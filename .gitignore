@@ -1,4 +1,5 @@
 *build
+*build_linux
 *install
 *log
 *.vscode
