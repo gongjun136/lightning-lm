@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "BashOutput",
+      "Glob",
+      "Grep",
+      "KillShell",
+      "Read",
+      "SlashCommand",
+      "Task",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "mcp__mcc-z",
+      "mcp__mcc-search",
+      "mcp__mcc-playwright"
+    ]
+  }
+}

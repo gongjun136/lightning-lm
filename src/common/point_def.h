@@ -107,7 +107,7 @@ inline Vec3f ToVec3f(const FullPointType& pt) { return pt.getVector3fMap(); }
 inline Vec3d ToVec3d(const FullPointType& pt) { return pt.getVector3fMap().cast<double>(); }
 
 using PointVector = std::vector<PointType, Eigen::aligned_allocator<PointType>>;
-constexpr double G_m_s2 = 9.81;  // Gravity const in GuangDong/China
+constexpr double G_m_s2 = 9.81;  // Gravity const in GuangDong/China.TODO.这里可以根据不同地方设置不同的值
 
 }  // namespace lightning
 

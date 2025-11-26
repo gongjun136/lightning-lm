@@ -232,47 +232,73 @@ inline void HistoryMeanAndVar(size_t hist_n, float hist_mean, float hist_var2, s
 }
 
 /**
- * Calculate cosine and sinc of sqrt(x2).
- * @param x2 the squared angle must be non-negative
- * @return a pair containing cos and sinc of sqrt(x2)
+ * 计算 cos(√x2) 和 sinc(√x2) = sin(√x2)/(√x2) 的高效数值实现
+ * @param x2 角度的平方值 (θ²)，必须非负
+ * @return pair{cos(θ), sinc(θ)} 其中 θ = √x2
  */
 template <class scalar>
 inline std::pair<scalar, scalar> cos_sinc_sqrt(const scalar& x2) {
     using std::cos;
     using std::sin;
     using std::sqrt;
-    static scalar const taylor_0_bound = boost::math::tools::epsilon<scalar>();
-    static scalar const taylor_2_bound = sqrt(taylor_0_bound);
-    static scalar const taylor_n_bound = sqrt(taylor_2_bound);
+    // 数值稳定性边界设定：小角度用泰勒展开，大角度用标准库函数
+    static scalar const taylor_0_bound = boost::math::tools::epsilon<scalar>();  // 机器精度
+    static scalar const taylor_2_bound = sqrt(taylor_0_bound);                   // √epsilon
+    static scalar const taylor_n_bound = sqrt(taylor_2_bound);                   // ε^(1/4) ≈ 1e-4
 
     assert(x2 >= 0 && "argument must be non-negative");
 
-    // FIXME check if bigger bounds are possible
+    // 大角度：使用标准库函数计算（精度更高但速度较慢）
     if (x2 >= taylor_n_bound) {
-        // slow fall-back solution
         scalar x = sqrt(x2);
-        return std::make_pair(cos(x), sin(x) / x);  // x is greater than 0.
+        return std::make_pair(cos(x), sin(x) / x);  // x > 0，避免除零
     }
 
-    // FIXME Replace by Horner-Scheme (4 instead of 5 FLOP/term, numerically more stable, theoretically cos and sinc can
-    // be calculated in parallel using SSE2 mulpd/addpd)
-    // TODO Find optimal coefficients using Remez algorithm
-    static scalar const inv[] = {1 / 3., 1 / 4., 1 / 5., 1 / 6., 1 / 7., 1 / 8., 1 / 9.};
-    scalar cosi = 1., sinc = 1;
-    scalar term = -1 / 2. * x2;
+    // 小角度：使用泰勒级数展开（速度快且数值稳定）
+    // cos(θ) ≈ 1 - θ²/2! + θ⁴/4! - θ⁶/6!
+    // sinc(θ) ≈ 1 - θ²/3! + θ⁴/5! - θ⁶/7!
+    static scalar const inv[] = {1 / 3., 1 / 4., 1 / 5., 1 / 6., 1 / 7., 1 / 8., 1 / 9.};  // 阶乘倒数
+    scalar cosi = 1., sinc = 1;  // 初始值：cos(0)=1, sinc(0)=1
+    scalar term = -1 / 2. * x2;  // 第一项：-θ²/2!
     for (int i = 0; i < 3; ++i) {
-        cosi += term;
-        term *= inv[2 * i];
-        sinc += term;
-        term *= -inv[2 * i + 1] * x2;
+        cosi += term;                  // cos累加项
+        term *= inv[2 * i];            // θ^(2i+2)/(2i+2)!
+        sinc += term;                  // sinc累加项
+        term *= -inv[2 * i + 1] * x2;  // 下一项系数
     }
 
     return std::make_pair(cosi, sinc);
 }
 
+/**
+ * @brief SO(3) 李代数到李群的指数映射 exp : so(3) → SO(3)
+ *
+ * 计算给定李代数向量 \p vec （轴角形式）在缩放因子 \p scale 下的 SO(3) 旋转。
+ *
+ * 数学含义（设 θ = ||vec||，ω = vec / θ，φ = scale * θ）：
+ * - 本实现内部计算：
+ *      cos_sinc_sqrt(scale² * θ²) = (cos(φ), sinc(φ)), 其中 sinc(φ) = sin(φ) / φ
+ * - 随后构造四元数：
+ *      q = [ cos(φ),  ω * sin(φ) ]
+ * - 对应的 SO(3) 旋转角为：
+ *      2φ = 2 * scale * θ
+ *
+ * 因此：
+ * - 当 scale = 1 时，旋转角为 2 * ||vec||；
+ * - 若希望得到“标准”轴角旋转 exp(ωθ)（旋转角为 θ）
+ *   1.可将输入改为 0.5 * ωθ，记 scale = 0.5;
+ *   2.调用本函数时令 vec 预先缩放为 0.5 * vec。
+ *
+ * @param[in] vec   so(3) 李代数向量（轴角向量，方向为旋转轴，模长为基准角度 θ）
+ * @param[in] scale 缩放因子（通常为时间步长 dt 或插值系数）
+ * @return          对应的 SO(3) 旋转（以四元数形式存储）
+ */
 inline SO3 exp(const Vec3d& vec, const double& scale = 1) {
     double norm2 = vec.squaredNorm();
     std::pair<double, double> cos_sinc = cos_sinc_sqrt(scale * scale * norm2);
+    // result = mult * vec = scale * sinc(φ) * vec
+    //         = scale * sinc(φ) * (ω * θ)
+    //         = ω * sin(φ)
     double mult = cos_sinc.second * scale;
     Vec3d result = mult * vec;
     return SO3(Quatd(cos_sinc.first, result[0], result[1], result[2]));
@@ -293,7 +319,7 @@ inline Eigen::Matrix<double, 2, 3> PseudoInverse(const Eigen::Matrix<double, 3, 
 }
 
 /**
- * SO3 Jl()/JacobianL()
+ * SO3 左雅可比，-v则为右雅可比
  * @param v
  * @return
  */

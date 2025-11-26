@@ -29,6 +29,7 @@ void RosbagIO::Go(int sleep_usec) {
         }
 
         if (lightning::debug::flg_exit) {
+            LOG(INFO) << "bag " << bag_file_ << " exit.";
             return;
         }
     }

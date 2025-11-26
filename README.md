@@ -306,6 +306,9 @@ Ubuntu 20.04 应该也可行，未测试。
     - 保存地图 ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
 2. 离线建图（遍历跑数据，更快一些）
     - ```ros2 run lightning run_slam_offline --config ./config/default_nclt.yaml --input_bag 数据包```
+    - ```
+      ./bin/run_slam_offline -config ./config/default_nclt.yaml -input_bag ~/nclt/nclt.db3
+      ```
     - 结束后会自动保存至data/new_map目录下
 3. 查看地图
     - 查看完整地图：```pcl_viewer ./data/new_map/global.pcd```
@@ -325,6 +328,10 @@ Ubuntu 20.04 应该也可行，未测试。
 2. 离线定位
     - ```ros2 run lightning run_loc_offline --config ./config/default_nclt.yaml --input_bag 数据包```
 
+    - ```
+      ./bin/run_loc_offline -config ./config/default_nclt.yaml -input_bag ~/nclt/nclt.db3
+      ```
+    
 3. 接收定位结果
     - 定位程序输出与IMU同频的TF话题（50-100Hz）
 

@@ -24,8 +24,19 @@ extern bool flg_pause;    // 暂停
 extern bool flg_next;     // 暂停后，放行单个消息(单步调试)
 extern float play_speed;  // 播放速度
 
+/**
+ * @brief 信号处理函数，用于优雅地处理 Ctrl+C 中断信号
+ * @param sig 接收到的信号类型（通常是 SIGINT）
+ *
+ * 当用户按下 Ctrl+C 时，系统会调用此函数：
+ * 1. 设置退出标志位，通知主循环停止运行
+ * 2. 调用 ROS2 节点关闭函数，优雅地关闭所有连接
+ */
 inline void SigHandle(int sig) {
+    // 设置全局退出标志，通知所有检查该标志的线程退出
     debug::flg_exit = true;
+
+    // 优雅关闭 ROS2 节点，释放所有资源
     rclcpp::shutdown();
 }
 

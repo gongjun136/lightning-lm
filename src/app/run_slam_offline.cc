@@ -21,6 +21,9 @@ int main(int argc, char** argv) {
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
+    std::string logfile = std::string(ROOT_DIR) + "/data/MapOffline_";
+	google::SetLogFilenameExtension(".log");
+	google::SetLogDestination(google::GLOG_INFO, logfile.c_str());
 
     google::ParseCommandLineFlags(&argc, &argv, true);
     if (FLAGS_input_bag.empty()) {

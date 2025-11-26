@@ -1,4 +1,5 @@
 #include "pointcloud_preprocess.h"
+#include "common/constant.h"
 #include <execution>
 
 #include <glog/logging.h>
@@ -43,6 +44,8 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     for (uint i = 0; i < plsize - 1; ++i) {
         index[i] = i + 1;  // 从1开始
     }
+    // 因为Livox需要做重复点检测，而检测需要与前一个点比较，
+    // 所以从索引1开始处理，避免访问cloud_full_[-1]造成数组越界。
 
     std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const uint &i) {
         if ((msg->points[i].line < num_scans_) &&
@@ -125,6 +128,7 @@ void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::msg::PointCloud2::
     cloud_out_.reserve(plsize);
 
     /*** These variables only works when no point timestamps given ***/
+    // TODO. 这里扫描角速度 (度/ms)是10HZ的，每秒10圈，这里应该是3.6 度/ms才对啊
     double omega_l = 3.61;  // scan angular velocity
     std::vector<bool> is_first(num_scans_, true);
     std::vector<double> yaw_fp(num_scans_, 0.0);    // yaw of first scan point
@@ -136,12 +140,12 @@ void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::msg::PointCloud2::
         given_offset_time_ = true;
     } else {
         given_offset_time_ = false;
-        double yaw_first = atan2(pl_orig.points[0].y, pl_orig.points[0].x) * 57.29578;
+        double yaw_first = atan2(pl_orig.points[0].y, pl_orig.points[0].x) * constant::kRAD2DEG;
         double yaw_end = yaw_first;
         int layer_first = pl_orig.points[0].ring;
         for (uint i = plsize - 1; i > 0; i--) {
             if (pl_orig.points[i].ring == layer_first) {
-                yaw_end = atan2(pl_orig.points[i].y, pl_orig.points[i].x) * 57.29578;
+                yaw_end = atan2(pl_orig.points[i].y, pl_orig.points[i].x) * constant::kRAD2DEG;
                 break;
             }
         }
@@ -158,7 +162,7 @@ void PointCloudPreprocess::VelodyneHandler(const sensor_msgs::msg::PointCloud2::
 
         if (!given_offset_time_) {
             int layer = pl_orig.points[i].ring;
-            double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
+            double yaw_angle = atan2(added_pt.y, added_pt.x) * constant::kRAD2DEG;
 
             if (is_first[layer]) {
                 yaw_fp[layer] = yaw_angle;

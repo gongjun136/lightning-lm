@@ -68,8 +68,8 @@ class SlamSystem {
     void ProcessIMU(const lightning::IMUPtr& imu);
 
     /// 处理点云
-    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
-    void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+    template <typename PointCloudMsgType>
+    void ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud);
 
     /// 实时模式下的spin
     void Spin();

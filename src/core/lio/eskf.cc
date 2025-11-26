@@ -7,19 +7,19 @@
 namespace lightning {
 
 void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
-    Eigen::Matrix<double, 24, 1> f_ = x_.get_f(gyro, acce);  // 调用get_f 获取 速度 角速度 加速度
-    Eigen::Matrix<double, 24, 23> f_x_ = x_.df_dx(acce);
+    Eigen::Matrix<double, 24, 1> f_ = x_.get_f(gyro, acce);  // 状态雅可比: f(x,u) - 刚体运动方程
+    Eigen::Matrix<double, 24, 23> f_x_ = x_.df_dx(acce);     // 部分误差状态雅可比: ∂f/∂x - 用于线性化
 
-    Eigen::Matrix<double, 24, 12> f_w_ = x_.df_dw();
-    Eigen::Matrix<double, 23, process_noise_dim_> f_w_final;
+    Eigen::Matrix<double, 24, 12> f_w_ = x_.df_dw();          // 部分噪声雅可比: ∂f/∂w - 噪声传播矩阵
+    Eigen::Matrix<double, 23, process_noise_dim_> f_w_final;  // 23*12，噪声雅可比，需要*dt的项
 
-    NavState x_before = x_;
-    x_.oplus(f_, dt);
+    NavState x_before = x_;  // 保存前一时刻状态（用于S2流形计算）
+    x_.oplus(f_, dt);        // 名义状态积分: x_{k+1} = x_k ⊕ f(x_k,u_k)*dt
 
-    F_x1_ = CovType::Identity();
+    F_x1_ = CovType::Identity();  // 存储部分误差状态雅可比，不需要*dt部分
 
-    // set f_x_final
-    CovType f_x_final;  // 23x23
+    // 构建完整的状态雅可比和噪声雅可比
+    CovType f_x_final;  // 23x23，误差状态雅可比，需要*dt的项
     for (auto st : x_.vect_states_) {
         int idx = st.idx_;
         int dim = st.dim_;
@@ -27,56 +27,56 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
 
         for (int i = 0; i < 23; i++) {
             for (int j = 0; j < dof; j++) {
-                f_x_final(idx + j, i) = f_x_(dim + j, i);
+                f_x_final(idx + j, i) = f_x_(dim + j, i);  // 填充向量状态的雅可比
             }
         }
 
         for (int i = 0; i < process_noise_dim_; i++) {
             for (int j = 0; j < dof; j++) {
-                f_w_final(idx + j, i) = f_w_(dim + j, i);
+                f_w_final(idx + j, i) = f_w_(dim + j, i);  // 填充向量状态的噪声传播
             }
         }
     }
-
+    // 1.处理SO3旋转状态
     Mat3d res_temp_SO3;
     Vec3d seg_SO3;
     for (auto st : x_.SO3_states_) {
         int idx = st.idx_;
         int dim = st.dim_;
         for (int i = 0; i < 3; i++) {
-            seg_SO3(i) = -1 * f_(dim + i) * dt;
+            seg_SO3(i) = -1 * f_(dim + i) * dt;  // 角轴向量 = -ω*dt
         }
 
-        F_x1_.block<3, 3>(idx, idx) = math::exp(seg_SO3, 0.5).matrix();
+        F_x1_.block<3, 3>(idx, idx) = math::exp(seg_SO3, 0.5).matrix();  // SO3状态转移矩阵
 
-        res_temp_SO3 = math::A_matrix(seg_SO3);
+        res_temp_SO3 = math::A_matrix(seg_SO3);  // -v代入= 李代数右雅可比
         for (int i = 0; i < state_dim_; i++) {
-            f_x_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_x_.block<3, 1>(dim, i));
+            f_x_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_x_.block<3, 1>(dim, i));  // TODO.少负号
         }
 
         for (int i = 0; i < process_noise_dim_; i++) {
-            f_w_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_w_.block<3, 1>(dim, i));
+            f_w_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_w_.block<3, 1>(dim, i));  // TODO.少负号
         }
     }
-
+    // 2.处理S2球面状态（重力向量）      这是什么玩意？？
     Eigen::Matrix<double, 2, 3> res_temp_S2;
     Vec3d seg_S2;
     for (auto st : x_.S2_states_) {
         int idx = st.idx_;
         int dim = st.dim_;
         for (int i = 0; i < 3; i++) {
-            seg_S2(i) = f_(dim + i) * dt;
+            seg_S2(i) = f_(dim + i) * dt;  // S2状态的李代数增量
         }
 
-        SO3 res = math::exp(seg_S2, 0.5f);
+        SO3 res = math::exp(seg_S2, 0.5f);  // 指数映射到SO3
 
         Vec2d vec = Vec2d::Zero();
-        Eigen::Matrix<double, 2, 3> Nx = x_.grav_.S2_Nx_yy();
+        Eigen::Matrix<double, 2, 3> Nx = x_.grav_.S2_Nx_yy();  // S2流形投影矩阵
         Eigen::Matrix<double, 3, 2> Mx = x_before.grav_.S2_Mx(vec);
 
-        F_x1_.block<2, 2>(idx, idx) = Nx * res.matrix() * Mx;
+        F_x1_.block<2, 2>(idx, idx) = Nx * res.matrix() * Mx;  // S2状态转移矩阵
 
-        Eigen::Matrix<double, 3, 3> x_before_hat = x_before.grav_.S2_hat();
+        Eigen::Matrix<double, 3, 3> x_before_hat = x_before.grav_.S2_hat();  // 反对称矩阵
         res_temp_S2 = -Nx * res.matrix() * x_before_hat * math::A_matrix(seg_S2).transpose();
 
         for (int i = 0; i < state_dim_; i++) {
@@ -87,8 +87,8 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
         }
     }
 
-    F_x1_ += f_x_final * dt;
-    P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
+    F_x1_ += f_x_final * dt;  // 完整状态转移矩阵: F = I + J*dt
+    P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();  // 卡尔曼协方差传播
 }
 
 /**

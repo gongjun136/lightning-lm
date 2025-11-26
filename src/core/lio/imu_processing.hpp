@@ -38,13 +38,13 @@ class ImuProcess {
 
     double GetMeanAccNorm() const { return mean_acc_.norm(); }
 
-    Eigen::Matrix<double, 12, 12> Q_;
-    Vec3d cov_acc_;
-    Vec3d cov_gyr_;
-    Vec3d cov_acc_scale_;
-    Vec3d cov_gyr_scale_;
-    Vec3d cov_bias_gyr_;
-    Vec3d cov_bias_acc_;
+    Eigen::Matrix<double, 12, 12> Q_;  // ESKF过程噪声协方差矩阵 [acc, gyr, acc_bias, gyr_bias]
+    Vec3d cov_acc_;                    // 加速度计噪声协方差（从IMU初始化中估计）
+    Vec3d cov_gyr_;                    // 陀螺仪噪声协方差（从IMU初始化中估计）
+    Vec3d cov_acc_scale_;              // 加速度计噪声协方差缩放因子（配置参数）
+    Vec3d cov_gyr_scale_;              // 陀螺仪噪声协方差缩放因子（配置参数）
+    Vec3d cov_bias_gyr_;               // 陀螺仪偏置不稳定性的协方差（配置参数）
+    Vec3d cov_bias_acc_;               // 加速度计偏置不稳定性的协方差（配置参数）
 
    private:
     void IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N);
@@ -56,13 +56,14 @@ class ImuProcess {
     lightning::IMUPtr last_imu_ = nullptr;
     std::deque<lightning::IMUPtr> imu_queue_;
 
-    std::vector<Pose6D> imu_pose_;
-    Mat3d R_lidar_imu_ = Mat3d ::Identity();
-    Vec3d t_lidar_mu_ = Vec3d ::Zero();
-    Vec3d mean_acc_ = Vec3d::Zero();
-    Vec3d mean_gyr_ = Vec3d::Zero();
-    Vec3d angvel_last_ = Vec3d ::Zero();
-    Vec3d acc_s_last_ = Vec3d ::Zero();
+    std::vector<Pose6D> imu_pose_;            // IMU位姿序列，用于点云运动畸变补偿
+    Mat3d R_lidar_imu_ = Mat3d ::Identity();  // LiDAR到IMU的旋转外参
+    Vec3d t_lidar_mu_ = Vec3d ::Zero();       // LiDAR到IMU的平移外参
+    Vec3d mean_acc_ = Vec3d::Zero();          // 加速度计均值（用于初始化）
+    Vec3d mean_gyr_ = Vec3d::Zero();          // 陀螺仪均值（用于初始化）
+    Vec3d angvel_last_ = Vec3d ::Zero();      // 上一时刻的角速度（去偏置后）
+    Vec3d acc_s_last_ = Vec3d ::Zero();       // 上一时刻的加速度（世界坐标系，含重力）
+    double imu_scale_ = 1.0;                  // IMU加速度计缩放因子（初始化时计算并缓存）
 
     double last_lidar_end_time_ = 0;
     int init_iter_num_ = 1;
@@ -89,6 +90,7 @@ inline void ImuProcess::Reset() {
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
     angvel_last_.setZero();
+    imu_scale_ = 1.0;  // 重置IMU缩放因子
 
     imu_need_init_ = true;
     init_iter_num_ = 1;
@@ -116,17 +118,17 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
      ** 2. normalize the acceleration measurenments to unit gravity_ **/
 
     Vec3d cur_acc, cur_gyr;
-
+    // 初始状态：b_first_frame_ 为 true 时，用第一个IMU数据初始化均值
     if (b_first_frame_) {
         Reset();
-        N = 1;
+        N = 1;  // 数据量计数
         b_first_frame_ = false;
         const auto &imu_acc = meas.imu_.front()->linear_acceleration;
         const auto &gyr_acc = meas.imu_.front()->angular_velocity;
         mean_acc_ = imu_acc;
         mean_gyr_ = gyr_acc;
     }
-
+    // 增量更新：后续每个IMU数据到来时，使用增量公式更新
     for (const auto &imu : meas.imu_) {
         const auto &imu_acc = imu->linear_acceleration;
         const auto &gyr_acc = imu->angular_velocity;
@@ -135,11 +137,9 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
         mean_acc_ += (cur_acc - mean_acc_) / N;
         mean_gyr_ += (cur_gyr - mean_gyr_) / N;
-
-        cov_acc_ =
-            cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * (N - 1.0) / (N * N);
-        cov_gyr_ =
-            cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * (N - 1.0) / (N * N);
+        // 修复方差递推更新公式
+        cov_acc_ = cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * 1.0 / (N + 1);
+        cov_gyr_ = cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * 1.0 / (N + 1);
 
         N++;
     }
@@ -152,12 +152,20 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     init_state.offset_R_lidar_ = R_lidar_imu_;
     kf_state.ChangeX(init_state);
 
+    // 计算并缓存IMU缩放因子
+    imu_scale_ = G_m_s2 / mean_acc_.norm();
+
     auto init_P = kf_state.GetP();
     init_P.setIdentity();
+    // LiDAR-IMU外参旋转 uncertainty (3个自由度)
     init_P(6, 6) = init_P(7, 7) = init_P(8, 8) = 0.00001;
+    // LiDAR-IMU外参平移 uncertainty (3个自由度)
     init_P(9, 9) = init_P(10, 10) = init_P(11, 11) = 0.00001;
+    // 陀螺仪零偏 uncertainty (3个自由度)
     init_P(15, 15) = init_P(16, 16) = init_P(17, 17) = 0.0001;
+    // 加速度计零偏 uncertainty (3个自由度)
     init_P(18, 18) = init_P(19, 19) = init_P(20, 20) = 0.001;
+    // 重力向量 uncertainty (2个自由度，S2约束)
     init_P(21, 21) = init_P(22, 22) = 0.00001;
     kf_state.ChangeP(init_P);
 
@@ -197,8 +205,8 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         angvel_avr = .5 * (head->angular_velocity + tail->angular_velocity);
         acc_avr = .5 * (head->linear_acceleration + tail->linear_acceleration);
 
-        acc_avr = acc_avr * G_m_s2 / mean_acc_.norm();  // - state_inout.ba;
-
+        acc_avr = acc_avr * imu_scale_;  // 使用缓存的缩放因子进行加速度计标定
+        // 目的: 只计算从上一帧Lidar结束后的有效时间
         if (head->timestamp < last_lidar_end_time_) {
             dt = tail->timestamp - last_lidar_end_time_;
         } else {
@@ -310,7 +318,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
 
         auto imu_state = kf_state.GetX();
         if (init_iter_num_ > max_init_count_) {
-            cov_acc_ *= pow(G_m_s2 / mean_acc_.norm(), 2);
+            cov_acc_ *= pow(imu_scale_, 2);  // 使用缓存的缩放因子，方差则需要平方
             imu_need_init_ = false;
 
             cov_acc_ = cov_acc_scale_;

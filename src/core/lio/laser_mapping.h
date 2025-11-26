@@ -57,6 +57,11 @@ class LaserMapping {
 
     bool Run();
 
+    // 三个ProcessPointCloud2函数处理逻辑：
+    // 1.时间戳检查和回环检测：检查时间戳是否倒退，如果是则清空缓冲区
+    // 2.点云预处理：调用 preprocess_->Process() 进行统一格式 (CloudPtr)转换和预处理
+    // 3.数据缓存：将处理后的点云和时间戳存入缓冲区
+    // 4.性能监控：使用 Timer::Evaluate 记录预处理耗时
     // callbacks of lidar and imu
     /// 处理ROS2的点云
     void ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
@@ -170,7 +175,7 @@ class LaserMapping {
     std::deque<lightning::IMUPtr> imu_buffer_;
 
     /// options
-    bool keep_first_imu_estimation_ = false;    // 在没有建立地图前，是否要使用前几帧的IMU状态
+    bool keep_first_imu_estimation_ = false;  // 在没有建立地图前，是否要使用前几帧的IMU状态
     double timediff_lidar_wrt_imu_ = 0.0;
     double last_timestamp_lidar_ = 0;
     double lidar_end_time_ = 0;
@@ -196,8 +201,8 @@ class LaserMapping {
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
     MeasureGroup measures_;  // sync IMU and lidar scan
 
-    ESKF kf_;      // 点云时刻的IMU状态
-    ESKF kf_imu_;  // imu 最新时刻的eskf状态
+    ESKF kf_;      // 点云时刻的IMU状态，用于畸变矫正+雷达里程计观测更新
+    ESKF kf_imu_;  // imu 最新时刻的eskf状态，提供UI的高频位姿输出
 
     NavState state_point_;  // ekf current state
 
