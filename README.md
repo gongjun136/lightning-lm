@@ -106,7 +106,7 @@ format.
 Converted dataset addresses:
 
 - OneDrive: https://1drv.ms/f/c/1a7361d22c554503/EpDSys0bWbxDhNGDYL_O0hUBa2OnhNRvNo2Gey2id7QMQA?e=7Ui0f5
-- BaiduYun:
+- BaiduYun: https://pan.baidu.com/s/1XmFitUtnkKa2d0YtWquQXw?pwd=xehn 提取码: xehn 
 
 Original dataset addresses:
 
@@ -289,7 +289,7 @@ Ubuntu 20.04 应该也可行，未测试。
 转换后的数据集地址：
 
 - OneDrive: https://1drv.ms/f/c/1a7361d22c554503/EpDSys0bWbxDhNGDYL_O0hUBa2OnhNRvNo2Gey2id7QMQA?e=7Ui0f5
-- BaiduYun:
+- BaiduYun: https://pan.baidu.com/s/1XmFitUtnkKa2d0YtWquQXw?pwd=xehn 提取码: xehn 
 
 原始数据集地址：
 
