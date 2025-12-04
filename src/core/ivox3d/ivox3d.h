@@ -128,7 +128,7 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
     closest_pt = iter->Get();
     return true;
 }
-
+// 每个领域体素里最多会贡献 max_num 个候选点，然后所有体素的候选点合在一起，再全局裁剪到 max_num 个，作为最终近邻。
 template <int dim, IVoxNodeType node_type, typename PointType>
 bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, PointVector& closest_pt, int max_num,
                                                       double max_range) {
@@ -137,8 +137,10 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
 
     auto key = Pos2Grid(math::ToEigen<float, dim>(pt));
 
+// 性能分析计时器宏（默认注释掉，需要时启用）
 // #define INNER_TIMER
 #ifdef INNER_TIMER
+    // 静态统计变量，记录knn搜索和nth_element的性能数据
     static std::unordered_map<std::string, std::vector<int64_t>> stats;
     if (stats.empty()) {
         stats["knn"] = std::vector<int64_t>();
@@ -146,27 +148,34 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
     }
 #endif
 
+    // 在邻域网格中搜索候选点
     for (const KeyType& delta : nearby_grids_) {
-        auto dkey = key + delta;
-        auto iter = grids_map_.find(dkey);
+        auto dkey = key + delta;            // 计算邻域网格坐标
+        auto iter = grids_map_.find(dkey);  // 查找该网格是否存在
         if (iter != grids_map_.end()) {
+            // 在该网格中进行KNN搜索，添加候选点
             iter->second->second.KNNPointByCondition(candidates, pt, max_num, max_range);
         }
     }
 
+    // 如果没有找到候选点，返回失败
     if (candidates.empty()) {
         return false;
     }
 
 #ifdef INNER_TIMER
-    auto t1 = std::chrono::high_resolution_clock::now();
+    auto t1 = std::chrono::high_resolution_clock::now();  // 开始计时排序操作
 #endif
 
+    // 候选点数量筛选和排序优化
     if (candidates.size() <= max_num) {
+        // 候选点数量不超过需求，无需筛选
     } else {
+        // 使用nth_element快速筛选出前max_num个最近的候选点（部分排序）
         std::nth_element(candidates.begin(), candidates.begin() + max_num - 1, candidates.end());
         candidates.resize(max_num);
     }
+    // 把 candidates.begin() 位置上的元素 调整成“整个区间里最小的那个元素
     std::nth_element(candidates.begin(), candidates.begin(), candidates.end());
 
 #ifdef INNER_TIMER
@@ -174,6 +183,7 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
     auto nth = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
     stats["nth"].emplace_back(nth);
 
+    // 每STAT_PERIOD次操作输出一次性能统计
     constexpr int STAT_PERIOD = 100000;
     if (!stats["nth"].empty() && stats["nth"].size() % STAT_PERIOD == 0) {
         for (auto& it : stats) {
@@ -188,27 +198,30 @@ bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointType& pt, Point
     }
 #endif
 
+    // 将最终结果返回
     closest_pt.clear();
     for (auto& it : candidates) {
-        closest_pt.emplace_back(it.Get());
+        closest_pt.emplace_back(it.Get());  // 获取实际点坐标
     }
     return closest_pt.empty() == false;
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 size_t IVox<dim, node_type, PointType>::NumValidGrids() const {
+    // 返回有效体素网格数量（即包含点云的体素数量）
     return grids_map_.size();
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 size_t IVox<dim, node_type, PointType>::NumPoints() const {
+    // 遍历所有体素网格，统计总点云数量
     int ret = 0;
     for (auto& g : grids_map_) {
-        ret += g.second->second.Size();
+        ret += g.second->second.Size();  // 累加每个体素中的点数
     }
     return ret;
 }
-
+// 生成领域的体素增量索引
 template <int dim, IVoxNodeType node_type, typename PointType>
 void IVox<dim, node_type, PointType>::GenerateNearbyGrids() {
     if (options_.nearby_type_ == NearbyType::CENTER) {
@@ -283,7 +296,7 @@ void IVox<dim, node_type, PointType>::AddPoints(const PointVector& points_to_add
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 Eigen::Matrix<int, dim, 1> IVox<dim, node_type, PointType>::Pos2Grid(const IVox::PtType& pt) const {
-    return (pt * options_.inv_resolution_).array().round().template cast<int>();
+    return (pt * options_.inv_resolution_).array().round().template cast<int>();  // 四舍五入
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>

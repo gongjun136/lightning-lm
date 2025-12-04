@@ -25,8 +25,15 @@ void PangolinWindow::Quit() {
     if (impl_->render_thread_.joinable()) {
         impl_->exit_flag_.store(true);
         impl_->render_thread_.join();
+    } else {
+        return;
     }
     impl_->DeInit();
+    // // [gj-2025-11-26] 待修复bug：
+    // 确保有当前上下文再做 OpenGL / Pangolin 清理
+    LOG(INFO) << "PangolinWindow deconstruct";
+    // pangolin::BindToContext(impl_->GetWindowName());
+    // pangolin::DestroyWindow(impl_->GetWindowName());
 }
 
 void PangolinWindow::UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud) {

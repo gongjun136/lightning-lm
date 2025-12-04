@@ -1,6 +1,6 @@
 #include "pointcloud_preprocess.h"
-#include "common/constant.h"
 #include <execution>
+#include "common/constant.h"
 
 #include <glog/logging.h>
 
@@ -38,8 +38,8 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
 
     cloud_out_.reserve(plsize);
     cloud_full_.resize(plsize);
-
-    std::vector<bool> is_valid_pt(plsize, false);
+    // [gj-2025-11-28] bool -> uint8_t
+    std::vector<uint8_t> is_valid_pt(plsize, false);
     std::vector<uint> index(plsize - 1);
     for (uint i = 0; i < plsize - 1; ++i) {
         index[i] = i + 1;  // 从1开始

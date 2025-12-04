@@ -48,16 +48,16 @@ class ESKF {
     /// 观测由观测模型+观测函数组成，模型层面存储具体的结果，观测函数负责实现各矩阵的计算
     /// TODO 观测模型已知时，维度可以事先指定（但是雷达匹配点数是不定的，所以这边无法指定矩阵行数）
     struct CustomObservationModel {
-        bool valid_ = true;
-        bool converge_ = true;
+        bool valid_ = true;     // 观测模型是否有效（数据质量检查）
+        bool converge_ = true;  // 优化是否收敛（迭代收敛状态）
 
         Eigen::Matrix<double, Eigen::Dynamic, 1> residual_;          // residual: z-Hx
         Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> h_x_;  // dr/dx, H阵
         Eigen::Matrix<double, Eigen::Dynamic, 1> s_;
         Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> R_;
 
-        double lidar_residual_mean_ = 0;
-        double lidar_residual_max_ = 0;
+        double lidar_residual_mean_ = 0;  // 中位数平方误差
+        double lidar_residual_max_ = 0;   // 最大的平方误差
     };
 
     /// 用户定义的观测模型函数，根据状态计算观测量和雅可比矩阵
@@ -112,10 +112,10 @@ class ESKF {
    private:
     double stamp_ = 0.0;
 
-    NavState x_;
-    CovType P_ = CovType::Identity();
-    CovType F_x1_ = CovType::Identity();
-    CovType L_ = CovType ::Identity();
+    NavState x_;                          // ESKF系统状态向量 [位置、姿态、速度、零偏等]
+    CovType P_ = CovType::Identity();     // 误差状态协方差矩阵
+    CovType F_x1_ = CovType::Identity();  // 误差状态雅可比
+    CovType L_ = CovType ::Identity();    // Joseph形式更新矩阵，保证协方差正定性
 
     CustomObservationModel custom_obs_model_;
     CustomObsFunction lidar_obs_func_, wheelspeed_obs_func_, acc_as_gravity_obs_func_, gps_obs_func_, bias_obs_func_;

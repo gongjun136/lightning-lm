@@ -223,14 +223,14 @@ struct NavState {
     bool lidar_odom_reliable_ = true;  // lio是否有效
     bool is_parking_ = false;          // 是否在停车
     // 名义状态：
-    Vec3d pos_ = Vec3d::Zero();             // 位置
-    SO3 rot_;                               // 旋转
-    SO3 offset_R_lidar_;                    // 外参R
-    Vec3d offset_t_lidar_ = Vec3d::Zero();  // 外参t
-    Vec3d vel_ = Vec3d::Zero();             // 速度
-    Vec3d bg_ = Vec3d::Zero();              // 陀螺零偏
-    Vec3d ba_ = Vec3d::Zero();              // 加计零偏
-    S2 grav_;                               // 重力
+    Vec3d pos_ = Vec3d::Zero();             // 位置（从IMU坐标系到世界坐标系，在世界坐标系下表示）
+    SO3 rot_;                               // 旋转（从IMU坐标系到世界坐标系）
+    SO3 offset_R_lidar_;                    // 外参旋转（从LiDAR坐标系到IMU坐标系）
+    Vec3d offset_t_lidar_ = Vec3d::Zero();  // 外参平移（从LiDAR坐标系到IMU坐标系，在IMU坐标系下表示）
+    Vec3d vel_ = Vec3d::Zero();             // 速度（世界坐标系）
+    Vec3d bg_ = Vec3d::Zero();              // 陀螺零偏（在IMU原始测量中补偿，IMU坐标系）
+    Vec3d ba_ = Vec3d::Zero();              // 加速度计零偏（在IMU原始测量中补偿，IMU坐标系）
+    S2 grav_;                               // 重力向量（世界坐标系）
 };
 
 }  // namespace lightning

@@ -64,36 +64,40 @@ class IVoxNodePhc {
     uint32_t CalculatePhcIndex(const PointT& pt) const;
 
    private:
-    std::vector<PhcCube> phc_cubes_;
+    std::vector<PhcCube> phc_cubes_;  // PHC子立方体数组，存储每个子立方体的质心信息
 
-    PointT center_;
-    float side_length_ = 0;
-    int phc_order_ = 6;
-    float phc_side_length_ = 0;
-    float phc_side_length_inv_ = 0;
-    Eigen::Matrix<float, dim, 1> min_cube_;
+    PointT center_;                          // 当前IVox节点的中心坐标
+    float side_length_ = 0;                  // 当前IVox节点的边长
+    int phc_order_ = 6;                      // PHC subdivision层级，默认将体素划分为2^6=64个子立方体
+    float phc_side_length_ = 0;              // PHC子立方体的边长 = side_length_ / (2^phc_order_)
+    float phc_side_length_inv_ = 0;          // PHC子立方体边长的倒数，用于快速计算索引
+    Eigen::Matrix<float, dim, 1> min_cube_;  // PHC网格的最小边界点坐标
 };
 
 template <typename PointT, int dim>
 struct IVoxNode<PointT, dim>::DistPoint {
-    double dist = 0;
-    IVoxNode* node = nullptr;
-    int idx = 0;
+    double dist = 0;           // 距离查询点的欧氏距离平方
+    IVoxNode* node = nullptr;  // 指向包含该点的体素节点
+    int idx = 0;               // 该点在体素节点中的索引位置
 
     DistPoint() = default;
+    // 构造函数：初始化距离、节点指针和索引
     DistPoint(const double d, IVoxNode* n, const int i) : dist(d), node(n), idx(i) {}
 
+    // 获取实际的点云数据
     PointT Get() { return node->GetPoint(idx); }
 
+    // 函数对象：用于比较两个DistPoint的距离（用于std::sort等算法）
     inline bool operator()(const DistPoint& p1, const DistPoint& p2) { return p1.dist < p2.dist; }
 
+    // 小于运算符重载：用于std::nth_element等算法的距离比较
     inline bool operator<(const DistPoint& rhs) { return dist < rhs.dist; }
 };
 
 template <typename PointT, int dim>
 void IVoxNode<PointT, dim>::InsertPoint(const PointT& pt) {
     points_.template emplace_back(pt);
-    if (points_.size() >= 10) {
+    if (points_.size() >= 10) {  // TODO.每个体素就10个点？
         points_.erase(points_.begin());
     }
 }
@@ -116,53 +120,64 @@ PointT IVoxNode<PointT, dim>::GetPoint(const std::size_t idx) const {
 template <typename PointT, int dim>
 int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_points, const PointT& point, const int& K,
                                                const double& max_range) {
-    std::size_t old_size = dis_points.size();
+    std::size_t old_size = dis_points.size();  // 记录输入时的候选点数量
+
+// 性能分析计时器宏（默认注释掉，需要时启用）
 // #define INNER_TIMER
 #ifdef INNER_TIMER
+    // 静态统计变量，记录距离计算、插入操作和排序的性能数据
     static std::unordered_map<std::string, std::vector<int64_t>> stats;
     if (stats.empty()) {
-        stats["dis"] = std::vector<int64_t>();
-        stats["put"] = std::vector<int64_t>();
-        stats["nth"] = std::vector<int64_t>();
+        stats["dis"] = std::vector<int64_t>();  // 距离计算耗时
+        stats["put"] = std::vector<int64_t>();  // 插入操作耗时
+        stats["nth"] = std::vector<int64_t>();  // 排序操作耗时
     }
 #endif
 
+    // 遍历当前体素中的所有点，计算与查询点的距离
     for (const auto& pt : points_) {
 #ifdef INNER_TIMER
-        auto t0 = std::chrono::high_resolution_clock::now();
+        auto t0 = std::chrono::high_resolution_clock::now();  // 开始计时距离计算
 #endif
-        double d = math::distance2(pt, point);
+        double d = math::distance2(pt, point);  // 计算欧氏距离的平方
 #ifdef INNER_TIMER
-        auto t1 = std::chrono::high_resolution_clock::now();
+        auto t1 = std::chrono::high_resolution_clock::now();  // 距离计算结束
 #endif
+
+        // 只保留在最大搜索范围内的点
         if (d < max_range * max_range) {
+            // 创建距离点对象并添加到候选列表
             dis_points.template emplace_back(DistPoint(d, this, &pt - points_.data()));
         }
 #ifdef INNER_TIMER
-        auto t2 = std::chrono::high_resolution_clock::now();
+        auto t2 = std::chrono::high_resolution_clock::now();  // 插入操作结束
 
         auto dis = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-        stats["dis"].emplace_back(dis);
+        stats["dis"].emplace_back(dis);  // 记录距离计算耗时
         auto put = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
-        stats["put"].emplace_back(put);
+        stats["put"].emplace_back(put);  // 记录插入操作耗时
 #endif
     }
 
 #ifdef INNER_TIMER
-    auto t1 = std::chrono::high_resolution_clock::now();
+    auto t1 = std::chrono::high_resolution_clock::now();  // 开始计时排序操作
 #endif
-    // sort by distance
+
+    // 按距离进行筛选和排序（保持K个最近的点）
     if (old_size + K >= dis_points.size()) {
+        // 候选点总数未超过需求，无需筛选
     } else {
+        // 使用nth_element快速筛选出距离最近的K个点（只对新添加的这部分点进行部分排序）
         std::nth_element(dis_points.begin() + old_size, dis_points.begin() + old_size + K - 1, dis_points.end());
-        dis_points.resize(old_size + K);
+        dis_points.resize(old_size + K);  // 只保留K个最近的点
     }
 
 #ifdef INNER_TIMER
-    auto t2 = std::chrono::high_resolution_clock::now();
+    auto t2 = std::chrono::high_resolution_clock::now();  // 排序操作结束
     auto nth = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
-    stats["nth"].emplace_back(nth);
+    stats["nth"].emplace_back(nth);  // 记录排序操作耗时
 
+    // 每STAT_PERIOD次操作输出一次性能统计
     constexpr int STAT_PERIOD = 100000;
     if (!stats["nth"].empty() && stats["nth"].size() % STAT_PERIOD == 0) {
         for (auto& it : stats) {
@@ -177,7 +192,7 @@ int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_point
     }
 #endif
 
-    return dis_points.size();
+    return dis_points.size();  // 返回总候选点数量
 }
 
 template <typename PointT, int dim>

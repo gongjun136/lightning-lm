@@ -62,8 +62,8 @@ class ImuProcess {
     Vec3d mean_acc_ = Vec3d::Zero();          // 加速度计均值（用于初始化）
     Vec3d mean_gyr_ = Vec3d::Zero();          // 陀螺仪均值（用于初始化）
     Vec3d angvel_last_ = Vec3d ::Zero();      // 上一时刻的角速度（去偏置后）
-    Vec3d acc_s_last_ = Vec3d ::Zero();       // 上一时刻的加速度（世界坐标系，含重力）
-    double imu_scale_ = 1.0;                  // IMU加速度计缩放因子（初始化时计算并缓存）
+    Vec3d acc_s_last_ = Vec3d ::Zero();       // 上一时刻的加速度（世界坐标系，不含重力）
+    double meas_acc_scale_ = 1.0;                  // IMU加速度计缩放因子（初始化时计算并缓存）
 
     double last_lidar_end_time_ = 0;
     int init_iter_num_ = 1;
@@ -90,7 +90,7 @@ inline void ImuProcess::Reset() {
     mean_acc_ = Vec3d(0, 0, -1.0);
     mean_gyr_ = Vec3d(0, 0, 0);
     angvel_last_.setZero();
-    imu_scale_ = 1.0;  // 重置IMU缩放因子
+    meas_acc_scale_ = 1.0;  // 重置IMU缩放因子
 
     imu_need_init_ = true;
     init_iter_num_ = 1;
@@ -137,7 +137,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
         mean_acc_ += (cur_acc - mean_acc_) / N;
         mean_gyr_ += (cur_gyr - mean_gyr_) / N;
-        // 修复方差递推更新公式
+        // [gj-2025-11-25] 修正：(N-1.0)/(N * N) -> 1.0 / (N + 1)
         cov_acc_ = cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * 1.0 / (N + 1);
         cov_gyr_ = cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * 1.0 / (N + 1);
 
@@ -153,7 +153,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     kf_state.ChangeX(init_state);
 
     // 计算并缓存IMU缩放因子
-    imu_scale_ = G_m_s2 / mean_acc_.norm();
+    meas_acc_scale_ = G_m_s2 / mean_acc_.norm();
 
     auto init_P = kf_state.GetP();
     init_P.setIdentity();
@@ -205,7 +205,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         angvel_avr = .5 * (head->angular_velocity + tail->angular_velocity);
         acc_avr = .5 * (head->linear_acceleration + tail->linear_acceleration);
 
-        acc_avr = acc_avr * imu_scale_;  // 使用缓存的缩放因子进行加速度计标定
+        acc_avr = acc_avr * meas_acc_scale_;  // 使用缓存的缩放因子进行加速度计标定
         // 目的: 只计算从上一帧Lidar结束后的有效时间
         if (head->timestamp < last_lidar_end_time_) {
             dt = tail->timestamp - last_lidar_end_time_;
@@ -221,7 +221,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             kf_state.SetTime((*it_imu)->timestamp);
             break;
         }
-
+        // TODO.在IMU初始化完成后，其实这个方差就不会变
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
@@ -238,43 +238,48 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         angvel_last_ = angvel_avr - imu_state.bg_;
         acc_s_last_ = imu_state.rot_ * (acc_avr - imu_state.ba_);
         for (int i = 0; i < 3; i++) {
-            acc_s_last_[i] += imu_state.grav_[i];
+            acc_s_last_[i] += imu_state.grav_[i];  // 去除重力向量
         }
-
+        // 思考：为什么用的平均加速度/角速度，而时间戳不是用的中间时间戳，而是尾端时间戳
+        // 1.ESKF预测使用的是前向欧拉积分：kf_state.Predict(dt, Q_, gyro, acc)
+        // 2.在 [head_timestamp, tail_timestamp] 区间内，使用平均的输入值进行积分
+        // 3.但积分结果对应的是区间末端的状态
         double &&offs_t = tail->timestamp - pcl_beg_time;
         imu_pose_.emplace_back(
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
-    /*** calculated the pos and attitude prediction at the frame-end ***/
+    /*** 计算帧结束时刻的位姿预测，确保IMU积分覆盖整个点云扫描周期 ***/
+    // 处理IMU数据可能比点云数据早结束或晚结束的情况
     double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
-    dt = note * (pcl_end_time - imu_end_time);
+    dt = note * (pcl_end_time - imu_end_time);  // 正向或反向预测到点云结束时刻
     kf_state.Predict(dt, Q_, gyro, acc);
 
-    imu_state = kf_state.GetX();
+    imu_state = kf_state.GetX();  // 获取最终的位姿状态（作为运动补偿的参考帧）
     last_imu_ = meas.imu_.back();
     last_lidar_end_time_ = pcl_end_time;
 
-    /*** sort point clouds by offset time ***/
+    /*** 按时间戳对点云进行排序，便于后续按时间区间进行运动补偿 ***/
     pcl_out = meas.scan_;
     std::sort(pcl_out->points.begin(), pcl_out->points.end(),
               [](const PointType &p1, const PointType &p2) { return p1.time < p2.time; });
 
-    /*** undistort each lidar point (backward propagation) ***/
+    /*** 开始点云运动畸变补偿（从后向前传播）***/
     if (pcl_out->empty()) {
         return;
     }
-
+    // 从后向前处理点云，将所有点补偿到扫描结束时刻
     auto it_pcl = pcl_out->points.end() - 1;
     for (auto it_kp = imu_pose_.end() - 1; it_kp != imu_pose_.begin(); it_kp--) {
-        auto head = it_kp - 1;
-        auto tail = it_kp;
+        auto head = it_kp - 1;  // 当前时间区间起始位姿
+        auto tail = it_kp;      // 当前时间区间结束位姿
+        // 获取区间起始时刻的运动状态
         R_imu = (head->rot);
         vel_imu = (head->vel);
         pos_imu = (head->pos);
-        acc_imu = (tail->acc);
-        angvel_avr = (tail->gyr);
-
+        acc_imu = (tail->acc);     // 区间内的加速度（平均）
+        angvel_avr = (tail->gyr);  // 区间内的角速度（平均）
+        // 处理当前时间区间内的所有点云点
         for (; it_pcl->time / double(1000) > head->offset_time; it_pcl--) {
             dt = it_pcl->time / double(1000) - head->offset_time;
 
@@ -282,16 +287,18 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
              * Note: Compensation direction is INVERSE of Frame's moving direction
              * So if we want to compensate a point at timestamp-i to the frame-e
              * p_compensate = R_imu_e ^ T * (R_i * P_i + T_ei) where T_ei is represented in global frame */
-            Mat3d R_i(R_imu * math::exp(angvel_avr, dt).matrix());
+            // [gj-2025-11-26] 修正：使用 0.5*dt 以匹配 exp 的 2*scale*|vec| 定义
+            Mat3d R_i(R_imu * math::exp(angvel_avr, 0.5 * dt).matrix());  // 计算点采集时刻的IMU旋转矩阵
 
-            Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);
-            Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_);
+            Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);  // 点云原始位置
+            Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt -
+                       imu_state.pos_);  // 从点采集时刻到扫描结束时刻的平移向量
             Vec3d p_compensate = imu_state.offset_R_lidar_.inverse() *
                                  (imu_state.rot_.inverse() *
                                       (R_i * (imu_state.offset_R_lidar_ * P_i + imu_state.offset_t_lidar_) + T_ei) -
-                                  imu_state.offset_t_lidar_);  // not accurate!
+                                  imu_state.offset_t_lidar_);  // 执行运动补偿变换（将点补偿到扫描结束时刻）
 
-            // save Undistorted points and their rotation
+            // 更新点云坐标
             it_pcl->x = p_compensate(0);
             it_pcl->y = p_compensate(1);
             it_pcl->z = p_compensate(2);
@@ -318,7 +325,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
 
         auto imu_state = kf_state.GetX();
         if (init_iter_num_ > max_init_count_) {
-            cov_acc_ *= pow(imu_scale_, 2);  // 使用缓存的缩放因子，方差则需要平方
+            cov_acc_ *= pow(meas_acc_scale_, 2);  // 使用缓存的缩放因子，方差则需要平方
             imu_need_init_ = false;
 
             cov_acc_ = cov_acc_scale_;

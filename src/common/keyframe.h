@@ -65,10 +65,10 @@ class Keyframe {
     unsigned long id_ = 0;
 
     double timestamp_ = 0;
-    CloudPtr cloud_ = nullptr;  /// 降采样之后的点云
+    CloudPtr cloud_ = nullptr;  /// 降采样之后的点云，去畸变后，lidar系
 
     std::mutex data_mutex_;
-    SE3 pose_lio_;  // 前端的pose
+    SE3 pose_lio_;  // 前端的pose，从IMU坐标系到世界坐标系
     SE3 pose_opt_;  // 后端优化后的pose
 
     NavState state_;  // 卡尔曼滤波器状态

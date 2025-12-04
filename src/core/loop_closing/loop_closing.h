@@ -72,21 +72,21 @@ class LoopClosing {
 
     Options options_;
 
-    Keyframe::Ptr last_kf_ = nullptr;
-    Keyframe::Ptr last_loop_kf_ = nullptr;
-    Keyframe::Ptr cur_kf_ = nullptr;
-    std::vector<Keyframe::Ptr> all_keyframes_;
-    std::vector<LoopCandidate> candidates_;
+    Keyframe::Ptr last_kf_ = nullptr;           // 上一次处理的关键帧（用于避免重复处理）
+    Keyframe::Ptr last_loop_kf_ = nullptr;      // 上一次成功检测到回环的关键帧
+    Keyframe::Ptr cur_kf_ = nullptr;            // 当前正在处理的关键帧
+    std::vector<Keyframe::Ptr> all_keyframes_;  // 所有已处理的关键帧列表
+    std::vector<LoopCandidate> candidates_;     // 当前关键帧的回环候选列表
 
-    AsyncMessageProcess<Keyframe::Ptr> kf_thread_;
+    AsyncMessageProcess<Keyframe::Ptr> kf_thread_;  // 在线模式下的异步关键帧处理线程
 
-    std::shared_ptr<miao::Optimizer> optimizer_ = nullptr;
+    std::shared_ptr<miao::Optimizer> optimizer_ = nullptr;  // Miao图优化器实例
 
     Mat6d info_motion_ = Mat6d::Identity();  // 关键帧间的运动信息阵
     Mat6d info_loops_ = Mat6d::Identity();   // 回环帧的信息矩阵
 
-    std::vector<std::shared_ptr<miao::VertexSE3>> kf_vert_;
-    std::vector<std::shared_ptr<miao::EdgeSE3>> edge_loops_;
+    std::vector<std::shared_ptr<miao::VertexSE3>> kf_vert_;    // 位姿图中所有关键帧的SE3顶点
+    std::vector<std::shared_ptr<miao::EdgeSE3>> edge_loops_;    // 回环检测生成的SE3约束边
 
     LoopClosedCallback loop_cb_;
 };

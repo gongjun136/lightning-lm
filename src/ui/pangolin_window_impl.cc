@@ -223,7 +223,6 @@ void PangolinWindowImpl::DrawAll() {
         UL lock(mtx_current_scan_);
 
         if (all_keyframes_.size() > 1) {
-
             /// 闭环后的轨迹
             glLineWidth(5.0);
             glBegin(GL_LINE_STRIP);
@@ -406,7 +405,7 @@ void PangolinWindowImpl::Render() {
         pangolin::FinishFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-
+    // [gj-2025-11-26] 待修复bug：
     // unset the current context from the main thread
     pangolin::GetBoundWindow()->RemoveCurrent();
     pangolin::DestroyWindow(GetWindowName());
