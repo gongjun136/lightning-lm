@@ -312,7 +312,8 @@ void LaserMapping::MakeKF() {
     // 记录关键帧创建信息
     LOG(INFO) << "LIO: create kf " << kf->GetID() << ", state: " << state_point_.pos_.transpose()
               << ", kf opt pose: " << kf->GetOptPose().translation().transpose()
-              << ", lio pose: " << kf->GetLIOPose().translation().transpose();
+              << ", lio pose: " << kf->GetLIOPose().translation().transpose() << ", time: " << std::setprecision(14)
+              << state_point_.timestamp_;
 
     // 只在SLAM模式下保存关键帧到列表
     if (options_.is_in_slam_mode_) {
@@ -655,8 +656,26 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                         0.0, 0.0, 0.0;                                                     ///< 外参平移部分(禁用)
                 }
 
-                /*** Measurement: distance to the closest surface/corner ***/
-                obs.residual_(i) = -corr_pts_[i][3];
+                /// 增加了cauchy's robust kernel
+                float res = -corr_pts_[i][3];
+                float rho, drho;
+
+                const float delta = 2.0;
+                const float dsqr = delta * delta;
+                const float dsqr_inv = 1.0 / dsqr;
+
+                if (res >= 0) {
+                    rho = dsqr * std::log(1 + res * dsqr_inv);
+                    drho = 1.0 / (1 + res * dsqr_inv);
+                } else {
+                    rho = -dsqr * std::log(1 - res * dsqr_inv);
+                    drho = 1.0 / (1 - res * dsqr_inv);
+                }
+
+                obs.residual_(i) = rho;
+                obs.h_x_.block<1, 12>(i, 0) = obs.h_x_.block<1, 12>(i, 0).eval() * drho;
+
+                // obs.residual_(i) = res;
             });
         },
         "    ObsModel (IEKF Build Jacobian)");
@@ -705,6 +724,8 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
         }
 
         *global_map += *cloud_trans;
+
+        LOG(INFO) << "kf " << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
     }
 
     CloudPtr global_map_filtered(new PointCloudType);
