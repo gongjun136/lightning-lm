@@ -41,8 +41,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
 
     Eigen::Matrix<double, NavState::full_dim, process_noise_dim_> f_w_ = x_.df_dw();  // 部分噪声雅可比: ∂f/∂w - 噪声传播矩阵
     Eigen::Matrix<double, state_dim_, process_noise_dim_> f_w_final =
-        Eigen::Matrix<double, state_dim_, process_noise_dim_>::Zero();
-    ;  // 23*12，噪声雅可比，需要*dt的项
+        Eigen::Matrix<double, state_dim_, process_noise_dim_>::Zero();              // 23*12，噪声雅可比，需要*dt的项
 
     NavState x_before = x_;  // 保存前一时刻状态（用于S2流形计算）
     x_.oplus(f_, dt);        // 名义状态积分: x_{k+1} = x_k ⊕ f(x_k,u_k)*dt
