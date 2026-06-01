@@ -255,7 +255,7 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
     q.normalize();
     Vec3d t = T.block<3, 1>(0, 3);
 
-    c.Tij_ = kf1->().inverse() * SE3(q, t);
+    c.Tij_ = kf1->GetLIOPose().inverse() * SE3(q, t);
 
     // pcl::io::savePCDFileBinaryCompressed(
     //     "./data/lc_" + std::to_string(c.idx1_) + "_" + std::to_string(c.idx2_) + "_out.pcd", *output);
