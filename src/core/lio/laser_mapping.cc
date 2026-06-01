@@ -5,6 +5,11 @@
 #include "common/options.h"
 #include "core/lightning_math.hpp"
 #include "laser_mapping.h"
+
+#include <opencv2/core/mat.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 
@@ -22,7 +27,7 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     // esekf init
     ESKF::Options eskf_options;
     eskf_options.max_iterations_ = fasterlio::NUM_MAX_ITERATIONS;
-    eskf_options.epsi_ = 1e-3 * Eigen::Matrix<double, 23, 1>::Ones();
+    eskf_options.epsi_ = 1e-3 * Eigen::Matrix<double, ESKF::state_dim_, 1>::Ones();
     // 使用Lambda表达式将LaserMapping::ObsModel方法绑定到lidar_obs_func_
     eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { ObsModel(s, obs); };
     eskf_options.use_aa_ = use_aa_;
@@ -36,8 +41,6 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     int lidar_type, ivox_nearby_type;
     double gyr_cov, acc_cov, b_gyr_cov, b_acc_cov;
     double filter_size_scan;
-    Vec3d lidar_T_wrt_IMU;
-    Mat3d lidar_R_wrt_IMU;
 
     auto yaml = YAML::LoadFile(yaml_file);
     try {
@@ -56,7 +59,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         lidar_type = yaml["fasterlio"]["lidar_type"].as<int>();
         preprocess_->NumScans() = yaml["fasterlio"]["scan_line"].as<int>();
         preprocess_->PointFilterNum() = yaml["fasterlio"]["point_filter_num"].as<int>();
-        extrinsic_est_en_ = yaml["fasterlio"]["extrinsic_est_en"].as<bool>();
+
         extrinT_ = yaml["fasterlio"]["extrinsic_T"].as<std::vector<double>>();
         extrinR_ = yaml["fasterlio"]["extrinsic_R"].as<std::vector<double>>();
 
@@ -66,6 +69,21 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;
+
+        float height_max = yaml["roi"]["height_max"].as<float>();
+        float height_min = yaml["roi"]["height_min"].as<float>();
+
+        preprocess_->SetHeightROI(height_max, height_min);
+
+        options_.kf_dis_th_ = yaml["fasterlio"]["kf_dis_th"].as<double>();
+        options_.kf_angle_th_ = yaml["fasterlio"]["kf_angle_th"].as<double>() * M_PI / 180.0;
+        options_.enable_icp_part_ = yaml["fasterlio"]["enable_icp_part"].as<bool>();
+        options_.min_pts = yaml["fasterlio"]["min_pts"].as<int>();
+        options_.plane_icp_weight_ = yaml["fasterlio"]["plane_icp_weight"].as<float>();
+
+        bool use_imu_filter = yaml["fasterlio"]["imu_filter"].as<bool>();
+        p_imu_->SetUseIMUFilter(use_imu_filter);
+        options_.proj_kfs_ = yaml["fasterlio"]["proj_kfs"].as<bool>();
 
     } catch (...) {
         LOG(ERROR) << "bad conversion";
@@ -82,6 +100,9 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     } else if (lidar_type == 3) {
         preprocess_->SetLidarType(LidarType::OUST64);
         LOG(INFO) << "Using OUST 64 Lidar";
+    } else if (lidar_type == 4) {
+        preprocess_->SetLidarType(LidarType::ROBOSENSE);
+        LOG(INFO) << "Using RoboSense Lidar";
     } else {
         LOG(WARNING) << "unknown lidar_type";
         return false;
@@ -102,15 +123,14 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
     voxel_scan_.setLeafSize(filter_size_scan, filter_size_scan, filter_size_scan);
 
-    lidar_T_wrt_IMU = math::VecFromArray<double>(extrinT_);
-    lidar_R_wrt_IMU = math::MatFromArray<double>(extrinR_);
+    offset_t_lidar_fixed_ = math::VecFromArray<double>(extrinT_);
+    offset_R_lidar_fixed_ = math::MatFromArray<double>(extrinR_);
 
-    p_imu_->SetExtrinsic(lidar_T_wrt_IMU, lidar_R_wrt_IMU);
+    p_imu_->SetExtrinsic(offset_t_lidar_fixed_, offset_R_lidar_fixed_);
     p_imu_->SetGyrCov(Vec3d(gyr_cov, gyr_cov, gyr_cov));
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
-
     return true;
 }
 
@@ -149,6 +169,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
 
 bool LaserMapping::Run() {
     if (!SyncPackages()) {
+        LOG(WARNING) << "sync package failed";
         return false;
     }
 
@@ -167,7 +188,7 @@ bool LaserMapping::Run() {
         state_point_ = kf_.GetX();
         scan_down_world_->resize(scan_undistort_->size());
         for (int i = 0; i < scan_undistort_->size(); i++) {
-            PointLidarToWorld(scan_undistort_->points[i], scan_down_world_->points[i]);
+            PointBodyToWorld(scan_undistort_->points[i], scan_down_world_->points[i]);
         }
         ivox_->AddPoints(scan_down_world_->points);
 
@@ -192,8 +213,9 @@ bool LaserMapping::Run() {
         }
     }
 
-    // LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
-    //           << ", end: " << measures_.lidar_end_time_;
+    LOG(INFO) << "=============================";
+    LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
+              << ", end: " << measures_.lidar_end_time_;
 
     if (last_lidar_time_ > 0 && (measures_.lidar_begin_time_ - last_lidar_time_) > 0.5) {
         LOG(ERROR) << "检测到雷达断流，时长：" << (measures_.lidar_begin_time_ - last_lidar_time_);
@@ -207,50 +229,69 @@ bool LaserMapping::Run() {
     voxel_scan_.setInputCloud(scan_undistort_);
     voxel_scan_.filter(*scan_down_lidar_);
 
+    // if (options_.proj_kfs_) {
+    //     ProjectKFs();
+    // }
+
     int cur_pts = scan_down_lidar_->size();
+
+    if (cur_pts < (scan_undistort_->size() * 0.1) || cur_pts < options_.min_pts) {
+        /// 降采样太狠了,有效点数不够，用0.1分辨率代替
+        // LOG(INFO) << "too few points, using 0.1 resol";
+        auto v = voxel_scan_;
+        v.setLeafSize(0.1, 0.1, 0.1);
+        v.setInputCloud(scan_undistort_);
+        v.filter(*scan_down_lidar_);
+
+        // LOG(INFO) << "Now pts: " << scan_down_lidar_->size() << ", before: " << cur_pts;
+        cur_pts = scan_down_lidar_->size();
+    }
+
     if (cur_pts < 5) {
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", "
                      << scan_down_lidar_->size();
         return false;
     }
+
     scan_down_world_->resize(cur_pts);
     nearest_points_.resize(cur_pts);
 
-    Timer::Evaluate(
-        [&, this]() {
-            // 成员变量预分配
-            residuals_.resize(cur_pts, 0);
-            point_selected_surf_.resize(cur_pts, true);
-            plane_coef_.resize(cur_pts, Vec4f::Zero());
+    // 成员变量预分配
+    residuals_.resize(cur_pts, 0);
+    point_selected_surf_.resize(cur_pts, 1);
+    point_selected_icp_.resize(cur_pts, 1);
+    plane_coef_.resize(cur_pts, Vec4f::Zero());
 
-            auto old_state = kf_.GetX();
+    auto pred_state = kf_.GetX();
+    // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
+    // kf_.ChangeX(pred_state);
 
-            kf_.Update(ESKF::ObsType::LIDAR, 1e-3);
-            state_point_ = kf_.GetX();
+    kf_.Update(ESKF::ObsType::LIDAR, 1.0);
 
-            // 早期IMU估计保护：防止系统初始化阶段的错误更新
-            if (keep_first_imu_estimation_ && all_keyframes_.size() < 5 &&
-                (old_state.rot_.inverse() * state_point_.rot_).log().norm() >
-                    0.3 * constant::kDEG2RAD) {  // 角度变化超过0.3度
-                kf_.ChangeX(old_state);          // 回退到更新前的状态
-                state_point_ = old_state;        // 使用预测状态而非观测更新结果
+    state_point_ = kf_.GetX();
+    state_point_.timestamp_ = measures_.lidar_end_time_;
 
-                LOG(INFO) << "set state as prediction";  // 记录保护机制触发
-            }
+    const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
+    const double delta_rotation_deg = (pred_state.rot_.inverse() * state_point_.rot_).log().norm() * 180.0 / M_PI;
+    const double delta_velocity = (pred_state.vel_ - state_point_.vel_).norm();
 
-            // LOG(INFO) << "old yaw: " << old_state.rot_.angleZ() << ", new: " << state_point_.rot_.angleZ();
-
-            state_point_.timestamp_ = measures_.lidar_end_time_;
-            euler_cur_ = state_point_.rot_;
-            pos_lidar_ = state_point_.pos_ + state_point_.rot_ * state_point_.offset_t_lidar_;
-        },
-        "IEKF Solve and Update");
-
-    // update local map
-    Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
+    const double current_speed = state_point_.vel_.norm();
 
     LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
-              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_num_;
+              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "
+              << effect_feat_icp_;
+    LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
+              << ", ang: " << delta_rotation_deg;
+    // LOG(INFO) << "P diag: " << kf_.GetP().diagonal().transpose();
+
+    // Vec3d v_from_last = (state_point_.pos_ - last_state.pos_) / (state_point_.timestamp_ - last_state.timestamp_);
+    // LOG(INFO) << "v from last: " << v_from_last.transpose();
+
+    // if (delta_velocity > 1.0 || current_speed > 4.0) {
+    //     LOG(ERROR) << "detected very large vel change, last: " << last_state.vel_.transpose()
+    //                << ", pred: " << pred_state.vel_.transpose() << ", cur:" << state_point_.vel_.transpose();
+    //     LOG(ERROR) << "please check";
+    // }
 
     /// keyframes - 智能关键帧创建决策
     if (last_kf_ == nullptr) {
@@ -263,6 +304,8 @@ bool LaserMapping::Run() {
         if ((last_pose.translation() - cur_pose.translation()).norm() > options_.kf_dis_th_ ||    // 平移距离超过阈值
             (last_pose.so3().inverse() * cur_pose.so3()).log().norm() > options_.kf_angle_th_) {  // 旋转角度超过阈值
             MakeKF();
+        } else if ((last_pose.so3().inverse() * cur_pose.so3()).log().norm() > 1.0 * M_PI / 180.0) {
+            // MapIncremental();
         }
         // 条件2：时间间隔过长（定位模式下的时间保险）
         else if (!options_.is_in_slam_mode_ && (state_point_.timestamp_ - last_kf_->GetState().timestamp_) > 2.0) {
@@ -282,21 +325,54 @@ bool LaserMapping::Run() {
     }
 
     if (ui_) {
-        ui_->UpdateScan(scan_undistort_, state_point_.GetPose());
+        ui_->UpdateScan(scan_down_lidar_, state_point_.GetPose());
     }
+
+    LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
+              << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
+              << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
 
     return true;
 }
 
-/**
- * @brief 创建关键帧：在满足条件时将当前帧设为关键帧
- */
+void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
+    auto state = kf_.GetX();
+    SE3 pose_cur(state.rot_, state.pos_);
+    pose_cur = pose_cur.inverse();
+
+    for (auto kf : proj_kfs_) {
+        // LOG(INFO) << "projecting kf: " << kf->GetID();
+        // if (last_kf_) {
+        // auto kf = last_kf_;
+        SE3 pose = pose_cur * kf->GetLIOPose();
+
+        int cnt = 0;
+        for (auto &pt : kf->GetCloud()->points) {
+            Vec3d p = pose * ToVec3d(pt);
+            PointType pcl_pt;
+
+            pcl_pt.x = p.x();
+            pcl_pt.y = p.y();
+            pcl_pt.z = p.z();
+            pcl_pt.intensity = pt.intensity;
+
+            cloud->push_back(pcl_pt);
+            cnt++;
+
+            if (cnt > size_limit) {
+                break;
+            }
+        }
+        // }
+    }
+}
+
 void LaserMapping::MakeKF() {
     // 创建关键帧对象，包含ID、点云和当前状态
     Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
 
     if (last_kf_) {
-        // 计算相对于上一关键帧的位姿变换
+        /// opt pose 用之前的递推
         SE3 delta = last_kf_->GetLIOPose().inverse() * kf->GetLIOPose();
         // 基于上一关键帧的优化位姿递推当前关键帧的优化位姿
         // TODO. 这里为什么不用LIO前端里程计 kf->SetOptPose(kf->GetLIOPose())
@@ -322,6 +398,29 @@ void LaserMapping::MakeKF() {
 
     // 更新最新关键帧指针
     last_kf_ = kf;
+
+    // 有keyframes时更新local map
+    Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
+
+    /// 更新project kfs
+    if (proj_kfs_.size() >= options_.max_proj_kfs_) {
+        auto last = proj_kfs_.back();
+
+        SE3 delta = last->GetLIOPose().inverse() * kf->GetLIOPose();
+
+        if (delta.translation().norm() < 3 || delta.so3().log().norm() < 20 / 180 * M_PI) {
+            // proj_kfs_.pop_back();
+        } else {
+            proj_kfs_.pop_front();
+            proj_kfs_.emplace_back(kf);
+        }
+    } else {
+        proj_kfs_.emplace_back(kf);
+    }
+
+    // for (auto &kf : proj_kfs_) {
+    //     LOG(INFO) << "proj kf: " << kf->GetID();
+    // }
 }
 
 void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
@@ -331,8 +430,8 @@ void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::Share
             scan_count_++;
             double timestamp = ToSec(msg->header.stamp);
             if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
-                lidar_buffer_.clear();
+                LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
+                return;
             }
 
             LOG(INFO) << "get cloud at " << std::setprecision(14) << timestamp
@@ -393,6 +492,7 @@ void LaserMapping::ProcessPointCloud2(CloudPtr cloud) {
 
 bool LaserMapping::SyncPackages() {
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
+        LOG(INFO) << "lidar or imu is empty";
         return false;
     }
 
@@ -409,17 +509,26 @@ bool LaserMapping::SyncPackages() {
         } else {
             scan_num_++;
             lidar_end_time_ = measures_.lidar_begin_time_ + measures_.scan_->points.back().time / double(1000);
+
             lidar_mean_scantime_ +=
                 (measures_.scan_->points.back().time / double(1000) - lidar_mean_scantime_) / scan_num_;
+
+            if ((lidar_end_time_ - measures_.lidar_begin_time_) > 5 * lo::lidar_time_interval) {
+                /// timestamp 有异常
+                lidar_end_time_ = measures_.lidar_begin_time_ + lo::lidar_time_interval;
+                lidar_mean_scantime_ = lo::lidar_time_interval;
+            }
         }
 
         lo::lidar_time_interval = lidar_mean_scantime_;
 
+        // LOG(INFO) << "recompute lidar end time: " << std::setprecision(14) << lidar_end_time_;
         measures_.lidar_end_time_ = lidar_end_time_;
         lidar_pushed_ = true;
     }
 
     if (last_timestamp_imu_ < lidar_end_time_) {
+        LOG(INFO) << "sync failed: " << std::setprecision(14) << last_timestamp_imu_ << ", " << lidar_end_time_;
         return false;
     }
 
@@ -475,7 +584,7 @@ void LaserMapping::MapIncremental() {
     // TODO. 这里的逻辑不太对，导致体素边缘的点可能较为密集
     std::for_each(index.begin(), index.end(), [&](const size_t &i) {
         /* transform to world frame */
-        PointLidarToWorld(scan_down_lidar_->points[i], scan_down_world_->points[i]);
+        PointBodyToWorld(scan_down_lidar_->points[i], scan_down_world_->points[i]);
 
         /* decide if need add to map */
         PointType &point_world = scan_down_world_->points[i];
@@ -549,11 +658,12 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         index[i] = i;
     }
 
+    // LOG(INFO) << "obs from state: " << s.pos_.transpose() << ", " << s.rot_.unit_quaternion().coeffs().transpose();
+
     Timer::Evaluate(
         [&, this]() {
-            /// 计算激光雷达到世界的变换矩阵
-            auto R_wl = (s.rot_ * s.offset_R_lidar_).cast<float>();
-            auto t_wl = (s.rot_ * s.offset_t_lidar_ + s.pos_).cast<float>();
+            Mat3f R_wl = (s.rot_.matrix() * offset_R_lidar_fixed_).cast<float>();
+            Vec3f t_wl = (s.rot_ * offset_t_lidar_fixed_ + s.pos_).cast<float>();
 
             std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
                 PointType &point_lidar = scan_down_lidar_->points[i];
@@ -570,6 +680,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 /// 在IVox地图中搜索最近的平面点
                 ivox_->GetClosestPoint(point_world, points_near, fasterlio::NUM_MATCH_POINTS);
                 point_selected_surf_[i] = points_near.size() >= fasterlio::MIN_NUM_MATCH_POINTS;
+
+                point_selected_icp_[i] = point_selected_surf_[i];
+
+                /// 能找到3个点以上，则估计平面
                 if (point_selected_surf_[i]) {
                     point_selected_surf_[i] =
                         math::esti_plane(plane_coef_[i], points_near, fasterlio::ESTI_PLANE_THRESHOLD);
@@ -593,105 +707,137 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         },
         "    ObsModel (Lidar Match)");
 
-    effect_feat_num_ = 0;
+    effect_feat_surf_ = 0;
+    effect_feat_icp_ = 0;
 
     corr_pts_.resize(cnt_pts);
     corr_norm_.resize(cnt_pts);
     for (int i = 0; i < cnt_pts; i++) {
         if (point_selected_surf_[i]) {
-            corr_norm_[effect_feat_num_] = plane_coef_[i];
-            corr_pts_[effect_feat_num_] = scan_down_lidar_->points[i].getVector4fMap();
-            corr_pts_[effect_feat_num_][3] = residuals_[i];
+            corr_norm_[effect_feat_surf_] = plane_coef_[i];
+            corr_pts_[effect_feat_surf_] = scan_down_lidar_->points[i].getVector4fMap();
+            corr_pts_[effect_feat_surf_][3] = residuals_[i];
 
-            effect_feat_num_++;
+            effect_feat_surf_++;
+        }
+
+        if (point_selected_icp_[i]) {
+            effect_feat_icp_++;
         }
     }
-    corr_pts_.resize(effect_feat_num_);
-    corr_norm_.resize(effect_feat_num_);
 
-    if (effect_feat_num_ < 1) {
+    corr_pts_.resize(effect_feat_surf_);
+    corr_norm_.resize(effect_feat_surf_);
+
+    if (effect_feat_surf_ < 20) {
         obs.valid_ = false;
-        LOG(WARNING) << "No Effective Points!";
+        LOG(WARNING) << "No enough effective surface points: " << effect_feat_surf_ << ", icp: " << effect_feat_icp_
+                     << ", required: " << 20;
         return;
     }
 
-    Timer::Evaluate(
-        [&, this]() {
-            /// 计算观测雅可比矩阵H和残差向量
-            obs.h_x_ = Eigen::MatrixXd::Zero(effect_feat_num_, 12);  ///< 12维状态雅可比矩阵
-            obs.residual_.resize(effect_feat_num_);                  ///< 观测残差向量
+    index.resize(effect_feat_surf_);
+    const Mat3f off_R = offset_R_lidar_fixed_.cast<float>();
+    const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
+    const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
 
-            index.resize(effect_feat_num_);
-            const Mat3f off_R = s.offset_R_lidar_.matrix().cast<float>();
-            const Vec3f off_t = s.offset_t_lidar_.cast<float>();
-            const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
+    /// 点面ICP部分
+    obs.HTH_.setZero();
+    obs.HTr_.setZero();
 
-            std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
-                Vec3f point_this_be = corr_pts_[i].head<3>();  //< lidar坐标系下的点
-                Mat3f point_be_crossmat = math::SKEW_SYM_MATRIX(point_this_be);
-                Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
-                Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
+    std::vector<Mat6d> JTJ(effect_feat_surf_);
+    std::vector<Vec6d> JTr(effect_feat_surf_);
 
-                /// 获取平面的法向量
-                Vec3f norm_vec = corr_norm_[i].head<3>();
+    std::vector<double> res_sq(index.size());
 
-                /// 计算雅可比矩阵的各个分量
-                Vec3f C(Rt * norm_vec);       ///< 法向量在IMU坐标系下的表示
-                Vec3f A(point_crossmat * C);  ///< 旋转部分的雅可比分量
-                // 观测模型为lidar系的点通过外参变换到imu系，平面方程由世界系变换到imu系，计算点面距离
-                // 理论观测为0
-                // 变量：位姿+外参
-                if (extrinsic_est_en_) {                                 ///< 是否估计外参
-                    Vec3f B(point_be_crossmat * off_R.transpose() * C);  ///< 外参旋转雅可比分量
-                    /// 雅可比矩阵: [∂r/∂p(3) ∂r/∂q(3) ∂r/∂R_ext(3) ∂r/∂t_ext(3)]
-                    obs.h_x_.block<1, 12>(i, 0) << norm_vec[0], norm_vec[1], norm_vec[2],  ///< 位置雅可比
-                        A[0], A[1], A[2],                                                  ///< 姿态雅可比
-                        B[0], B[1], B[2],                                                  ///< 外参旋转雅可比
-                        C[0], C[1], C[2];                                                  ///< 外参平移雅可比
-                } else {
-                    /// 雅可比矩阵: [∂r/∂p(3) ∂r/∂q(3) 外参部分(6)=0]
-                    obs.h_x_.block<1, 12>(i, 0) << norm_vec[0], norm_vec[1], norm_vec[2],  ///< 位置雅可比
-                        A[0], A[1], A[2],                                                  ///< 姿态雅可比
-                        0.0, 0.0, 0.0,                                                     ///< 外参旋转部分(禁用)
-                        0.0, 0.0, 0.0;                                                     ///< 外参平移部分(禁用)
-                }
+    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+        Vec3f point_this_be = corr_pts_[i].head<3>();  //< lidar坐标系下的点
+        Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
+        Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
 
-                /// 增加了cauchy's robust kernel
-                float res = -corr_pts_[i][3];
-                float rho, drho;
+        /*** get the normal vector of closest surface/corner ***/
+        Vec3f norm_vec = corr_norm_[i].head<3>();
 
-                const float delta = 2.0;
-                const float dsqr = delta * delta;
-                const float dsqr_inv = 1.0 / dsqr;
+        /*** calculate the Measurement Jacobian matrix H ***/
+        Vec3f C(Rt * norm_vec);
+        Vec3f A(point_crossmat * C);
 
-                if (res >= 0) {
-                    rho = dsqr * std::log(1 + res * dsqr_inv);
-                    drho = 1.0 / (1 + res * dsqr_inv);
-                } else {
-                    rho = -dsqr * std::log(1 - res * dsqr_inv);
-                    drho = 1.0 / (1 - res * dsqr_inv);
-                }
+        Eigen::Matrix<double, 1, ESKF::pose_obs_dim_> J;
+        J.setZero();
+        J << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2];
 
-                obs.residual_(i) = rho;
-                obs.h_x_.block<1, 12>(i, 0) = obs.h_x_.block<1, 12>(i, 0).eval() * drho;
+        float res = -corr_pts_[i][3];
 
-                // obs.residual_(i) = res;
-            });
-        },
-        "    ObsModel (IEKF Build Jacobian)");
+        // double w = huber_weight(res);
+        double w = 1.0;
 
-    /// 填入中位数平方误差
-    std::vector<double> res_sq2;
-    for (size_t i = 0; i < cnt_pts; ++i) {
-        if (point_selected_surf_[i]) {
-            double r = residuals_[i];
-            res_sq2.emplace_back(r * r);
-        }
+        JTJ[i] = (J.transpose() * J).eval() * w;
+        JTr[i] = J.transpose() * res * w;
+
+        res_sq[i] = res * res;
+    });
+
+    for (int i = 0; i < index.size(); ++i) {
+        obs.HTH_ += JTJ[i] * options_.plane_icp_weight_;
+        obs.HTr_ += JTr[i] * options_.plane_icp_weight_;
     }
 
-    std::sort(res_sq2.begin(), res_sq2.end());
-    obs.lidar_residual_mean_ = res_sq2[res_sq2.size() / 2];
-    obs.lidar_residual_max_ = res_sq2[res_sq2.size() - 1];
+    if (!res_sq.empty()) {
+        std::sort(res_sq.begin(), res_sq.end());
+        obs.lidar_residual_mean_ = res_sq[res_sq.size() / 2];
+        obs.lidar_residual_max_ = res_sq[res_sq.size() - 1];
+        // LOG(INFO) << "residual mean: " << obs.lidar_residual_mean_ << ", max: " << obs.lidar_residual_max_
+        //           << ", 85%: " << res_sq[res_sq.size() * 0.85];
+    }
+
+    /// 点到点ICP部分
+
+    if (options_.enable_icp_part_) {
+        JTJ.resize(cnt_pts);
+        JTr.resize(cnt_pts);
+
+        std::vector<size_t> index(cnt_pts);
+        for (size_t i = 0; i < index.size(); ++i) {
+            index[i] = i;
+        }
+
+        std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+            if (point_selected_icp_[i] == false) {
+                return;
+            }
+
+            /// TODO: 外参
+            Vec3d q = scan_down_lidar_->points[i].getVector3fMap().cast<double>();
+            Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
+
+            Eigen::Matrix<double, 3, ESKF::pose_obs_dim_> J;
+            J.setZero();
+
+            /// translation 部分
+            J.block<3, 3>(0, 0) = Mat3d::Identity();
+
+            /// rotation 部分
+            J.block<3, 3>(0, 3) = -(s.rot_.matrix() * offset_R_lidar_fixed_) * SO3::hat(q);
+
+            Vec3d e = qs - nearest_points_[i][0].getVector3fMap().cast<double>();
+
+            if (e.norm() > 0.5) {
+                point_selected_icp_[i] = false;
+                return;
+            }
+
+            JTJ[i] = J.transpose() * J;
+            JTr[i] = -J.transpose() * e;
+        });
+
+        for (int i = 0; i < cnt_pts; ++i) {
+            if (point_selected_icp_[i] == false) {
+                continue;
+            }
+            obs.HTH_ += JTJ[i] * options_.icp_weight_;
+            obs.HTr_ += JTr[i] * options_.icp_weight_;
+        }
+    }
 }
 
 ///////////////////////////  private method /////////////////////////////////////////////////////////////////////
@@ -760,6 +906,12 @@ CloudPtr LaserMapping::GetRecentCloud() {
     }
 
     return lidar_buffer_.front();
+}
+
+CloudPtr LaserMapping::GetProjCloud() {
+    auto cloud = scan_undistort_;
+    ProjectKFs(cloud);
+    return cloud;
 }
 
 }  // namespace lightning

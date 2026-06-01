@@ -35,9 +35,18 @@ class LaserMapping {
 
         bool is_in_slam_mode_ = true;  // 是否在slam模式下
 
+        bool enable_icp_part_ = true;    // 是否添加ICP部分
+        double plane_icp_weight_ = 1.0;  // 点面ICP部分的权重
+        double icp_weight_ = 100;        // ICP部分的权重
+
+        int min_pts = 300;  // 配准所需的点数
+
         /// 关键帧阈值
         double kf_dis_th_ = 2.0;
         double kf_angle_th_ = 15 * M_PI / 180.0;
+
+        bool proj_kfs_ = false;
+        int max_proj_kfs_ = 5;
     };
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -97,6 +106,7 @@ class LaserMapping {
     }
 
     CloudPtr GetScanUndist() const { return scan_undistort_; }
+    CloudPtr GetProjCloud();
 
     /// 获取最新的点云
     CloudPtr GetRecentCloud();
@@ -116,9 +126,9 @@ class LaserMapping {
 
     void ObsModel(NavState &s, ESKF::CustomObservationModel &obs);
 
-    inline void PointLidarToWorld(const PointType &pi, PointType &po) {
-        Vec3d p_global(state_point_.rot_ * (state_point_.offset_R_lidar_ * pi.getVector3fMap().cast<double>() +
-                                            state_point_.offset_t_lidar_) +
+    inline void PointBodyToWorld(const PointType &pi, PointType &po) {
+        Vec3d p_global(state_point_.rot_ *
+                           (offset_R_lidar_fixed_ * pi.getVector3fMap().cast<double>() + offset_t_lidar_fixed_) +
                        state_point_.pos_);
 
         po.x = p_global(0);
@@ -133,6 +143,9 @@ class LaserMapping {
 
     /// 创建关键帧
     void MakeKF();
+
+    /// 将附近的关键帧投影至cloud中
+    void ProjectKFs(CloudPtr cloud, int size_limit = 1000);
 
    private:
     Options options_;
@@ -149,6 +162,8 @@ class LaserMapping {
     /// params
     std::vector<double> extrinT_{3, 0.0};  // lidar-imu translation
     std::vector<double> extrinR_{9, 0.0};  // lidar-imu rotation
+    Mat3d offset_R_lidar_fixed_ = Mat3d::Identity();
+    Vec3d offset_t_lidar_fixed_ = Vec3d::Zero();
     std::string map_file_path_;
 
     std::vector<Keyframe::Ptr> all_keyframes_;  // 所有关键帧的存储列表
@@ -159,15 +174,18 @@ class LaserMapping {
     CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion in lidar
     CloudPtr scan_down_lidar_{new PointCloudType()};  // downsampled scan in lidar
     CloudPtr scan_down_world_{new PointCloudType()};  // downsampled scan in world
-    std::vector<PointVector> nearest_points_;         // nearest points of current scan in world
-    std::vector<Vec4f> corr_pts_;                     // 内点：有效匹配点 [x,y,z,残差]，lidar系
-    std::vector<Vec4f> corr_norm_;                    // 内点：对应平面法向量 [nx,ny,nz,d]，world系
     pcl::VoxelGrid<PointType> voxel_scan_;            // voxel filter for current scan
 
-    std::vector<float> residuals_;  // point-to-plane residuals
-    // [gj-2025-11-28] bool -> uint8_t
-    std::vector<uint8_t> point_selected_surf_;  // selected points (uint8_t for thread safety)
-    std::vector<Vec4f> plane_coef_;             // plane coeffs
+    /// 点面相关
+    std::vector<PointVector> nearest_points_;  // nearest points of current scan
+    std::vector<Vec4f> corr_pts_;              // 内点：有效匹配点 [x,y,z,残差]，lidar系
+    std::vector<Vec4f> corr_norm_;             // 内点：对应平面法向量 [nx,ny,nz,d]，world系
+    std::vector<float> residuals_;             // point-to-plane residuals
+    std::vector<char> point_selected_surf_;    // selected points
+    std::vector<Vec4f> plane_coef_;            // plane coeffs
+
+    /// 点到点相关
+    std::vector<char> point_selected_icp_;  // 点到点的selected points
 
     std::mutex mtx_buffer_;
     std::deque<double> time_buffer_;
@@ -195,8 +213,7 @@ class LaserMapping {
     bool flg_EKF_inited_ = false;       // ESKF滤波器是否已初始化（影响是否进行观测更新）
     double lidar_mean_scantime_ = 0.0;  // 激光雷达平均扫描时间（用于时间统计和性能监控）
     int scan_num_ = 0;                  // 当前扫描序列号
-    int effect_feat_num_ = 0;           // 有效特征点数量（成功匹配的点云特征数）
-    int frame_num_ = 0;                 // 总处理帧数
+    int effect_feat_surf_ = 0, frame_num_ = 0, effect_feat_icp_ = 0;
 
     double last_lidar_time_ = 0;  // 上一帧激光雷达时间戳（用于时间同步和断流检测）
 
@@ -208,10 +225,9 @@ class LaserMapping {
 
     NavState state_point_;  // ekf current state
 
-    Vec3d pos_lidar_;               // lidar position after eskf update
-    SO3 euler_cur_;                 // rotation in euler angles
-    bool extrinsic_est_en_ = true;  // 是否估计lidar和IMU外参
-    bool use_aa_ = false;           // use anderson acceleration?
+    bool use_aa_ = false;  // use anderson acceleration?
+
+    std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 
     std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;
 };

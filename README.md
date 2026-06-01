@@ -1,5 +1,7 @@
 # Lightning-LM
 
+English | [中文](./README_CN.md)
+
 Lightning-Speed Lidar Localization and Mapping
 
 Lightning-LM is a complete laser mapping and localization module.
@@ -29,7 +31,45 @@ Features of Lightning-LM:
 
 ## Updates
 
-1. 2025.11.13
+### 2026.4.2
+
+- Significantly improved the stability of mapping and localization, now adapted to multi-floor data mentioned in issues
+  and data provided by Deep Robotics. Related data is being uploaded to BaiduYun — feel free to try it!
+- Adjusted the structure and dimensions of state variables. `ba`, `grav`, `offset_R`, `offset_t` no longer need to be
+  estimated online, reducing the state vector to 12 dimensions (previously 23).
+- Added a correction scale for laser localization. Localization is now based on LIO prediction to prevent large laser
+  jumps.
+- Added point-to-point ICP error in the LaserMapping module; point-to-point computations are also accelerated with
+  multi-threading.
+- Added some practical tricks in the ESKF module.
+- Localization now uses LIO keyframes for map-to-map registration.
+- Tuned parameters for several Deep Robotics datasets and GitHub issue datasets.
+- Adjusted the ESKF interface to accommodate point-to-point ICP (which has different dimensions from point-to-plane ICP).
+- Added Kalman filter tricks: symmetrization of the P matrix, protection of minimum values, etc.
+
+### 2026.3.20
+
+- MapIncremental is now called at the keyframe level to improve LIO robustness (no drift on the VBR dataset).
+- Fixed a Jacobian issue with the height constraint (issue #100, #110).
+- Fixed an out-of-bounds issue in the loop closure detection module (issue #88).
+- Adapted to Deep Robotics quadruped robot data (RoboSense lidar type=4).
+- Added timestamp data checks (VBR has abnormal timestamp issues).
+- Loop closure detection now uses the optimized pose as the initial estimate (useful for large loops).
+- If the point cloud after voxelization has too few points, use the pre-voxelization point cloud for LIO (prevents too
+  few points after downsampling).
+- Fixed an issue with `std::vector<bool>` in parallelization.
+- Fixed several issues that could cause segmentation faults.
+
+### 2025.11.27
+
+- Added Cauchy's kernel in the LIO module.
+- Added the `try_self_extrap` configuration in the localization module (disabled by default). When disabled, the
+  localization module does not use its own extrapolated pose for localization (since the localization interval is large
+  and can be inaccurate when the vehicle moves significantly).
+- Added a configuration file for Livox, as it is widely used.
+- If a fixed height is set during mapping, localization will also use this map height (disabled by default).
+
+### 2025.11.13
 
 - Fix two logic typos in FasterLIO.
 - Add global height constraint that can be configured in loop_closing.with_height. If set true, lightning-lm will keep
@@ -57,6 +97,16 @@ Features of Lightning-LM:
 - Localization on the NCLT dataset
 
 ![](./doc/lm_loc1_nclt.gif)
+
+- Data on the Deep Robotics quadruped robot
+
+![](./doc/demo_ysc1.png)
+![](./doc/demo_ysc2.png)
+![](./doc/demo_ysc3.png)
+
+- Tilted mounting demo
+
+  ![](./doc/demo_github.png)
 
 ## Build
 
@@ -161,6 +211,12 @@ has timestamps for each point and if they are calculated correctly. This code is
 
 Refer to the next section for other parameter adjustments.
 
+### Deep Robotics Quadruped Robot
+
+Repo: https://github.com/DeepRoboticsLab/lightning-lm-deep-robotics
+
+Video: [Embodied Intelligence Episode 3 | [Lynx M20] [SLAM] M20 RoboSense LiDAR Usage and Secondary Development, Using lightning-lm as an Example] https://www.bilibili.com/video/BV12YQZBqE1b?vd_source=57f46145c37bfb96f7583c9e02081590
+
 ### Fine-tuning Lightning-LM
 
 You can fine-tune Lightning by modifying the configuration file, turning some features on or off. Common configuration
@@ -184,6 +240,28 @@ items include:
 - [done] Check if grid map resolution values are normal
 - Force 2D output
 - Additional convenience features (turn localization on/off, reinitialize, specify location, etc.)
+
+### Test Results
+
+1. Mapping
+
+- NCLT: pass
+- VBR: pass
+- Livox Multi Floor: pass
+- GitHub issues:
+    - Tilted 30 degrees https://github.com/gaoxiang12/lightning-lm/issues/75#issuecomment-4131131883 pass (need to
+      disable IMU filter)
+    - multi_floor multi-floor map: pass (can map but cannot loop close)
+    - Outdoor only, elevated bridge
+- geely: pass
+- Deep Robotics (yunshenchu):
+    - building1 multi-floor indoor/outdoor mixed: pass
+    - building2: pass
+    - building3: pass
+    - grass: need to increase minimum height, e.g., above 0.5
+    - road1: same as above, pass
+
+2. Localization
 
 ## Miscellaneous
 
@@ -308,9 +386,6 @@ Ubuntu 20.04 应该也可行，未测试。
     - 保存地图 ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
 2. 离线建图（遍历跑数据，更快一些）
     - ```ros2 run lightning run_slam_offline --config ./config/default_nclt.yaml --input_bag 数据包```
-    - ```
-      ./bin/run_slam_offline -config ./config/default_nclt.yaml -input_bag ~/nclt/nclt.db3
-      ```
     - 结束后会自动保存至data/new_map目录下
 3. 查看地图
     - 查看完整地图：```pcl_viewer ./data/new_map/global.pcd```
@@ -330,10 +405,6 @@ Ubuntu 20.04 应该也可行，未测试。
 2. 离线定位
     - ```ros2 run lightning run_loc_offline --config ./config/default_nclt.yaml --input_bag 数据包```
 
-    - ```
-      ./bin/run_loc_offline -config ./config/default_nclt.yaml -input_bag ~/nclt/nclt.db3
-      ```
-    
 3. 接收定位结果
     - 定位程序输出与IMU同频的TF话题（50-100Hz）
 
@@ -383,3 +454,4 @@ imu和雷达外参默认为零就好，我们对这个不敏感。
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=gaoxiang12/lightning-lm&type=date&legend=top-left)](https://www.star-history.com/#gaoxiang12/lightning-lm&type=date&legend=top-left)
+
