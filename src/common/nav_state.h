@@ -71,38 +71,75 @@ struct NavState {
         bg_ = state.block<kBlockDim, 1>(kBgIdx, 0);
     }
 
-    // 计算状态向量的时间导数（IMU不考虑测量噪声的离散运动学方程的雅可比矩阵）
+    /**
+     * @brief 计算名义状态连续时间导数 f(x,u)。
+     *
+     * gyro/acce通常来自当前IMU积分区间的输入，外部可能已经做均值、滤波和尺度修正。
+     * 这里不显式引入测量噪声，只用陀螺零偏bg_修正角速度；加速度计零偏没有参与当前在线状态。
+     *
+     * 返回的FullVectState按full_dim布局保存各状态块导数：
+     * - pos_dot = vel_
+     * - rot_dot = gyro - bg_，后续在oplus()里通过SO3指数映射积分
+     * - vel_dot = rot_ * acce + grav_
+     */
     inline FullVectState get_f(const Vec3d& gyro, const Vec3d& acce) const {
         FullVectState res = FullVectState::Zero();
-        // 减零偏
+        // 陀螺仪量测先减去估计零偏，得到用于姿态积分的角速度。
         Vec3d omega = gyro - bg_;
-        Vec3d a_inertial = rot_ * acce;  // 加计零偏不再参与在线估计
+        // 加速度计量测从IMU系转到世界系；当前实现没有在线估计加计零偏ba。
+        Vec3d a_inertial = rot_ * acce;
 
         for (int i = 0; i < 3; i++) {
-            res(i) = vel_[i];
-            res(i + kRotIdx) = omega[i];
-            res(i + kVelIdx) = a_inertial[i] + grav_[i];
+            res(i) = vel_[i];                         // p_dot
+            res(i + kRotIdx) = omega[i];              // theta_dot
+            res(i + kVelIdx) = a_inertial[i] + grav_[i];  // v_dot
         }
         return res;
     }
 
-    /// 运动方程对误差状态的雅可比矩阵: ∂f/∂(δx)
-    /// 返回部分雅可比矩阵F，包含所有与dt相关的部分
+    /**
+     * @brief 运动方程对误差状态的连续雅可比 F_c = ∂f/∂δx。
+     *
+     * 这里返回的是未乘dt的连续时间雅可比。ESKF::Predict()会将其映射到误差状态空间，
+     * 再用 Phi ~= I + F_c * dt 做一阶离散化。
+     *
+     * 当前实现包含的主要项：
+     * - δp_dot / δv = I
+     * - δv_dot / δθ = -R * [a]_x
+     * - δθ_dot / δbg = -I
+     *
+     * @param acce 当前积分区间使用的加速度计输入。
+     */
     inline Eigen::Matrix<double, full_dim, dim> df_dx(const Vec3d& acce) const {
         Eigen::Matrix<double, full_dim, dim> cov = Eigen::Matrix<double, full_dim, dim>::Zero();
+        // 位置误差导数由速度误差直接驱动：δp_dot = δv。
         cov.block<kBlockDim, kBlockDim>(kPosIdx, kVelIdx) = Mat3d::Identity();
         Vec3d acc = acce;
         // Vec3d omega = gyro - bg_;
+        // 速度误差对姿态误差的敏感度：
+        // R Exp(δθ) a ≈ R a - R [a]_x δθ，因此 δv_dot / δθ = -R [a]_x。
         cov.block<kBlockDim, kBlockDim>(kVelIdx, kRotIdx) = -rot_.matrix() * SO3::hat(acc);
+        // 姿态误差由陀螺零偏误差驱动：δθ_dot ≈ -δbg。
         cov.block<kBlockDim, kBlockDim>(kRotIdx, kBgIdx) = -Eigen::Matrix3d::Identity();
         return cov;
     }
 
-    /// 运动方程对噪声的雅可比
+    /**
+     * @brief 运动方程对过程噪声的连续雅可比 G_c = ∂f/∂w。
+     *
+     * 噪声向量按12维预留，当前代码实际使用的顺序为：
+     * - w[0:3]：陀螺仪白噪声，进入姿态误差；
+     * - w[3:6]：加速度计白噪声，进入速度误差；
+     * - w[6:9]：陀螺零偏随机游走，进入bg；
+     * - w[9:12]：加速度计零偏随机游走预留，当前实现未接入。
+     */
     inline Eigen::Matrix<double, full_dim, 12> df_dw() const {
         Eigen::Matrix<double, full_dim, 12> cov = Eigen::Matrix<double, full_dim, 12>::Zero();
+        // 加速度噪声在IMU系，转到世界系后影响速度误差，符号来自 a = a_meas - eta_a。
         cov.block<kBlockDim, kBlockDim>(kVelIdx, 3) = -rot_.matrix();
+        // 陀螺噪声直接影响姿态误差，符号来自 omega = omega_meas - bg - eta_g。
         cov.block<kBlockDim, kBlockDim>(kRotIdx, 0) = -Eigen::Matrix3d::Identity();
+        // 陀螺零偏按随机游走建模，bg_dot = eta_bg。
         cov.block<kBlockDim, kBlockDim>(kBgIdx, 6) = Eigen::Matrix3d::Identity();
         return cov;
     }

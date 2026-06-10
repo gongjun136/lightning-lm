@@ -82,11 +82,15 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
         res_temp_SO3 = math::A_matrix(seg_SO3);  // -v代入= 李代数右雅可比
         for (int i = 0; i < state_dim_; i++) {
             // [gj-2025-11-26] 为啥没有添加负号？？？
+            // 答：这里不再额外加负号。seg_SO3 = -Omega，因此A_matrix(seg_SO3)=J_l(-Omega)=J_r(Omega)；
+            // 姿态对gyro bias的负号已经在NavState::df_dx()的kRotIdx-kBgIdx块中，即f_x_里是-I。
             f_x_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_x_.block<3, 1>(dim, i));
         }
 
         for (int i = 0; i < process_noise_dim_; i++) {
             // [gj-2025-11-26] 为啥没有添加负号？？？
+            // 答：同理，姿态对gyro noise的负号已经在NavState::df_dw()的kRotIdx噪声块中，即f_w_里是-I。
+            // 此处只做SO3切空间映射；若再加负号，会把文档推导中的-J_r(Omega)dt变成错误的+J_r(Omega)dt。
             f_w_final.template block<3, 1>(idx, i) = res_temp_SO3 * (f_w_.block<3, 1>(dim, i));
         }
     }
@@ -187,9 +191,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         for (auto it : x_.SO3_states_) {
             int idx = it.idx_;                       // SO3状态在向量中的索引
             Vec3d seg_SO3 = dx.block<3, 1>(idx, 0);  // 提取SO3状态的变化量
-            // [gj-2025-12-4] 右雅可比的转置！= 逆；虽然接近单位阵可以近似。
-            Mat3d res_temp_SO3 = Mat3d::Identity() - 0.5 * SO3::hat(seg_SO3);
-            // Mat3d res_temp_SO3 = math::A_matrix(seg_SO3).transpose();  // 先验误差映射到迭代点的雅可比矩阵
+            // 使用从start_x切空间到当前x_切空间的右雅可比J_r(δθ)。
+            // math::A_matrix(δθ)=J_l(δθ)，由BCH.md中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
+            // I - 0.5*[δθ]x只是J_r(δθ)的小角度一阶近似；这里保留完整右雅可比。
+            Mat3d res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
             // 对dx进行流形变换,这里理论是有负号的，后面dx_current迭代更新抵消了，所以就没写了
             dx_current.block<3, 1>(idx, 0) = res_temp_SO3 * dx.block<3, 1>(idx, 0);
 
@@ -344,10 +349,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                     seg_SO3(j) = dx_current(j + idx);
                 }
 
-                // [gj-2025-12-4] 右雅可比的转置！= 逆；虽然接近单位阵可以近似。
-                // res_temp_SO3 = A(δθ)^T，右雅可比的转置，对应“从 start_x 切空间 → 当前 x_ 切空间”的雅可比
-                // res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
-                res_temp_SO3 = Mat3d::Identity() - 0.5 * SO3::hat(seg_SO3);
+                // 这里应使用从start_x切空间到当前x_切空间的右雅可比J_r(δθ)。
+                // math::A_matrix(δθ)=J_l(δθ)，由BCH.md中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
+                // I - 0.5*[δθ]x只是J_r(δθ)的小角度一阶近似；这里保留完整右雅可比，避免较大迭代步下误差变大。
+                res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
 
                 // 先更新协方差的“行”：P_row = J * P_row
                 for (int j = 0; j < state_dim_; j++) {

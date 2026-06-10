@@ -167,13 +167,29 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     imu_buffer_.emplace_back(imu);
 }
 
+/**
+ * @brief 处理一帧已经缓存并完成时间同步的Lidar数据。
+ *
+ * Run()是LIO前端的主循环单步：
+ * 1. 从缓存中同步出一帧Lidar和覆盖扫描周期的IMU；
+ * 2. 用IMU预测ESKF并对点云去畸变；
+ * 3. 首帧直接建初始局部地图，后续帧进入降采样和地图匹配；
+ * 4. 通过Lidar观测更新ESKF；
+ * 5. 根据运动幅度创建关键帧、维护局部地图和高频IMU显示状态。
+ *
+ * @return true表示本帧完成了有效前端处理，false表示同步失败、初始化等待、跳帧或点数不足。
+ */
 bool LaserMapping::Run() {
+    // SyncPackages()只在IMU已经覆盖当前Lidar扫描结束时间时才会成功。
+    // 因此这里处理的可能不是最新进入缓存的点云，而是第一帧已经等到足够IMU的点云。
     if (!SyncPackages()) {
         LOG(WARNING) << "sync package failed";
         return false;
     }
 
-    /// IMU process, kf prediction, undistortion
+    // IMU处理包含两种情况：
+    // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
+    // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
     p_imu_->Process(measures_, kf_, scan_undistort_);
 
     if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
@@ -181,7 +197,7 @@ bool LaserMapping::Run() {
         return false;
     }
 
-    /// the first scan
+    // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
     if (flg_first_scan_) {
         LOG(INFO) << "first scan pts: " << scan_undistort_->size();
 
@@ -192,12 +208,15 @@ bool LaserMapping::Run() {
         }
         ivox_->AddPoints(scan_down_world_->points);
 
+        // 记录第一帧时间，后续用INIT_TIME判断地图是否足够稳定，可以开始正常观测更新/地图筛选。
         first_lidar_time_ = measures_.lidar_end_time_;
         state_point_.timestamp_ = lidar_end_time_;
         flg_first_scan_ = false;
         return true;
     }
 
+    // 可选跳帧：仍然完成了IMU预测和去畸变，但跳过耗时的地图匹配和ESKF观测更新。
+    // 这样UI可以继续显示预测位姿，前端计算负载也能降低。
     if (enable_skip_lidar_) {
         skip_lidar_cnt_++;
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
@@ -223,9 +242,10 @@ bool LaserMapping::Run() {
 
     last_lidar_time_ = measures_.lidar_begin_time_;
 
+    // 初始若干秒内地图还很稀疏，ObsModel和MapIncremental会根据这个标志放宽部分逻辑。
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
 
-    /// downsample
+    // 对当前去畸变点云降采样，后续匹配和建图都使用scan_down_lidar_，避免逐点处理原始大点云。
     voxel_scan_.setInputCloud(scan_undistort_);
     voxel_scan_.filter(*scan_down_lidar_);
 
@@ -235,6 +255,8 @@ bool LaserMapping::Run() {
 
     int cur_pts = scan_down_lidar_->size();
 
+    // 如果yaml配置的体素分辨率导致点数过少，则临时用0.1m重新降采样。
+    // 这是一个保护分支：保证观测模型至少有足够点参与匹配。
     if (cur_pts < (scan_undistort_->size() * 0.1) || cur_pts < options_.min_pts) {
         /// 降采样太狠了,有效点数不够，用0.1分辨率代替
         // LOG(INFO) << "too few points, using 0.1 resol";
@@ -247,6 +269,7 @@ bool LaserMapping::Run() {
         cur_pts = scan_down_lidar_->size();
     }
 
+    // 极端情况下仍然点数不足，继续匹配会让最近邻和平面拟合没有意义，直接跳过。
     if (cur_pts < 5) {
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", "
                      << scan_down_lidar_->size();
@@ -256,21 +279,25 @@ bool LaserMapping::Run() {
     scan_down_world_->resize(cur_pts);
     nearest_points_.resize(cur_pts);
 
-    // 成员变量预分配
+    // 按当前帧点数预分配观测模型缓存，ObsModel()中会复用这些数组保存最近邻、残差和平面。
     residuals_.resize(cur_pts, 0);
     point_selected_surf_.resize(cur_pts, 1);
     point_selected_icp_.resize(cur_pts, 1);
     plane_coef_.resize(cur_pts, Vec4f::Zero());
 
+    // 保存预测状态，后面用来统计Lidar观测更新带来的位姿修正量。
     auto pred_state = kf_.GetX();
     // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
     // kf_.ChangeX(pred_state);
 
+    // Lidar观测更新：ESKF内部会多次调用ObsModel()，构造点面/点点残差的HTH和HTr。
     kf_.Update(ESKF::ObsType::LIDAR, 1.0);
 
+    // 更新当前Lidar帧结束时刻的前端状态，供建图、关键帧和外部查询使用。
     state_point_ = kf_.GetX();
     state_point_.timestamp_ = measures_.lidar_end_time_;
 
+    // 统计本次观测更新相对IMU预测的修正量，主要用于日志和异常诊断。
     const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
     const double delta_rotation_deg = (pred_state.rot_.inverse() * state_point_.rot_).log().norm() * 180.0 / M_PI;
     const double delta_velocity = (pred_state.vel_ - state_point_.vel_).norm();
@@ -294,6 +321,8 @@ bool LaserMapping::Run() {
     // }
 
     /// keyframes - 智能关键帧创建决策
+    // 只有创建关键帧时才会调用MakeKF()，而MakeKF()内部会把当前帧点云增量加入IVox地图。
+    // 因此关键帧阈值也间接控制了局部地图更新频率。
     if (last_kf_ == nullptr) {
         MakeKF();  // 第一个关键帧：直接创建
     } else {
@@ -313,18 +342,21 @@ bool LaserMapping::Run() {
         }
     }
 
-    /// 更新kf_for_imu
+    // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
+    // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
     kf_imu_ = kf_;
     if (!measures_.imu_.empty()) {
         double t = measures_.imu_.back()->timestamp;
         for (auto &imu : imu_buffer_) {
             double dt = imu->timestamp - t;
+            // 这里直接使用原始IMU输入做高频显示预测，不参与Lidar帧的去畸变输出。
             kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
             t = imu->timestamp;
         }
     }
 
     if (ui_) {
+        // 显示当前帧降采样点云和Lidar更新后的位姿。
         ui_->UpdateScan(scan_down_lidar_, state_point_.GetPose());
     }
 

@@ -6,22 +6,24 @@
 
 ## 1.2.符号约定
 
-普通符号说明：
+本文统一采用 [符号说明.md](./符号说明.md) 中的约定。为便于阅读，这里列出后文最常用的符号：
 
-| **符号**                                                     | **说明**                                                     |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| $ a / b / c$                                               | 标量                                                         |
-| $$ \mathbf{a} / \mathbf{b} / \mathbf{c} $$                   | 向量，小写黑体                                               |
-| $$ \mathbf{A} / \mathbf{B} / \mathbf{C} $$                   | 矩阵，大写黑体                                               |
-| $$ \mathcal{F}$$                                             | 坐标系， $$ \mathcal{F}_w$$  表示世界系， $$ \mathcal{F}_b$$ 表示载体系 |
-| $$ \mathbf{v}_{(\cdot)}$$                                    | 向量在 (·) 坐标系下的坐标                                    |
-| $$ \mathbf{R}_b^w$$ 或 $$ \mathbf{R}_{wb}$$                  | 坐标系 $$ \mathcal{F}_b$$ 相对于 $$ \mathcal{F}_w$$ 的旋转   |
-| $$ \mathbf{t}_{w}^{wb} $$                                    | 坐标系 $$ \mathcal{F}_b$$ 相对于 $$ \mathcal{F}_w$$ 的平移，是由坐标系 $$ \mathcal{F}_w$$ 的原点指向 $$ \mathcal{F}_b$$ 的向量在 $$ \mathcal{F}_w$$ 下的坐标。 |
-| $${\left(  \cdot\right)^ \times }/{\left( \cdot \right)^ \wedge }$$ | 向量取反对称矩阵                                             |
-| $${\rm Exp}(\cdot$$                                          | 从李代数 $$\mathfrak{so}(3$$ 到李群 $${\rm SO}(3$$ 的指数映射 |
-| $${\rm Log}(\cdot)$$                                         | 从李群 $${\rm SO}(3$$ 到李代数 $$\mathfrak{so}(3$$ 的对数映射 |
+| **符号** | **说明** |
+| --- | --- |
+| $a,b,c$ | 标量 |
+| $p,q,o_a$ | 点；$o_a$ 表示坐标系 $\mathcal{F}_a$ 的原点 |
+| $\mathbf{a},\mathbf{b},\mathbf{c}$ | 向量，小写黑体 |
+| $\mathbf{A},\mathbf{B},\mathbf{C}$ | 矩阵，大写黑体 |
+| $\mathcal{F}_w,\mathcal{F}_i,\mathcal{F}_l$ | 世界坐标系、IMU 坐标系、LiDAR 坐标系 |
+| ${}^{a}\mathbf{p}_{ap}$ | 点 $p$ 在坐标系 $\mathcal{F}_a$ 下的坐标列向量；右下标 $ap$ 表示从 $o_a$ 指向点 $p$ |
+| ${}^{a}\mathbf{v}$ | 向量 $\mathbf{v}$ 在坐标系 $\mathcal{F}_a$ 下的坐标表达 |
+| $\mathbf{R}_{ab}$ | 从坐标系 $\mathcal{F}_b$ 到坐标系 $\mathcal{F}_a$ 的旋转矩阵，${}^{a}\mathbf{v}=\mathbf{R}_{ab}{}^{b}\mathbf{v}$ |
+| ${}^{a}\mathbf{t}_{ab}$ | 从 $o_a$ 指向 $o_b$ 的平移向量，在 $\mathcal{F}_a$ 下表达 |
+| $\mathbf{T}_{ab}=(\mathbf{R}_{ab},{}^{a}\mathbf{t}_{ab})$ | 从坐标系 $\mathcal{F}_b$ 到坐标系 $\mathcal{F}_a$ 的位姿变换 |
+| $[\boldsymbol{\phi}]_{\times}$ | 向量 $\boldsymbol{\phi}$ 对应的叉乘矩阵 |
+| $\operatorname{Exp}(\boldsymbol{\phi})$ / $\operatorname{Log}(\mathbf{R})$ | $\operatorname{SO}(3)$ 上的向量形式指数映射和对数映射 |
 
-# 二、**系统总体架构**
+# 二、系统总体架构
 
 ## 2.1.系统概述
 
@@ -51,26 +53,17 @@
 
 ![img](./assets/1780298419776-7.png)
 
-# 三、**关键模块设计**
+# 三、关键模块设计
 
-## **3.1 传感器输入层**
+## 3.1 传感器输入层
 
-传感器输入层负责把外部 ROS/rosbag 中的 IMU 与 LiDAR 消息转换为系统内部统一的数据结构，并按照时间顺序放入缓存队列。需要注意的是，这一层并不直接完成点云与 IMU 的紧耦合计算，而是完成三件事：
+传感器输入层负责把外部 ROS/rosbag 中的 IMU 与 LiDAR 消息转换为系统内部统一的数据结构，并按时间顺序写入缓存队列。它的处理顺序可以概括为：
 
-1. 将 ROS 消息转换为内部数据格式；
-2. 对 LiDAR 点云做格式统一、基础过滤和逐点相对时间计算；
-3. 将 IMU 与 LiDAR 分别写入缓存，等待前端循环进行时间同步。
-
-在线模式下，输入来自 `SlamSystem` 或 `LocSystem` 中的 ROS2 subscriber；离线模式下，输入来自 `RosbagIO` 对 bag 文件的遍历读取。两种模式最终都会进入 `LaserMapping` 的同一组接口：
-
-```C++
-void LaserMapping::ProcessIMU(const lightning::IMUPtr& imu);
-void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr& msg);
-void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg);
-void LaserMapping::ProcessPointCloud2(CloudPtr cloud);
+```text
+外部消息 -> 内部数据格式 -> IMU/LiDAR预处理与缓存 -> 点云-IMU时间同步 -> MeasureGroup
 ```
 
-其中 IMU 数据进入 `imu_buffer_`，LiDAR 点云进入 `lidar_buffer_`，点云帧起始时间进入 `time_buffer_`。后续 `LaserMapping::Run()` 会调用 `SyncPackages()`，从这些缓存中取出一帧点云及其时间范围内的 IMU 测量，组成 `MeasureGroup` 交给 IMU 处理与 LIO 前端。
+在线模式下，输入来自 `SlamSystem` 或 `LocSystem` 中的 ROS2 subscriber；离线模式下，输入来自 `RosbagIO` 对 bag 文件的遍历读取。两种模式最终都会进入 `LaserMapping` 的输入接口。
 
 ### **3.1.1 数据格式定义**
 
@@ -108,38 +101,101 @@ struct MeasureGroup {
 };
 ```
 
-### **3.1.2 输入缓存与时间同步机制**
+### **3.1.2 预处理与缓存**
 
-IMU 输入回调只负责检查时间戳、维护高频 IMU 状态和写入缓存。其主要逻辑位于：
+这一节对应 `LaserMapping` 的输入接口：
+
+```C++
+void LaserMapping::ProcessIMU(const lightning::IMUPtr& imu);
+void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr& msg);
+void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg);
+void LaserMapping::ProcessPointCloud2(CloudPtr cloud);
+```
+
+这些函数并不直接执行点云-IMU紧耦合估计，而是完成输入检查、基础预处理和缓存写入。真正的同步和融合发生在后续 `LaserMapping::Run()` 中。
+
+#### **3.1.2.1 IMU预处理与缓存**
+
+IMU 输入进入：
 
 ```C++
 void LaserMapping::ProcessIMU(const lightning::IMUPtr& imu)
 ```
 
-当 IMU 时间戳发生倒退时，系统会清空 `imu_buffer_`，避免旧数据继续参与同步。若 IMU 已经完成初始化，则每来一帧 IMU 都会调用 `kf_imu_.Predict()` 做高频状态外推，用于 UI 或高频状态输出；无论是否已经初始化，当前 IMU 最终都会被追加到 `imu_buffer_`。
+该函数主要做三件事：
 
-LiDAR 输入回调负责将原始点云消息转换为内部点云格式，并写入点云缓存。其主要逻辑位于：
+1. 检查 IMU 时间戳是否倒退。若 `timestamp < last_timestamp_imu_`，清空 `imu_buffer_`，避免旧数据继续参与同步；
+2. 如果 IMU 已经完成初始化，则用当前 IMU 调用 `kf_imu_.Predict()` 做高频状态外推，用于 UI 或高频状态输出；
+3. 更新 `last_timestamp_imu_`，并将当前 IMU 写入 `imu_buffer_`。
+
+因此，IMU 回调阶段只负责数据缓存和初始化后的高频预测。IMU 静态初始化本身不在这里执行，而是在点云-IMU同步成功后由 `ImuProcess::Process()` 触发。
+
+#### **3.1.2.2 LiDAR点云预处理与缓存**
+
+LiDAR 输入进入：
 
 ```C++
 void LaserMapping::ProcessPointCloud2(...)
 ```
 
-对于标准 `sensor_msgs::msg::PointCloud2` 和 Livox `CustomMsg`，系统会先调用 `PointCloudPreprocess::Process()` 完成格式转换与基础过滤，然后把结果写入：
+该函数先读取点云帧起始时间，然后调用 `PointCloudPreprocess::Process()` 将不同雷达的原始消息统一成系统内部的 `PointCloudType`。
+
+统一后的点包含：
+
+- `x, y, z`：LiDAR 坐标系下的三维坐标；
+- `intensity`：统一后的反射强度；
+- `time`：点在当前扫描帧内的相对时间，单位为毫秒。
+
+不同雷达的预处理差异如下：
+
+| 功能       | Livox                                     | Ouster                                | Velodyne                              | 说明         |
+| ---------- | ----------------------------------------- | ------------------------------------- | ------------------------------------- | ------------ |
+| 格式转换   | `CustomMsg -> PointCloudType`             | `PointCloud2 -> PointCloudType`       | `PointCloud2 -> PointCloudType`       | 屏蔽消息格式差异 |
+| 点过滤     | 标签、盲区、重复点、抽样                   | 盲区、抽样                             | 盲区、抽样                             | 控制点云质量和规模 |
+| 强度字段   | `reflectivity`                            | `intensity`                           | `intensity`                           | 统一为 `intensity` |
+| 时间字段   | `offset_time / 1e6`                       | `t / 1e6`                             | 原始 `time` 或扫描角估算               | 统一为毫秒级相对时间 |
+
+其中最关键的是逐点相对时间。预处理阶段必须保证 `time` 字段单位正确、范围合理，并能覆盖当前扫描周期，因为后续时间同步和点云去畸变都依赖该字段。不同雷达的时间来源如下：
+
+| 特性       | Livox                 | Ouster     | Velodyne (有原始时间戳) | Velodyne (无原始时间戳) |
+| ---------- | --------------------- | ---------- | ----------------------- | ----------------------- |
+| 时间戳字段 | offset_time           | t          | time                    | -                       |
+| 计算方式   | offset_time / 1000000 | t / 1e6    | time * time_scale_      | 基于扫描角度计算        |
+| 时间基准   | 帧起始点              | 帧起始点   | 帧起始点                | 每条扫描线起始点        |
+| 时间范围   | 0~100ms               | 0~100ms    | 0~100ms                 | 每条线0~(360/3.6)ms     |
+| 原始单位   | 纳秒 (ns)             | 纳秒 (ns)  | 微秒 (μs)               | -                       |
+| 输出单位   | 毫秒 (ms)             | 毫秒 (ms)  | 毫秒 (ms)               | 毫秒 (ms)               |
+
+需要注意的是，Velodyne 在没有原始逐点时间戳时，会根据扫描角度估算相对时间，这一假设依赖雷达转速配置；如果实际转速与假设不一致，会影响后续去畸变效果。
+
+Livox 还会额外使用 `tag` 字段过滤低质量回波：
+
+```C++
+((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00)
+```
+
+这里通过 `0x30` 提取 `tag` 中与回波质量相关的位，只保留 `0x00` 和 `0x10` 两类点，丢弃更可能由弱回波、多路径或杂散反射产生的点。
+
+> 参考Livox 的官网 “[How to use Tag Information in Livox LiDAR Point Cloud](https://www.livoxtech.com/showcase/livox-tag?utm_source=chatgpt.com)” 
+
+预处理完成后，点云和帧起始时间分别写入缓存：
 
 ```C++
 lidar_buffer_.push_back(cloud);
 time_buffer_.push_back(timestamp);
 ```
 
-其中 `lidar_buffer_` 保存点云本体，`time_buffer_` 保存该点云帧的起始时间。这样做是因为 PCL 点云内部只保存逐点相对时间，而帧的绝对起始时间来自 ROS 消息头。
+其中 `lidar_buffer_` 保存点云本体，`time_buffer_` 保存该点云帧的绝对起始时间。这样设计是因为 PCL 点云内部只保存逐点相对时间，而帧起始时间来自 ROS 消息头。
 
-真正的点云-IMU 时间同步发生在前端循环中：
+### **3.1.3 时间同步机制**
+
+时间同步发生在前端循环中：
 
 ```C++
 bool LaserMapping::SyncPackages();
 ```
 
-同步过程如下：
+该函数从缓存中取出一帧点云，并收集覆盖该点云扫描周期的 IMU 测量，形成 `MeasureGroup`。同步过程如下：
 
 1. 从 `lidar_buffer_` 取出最早的一帧点云作为当前扫描；
 2. 从 `time_buffer_` 取出该帧点云的起始时间，写入 `measures_.lidar_begin_time_`；
@@ -162,79 +218,44 @@ p_imu_->Process(measures_, kf_, scan_undistort_);
 
 这一阶段才真正使用“点云 + 对齐 IMU”的测量组：若 IMU 尚未初始化，则执行静态初始化；若已经初始化，则进行 IMU 前向传播和点云运动畸变补偿。
 
-### **3.1.3 LiDAR点云预处理**
-
-LiDAR 点云预处理在 `ProcessPointCloud2()` 中发生，时间上早于 `SyncPackages()` 和 `ImuProcess::Process()`；功能上也主要是输入适配，将不同雷达的原始消息统一为系统内部的 `PointCloudType`。
-
-预处理模块的**目标**就是：将各种不同格式、不同质量的原始激光雷达数据，转换为干净、统一、高质量的PCL格式点云，每个点统一包含了如下信息：
-
-- **标准坐标**：`x, y, z`
-- **统一强度**：`intensity`
-- **统一时间**：`time` (毫秒)
-
-这样，后续的LIO、回环检测、地图构建等模块就可以**完全忽略硬件差异**，专注于算法本身！如下是不同激光雷达数据的完整功能对比表：
-
-| 功能       | Livox                                     | Ouster                                | Velodyne                              | 说明         |
-| ---------- | ----------------------------------------- | ------------------------------------- | ------------------------------------- | ------------ |
-| 格式转换   | ✅ livox_ros_driver2::msg::CustomMsg → PCL | ✅ sensor_msgs::msg::PointCloud2 → PCL | ✅ sensor_msgs::msg::PointCloud2 → PCL | 统一输出格式 |
-| 点采样过滤 | ✅ i % point_filter_num_ == 0              | ✅ i % point_filter_num_ != 0          | ✅ i % point_filter_num_ == 0          | 降低数据量   |
-| 盲区过滤   | ✅ 距离检查                                | ✅ 距离检查                            | ✅ 距离检查                            | 过滤近距噪声 |
-| 时间戳计算 | ✅ offset_time/1e6                         | ✅ t/1e6                               | ✅ 原始或计算                          | 运动补偿关键 |
-| 标签检查   | ✅ tag & 0x30                              | ❌ 无标签                              | ❌ 无标签                              | Livox特有    |
-| 重复点检测 | ✅ 坐标差值检查                            | ❌ 无                                  | ❌ 无                                  | 去除重复数据 |
-| 并行处理   | ✅ par_unseq                               | ❌ 串行                                | ❌ 串行                                | 性能优化     |
-| 强度映射   | ✅ reflectivity                            | ✅ intensity                           | ✅ intensity                           | 字段统一     |
-
-下面介绍关键的几个功能。
-
-#### 3.1.3.1.时间戳计算
-
-各不同雷达时间字段说明：
-
-| 特性       | Livox                 | Ouster     | Velodyne (有原始时间戳) | Velodyne (无原始时间戳) |
-| ---------- | --------------------- | ---------- | ----------------------- | ----------------------- |
-| 时间戳字段 | offset_time           | t          | time                    | -                       |
-| 计算方式   | offset_time / 1000000 | t / 1e6    | time * time_scale_      | 基于扫描角度计算        |
-| 时间基准   | 🟢 帧起始点            | 🟢 帧起始点 | 🟢 帧起始点              | 🟡 每条扫描线起始点      |
-| 时间范围   | 0~100ms               | 0~100ms    | 0~100ms                 | 每条线0~(360/3.6)ms     |
-| 原始单位   | 纳秒 (ns)             | 纳秒 (ns)  | 微秒 (μs)               | -                       |
-| 输出单位   | 毫秒 (ms)             | 毫秒 (ms)  | 毫秒 (ms)               | 毫秒 (ms)               |
-
-注意：机械激光雷达的旋转角速度是可配置的，不是一个固定值，此处Velodyne扫描角度的计算是以10HZ的旋转角速度得到的。
-
-#### 3.1.3.2.标签检查
-
-只有Livox点云才有标签字段Tag，并且，在 Livox 的官网 “[How to use Tag Information in Livox LiDAR Point Cloud](https://www.livoxtech.com/showcase/livox-tag?utm_source=chatgpt.com)” 中，明确说明 Tag 是一个字节，用来指示多回波 (multi‑echo) 及噪声 (noise) 信息”。1 字节，共 8 位 (bit7 … bit0) 被分成 4 组：
-
-| 组别    | 位        | 含义                                              | 详细说明                                                     |
-| ------- | --------- | ------------------------------------------------- | ------------------------------------------------------------ |
-| Group 1 | bit7‑bit6 | 保留/拓展用（或保留为未来功能）                   | 官方文档中未详细说明。                                       |
-| Group 2 | bit5‑bit4 | 回波序号 (echo sequence)                          | 表示该激光点是第 0 回波、1 回波、2 回波或3 回波。例如：  · 00 → Echo 0   · 01 → Echo 1   · 10 → Echo 2   · 11 → Echo 3 |
-| Group 3 | bit3‑bit2 | 置信等级／回波能量强度 (confidence / echo energy) | 用于区分正常回波与可能为噪声（如灰尘、雨、雾）回波。  例如：  · 11 → 高置信（强回波）   · 10 → 中置信   · 01 → 低置信（高可能为噪声） |
-| Group 4 | bit1‑bit0 | 线程状噪声标识 / 杂散回波标识                     | 用于给出额外噪声类别提示（如线状反射、散射杂波等）。官方说明不如前两组详细。 |
-
-Livox激光雷达中的标签检查（tag field）检查代码分析：
-
-```C++
-((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00)
-```
-
-位运算解析：`msg->points[i].tag & 0x30` 这一操作是将 `tag` 字段与 `0x30` 进行按位与操作，提取出 `tag` 的第5和第6位。
-
-**过滤逻辑解释：**
-
-1. `(msg->points[i].tag & 0x30) == 0x00`
-   1.  提取第4、5位后等于 `00`，表示：**正常有效点**
-2. `(msg->points[i].tag & 0x30) == 0x10`
-   1.  提取第4、5位后等于 `01`，表示：**高置信有效点。**丢弃回波序号为 2 或 3（bit5/bit4 = `10` 或 `11` → 0x20 或 0x30）那些可能是更弱的回波、多路径或杂散回波。剔除一些多回波较晚被反射/回传的点，这些点可能质量较差、误差较大、或属于噪声/多路径反射。
-
-## **3.2 前端里程计（****LiDAR** **Odometry）**
-
-### 3.2.1 紧耦合融合融合框架
+## 3.2 前端里程计（LiDAR Odometry）
 
 借鉴[Fast-LIO](https://arxiv.org/abs/2010.08196)算法采用紧耦合的传感器融合架构，区别于松耦合仅融合两种传感器的最终结果，该架构将 LiDAR 点云数据和 IMU 的角速度、加速度数据深度融合到同一个状态估计框架中。两种数据共同参与状态方程构建和残差计算，能充分利用各自优势 ——IMU 高频特性可弥补 LiDAR 帧率低的缺陷，解决快速运动时的点云畸变问题；LiDAR 的高精度距离测量则能校正 IMU 的累积误差。
 
-在紧耦合架构中，IMU 数据主要用于前向传播和后向传播两个过程。前向传播是指将 IMU 的数据带入模型公式，得到状态先验均值和协方差；后向传播是指对激光雷达点云进行运动补偿，将不同时刻测量的特征点 $$l_{j}$$全部投影到 $$t_{k}$$ 时刻，得到一系列点$$l_{k}$$，并且可以认为系列点 $$l_{k}$$都是 tk 时刻同时测量的。
+在代码实现上，前端里程计的主入口是 `LaserMapping::Run()`。上一节得到的 `MeasureGroup` 会首先进入 IMU 处理模块：
+
+```C++
+p_imu_->Process(measures_, kf_, scan_undistort_);
+```
+
+其中 `measures_` 是当前点云帧及其时间范围内的 IMU 序列，`kf_` 是 LIO 前端维护的 ESKF 状态，`scan_undistort_` 是 IMU 处理后的去畸变点云输出。`ImuProcess::Process()` 是这一阶段的调度入口：如果 IMU 尚未初始化，则执行静态初始化；如果初始化已经完成，则执行 IMU 前向传播和点云运动畸变补偿。
+
+### 3.2.1 IMU处理入口
+
+`ImuProcess::Process()` 的主要逻辑如下：
+
+```C++
+void ImuProcess::Process(const MeasureGroup& meas, ESKF& kf_state, CloudPtr& scan) {
+    if (meas.imu_.empty()) {
+        return;
+    }
+
+    if (imu_need_init_) {
+        IMUInit(meas, kf_state, init_iter_num_);
+        ...
+        return;
+    }
+
+    UndistortPcl(meas, kf_state, scan);
+}
+```
+
+这个函数本身不做复杂数学计算，而是根据 `imu_need_init_` 选择后续流程：
+
+1. `imu_need_init_ == true`：调用 `IMUInit()`，统计启动初期 IMU 数据，初始化重力方向和陀螺零偏；
+2. `imu_need_init_ == false`：调用 `UndistortPcl()`，利用当前点云周期内的 IMU 序列进行 ESKF 前向传播，并把点云补偿到扫描结束时刻。
+
+因此，它对应文档中后续三个部分：IMU静态初始化、前向传播、点云去畸变。
 
 ### 3.2.2 IMU静态初始化
 
@@ -246,9 +267,17 @@ IMU初始化是激光雷达惯性里程计(LIO)系统中的关键步骤，其目
 
 IMU连续时间测量模型如下：
 
-$$\begin{array}{l} {{{\bf{\tilde a}}}_b} = {\left[ {{\bf{R}}_b^w} \right]^{\rm T}}\left( {{{\bf{a}}_w} - {{\bf{g}}_w}} \right) + {{\bf{b}}_a} + {{\bf{\eta }}_a}\\ {{{\bf{\tilde \omega }}}_b} = {{\bf{\omega }}_b} + {{\bf{b}}_g} + {{\bf{\eta }}_g} \end{array}$$
+$$
+\begin{aligned}
+{}^{i}\overline{\mathbf{a}}
+&= \mathbf{R}_{iw}\left({}^{w}\mathbf{a}-{}^{w}\mathbf{g}\right)
+   +{}^{i}\mathbf{b}_a+\mathbf{n}_a,\\
+{}^{i}\overline{\boldsymbol{\omega}}
+&= {}^{i}\boldsymbol{\omega}+{}^{i}\mathbf{b}_g+\mathbf{n}_g .
+\end{aligned}
+$$
 
-其中，下标g表示陀螺仪，a表示加速度计， $${{\bf{\eta }}_g},{{\bf{\eta }}_a}$$表示IMU测量噪声， $${{\bf{b }}_g},{{\bf{b }}_a}$$表示IMU零偏， $${{{\bf{\tilde a}}}_b},{{{\bf{\tilde \omega }}}_b}$$表示IMU测量值，它是在body系下的数值，加速度计的测量还与重力向量有关，所以应该把重力写在测量模型中。
+其中，$\mathbf{n}_g,\mathbf{n}_a$ 表示 IMU 测量噪声，${}^{i}\mathbf{b}_g,{}^{i}\mathbf{b}_a$ 表示 IMU 零偏，${}^{i}\overline{\mathbf{a}},{}^{i}\overline{\boldsymbol{\omega}}$ 表示 IMU 测量值，均在 IMU 坐标系 $\mathcal{F}_i$ 下表达。加速度计测量包含重力项，所以模型中需要显式写出 ${}^{w}\mathbf{g}$。这里 $\mathbf{R}_{iw}=\mathbf{R}_{wi}^{\mathsf{T}}$，用于把世界系中的向量转到 IMU 坐标系表达。
 
 所谓静态初始化，就是假设系统启动初期 IMU 处于静止或近似静止状态。在这段时间内，由于载体没有明显运动，可以简单地认为 IMU 的陀螺仪主要测到零偏，而加速度计主要测到重力方向。当前代码中的初始化入口位于：
 
@@ -284,152 +313,153 @@ init_state.bg_ = mean_gyr_;
 >
 > - 当前代码没有轮速计静止判定，也没有显式的 10 秒初始化窗口；它默认启动初期数据可用于静态初始化，并以累计 IMU 样本数 `max_init_count_ = 20` 作为结束条件。
 > - 当前代码初始化了陀螺零偏 `bg_` 与重力方向 `grav_`，没有显式估计加速度计零偏；初始化阶段统计得到的 `cov_acc_`、`cov_gyr_` 随后会被配置中的 `acc_cov`、`gyr_cov` 覆盖为过程噪声参数。
-> - 在重力方向初始化之后，理论上还可以基于矢量定姿进一步估计 $${{\bf{R}}_b^w}$$ 作为姿态初值，但当前实现没有额外做这一步。
+> - 在重力方向初始化之后，理论上还可以基于矢量定姿进一步估计 $\mathbf{R}_{wi}$ 作为姿态初值，但当前实现没有额外做这一步。
 
 ### 3.2.3 前向传播：ESKF 预测与状态缓存
 
-机械旋转式 LiDAR 在一个扫描周期内是“逐点采样”的，同一帧点云中的每个点对应的采样时刻不同，传感器在这段时间内又在运动（平移+旋转），因此：
-
-- 实际上，这一帧中早期和晚期的点对应的位姿不同；
-- 在高速车体运动、急转弯等情况下，拼成的点云会出现“拉伸、扭曲”等运动畸变。
-
-为了消除这类畸变，我们通常利用高频 IMU 数据在整帧扫描期间估计出 **LiDAR 的连续位姿轨迹**，再把每个激光点“拉回”到统一的参考时刻（通常选**帧末时刻**），从而得到**去畸变后的点云**。
-
-从实现角度看，整体算法可以拆成两步
-
-1. **IMU 前向传播 + 状态缓存（ESKF 预测）** 从上一帧**末尾时刻**开始，利用连续 IMU 测量，通过 ESKF 进行**前向传播**，在每一个 IMU 时间戳上都预测出一份系统状态（姿态、位置、速度、偏置等），并将这些状态缓存下来，形成一条**离散的时序轨迹**。
+初始化完成后，`ImuProcess::Process()` 会调用 `UndistortPcl()`。该函数首先把上一帧末尾的 `last_imu_` 插入当前 IMU 序列头部，保证相邻点云帧之间的 IMU 积分连续：
 
 ```C++
-// ESKF预测步骤（eskf.cc:9-92）
-void ESKF::Predict(const IMU& imu, double dt) {
-    // 获取运动函数f和雅可比矩阵
-    Eigen::Matrix<double, 24, 1> f_ = x_.get_f(imu.gyro, imu.acc);
-    Eigen::Matrix<double, 24, 23> f_x_ = x_.df_dx(imu.acc);
-    Eigen::Matrix<double, 24, 12> f_w_ = x_.df_dw();
-    // 状态递推：x = x + f*dt
-    x_.oplus(f_, dt);
-    // 协方差递推：P = F*P*F^T + L*Q*L^T
-    Eigen::Matrix<double, 24, 24> F_x1_ = Eigen::Matrix<double, 24, 24>::Identity();
-    F_x1_.block<23, 23>(0, 0) += f_x_ * dt;
-    P_ = (F_x1_) * P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
-}
+auto v_imu = meas.imu_;
+v_imu.push_front(last_imu_);
 ```
 
-1. **逐点反向传播补偿（点云去畸变）** 对于当前 LiDAR 帧中的每个点，根据该点的采样时间，在上一步缓存的 IMU 轨迹中进行插值，求出这一时刻的 LiDAR 位姿。然后，将点从**该时刻的 LiDAR 坐标系**变换到**参考时刻的 LiDAR 坐标系**，完成畸变补偿。
+随后遍历当前点云扫描周期内的 IMU 测量。对每一对相邻 IMU 测量 `head` 和 `tail`，代码取平均角速度和平均加速度作为该时间段内的输入：
 
-本章节我们先讨论前向传播的具体细节，ESKF系统的状态向量包含 18 个维度，包括位置、速度、姿态、零偏bais 和加速度 g。状态向量的具体定义为：
+```C++
+angvel_avr = 0.5 * (head->angular_velocity + tail->angular_velocity);
+acc_avr = 0.5 * (head->linear_acceleration + tail->linear_acceleration);
+acc_avr = acc_avr * acc_scale_factor_;
+```
 
-$$\mathbf{x} = \begin{bmatrix} \boldsymbol{\theta}_b^w  \\ \mathbf{p}_w \\ \mathbf{v}_w \\ \mathbf{b}_g \\ \mathbf{b}_a \\ \mathbf{g}_w \end{bmatrix}$$
+其中 `acc_scale_factor_` 来自初始化阶段，用于兼容加速度单位为 `g` 或 `m/s²` 的数据。接着根据 IMU 时间差 `dt` 调用 ESKF 预测：
 
-其中，$$\boldsymbol{\theta}_b^w $$和 $$\mathbf{p}_w$$ 分别表示 IMU 在世界坐标系中的姿态（李代数）和位置，$$\mathbf{v}_w$$ 表示速度，$$\mathbf{b}_g$$ 和 $$\mathbf{b}_a$$  分别表示 IMU 的角速度和加速度零偏，$$\mathbf{g}_w$$ 表示重力矢量。
+```C++
+kf_state.Predict(dt, Q_, gyro, acc);
+```
+
+当前版本的 `NavState` 主要包含位置、姿态、速度、陀螺零偏和重力方向：
 
 ```C++
 struct NavState {
-    // 位置（3维）
-    Eigen::Vector3d pos_;           // [p_x, p_y, p_z]
-    // 姿态（SO(3)李代数，3维）    Eigen::Vector3d rot_;           // [φ_x, φ_y, φ_z]
-    // 速度（3维）
-    Eigen::Vector3d vel_;           // [v_x, v_y, v_z]
-    // IMU偏置（6维）
-    Eigen::Vector3d bg_;            // 陀螺仪零偏
-    Eigen::Vector3d ba_;            // 加速度计零偏
-    // 外参（6维）
-    Eigen::Vector3d offset_R_lidar_; // IMU到LiDAR旋转外参
-    Eigen::Vector3d offset_t_lidar_; // IMU到LiDAR平移外参
-    // 重力（2维，S2流形）
-    Eigen::Vector2d grav_;          // 重力向量
+    Vec3d pos_;    // IMU在世界系下的位置
+    SO3 rot_;      // IMU到世界系的旋转
+    Vec3d vel_;    // 世界系速度
+    Vec3d bg_;     // 陀螺零偏
+    Vec3d grav_;   // 世界系重力向量
 };
 ```
 
-基于IMU离散运动学方程:
+名义状态的连续运动模型可以概括为：
 
-$$\mathbf{x}_{t+\Delta t} = \begin{bmatrix} \boldsymbol{\theta}_b^w \\ \mathbf{p}_w \\ \mathbf{v}_w \\ \mathbf{b}_g \\ \mathbf{b}_a \\ \mathbf{g}_w \end{bmatrix}_{t+\Delta t} = \begin{bmatrix} \boldsymbol{\theta}_b^w \\ \mathbf{p}_w \\ \mathbf{v}_w \\ \mathbf{b}_g \\ \mathbf{b}_a \\ \mathbf{g}_w \end{bmatrix}_t + \begin{bmatrix} \tilde{\boldsymbol{\omega}}_b - \mathbf{b}_g - \boldsymbol{\eta}_g \\ \mathbf{v}_w \\ \mathbf{R}_b^w(\tilde{\mathbf{a}}_b - \mathbf{b}_a - \boldsymbol{\eta}_a) + \mathbf{g}_w \\ \boldsymbol{\eta}_{bg} \\ \boldsymbol{\eta}_{ba} \\ \mathbf{0}_{3\times 1} \end{bmatrix}_t \Delta t.$$
+$$
+\dot{\mathbf{p}} = \mathbf{v}, \quad
+\dot{\mathbf{R}}_{wi} = \mathbf{R}_{wi}[{}^{i}\overline{\boldsymbol{\omega}}-{}^{i}\mathbf{b}_g]_{\times},\quad
+{}^{w}\dot{\mathbf{v}} = \mathbf{R}_{wi}({}^{i}\overline{\mathbf{a}}-{}^{i}\mathbf{b}_a)+{}^{w}\mathbf{g}
+$$
 
-继而推导得到ESKF的运动方程：
+对应到代码，是 `NavState::get_f()`、`NavState::df_dx()`、`NavState::df_dw()` 和 `NavState::oplus()` 共同完成名义状态积分与协方差传播。
 
-$$\left\{ \begin{bmatrix} \delta \boldsymbol{\theta}_b^{\hat b} \\ \delta \mathbf{p}_w \\ \delta \mathbf{v}_w \\ \delta \mathbf{b}_g \\ \delta \mathbf{b}_a \\ \delta \mathbf{g}_w \end{bmatrix} \right\}_{t+\Delta t} = \left\{ \begin{aligned} & \left[ \begin{array}{cccccc} \mathrm{Exp}\!\big( -(\tilde{\boldsymbol{\omega}}_b - \hat{\mathbf{b}}_g)\Delta t \big) & \mathbf{0} & \mathbf{0} & -\mathbf{J}_r\!\big((\tilde{\boldsymbol{\omega}}_b - \hat{\mathbf{b}}_g)\Delta t\big)\Delta t & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{I} & \mathbf{I}\Delta t & \mathbf{0} & \mathbf{0} & \mathbf{0} \\ -\hat{\mathbf{R}}_b^w(\tilde{\mathbf{a}}_b - \hat{\mathbf{b}}_a){^ \times }\Delta t& \mathbf{0} & \mathbf{I} & \mathbf{0} & -\hat{\mathbf{R}}_b^w\Delta t & \mathbf{I}\Delta t \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{I} & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{I} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{I} \end{array} \right] \begin{bmatrix} \delta \boldsymbol{\theta}_b^{\hat b} \\ \delta \mathbf{p}_w \\ \delta \mathbf{v}_w \\ \delta \mathbf{b}_g \\ \delta \mathbf{b}_a \\ \delta \mathbf{g}_w \end{bmatrix} \\[6pt] &\quad+ \left[ \begin{array}{cccc} -\mathbf{J}_r\!\big((\tilde{\boldsymbol{\omega}}_b - \hat{\mathbf{b}}_g)\Delta t\big)\Delta t & \mathbf{0} & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & -\hat{\mathbf{R}}_b^w\Delta t & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{I}\Delta t & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{I}\Delta t \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \end{array} \right] \begin{bmatrix} \boldsymbol{\eta}_g \\ \boldsymbol{\eta}_a \\ \boldsymbol{\eta}_{bg} \\ \boldsymbol{\eta}_{ba} \end{bmatrix} \end{aligned} \right\}_t$$
+每完成一次预测，代码会把当前 IMU 时刻对应的状态缓存到 `imu_pose_`：
 
-详细推导参考[ESKF原理](https://rs2flu7c17.work.sany.com.cn/docx/doxk5l8nlkVKIVerPnyr9azVYge#doxk5HevfL8c50Pnz3wTnCoy5rh)
+```C++
+imu_pose_.emplace_back(
+    Pose6D(offs_t, acc_s_last_, angvel_last_,
+           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
+```
 
-在代码实现上，首先把上一帧的最后一个 IMU 测量`last_imu_` 插到当前序列头部，保证 IMU 序列时间上的连续性。主要分为如下几个步骤：
+`imu_pose_` 可以理解为当前扫描周期内的离散 IMU 轨迹。后续点云去畸变会根据每个点的相对时间，找到它所在的 IMU 时间区间，并将点补偿到统一参考时刻。
 
-1. ESKF 预测与状态记录：
+最后，如果 IMU 序列末尾时间 `imu_end_time` 和点云帧结束时间 `pcl_end_time` 不一致，代码会再执行一次预测，把滤波器状态对齐到点云帧末尾：
 
-遍历当前LiDAR时间范围内的所有IMU数据，对每一对相邻测量$$\text{head}, \text{tail}$$ ，计算平均角速度和平均线加速度进行中值积分：
+```C++
+dt = note * (pcl_end_time - imu_end_time);
+kf_state.Predict(dt, Q_, gyro, acc);
+```
 
-$$\boldsymbol{\omega}_{\text{avg}} = \frac{1}{2}(\boldsymbol{\omega}_{\text{head}} + \boldsymbol{\omega}_{\text{tail}}), \quad \mathbf{a}_{\text{avg}} = \frac{1}{2}(\mathbf{a}_{\text{head}} + \mathbf{a}_{\text{tail}})$$
-
-根据初始化阶段的重力模长对加速度做尺度校正（代码中 `acc_avr * G_m_s2 / mean_acc_.norm()`），构造过程噪声协方差 $$\mathbf{Q}$$ ，并进行误差状态卡尔曼滤波的预测；将积分结果作为一个离散状态结点写入缓存`imu_pose_` ，每个结点包含：
-
-- 相对当前 LiDAR 帧起始的时间偏移 `offset_time`；
-- 此时刻的姿态 、速度 、位置 ；
-- 当前估计的加速度（减去了零偏和重力）和角速度（已减去零偏）。
-
-这样，`imu_pose_` 就成为一条离散的 IMU 轨迹序列，后面可以用来对每个点进行插值。
-
-1. 末端时刻对齐
-
-IMU 序列最后一个时间戳 `imu_end_time` 不一定刚好等于 LiDAR 帧末时间 `pcl_end_time`，因此，若两者不同，则再做一次预测，把滤波器时间推进或回退到点云帧末时刻；后续所有点都会被对齐到这个参考时刻。
-
-### 3.2.4.后向传播：点云去畸变
+### 3.2.4 后向传播：点云去畸变
 
 完成前向传播后，将当前帧点云按照点的 `time` 字段进行升序排序。遍历点云去畸变阶段采用“双向遍历”策略，从最后一个点向前遍历，同时从最后一个 IMU 结点向前遍历 `imu_pose_`，保证在时间上“对齐”每个点所属的 IMU 时间区间。
 
-假设存在点i在相邻两个 IMU 结点 $$t_k -t_{k+1}$$ 之间，点所在时间 $$t_i = t_k + \Delta t$$ 
+假设第 $j$ 个点在相邻两个 IMU 结点 $t_m$ 与 $t_{m+1}$ 之间，点所在时间 $t_j=t_m+\Delta t$。
 
 - 姿态更新：
 
-$$ \mathbf{R}^{w}_{b_i}\approx \mathbf{R}^{w}_{b_k} \cdot \exp\left(\left[\boldsymbol{\omega}_{\text{avg}}\right]_\times \Delta t\right)$$
+$$
+\mathbf{R}_{wi_j}\approx
+\mathbf{R}_{wi_m}\operatorname{Exp}\left({}^{i}\boldsymbol{\omega}_{\text{avg}}\Delta t\right)
+$$
 
 - 位置更新（匀加速模型+欧拉积分）：
 
-$$ \mathbf{p}^{wb_i}_{w} \approx \mathbf{p}^{wb_k}_{w} + \mathbf{v}_{w_k}\Delta t + \frac{1}{2}\mathbf{a}_{w_k} \Delta t^2$$
+$$
+{}^{w}\mathbf{t}_{wi_j}
+\approx {}^{w}\mathbf{t}_{wi_m}
+      +{}^{w}\mathbf{v}_{m}\Delta t
+      +\frac{1}{2}{}^{w}\mathbf{a}_{m}\Delta t^2
+$$
 
 代码中的实现对应为：
 
 ```C++
-Mat3d R_i(R_imu * math::exp(angvel_avr, dt).matrix());
+Mat3d R_i(R_imu * math::exp(angvel_avr, 0.5 * dt).matrix());
 Vec3d T_ei = pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos_;
 ```
 
-给定一个在时刻 $$t_$$ (用上标f表示)采集的原始点 $$\mathbf{p}^{L_if}_{L_i}$$ ，其补偿过程可以抽象为以下 4 步坐标变换（约定：世界坐标系为$$\mathcal{F}_w$$ ，IMU 坐标系为$$\mathcal{F}_b$$ ，LiDAR 坐标系为$$\mathcal{F}_l$$ ），坐标变换链如下：
+给定一个在时刻 $t_j$ 采集的原始点 $p_j$，其在采样时刻 LiDAR 坐标系 $\mathcal{F}_{l_j}$ 下的坐标为 ${}^{l_j}\mathbf{p}_{l_jj}$。补偿过程可以抽象为以下 4 步坐标变换（约定：世界坐标系为 $\mathcal{F}_w$，IMU 坐标系为 $\mathcal{F}_i$，LiDAR 坐标系为 $\mathcal{F}_l$），坐标变换链如下：
 
 - LiDAR → IMU（外参）：
 
-$$\mathbf{p}^{b_if}_{b_i} = \mathbf{R}_l^b \mathbf{p}^{l_if}_{l_i} + \mathbf{t}_{b}^{bl}$$
+$$
+{}^{i_j}\mathbf{p}_{i_jj}
+= \mathbf{R}_{il}\,{}^{l_j}\mathbf{p}_{l_jj}
+  +{}^{i}\mathbf{t}_{il}
+$$
 
-- IMU → 世界，在时刻 $$t_$$  ：
+- IMU → 世界，在采样时刻 $t_j$：
 
-$$\mathbf{p}_{w}^{wf} = \mathbf{R}_{b_i}^w\,\mathbf{p}^{b_if}_{b_i} + \mathbf{t}_w^{wb_i}$$
+$$
+{}^{w}\mathbf{p}_{wj}
+= \mathbf{R}_{wi_j}\,{}^{i_j}\mathbf{p}_{i_jj}
+  +{}^{w}\mathbf{t}_{wi_j}
+$$
 
-- 世界 → 参考 IMU 帧（帧末  $$t_{\text{k+1}}$$ ）：
+- 世界 → 参考 IMU 帧（帧末 $t_{e}$）：
 
-$$\mathbf{p}^{b_{k+1}f}_{b_{k+1}}= {\mathbf{R}_{b_{k+1}}^w}^\top \big(\mathbf{p}_{w}^{wf} - \mathbf{t}_w^{wb_{k+1}}\big)$$
+$$
+{}^{i_e}\mathbf{p}_{i_ej}
+= \mathbf{R}_{i_ew}
+  \left({}^{w}\mathbf{p}_{wj}-{}^{w}\mathbf{t}_{wi_e}\right)
+$$
 
 - IMU → LiDAR（再用外参反变换）：
 
-$$\mathbf{p}^{l_{k+1}f}_{l_{k+1}}= \mathbf{R}_l^b{}^\top \big( \mathbf{p}^{b_{k+1}f}_{b_{k+1}} - \mathbf{t}_b^{bl} \big)$$
+$$
+{}^{l_e}\mathbf{p}_{l_ej}
+= \mathbf{R}_{li}
+  \left({}^{i_e}\mathbf{p}_{i_ej}-{}^{i}\mathbf{t}_{il}\right)
+$$
 
-综合起来就是：点从采样时刻的 LiDAR 坐标系 $$\mathcal{F}_l$$ → 参考时刻的 LiDAR 坐标系 $$\mathcal{F}_l$$ 的完整变换链。
+综合起来就是：点从采样时刻的 LiDAR 坐标系 $\mathcal{F}_{l_j}$ → 参考时刻的 LiDAR 坐标系 $\mathcal{F}_{l_e}$ 的完整变换链。
 
 代码中的实现：
 
 ```C++
-Vec3d p_compensate = imu_state.offset_R_lidar_.inverse() *
+Vec3d p_compensate = R_lidar_imu_.transpose() *
                      (imu_state.rot_.inverse() *
-                          (R_i * (imu_state.offset_R_lidar_ * P_i + imu_state.offset_t_lidar_) + T_ei) -
-                      imu_state.offset_t_lidar_);
+                          (R_i * (R_lidar_imu_ * P_i + t_lidar_mu_) + T_ei) -
+                      t_lidar_mu_);
 ```
 
 与上述公式一一对应
 
-- `offset_R_lidar_` ≈  $$\mathbf{R}_l^b$$  
-- `offset_t_lidar_` ≈ $$\mathbf{t}_{b}^{bl}$$ 
-- `R_i` ≈  $$\mathbf{R}_{b_i}^w$$  
-- `imu_state.rot_` / `imu_state.pos_` ≈ $${\mathbf{R}_{b_{k+1}}^w}, \mathbf{t}_w^{wb_{k+1}}$$
-- `T_ei` ≈  $$\mathbf{t}_w^{wb_i} - \mathbf{t}_w^{wb_{k+1}}$$ 
+- `R_lidar_imu_` ≈ $\mathbf{R}_{il}$；
+- `t_lidar_mu_` ≈ ${}^{i}\mathbf{t}_{il}$；
+- `R_i` ≈ $\mathbf{R}_{wi_j}$；
+- `imu_state.rot_` / `imu_state.pos_` ≈ $\mathbf{R}_{wi_e},{}^{w}\mathbf{t}_{wi_e}$；
+- `T_ei` ≈ ${}^{w}\mathbf{t}_{wi_j}-{}^{w}\mathbf{t}_{wi_e}$。
 
-最终 `p_compensate` 就是补偿后统一到帧末（参考时刻  $$t_{\text{k+1}}$$）的第 $$$$ 个点坐标  $$\mathbf{p}^{l_{k+1}f}_{l_{k+1}}$$，用来回写到点云中。
+最终 `p_compensate` 就是该点补偿到帧末参考时刻 $t_e$ 后，在 LiDAR 坐标系 $\mathcal{F}_{l_e}$ 下的坐标，用来回写到点云中。
 
 ### 3.2.5.状态更新
 
@@ -449,29 +479,91 @@ ESKF（误差状态卡尔曼滤波）的状态更新模块运行在预测步骤�
 
 观测更新对具体传感器（Lidar、轮速、GPS、加速度重力约束、偏置约束等）做了一层统一抽象：
 
-$${{\bf{r}}_k} = {{\bf{z}}_k} - {\bf{h}}({{\bf{\hat x}}_k},{{\bf{\tilde x}}_k}) = {{\bf{v}}_k}\sim{\cal N}(0,{{\bf{V}}_k})$$
+$$
+\mathbf{r}_k
+= \mathbf{z}_k-\mathbf{h}(\hat{\mathbf{x}}_k,\tilde{\mathbf{x}}_k)
+= \mathbf{n}_k,\quad
+\mathbf{n}_k\sim\mathcal{N}(\mathbf{0},\mathbf{N}_k)
+$$
 
-在$${\bf{\hat x}}_k^\kappa $$处关于$${\bf{\tilde x}}_k^\kappa = {\bf{0}}$$线性化得到
+在 $\hat{\mathbf{x}}_k^\kappa$ 处关于 $\tilde{\mathbf{x}}_k^\kappa=\mathbf{0}$ 线性化得到：
 
-$${\bf{r}}_{k,j}^\kappa = {\bf{z}}_{k,j}^\kappa - {\bf{h}}({\bf{\hat x}}_k^\kappa ,{\bf{0}}) - {\bf{H}}_{k,j}^\kappa {\mkern 1mu} {\bf{\tilde x}}_k^\kappa = {\bf{v}}_{k,j}^\kappa \sim {\cal N}(0,{\bf{V}}_{k,j}^\kappa )$$
+$$
+\mathbf{r}_{k,j}^\kappa
+= \mathbf{z}_{k,j}^\kappa
+ - \mathbf{h}(\hat{\mathbf{x}}_k^\kappa,\mathbf{0})
+ - \mathbf{H}_{k,j}^\kappa\tilde{\mathbf{x}}_k^\kappa
+= \mathbf{n}_{k,j}^\kappa,\quad
+\mathbf{n}_{k,j}^\kappa\sim\mathcal{N}(\mathbf{0},\mathbf{N}_{k,j}^\kappa)
+$$
 
 其中雅可比为：
 
-$${\bf{H}}_{k,j}^\kappa= {\left. {\frac{{\partial {\bf{h}}}}{{\partial {{{\bf{\hat x}}}_k}}}} \right|_{{{{\bf{\hat x}}}_k} = {\bf{\hat x}}_k^\kappa }}{\left. {\frac{{\partial {{{\bf{\hat x}}}_k}}}{{\partial {{{\bf{\tilde x}}}_k}}}} \right|_{{{{\bf{\tilde x}}}_k} = {\bf{\tilde x}}_k^\kappa  = {\bf{0}}}}$$
+$$
+\mathbf{H}_{k,j}^\kappa
+= \left.
+   \frac{\partial\mathbf{h}}{\partial\hat{\mathbf{x}}_k}
+  \right|_{\hat{\mathbf{x}}_k=\hat{\mathbf{x}}_k^\kappa}
+  \left.
+   \frac{\partial\hat{\mathbf{x}}_k}{\partial\tilde{\mathbf{x}}_k}
+  \right|_{\tilde{\mathbf{x}}_k^\kappa=\mathbf{0}}
+$$
 
-$$\frac{{\partial {{{\bf{\hat x}}}_k}}}{{\partial {{{\bf{\tilde x}}}_k}}} = {\mathop{\rm diag}\nolimits} \left( { - {{\bf{I}}_3}, - {{\bf{I}}_3},\frac{{\partial {\rm{Log}}\left( {{\bf{R}}_{\hat b}^w{\rm{Exp}}\left( {{\bf{\tilde \theta }}_b^{\hat b}} \right)} \right)}}{{\partial {\bf{\tilde \theta }}_b^{\hat b}}}, - {{\bf{I}}_3}, - {{\bf{I}}_3}, - {{\bf{I}}_3}} \right) = {\mathop{\rm diag}\nolimits} \left( { - {{\bf{I}}_3}, - {{\bf{I}}_3},{\bf{J}}_r^{ - 1}, - {{\bf{I}}_3}, - {{\bf{I}}_3}, - {{\bf{I}}_3}} \right)$$
+$$
+\frac{\partial\hat{\mathbf{x}}_k}{\partial\tilde{\mathbf{x}}_k}
+= \operatorname{diag}\left(
+-\mathbf{I}_3,
+-\mathbf{I}_3,
+\mathbf{J}_r^{-1}(\boldsymbol{\theta}_{wi}),
+-\mathbf{I}_3,
+-\mathbf{I}_3,
+-\mathbf{I}_3
+\right)
+$$
 
-其中$${\bf{J}}_r$$的参数是$${\bf{\theta }}_{\hat b}^w$$。**观测模型只负责给出** $${\bf{r}}_{k,j}^\kappa,{\bf{H}}_{k,j}^\kappa,{\bf{V}}_{k,j}^\kappa$$，求解误差状态、Anderson 加速、协方差更新等都由 ESKF 内部统一完成。
+其中 $\mathbf{J}_r$ 是 $\operatorname{SO}(3)$ 的右雅可比，参数为当前姿态对应的旋转向量 $\boldsymbol{\theta}_{wi}=\operatorname{Log}(\mathbf{R}_{wi})$。**观测模型只负责给出** $\mathbf{r}_{k,j}^\kappa,\mathbf{H}_{k,j}^\kappa,\mathbf{N}_{k,j}^\kappa$，求解误差状态、Anderson 加速、协方差更新等都由 ESKF 内部统一完成。
 
 #### 3.2.5.3.先验分布在迭代点的表示
 
-已有先验分布$${\bf{\tilde x}}_k^- \sim {\cal N}({\bf{0}},{\bf{P}}_k^ - )$$，由于线性化点变为$${\bf{\hat x}}_k^\kappa $$处，需要计算新的高斯分布$${\bf{\tilde x}}_k^\kappa \sim{\cal N}({\bf{\mu }}_k^\kappa ,{\bf{P}}_k^\kappa )$$
+已有先验分布 $\tilde{\mathbf{x}}_k^{-}\sim\mathcal{N}(\mathbf{0},\tilde{\mathbf{P}}_k^{-})$。由于线性化点变为 $\hat{\mathbf{x}}_k^\kappa$，需要把先验分布重新表示到当前迭代误差坐标中：
 
-![img](https://rs2flu7c17.work.sany.com.cn/space/api/box/stream/download/asynccode/?code=MWM0Mzc4NTQ0NGVhNDZmMzdmMTJkZjVmMjlmZTM0ODhfbUdOUk80WlVHTTRsTmRNNjQ2elhXTmNpY3RmdVVxM09fVG9rZW46Ym94azUybmszaTd2ZVdqU2lUSDZMSkRzb3doXzE3ODAyOTczNzQ6MTc4MDMwMDk3NF9WNA)
+$$
+\tilde{\mathbf{x}}_k^\kappa
+\sim \mathcal{N}\left(
+\tilde{\boldsymbol{\mu}}_k^{\kappa-},
+\tilde{\mathbf{P}}_k^{\kappa-}
+\right)
+$$
 
-其中，$${\bf{J}}_k^\kappa = {\mathop{\rm diag}\nolimits} \left( {{{\bf{I}}_3},{{\bf{I}}_3},{\bf{J}}_{\bf{\theta }}^\kappa ,{{\bf{I}}_3},{{\bf{I}}_3},{{\bf{I}}_3}} \right) = {\mathop{\rm diag}\nolimits} \left( {{{\bf{I}}_3},{{\bf{I}}_3},{\bf{J}}_r^{ - 1},{{\bf{I}}_3},{{\bf{I}}_3},{{\bf{I}}_3}} \right)$$，$${\bf{J}}_r$$的参数是$${\rm{Log}}\left( {{{\left[ {{\bf{R}}_{\hat b_k^ - }^w} \right]}^{\rm T}}{\bf{R}}_{\hat b_k^\kappa }^w} \right) = {\rm{Log}}\left( {{\bf{R}}_{\hat b_k^\kappa }^{\hat b_k^ - }} \right) = {\bf{\tilde \theta }}_{\hat b_k^\kappa }^{\hat b_k^ - }$$。
+其中，
 
-最终得$${\bf{\mu }}_k^\kappa \approx - {({\bf{J}}_k^\kappa )^{ - 1}}({\bf{\hat x}}_k^\kappa {\bf{\hat x}}_k^ - )，{\bf{P}}_k^\kappa  \approx {({\bf{J}}_k^\kappa )^{ - 1}}{\bf{P}}_k^ - {({\bf{J}}_k^\kappa )^{ - T}}$$
+$$
+\mathbf{J}_k^\kappa
+= \operatorname{diag}\left(
+\mathbf{I}_3,\mathbf{I}_3,\mathbf{J}_r^{-1}(\boldsymbol{\xi}_{R,k}^{\kappa}),
+\mathbf{I}_3,\mathbf{I}_3,\mathbf{I}_3
+\right),
+$$
+
+$$
+\boldsymbol{\xi}_{R,k}^{\kappa}
+= \operatorname{Log}\left(\mathbf{R}_{wi_k^{-}}^{\mathsf{T}}\mathbf{R}_{wi_k^\kappa}\right)
+= \operatorname{Log}\left(\mathbf{R}_{i_k^{-}i_k^\kappa}\right).
+$$
+
+最终得到：
+
+$$
+\tilde{\boldsymbol{\mu}}_k^{\kappa-}
+\approx -(\mathbf{J}_k^\kappa)^{-1}
+          \left(\hat{\mathbf{x}}_k^\kappa\boxminus\hat{\mathbf{x}}_k^{-}\right),
+\quad
+\tilde{\mathbf{P}}_k^{\kappa-}
+\approx
+(\mathbf{J}_k^\kappa)^{-1}
+\tilde{\mathbf{P}}_k^{-}
+(\mathbf{J}_k^\kappa)^{-\mathsf{T}}
+$$
 
 #### 3.2.5.4.迭代更新
 
@@ -481,11 +573,54 @@ $$\frac{{\partial {{{\bf{\hat x}}}_k}}}{{\partial {{{\bf{\tilde x}}}_k}}} = {\ma
 
 进行如下分量合并:
 
-$$\mathbf H_k^\kappa = \begin{bmatrix} \mathbf H_{k,1}^\kappa \\ \vdots \\ \mathbf H_{k,M_k}^\kappa \end{bmatrix}, \; \mathbf V_k^\kappa = \operatorname{diag}\!\bigl(\mathbf V_{1}^\kappa,\dots,\mathbf V_{k,M_k}^\kappa\bigr), \; \mathbf P_k^{\kappa-} = (\mathbf J_k^\kappa)^{-1}\mathbf P_k^{-}(\mathbf J_k^\kappa)^{-T}, \; \mathbf r_k^\kappa = \begin{bmatrix} \mathbf r_{k,1}^\kappa \\ \vdots \\ \mathbf r_{k,M_k}^\kappa \end{bmatrix}, \; \mathbf z_k^\kappa = \begin{bmatrix} \mathbf z_{k,1}^\kappa \\ \vdots \\ \mathbf z_{k,M_k}^\kappa \end{bmatrix}$$
+$$
+\mathbf{H}_k^\kappa
+= \begin{bmatrix}
+\mathbf{H}_{k,1}^\kappa\\
+\vdots\\
+\mathbf{H}_{k,M_k}^\kappa
+\end{bmatrix},\quad
+\mathbf{N}_k^\kappa
+= \operatorname{diag}\left(
+\mathbf{N}_{k,1}^\kappa,\dots,\mathbf{N}_{k,M_k}^\kappa
+\right),
+$$
+
+$$
+\mathbf{r}_k^\kappa
+= \begin{bmatrix}
+\mathbf{r}_{k,1}^\kappa\\
+\vdots\\
+\mathbf{r}_{k,M_k}^\kappa
+\end{bmatrix},\quad
+\mathbf{z}_k^\kappa
+= \begin{bmatrix}
+\mathbf{z}_{k,1}^\kappa\\
+\vdots\\
+\mathbf{z}_{k,M_k}^\kappa
+\end{bmatrix}.
+$$
 
 最终得到ESKF更新方程如下：
 
-$$\begin{aligned} \mathbf K_k^\kappa  &= \mathbf P_k^{\kappa-}\,\mathbf H_k^{\kappa\mathsf T}     \Bigl(\mathbf H_k^\kappa \mathbf P_k^{\kappa-}\mathbf H_k^{\kappa\mathsf T}           + \mathbf V_k^\kappa\Bigr)^{-1} \\ \tilde{\mathbf x}_k^{\kappa+}  &=  \left\{  \begin{aligned}    &\boldsymbol\mu_k^\kappa + \mathbf K_k^\kappa \mathbf r_k^\kappa, \\    &\boldsymbol\mu_k^\kappa + \mathbf K_k^\kappa      \bigl(\mathbf z_{k,j}^\kappa - \mathbf h(\hat{\mathbf x}_k^\kappa,\mathbf 0)            - \mathbf H_k^\kappa \boldsymbol\mu_k^\kappa\bigr), \\    &\mathbf K_k^\kappa \bigl(\mathbf z_{k,j}^\kappa - \mathbf h(\hat{\mathbf x}_k^\kappa,\mathbf 0)\bigr)      + (\mathbf I - \mathbf K_k^\kappa \mathbf H_k^\kappa)\,\boldsymbol\mu_k^\kappa ,  \end{aligned}  \right. \\ \mathbf P_k^{\kappa+}  &= (\mathbf I - \mathbf K_k^\kappa \mathbf H_k^\kappa)\,\hat{\mathbf P}_k^{\kappa-} \end{aligned}$$
+$$
+\begin{aligned}
+\mathbf{K}_k^\kappa
+&= \tilde{\mathbf{P}}_k^{\kappa-}\mathbf{H}_k^{\kappa\mathsf{T}}
+   \left(
+      \mathbf{H}_k^\kappa\tilde{\mathbf{P}}_k^{\kappa-}\mathbf{H}_k^{\kappa\mathsf{T}}
+      +\mathbf{N}_k^\kappa
+   \right)^{-1},\\
+\tilde{\boldsymbol{\mu}}_k^{\kappa+}
+&= \tilde{\boldsymbol{\mu}}_k^{\kappa-}
+   +\mathbf{K}_k^\kappa
+      \left(\mathbf{r}_k^\kappa
+      -\mathbf{H}_k^\kappa\tilde{\boldsymbol{\mu}}_k^{\kappa-}\right),\\
+\tilde{\mathbf{P}}_k^{\kappa+}
+&= \left(\mathbf{I}-\mathbf{K}_k^\kappa\mathbf{H}_k^\kappa\right)
+   \tilde{\mathbf{P}}_k^{\kappa-}.
+\end{aligned}
+$$
 
 ### 3.2.5 卡尔曼增益优化策略
 
@@ -493,9 +628,9 @@ $$\begin{aligned} \mathbf K_k^\kappa  &= \mathbf P_k^{\kappa-}\,\mathbf H_k^{\ka
 
 ![img](https://rs2flu7c17.work.sany.com.cn/space/api/box/stream/download/asynccode/?code=NGIwMGI2ZmJiMTkyYTAzMWI1MDk1MjY2Nzg5OWRmYzRfa1NVZHdFeW52VnNXZ2JxeWE1N0RURkZFQU9QVm5yN01fVG9rZW46Ym94azVFRWI4QVBpbE9uaUNxb0N2a3pyV21mXzE3ODAyOTczNzQ6MTc4MDMwMDk3NF9WNA)
 
-其中$$P$$是先验估计误差的协方差矩阵，$$H$$是观测矩阵，$$R$$是观测噪声的协方差矩阵。当用于计算残差的特征点数量特别大时，计算 $$HPH^T+R$$时维度将变为 $$m×m$$，需要对该矩阵进行求逆，导致计算量急剧增加。
+其中 $\tilde{\mathbf{P}}$ 是误差状态协方差矩阵，$\mathbf{H}$ 是观测雅可比矩阵，$\mathbf{N}$ 是观测噪声协方差矩阵。当用于计算残差的特征点数量特别大时，计算 $\mathbf{H}\tilde{\mathbf{P}}\mathbf{H}^{\mathsf{T}}+\mathbf{N}$ 时维度将变为 $m\times m$，需要对该矩阵进行求逆，导致计算量急剧增加。
 
-FAST-LIO 通过 Sherman-Morrison-Woodbury（SMW）恒等式解决了这一问题，提出了一个新的卡尔曼增益计算公式，并证明它与传统卡尔曼增益计算结果是等价的。新公式的计算复杂度取决于状态维度 $$n$$而不是测量维度 $$m$$，从而大幅降低了计算负担。
+FAST-LIO 通过 Sherman-Morrison-Woodbury（SMW）恒等式解决了这一问题，提出了一个新的卡尔曼增益计算公式，并证明它与传统卡尔曼增益计算结果是等价的。新公式的计算复杂度取决于状态维度 $n$ 而不是测量维度 $m$，从而大幅降低了计算负担。
 
 ![img](https://rs2flu7c17.work.sany.com.cn/space/api/box/stream/download/asynccode/?code=M2U4MDJkNjY0MTE4YmJjMjg3OTE4MjNiNmRmMWI5ZjlfYU55aFo3eEhTM01FYWM1VDVVQVIzcnl4UmEwNUFJVzdfVG9rZW46Ym94azU2VndZWUpUQllRNXF0b0ZuM2pCZGdkXzE3ODAyOTczNzQ6MTc4MDMwMDk3NF9WNA)
 
@@ -513,7 +648,18 @@ FAST-LIO 通过 Sherman-Morrison-Woodbury（SMW）恒等式解决了这一问题
 
 **点到面距离残差模型**：
 
-$$\text{残差: } r_i = \mathbf{n}_i^T \cdot (\mathbf{R} \cdot \mathbf{p}_i + \mathbf{t} - \mathbf{p}_{target}) + d_i$$
+$$
+r_j
+= {}^{w}\mathbf{n}_{j}^{\mathsf{T}}
+  \left(
+    \mathbf{R}_{wi}\,{}^{i}\mathbf{p}_{ij}
+    +{}^{w}\mathbf{t}_{wi}
+    -{}^{w}\mathbf{p}_{wq_j}
+  \right)
+  +d_j
+$$
+
+其中 ${}^{w}\mathbf{n}_{j}$ 和 $d_j$ 表示局部平面参数，${}^{i}\mathbf{p}_{ij}$ 是当前扫描点在 IMU 坐标系下的坐标，${}^{w}\mathbf{p}_{wq_j}$ 是平面上一点 $q_j$ 在世界坐标系下的坐标。
 
 ```C++
 // 观测模型实现（laser_mapping.cc:501-625）
@@ -832,14 +978,21 @@ private:
 
 **优化目标函数**：
 
-$$\min_{\{\mathbf{T}_i\}} \sum_{(i,j) \in \mathcal{E}} \| \mathbf{z}_{ij} - \mathbf{h}(\mathbf{T}_i, \mathbf{T}_j) \|^2_{\boldsymbol{\Omega}_{ij}}$$
+$$
+\min_{\{\mathbf{T}_{wn_i}\}}
+\sum_{(i,j)\in\mathcal{E}}
+\left\|
+\mathbf{z}_{ij}
+-\mathbf{h}(\mathbf{T}_{wn_i},\mathbf{T}_{wn_j})
+\right\|_{\boldsymbol{\Omega}_{ij}}^2
+$$
 
 其中：
 
-- $$\mathbf{T}_i$$：第i个关键帧的位姿
-- $$\mathbf{z}_{ij}$$：相对观测（里程计、回环、定位）
-- $$\mathbf{h}(\mathbf{T}_i, \mathbf{T}_j)$$：位姿变换预测
-- $$\boldsymbol{\Omega}_{ij}$$：信息矩阵（权重）
+- $\mathbf{T}_{wn_i}$：第 $i$ 个关键帧节点坐标系 $\mathcal{F}_{n_i}$ 到世界坐标系 $\mathcal{F}_w$ 的位姿变换
+- $\mathbf{z}_{ij}$：相对观测（里程计、回环、定位）
+- $\mathbf{h}(\mathbf{T}_{wn_i},\mathbf{T}_{wn_j})$：由两个关键帧位姿预测出的相对观测
+- $\boldsymbol{\Omega}_{ij}$：信息矩阵（权重）
 
 **约束权重配置**：
 
@@ -988,7 +1141,7 @@ public:
         UpdateCenterTile(tile_id);
         // 卸载远离的分块以节省内存
         UnloadDistantTiles();
-    }
+    } 
 };
 ```
 

@@ -24,33 +24,50 @@ class PangolinWindow;
 }
 
 /**
- * laser mapping
- * 目前有个问题：点云在缓存之后，实际处理的并不是最新的那个点云（通常是buffer里的前一个），这是因为bag里的点云用的开始时间戳，导致
- * 点云的结束时间要比IMU多0.1s左右。为了同步最近的IMU，就只能处理缓冲队列里的那个点云，而不是最新的点云
+ * @brief LIO前端主流程：点云预处理、IMU同步、ESKF更新和局部地图维护。
+ *
+ * LaserMapping串起整个前端定位流程：
+ * 1. 接收ROS/Livox/已预处理点云和IMU数据，并放入缓存队列；
+ * 2. 将一帧Lidar与覆盖其扫描时间的IMU同步成MeasureGroup；
+ * 3. 调用ImuProcess完成IMU预测和点云运动畸变补偿；
+ * 4. 用当前点云和IVox局部地图构造Lidar观测，迭代更新ESKF；
+ * 5. 根据运动阈值创建关键帧，并增量更新局部地图。
+ *
+ * 同步上有一个容易误解的点：bag中的点云时间戳通常是扫描开始时间，
+ * 但处理一帧点云需要等到扫描结束时间之后的IMU。因此缓存中最新点云往往还不能处理，
+ * 实际处理的通常是队列中已经等到足够IMU覆盖的那一帧。
  */
 class LaserMapping {
    public:
+    /**
+     * @brief LaserMapping运行选项。
+     *
+     * 这些参数主要控制前端配准权重、关键帧创建阈值和关键帧投影策略。
+     * 传感器、体素分辨率、噪声等运行参数由Init()从yaml中读取。
+     */
     struct Options {
         Options() {}
 
-        bool is_in_slam_mode_ = true;  // 是否在slam模式下
+        bool is_in_slam_mode_ = true;  // SLAM模式会保存关键帧；定位模式下可用时间阈值强制创建关键帧
 
-        bool enable_icp_part_ = true;    // 是否添加ICP部分
-        double plane_icp_weight_ = 1.0;  // 点面ICP部分的权重
-        double icp_weight_ = 100;        // ICP部分的权重
+        bool enable_icp_part_ = true;    // 是否在点面约束外额外加入点到点ICP约束
+        double plane_icp_weight_ = 1.0;  // 点面ICP残差在ESKF观测信息矩阵中的权重
+        double icp_weight_ = 100;        // 点到点ICP残差在ESKF观测信息矩阵中的权重
 
-        int min_pts = 300;  // 配准所需的点数
+        int min_pts = 300;  // 降采样后进入配准流程所需的最少点数
 
-        /// 关键帧阈值
-        double kf_dis_th_ = 2.0;
-        double kf_angle_th_ = 15 * M_PI / 180.0;
+        /// 关键帧创建阈值：当前帧相对上一关键帧的平移或旋转超过阈值时创建新关键帧。
+        double kf_dis_th_ = 2.0;                    // 平移阈值，单位m
+        double kf_angle_th_ = 15 * M_PI / 180.0;    // 旋转阈值，单位rad
 
-        bool proj_kfs_ = false;
-        int max_proj_kfs_ = 5;
+        bool proj_kfs_ = false;  // 是否将附近关键帧点云投影到当前帧，用于显示或辅助匹配
+        int max_proj_kfs_ = 5;   // 保留用于投影的关键帧数量上限
     };
 
+    /// 类内有Eigen固定大小矩阵成员，使用对齐new避免内存对齐问题。
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+    /// IVox局部地图类型，保存世界系点云并支持快速最近邻查询。
     using IVoxType = IVox<3, IVoxNodeType::DEFAULT, PointType>;
 
     LaserMapping(Options options = Options());
@@ -61,9 +78,10 @@ class LaserMapping {
         LOG(INFO) << "laser mapping deconstruct";
     }
 
-    /// init without ros
+    /// 从yaml加载参数并初始化预处理器、IMU处理器、IVox局部地图和ESKF观测函数。
     bool Init(const std::string &config_yaml);
 
+    /// 处理缓存中的一帧同步数据，完成去畸变、ESKF更新、关键帧判断和地图维护。
     bool Run();
 
     // 三个ProcessPointCloud2函数处理逻辑：
@@ -72,20 +90,22 @@ class LaserMapping {
     // 3.数据缓存：将处理后的点云和时间戳存入缓冲区
     // 4.性能监控：使用 Timer::Evaluate 记录预处理耗时
     // callbacks of lidar and imu
-    /// 处理ROS2的点云
+    /// 处理标准ROS2 PointCloud2点云消息，完成预处理后写入Lidar缓存队列。
     void ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
 
-    /// 处理livox的点云
+    /// 处理Livox自定义点云消息，完成预处理后写入Lidar缓存队列。
     void ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
 
-    /// 如果已经做了预处理，也可以直接处理点云
+    /// 处理已经转换好的点云，直接写入Lidar缓存队列。
     void ProcessPointCloud2(CloudPtr cloud);
 
+    /// 处理一条IMU消息：写入IMU缓存，并在IMU初始化后维护一份高频kf_imu_状态供UI显示。
     void ProcessIMU(const lightning::IMUPtr &msg_in);
 
     /// 保存前端的地图
     void SaveMap();
 
+    /// 绑定UI窗口，用于在Run()/ProcessIMU()中更新状态和点云显示。
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
 
     /// 获取关键帧
@@ -94,7 +114,7 @@ class LaserMapping {
     /// 获取激光的状态
     NavState GetState() const { return state_point_; }
 
-    /// 获取IMU状态
+    /// 获取IMU最新时刻状态；IMU未初始化时返回pose_is_ok_=false的无效状态。
     NavState GetIMUState() const {
         if (p_imu_->IsIMUInited()) {
             return kf_imu_.GetX();
@@ -105,27 +125,35 @@ class LaserMapping {
         }
     }
 
+    /// 获取最近一次去畸变后的点云，点仍在当前Lidar坐标系下。
     CloudPtr GetScanUndist() const { return scan_undistort_; }
+    /// 获取当前去畸变点云叠加附近投影关键帧后的点云。
     CloudPtr GetProjCloud();
 
     /// 获取最新的点云
     CloudPtr GetRecentCloud();
 
+    /// 获取全部关键帧，用于后端、保存地图或调试显示。
     std::vector<Keyframe::Ptr> GetAllKeyframes() { return all_keyframes_; }
 
     /**
-     * 计算全局地图
-     * @param use_lio_pose
-     * @return
+     * @brief 根据关键帧点云拼接全局地图。
+     *
+     * @param use_lio_pose true时使用前端LIO位姿，false时使用关键帧优化位姿。
+     * @param use_voxel 是否对每个关键帧点云和最终地图做体素滤波。
+     * @param res 体素滤波分辨率，单位m。
+     * @return 拼接后的全局点云。
      */
     CloudPtr GetGlobalMap(bool use_lio_pose, bool use_voxel = true, float res = 0.1);
 
    private:
-    // sync lidar with imu
+    /// 从Lidar/IMU缓存队列中取出一帧时间覆盖完整的同步数据，写入measures_。
     bool SyncPackages();
 
+    /// Lidar观测模型：根据当前状态匹配局部地图，构造ESKF需要的HTH/HTr。
     void ObsModel(NavState &s, ESKF::CustomObservationModel &obs);
 
+    /// 将当前帧Lidar坐标系下的点变换到世界系，使用state_point_和固定外参。
     inline void PointBodyToWorld(const PointType &pi, PointType &po) {
         Vec3d p_global(state_point_.rot_ *
                            (offset_R_lidar_fixed_ * pi.getVector3fMap().cast<double>() + offset_t_lidar_fixed_) +
@@ -137,8 +165,10 @@ class LaserMapping {
         po.intensity = pi.intensity;
     }
 
+    /// 将当前帧降采样点云增量加入IVox局部地图，并根据邻近点做自适应下采样。
     void MapIncremental();
 
+    /// 从yaml读取传感器、预处理、IVox、ESKF噪声和关键帧等参数。
     bool LoadParamsFromYAML(const std::string &yaml);
 
     /// 创建关键帧
@@ -150,45 +180,45 @@ class LaserMapping {
    private:
     Options options_;
 
-    /// modules
+    /// 核心模块
     IVoxType::Options ivox_options_;
-    std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
-    std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // point cloud preprocess
-    std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // imu process
+    std::shared_ptr<IVoxType> ivox_ = nullptr;                    // IVox局部地图，支持地图点插入和最近邻查询
+    std::shared_ptr<PointCloudPreprocess> preprocess_ = nullptr;  // 点云预处理模块，统一不同雷达消息格式
+    std::shared_ptr<ImuProcess> p_imu_ = nullptr;                 // IMU初始化、预测和点云去畸变模块
 
-    /// local map related
+    /// 局部地图相关
     double filter_size_map_min_ = 0;  // 地图体素滤波分辨率（m），控制地图点的密度
 
-    /// params
-    std::vector<double> extrinT_{3, 0.0};  // lidar-imu translation
-    std::vector<double> extrinR_{9, 0.0};  // lidar-imu rotation
-    Mat3d offset_R_lidar_fixed_ = Mat3d::Identity();
-    Vec3d offset_t_lidar_fixed_ = Vec3d::Zero();
-    std::string map_file_path_;
+    /// Lidar-IMU固定外参和地图保存路径
+    std::vector<double> extrinT_{3, 0.0};  // yaml读取的Lidar到IMU平移外参
+    std::vector<double> extrinR_{9, 0.0};  // yaml读取的Lidar到IMU旋转外参
+    Mat3d offset_R_lidar_fixed_ = Mat3d::Identity();  // Lidar到IMU的旋转矩阵形式
+    Vec3d offset_t_lidar_fixed_ = Vec3d::Zero();      // Lidar到IMU的平移向量形式
+    std::string map_file_path_;                       // 地图保存路径，当前SaveMap使用固定路径
 
     std::vector<Keyframe::Ptr> all_keyframes_;  // 所有关键帧的存储列表
     Keyframe::Ptr last_kf_ = nullptr;           // 最近的关键帧指针（用于快速访问）
     int kf_id_ = 0;                             // 关键帧ID计数器（唯一标识每个关键帧）
 
-    /// point clouds data
-    CloudPtr scan_undistort_{new PointCloudType()};   // scan after undistortion in lidar
-    CloudPtr scan_down_lidar_{new PointCloudType()};  // downsampled scan in lidar
-    CloudPtr scan_down_world_{new PointCloudType()};  // downsampled scan in world
-    pcl::VoxelGrid<PointType> voxel_scan_;            // voxel filter for current scan
+    /// 当前帧点云缓存
+    CloudPtr scan_undistort_{new PointCloudType()};   // 去畸变后的当前帧点云，仍在Lidar坐标系
+    CloudPtr scan_down_lidar_{new PointCloudType()};  // 当前帧降采样点云，Lidar坐标系
+    CloudPtr scan_down_world_{new PointCloudType()};  // 当前帧降采样点云，世界坐标系
+    pcl::VoxelGrid<PointType> voxel_scan_;            // 当前帧点云体素滤波器
 
     /// 点面相关
-    std::vector<PointVector> nearest_points_;  // nearest points of current scan
-    std::vector<Vec4f> corr_pts_;              // 内点：有效匹配点 [x,y,z,残差]，lidar系
-    std::vector<Vec4f> corr_norm_;             // 内点：对应平面法向量 [nx,ny,nz,d]，world系
-    std::vector<float> residuals_;             // point-to-plane residuals
-    std::vector<char> point_selected_surf_;    // selected points
-    std::vector<Vec4f> plane_coef_;            // plane coeffs
+    std::vector<PointVector> nearest_points_;  // 当前帧每个点在IVox地图中的最近邻点
+    std::vector<Vec4f> corr_pts_;              // 点面内点：[x,y,z,残差]，点坐标在Lidar系
+    std::vector<Vec4f> corr_norm_;             // 点面内点对应平面：[nx,ny,nz,d]，平面在世界系
+    std::vector<float> residuals_;             // 点到平面有符号残差
+    std::vector<char> point_selected_surf_;    // 点面约束是否有效
+    std::vector<Vec4f> plane_coef_;            // 每个点局部拟合出的平面参数
 
     /// 点到点相关
-    std::vector<char> point_selected_icp_;  // 点到点的selected points
+    std::vector<char> point_selected_icp_;  // 点到点ICP约束是否有效
 
-    std::mutex mtx_buffer_;
-    std::deque<double> time_buffer_;
+    std::mutex mtx_buffer_;          // 保护Lidar/IMU缓存队列的互斥锁
+    std::deque<double> time_buffer_; // 与lidar_buffer_一一对应的点云起始时间
 
     std::deque<PointCloudType::Ptr> lidar_buffer_;  // 激光雷达数据缓冲队列（用于与IMU时间同步）
     std::deque<lightning::IMUPtr> imu_buffer_;      // IMU数据缓冲队列（高频数据，用于状态预测）
@@ -204,7 +234,7 @@ class LaserMapping {
 
     bool enable_skip_lidar_ = true;  // 雷达是否需要跳帧
     int skip_lidar_num_ = 5;         // 每隔多少帧跳一个雷达
-    int skip_lidar_cnt_ = 0;
+    int skip_lidar_cnt_ = 0;         // 跳帧计数器
 
     /// statistics and flags ///
     int scan_count_ = 0;                // 总扫描帧数统计
@@ -218,18 +248,18 @@ class LaserMapping {
     double last_lidar_time_ = 0;  // 上一帧激光雷达时间戳（用于时间同步和断流检测）
 
     ///////////////////////// EKF inputs and output ///////////////////////////////////////////////////////
-    MeasureGroup measures_;  // sync IMU and lidar scan
+    MeasureGroup measures_;  // SyncPackages输出的一帧同步Lidar和IMU数据
 
     ESKF kf_;      // 点云时刻的IMU状态，用于畸变矫正+雷达里程计观测更新
     ESKF kf_imu_;  // imu 最新时刻的eskf状态，提供UI的高频位姿输出
 
-    NavState state_point_;  // ekf current state
+    NavState state_point_;  // 当前Lidar帧结束时刻的前端状态
 
-    bool use_aa_ = false;  // use anderson acceleration?
+    bool use_aa_ = false;  // ESKF观测更新是否使用Anderson Acceleration
 
     std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 
-    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;
+    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  // 可选UI，用于显示状态和点云
 };
 
 }  // namespace lightning
