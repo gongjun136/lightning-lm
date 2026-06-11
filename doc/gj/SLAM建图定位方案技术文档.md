@@ -4,12 +4,14 @@
 
 本文面向一个以 LiDAR-IMU 融合为核心的 SLAM 建图定位系统，给出建图、回环、地图表达、重定位和在线定位的整体技术方案。系统以激光雷达点云提供几何约束，以 IMU 提供高频运动预测和点云运动畸变补偿，通过误差状态迭代卡尔曼滤波实现前端里程计，通过关键帧、回环检测和位姿图优化保证全局地图一致性，并在定位阶段利用分块点云地图、NDT 匹配和滑窗位姿图融合输出高频稳定位姿。
 
+本文统一采用 [符号说明.md](./符号说明.md) 中的约定。局部新增的坐标系或索引会在首次出现处说明；若某处为了表达简洁省略右下标，默认仍遵循“上标表示表达坐标系、右下标表示从哪个坐标系原点指向哪个点”的规则。
+
 系统的核心目标如下：
 
 1. **实时建图**：在 LiDAR 与 IMU 输入下估计连续位姿，生成全局一致的三维点云地图。
 2. **全局一致性**：通过关键帧回环检测与位姿图优化抑制前端累积漂移。
 3. **地图可用性**：同时输出全局 PCD、分块点云地图和可选 2D 栅格地图。
-4. **在线定位**：加载已有地图，结合 LIO 短时预测与全局点云匹配得到稳定定位结果。
+4. **在线定位**：加载已有地图，结合 LIO 短时相对运动预测与全局点云匹配得到稳定定位结果。
 5. **大场景适应**：通过地图分块动态加载、动态层更新和高频外推降低内存与延迟压力。
 
 ## 2. 坐标系与状态定义
@@ -31,25 +33,27 @@
 $$
 \hat{\mathbf{x}} =
 \left(
+{}^{w}\hat{\mathbf{p}}_{wi},
 \hat{\mathbf{R}}_{wi},
-{}^{w}\hat{\mathbf{p}},
 {}^{w}\hat{\mathbf{v}},
 {}^{i}\hat{\mathbf{b}}_g,
+{}^{i}\hat{\mathbf{b}}_a,
 {}^{w}\hat{\mathbf{g}}
 \right).
 $$
 
-其中 ${}^{i}\hat{\mathbf{b}}_g$ 为陀螺零偏，${}^{w}\hat{\mathbf{g}}$ 为世界系重力向量。当前框架的在线前端以位置、姿态、速度、陀螺零偏为主要可修正误差块，重力由静态初始化给定并在运行中保持稳定；LiDAR-IMU 外参和加速度计零偏采用配置或离线标定结果，不作为默认在线估计量。这样的状态设计牺牲一部分自标定自由度，换取更小的状态维度和更稳定的实时估计。
+其中 ${}^{i}\hat{\mathbf{b}}_g$ 为陀螺零偏，${}^{i}\hat{\mathbf{b}}_a$ 为加速度计零偏，${}^{w}\hat{\mathbf{g}}$ 为世界系重力向量。方案层采用完整 LiDAR-IMU 惯导建模，在线前端以位置、姿态、速度、陀螺零偏和加速度计零偏为主要可修正误差块；重力由静态初始化给定，可根据实现选择固定、弱约束或在线估计；LiDAR-IMU 外参通常采用配置或离线标定结果。若工程代码为实时性和稳定性暂不估计 ${}^{i}\mathbf{b}_a$，可视为对完整模型的降维实现，而不是物理模型中不需要加速度计零偏。
 
 误差状态采用切空间小扰动：
 
 $$
 \tilde{\mathbf{x}} =
 \begin{bmatrix}
-\delta{}^{w}\mathbf{p}^{\mathsf{T}} &
+\delta{}^{w}\mathbf{p}_{wi}^{\mathsf{T}} &
 \delta\boldsymbol{\theta}^{\mathsf{T}} &
 \delta{}^{w}\mathbf{v}^{\mathsf{T}} &
-\delta{}^{i}\mathbf{b}_g^{\mathsf{T}}
+\delta{}^{i}\mathbf{b}_g^{\mathsf{T}} &
+\delta{}^{i}\mathbf{b}_a^{\mathsf{T}}
 \end{bmatrix}^{\mathsf{T}},
 $$
 
@@ -66,73 +70,15 @@ $$
 
 系统分为建图链路和定位链路。建图链路侧重生成高质量地图，定位链路侧重利用已有地图输出稳定低延迟位姿。两者共享 LiDAR-IMU 前端、点云预处理、地图表达和位姿图优化等基础能力。
 
-```mermaid
-flowchart TB
-    classDef input fill:#EEF6FF,stroke:#4C7EDB,color:#172B4D;
-    classDef front fill:#FFF8E8,stroke:#D99A25,color:#3D2A00;
-    classDef mapping fill:#EEF9F1,stroke:#36A26B,color:#113D26;
-    classDef loc fill:#F6F0FF,stroke:#8B65D9,color:#2C1E4A;
-    classDef output fill:#FFF1F1,stroke:#DC6767,color:#4A1F1F;
+![image-20260611163459863](./assets/image-20260611163459863.png)
 
-    subgraph Input["传感器输入与同步"]
-        direction LR
-        Lidar["LiDAR<br/>点云"]:::input
-        IMU["IMU<br/>角速度/加速度"]:::input
-        Sync["预处理<br/>时间同步"]:::input
-
-        Lidar --> Sync
-        IMU --> Sync
-    end
-
-    subgraph Frontend["LIO 前端：实时状态估计"]
-        direction LR
-        Init["IMU<br/>静态初始化"]:::front
-        Deskew["IMU 预测<br/>点云去畸变"]:::front
-        Match["scan-to-map<br/>几何约束"]:::front
-        IEKF["迭代 ESKF<br/>状态更新"]:::front
-        IVox["iVOX<br/>局部地图"]:::front
-        KF["关键帧<br/>选择"]:::front
-
-        Init --> Deskew --> Match --> IEKF --> KF
-        IEKF --> IVox
-        IVox --> Match
-    end
-
-    subgraph Mapping["建图后端：全局一致性与地图生成"]
-        direction LR
-        LC["回环候选<br/>检测"]:::mapping
-        NDTLoop["多分辨率<br/>NDT 验证"]:::mapping
-        PGO["位姿图<br/>优化"]:::mapping
-        OptKF["优化关键帧<br/>位姿"]:::mapping
-        Map3D["全局/分块<br/>3D 地图"]:::output
-        Grid["2D<br/>栅格地图"]:::output
-
-        LC --> NDTLoop --> PGO --> OptKF
-        OptKF --> Map3D
-        OptKF --> Grid
-    end
-
-    subgraph Localization["在线定位：地图匹配与高频输出"]
-        direction LR
-        Tiled["分块地图<br/>动态加载"]:::loc
-        LocNDT["NDT_OMP<br/>全局匹配"]:::loc
-        LocPGO["定位滑窗<br/>PGO"]:::loc
-        HF["高频外推<br/>平滑输出"]:::output
-
-        Tiled --> LocNDT --> LocPGO --> HF
-    end
-
-    Sync --> Init
-    KF --> LC
-    Map3D --> Tiled
-    IEKF -.->|短时预测| LocNDT
-```
+图中 IEKF 到 NDT 全局匹配的虚线表示定位阶段的短时相对运动预测：LIO 前端根据 IMU 传播和 scan-to-map 更新，连续输出上一时刻到当前时刻的里程计增量。该增量不会提供长期全局一致的位置，而是用于把上一帧绝对定位结果递推到当前帧附近，作为 NDT 匹配的初值，从而缩小搜索范围并提高收敛稳定性。
 
 建图阶段的主流程为：
 
 1. 对 LiDAR 和 IMU 数据进行格式统一、时间检查和缓存。
 2. 按一帧 LiDAR 扫描的起止时间同步 IMU 序列。
-3. 启动阶段统计 IMU 均值，初始化重力方向和陀螺零偏。
+3. 启动阶段统计 IMU 均值，初始化重力方向、陀螺零偏和加速度计零偏先验。
 4. 正常运行阶段用 IMU 对当前扫描周期做前向传播，补偿点云运动畸变。
 5. 将去畸变点云与 iVOX 局部地图匹配，构造点到面几何残差。
 6. 使用迭代 ESKF 更新当前位姿，并增量维护局部地图。
@@ -157,7 +103,7 @@ flowchart TB
 系统支持多种 LiDAR 数据源，预处理层需要将不同消息格式统一为带时间戳的点云：
 
 $$
-{}^{l}\mathbf{p}_{l_jj} =
+{}^{l}\mathbf{p}_{lj} =
 \begin{bmatrix}
 x_j & y_j & z_j
 \end{bmatrix}^{\mathsf{T}},
@@ -188,7 +134,7 @@ $$
 系统从 IMU 缓存中取出满足
 
 $$
-t_k^b \leq t_m \leq t_k^e
+t_k^b \leq t_{\mathrm{imu}} \leq t_k^e
 $$
 
 的 IMU 序列，与当前点云组成一个测量组。只有当最新 IMU 时间覆盖到 $t_k^e$ 之后，才允许进入本帧处理；否则等待后续 IMU 数据。这一策略保证了去畸变和滤波预测拥有完整的扫描周期运动信息。
@@ -213,7 +159,7 @@ sequenceDiagram
 
 ## 5. LIO 前端里程计
 
-LIO 前端是系统实时性的核心。它将 IMU 预测、点云去畸变、scan-to-map 几何匹配和局部地图更新放在同一个闭环内，形成“预测-配准-更新-建图”的迭代过程。
+LIO 前端是系统实时性的核心，里面最关键的就是误差状态卡尔曼滤波器，具体公式推导参考 [ESKF](./ESKF/ESKF.md) 。它将 IMU 预测、点云去畸变、scan-to-map 几何匹配和局部地图更新放在同一个闭环内，形成“预测-配准-更新-建图”的迭代过程。
 
 ### 5.1 IMU 静态初始化
 
@@ -224,93 +170,137 @@ $$
 {}^{i}\overline{\boldsymbol{\omega}}
 &= {}^{i}\boldsymbol{\omega}
  + {}^{i}\mathbf{b}_g
- + \mathbf{n}_g, \\
+ + {}^{i}\boldsymbol{\eta}_g, \\
 {}^{i}\overline{\mathbf{a}}
 &= \mathbf{R}_{iw}
 \left({}^{w}\mathbf{a}-{}^{w}\mathbf{g}\right)
  + {}^{i}\mathbf{b}_a
- + \mathbf{n}_a .
+ + {}^{i}\boldsymbol{\eta}_a .
 \end{aligned}
 $$
 
-静止时 ${}^{i}\boldsymbol{\omega}\approx\mathbf{0}$，${}^{w}\mathbf{a}\approx\mathbf{0}$。因此可用 IMU 统计均值估计陀螺零偏和重力方向：
+静止时 ${}^{i}\boldsymbol{\omega}\approx\mathbf{0}$，${}^{w}\mathbf{a}\approx\mathbf{0}$。因此可用 IMU 统计均值估计陀螺零偏和重力方向，并为加速度计零偏设置初始先验：
 
 $$
 {}^{i}\hat{\mathbf{b}}_g
 =
-\frac{1}{M}\sum_{m=1}^{M}{}^{i}\overline{\boldsymbol{\omega}}_m,
+\frac{1}{M}\sum_{k=1}^{M}{}^{i}\overline{\boldsymbol{\omega}}_k,
 \quad
 {}^{w}\hat{\mathbf{g}}
 =
--\frac{\bar{\mathbf{a}}}{\|\bar{\mathbf{a}}\|}g.
+-\frac{\bar{\mathbf{a}}}{\|\bar{\mathbf{a}}\|}g,
+\quad
+{}^{i}\hat{\mathbf{b}}_{a,0}
+=
+{}^{i}\mathbf{b}_{a}^{\mathrm{calib}}
+\ \text{或}\ 
+\mathbf{0}.
 $$
 
-这里 $\bar{\mathbf{a}}$ 为加速度计均值，$g\approx 9.81\,\mathrm{m/s^2}$。如果加速度均值模长接近 $1$，说明输入可能以 $g$ 为单位，需进行尺度修正；如果模长接近 $9.81$，则通常已经是 $\mathrm{m/s^2}$。
+这里 $\bar{\mathbf{a}}$ 为加速度计均值，$g\approx 9.81\,\mathrm{m/s^2}$。如果加速度均值模长接近 $1$，说明输入可能以 $g$ 为单位，需进行尺度修正；如果模长接近 $9.81$，则通常已经是 $\mathrm{m/s^2}$。仅依靠静止加速度均值无法严格区分重力方向误差和加速度计零偏，因此 ${}^{i}\hat{\mathbf{b}}_{a,0}$ 通常来自离线标定；没有标定值时可置零并赋予较大的先验协方差，让后续 LiDAR-IMU 约束逐步修正。
 
 静态初始化的可靠性直接影响后续姿态水平度和点云去畸变质量。实际使用中应尽量保证启动前若干帧 IMU 无明显加减速和大角速度。
 
 ### 5.2 IMU 预测模型
 
-设去零偏角速度和加速度为：
+本节下标 $k$ 表示 IMU 预测的离散时间索引。设去零偏角速度和加速度为：
 
 $$
 \begin{aligned}
-{}^{i}\hat{\boldsymbol{\omega}}_m
-&= {}^{i}\overline{\boldsymbol{\omega}}_m
- - {}^{i}\hat{\mathbf{b}}_{g,m},\\
-{}^{i}\hat{\mathbf{a}}_m
-&= {}^{i}\overline{\mathbf{a}}_m.
+{}^{i}\hat{\boldsymbol{\omega}}_k
+&= {}^{i}\overline{\boldsymbol{\omega}}_k
+ - {}^{i}\hat{\mathbf{b}}_{g,k},\\
+{}^{i}\hat{\mathbf{a}}_k
+&= {}^{i}\overline{\mathbf{a}}_k
+ - {}^{i}\hat{\mathbf{b}}_{a,k}.
 \end{aligned}
 $$
 
-当前默认方案不在线估计 ${}^{i}\mathbf{b}_a$，因此加速度计零偏误差主要被过程噪声、LiDAR 观测和工程参数吸收。完整惯导预测模型可写为：
+惯导预测模型可写为：
 
 $$
 \begin{aligned}
-\hat{\mathbf{R}}_{wi,m+1}^{-}
+\hat{\mathbf{R}}_{wi,k+1}^{-}
 &=
-\hat{\mathbf{R}}_{wi,m}^{+}
-\operatorname{Exp}\!\left({}^{i}\hat{\boldsymbol{\omega}}_m\Delta t\right),\\
-{}^{w}\hat{\mathbf{v}}_{m+1}^{-}
+\hat{\mathbf{R}}_{wi,k}^{+}
+\operatorname{Exp}\!\left({}^{i}\hat{\boldsymbol{\omega}}_k\Delta t\right),\\
+{}^{w}\hat{\mathbf{v}}_{k+1}^{-}
 &=
-{}^{w}\hat{\mathbf{v}}_m^{+}
+{}^{w}\hat{\mathbf{v}}_k^{+}
 +
 \left(
-\hat{\mathbf{R}}_{wi,m}^{+}{}^{i}\hat{\mathbf{a}}_m
+\hat{\mathbf{R}}_{wi,k}^{+}{}^{i}\hat{\mathbf{a}}_k
 +{}^{w}\hat{\mathbf{g}}
 \right)\Delta t,\\
-{}^{w}\hat{\mathbf{p}}_{m+1}^{-}
+{}^{w}\hat{\mathbf{p}}_{wi,k+1}^{-}
 &=
-{}^{w}\hat{\mathbf{p}}_m^{+}
+{}^{w}\hat{\mathbf{p}}_{wi,k}^{+}
 +
-{}^{w}\hat{\mathbf{v}}_m^{+}\Delta t
+{}^{w}\hat{\mathbf{v}}_k^{+}\Delta t
 +
 \frac{1}{2}
 \left(
-\hat{\mathbf{R}}_{wi,m}^{+}{}^{i}\hat{\mathbf{a}}_m
+\hat{\mathbf{R}}_{wi,k}^{+}{}^{i}\hat{\mathbf{a}}_k
 +{}^{w}\hat{\mathbf{g}}
 \right)\Delta t^2,\\
-{}^{i}\hat{\mathbf{b}}_{g,m+1}^{-}
+{}^{i}\hat{\mathbf{b}}_{g,k+1}^{-}
 &=
-{}^{i}\hat{\mathbf{b}}_{g,m}^{+}.
+{}^{i}\hat{\mathbf{b}}_{g,k}^{+},\\
+{}^{i}\hat{\mathbf{b}}_{a,k+1}^{-}
+&=
+{}^{i}\hat{\mathbf{b}}_{a,k}^{+}.
 \end{aligned}
 $$
 
-在工程实现中，为抑制加速度零偏和时间同步误差导致的速度漂移，可对速度积分和协方差膨胀采用更保守的策略。无论采用完整积分还是保守外推，核心原则都是：IMU 给出扫描周期内的连续运动先验，LiDAR 观测负责校正长期漂移。
-
-误差协方差预测采用一阶离散化：
+名义预测中零偏保持常值，真值零偏通常按随机游走建模：
 
 $$
-\tilde{\mathbf{P}}_{m+1}^{-}
+\begin{aligned}
+{}^{i}\mathbf{b}_{g,k+1}
+&=
+{}^{i}\mathbf{b}_{g,k}
++{}^{i}\boldsymbol{\eta}_{bg,k}\Delta t,\\
+{}^{i}\mathbf{b}_{a,k+1}
+&=
+{}^{i}\mathbf{b}_{a,k}
++{}^{i}\boldsymbol{\eta}_{ba,k}\Delta t.
+\end{aligned}
+$$
+
+在工程实现中，即使将加速度计零偏纳入状态，速度仍容易受到加速度零偏、时间同步误差和姿态误差影响，因此可对速度积分和协方差膨胀采用更保守的策略。无论采用完整积分还是保守外推，核心原则都是：IMU 给出扫描周期内的连续运动先验，LiDAR 观测负责校正长期漂移。
+
+将误差状态传播写为：
+
+$$
+\tilde{\mathbf{x}}_{k+1}^{-}
 =
-\boldsymbol{\Phi}_m
-\tilde{\mathbf{P}}_m^{+}
-\boldsymbol{\Phi}_m^{\mathsf{T}}
-+
-\mathbf{G}_m\mathbf{Q}_m\mathbf{G}_m^{\mathsf{T}},
+\mathbf{F}_{\tilde{x},k}\tilde{\mathbf{x}}_k^{+}
++\mathbf{F}_{\eta,k}\boldsymbol{\eta}_k,
+\quad
+\boldsymbol{\eta}_k=
+\begin{bmatrix}
+{}^{i}\boldsymbol{\eta}_{g,k}^{\mathsf{T}} &
+{}^{i}\boldsymbol{\eta}_{a,k}^{\mathsf{T}} &
+{}^{i}\boldsymbol{\eta}_{bg,k}^{\mathsf{T}} &
+{}^{i}\boldsymbol{\eta}_{ba,k}^{\mathsf{T}}
+\end{bmatrix}^{\mathsf{T}}.
 $$
 
-其中 $\boldsymbol{\Phi}_m$ 为误差状态转移矩阵，$\mathbf{G}_m$ 为过程噪声雅可比，$\mathbf{Q}_m$ 为 IMU 噪声协方差。为了避免滤波器过度自信，协方差预测后可进行轻微膨胀，并强制保持对称和正定下限。
+协方差预测为：
+
+$$
+\tilde{\mathbf{P}}_{k+1}^{-}
+=
+\mathbf{F}_{\tilde{x},k}
+\tilde{\mathbf{P}}_k^{+}
+\mathbf{F}_{\tilde{x},k}^{\mathsf{T}}
++
+\mathbf{F}_{\eta,k}
+\mathbf{W}_k
+\mathbf{F}_{\eta,k}^{\mathsf{T}}.
+$$
+
+其中 $\mathbf{F}_{\tilde{x},k}$ 是误差状态对误差状态的雅可比，$\mathbf{F}_{\eta,k}$ 是误差状态对 IMU 噪声的雅可比，$\mathbf{W}_k$ 是 $\boldsymbol{\eta}_k$ 的协方差，通常包含陀螺白噪声、加速度计白噪声、陀螺零偏随机游走和加速度计零偏随机游走。为了避免滤波器过度自信，协方差预测后可进行轻微膨胀，并强制保持对称和正定下限。
 
 ### 5.3 点云运动畸变补偿
 
@@ -350,16 +340,15 @@ $$
 \right].
 $$
 
-补偿后的点云全部表达在 $\mathcal{F}_{l_e}$ 中，作为当前帧 scan-to-map 匹配输入。
+上述三式可按如下步骤理解：
 
-```mermaid
-flowchart TD
-    A[原始点: 采样时刻 LiDAR 系] --> B[LiDAR -> IMU 外参]
-    B --> C[采样时刻 IMU -> 世界]
-    C --> D[世界 -> 扫描结束 IMU]
-    D --> E[IMU -> 扫描结束 LiDAR]
-    E --> F[去畸变点云]
-```
+1. 将原始点从采样时刻 LiDAR 坐标系 $\mathcal{F}_{l_j}$ 转到同一时刻 IMU 坐标系 $\mathcal{F}_{i_j}$。该步骤只使用 LiDAR-IMU 外参 $\mathbf{R}_{il}$ 与 ${}^{i}\mathbf{t}_{il}$，得到 ${}^{i_j}\mathbf{p}_{i_jj}$。
+
+2. 根据 IMU 在扫描周期内的预测轨迹，取点采样时刻 $t_j$ 对应的 IMU 位姿 $\left(\mathbf{R}_{wi_j},{}^{w}\mathbf{t}_{wi_j}\right)$，将该点从 $\mathcal{F}_{i_j}$ 转到世界坐标系 $\mathcal{F}_{w}$，得到 ${}^{w}\mathbf{p}_{wj}$。这一步保留了该点真实采样时刻的运动状态。
+
+3. 取扫描结束时刻 $t_e$ 的 IMU 位姿 $\left(\mathbf{R}_{wi_e},{}^{w}\mathbf{t}_{wi_e}\right)$，用其逆变换将 ${}^{w}\mathbf{p}_{wj}$ 转回扫描结束时刻 IMU 坐标系 $\mathcal{F}_{i_e}$。其中 $\mathbf{R}_{i_ew}=\mathbf{R}_{wi_e}^{\mathsf{T}}$。
+
+4. 最后使用 IMU-LiDAR 外参的逆变换，将点从 $\mathcal{F}_{i_e}$ 转到扫描结束时刻 LiDAR 坐标系 $\mathcal{F}_{l_e}$，得到补偿后的点 ${}^{l_e}\mathbf{p}_{l_ej}$。所有点都统一到 $\mathcal{F}_{l_e}$ 后，点云内部的时间畸变被压缩为同一参考时刻下的空间结构，并作为当前帧 scan-to-map 匹配输入。
 
 ### 5.4 Scan-to-Map 观测模型
 
@@ -375,7 +364,7 @@ $$
 {}^{i}\mathbf{t}_{il}
 \right)
 +
-{}^{w}\hat{\mathbf{p}}.
+{}^{w}\hat{\mathbf{p}}_{wi}.
 $$
 
 在局部地图中查询近邻点并拟合局部平面：
@@ -449,66 +438,63 @@ $$
 
 ### 5.5 迭代 ESKF 更新
 
-LiDAR 观测更新采用迭代误差状态滤波。每次迭代在当前名义状态 $\hat{\mathbf{x}}^\kappa$ 处重新建立对应关系、拟合平面并线性化残差：
+LiDAR 观测更新采用迭代误差状态滤波。把残差写成 $\mathbf{r}_k(\mathbf{x}_k)+\mathbf{n}_k=\mathbf{0}$；对于标准观测，可取 $\mathbf{r}_k=\mathbf{h}(\mathbf{x}_k)-\mathbf{z}_k$。每次迭代在当前名义状态 $\hat{\mathbf{x}}_k^\kappa$ 处重新建立对应关系、拟合平面并线性化残差：
 
 $$
-\mathbf{r}^{\kappa}
+\mathbf{r}_k
+\left(
+\hat{\mathbf{x}}_k^\kappa\boxplus\tilde{\mathbf{x}}_k^\kappa
+\right)
 \approx
-\mathbf{r}(\hat{\mathbf{x}}^\kappa)
--
-\mathbf{H}^{\kappa}\tilde{\mathbf{x}}^\kappa.
+\mathbf{r}_k^\kappa
++
+\mathbf{H}_k^{\kappa}\tilde{\mathbf{x}}_k^\kappa,
+\quad
+\mathbf{r}_k^\kappa=\mathbf{r}_k(\hat{\mathbf{x}}_k^\kappa).
 $$
 
 更新可从最大后验角度理解为：
 
 $$
-\min_{\tilde{\mathbf{x}}^\kappa}
+\min_{\tilde{\mathbf{x}}_k^\kappa}
 \left\|
-\tilde{\mathbf{x}}^\kappa
+\tilde{\mathbf{x}}_k^\kappa
 -
-\tilde{\boldsymbol{\mu}}^{\kappa-}
-\right\|_{\left(\tilde{\mathbf{P}}^{\kappa-}\right)^{-1}}^2
+\tilde{\boldsymbol{\mu}}_k^{\kappa-}
+\right\|_{\left(\tilde{\mathbf{P}}_k^{\kappa-}\right)^{-1}}^2
 +
 \left\|
-\mathbf{r}^{\kappa}
--
-\mathbf{H}^{\kappa}\tilde{\mathbf{x}}^\kappa
-\right\|_{\mathbf{N}^{-1}}^2.
+\mathbf{r}_k^\kappa
++
+\mathbf{H}_k^{\kappa}\tilde{\mathbf{x}}_k^\kappa
+\right\|_{\mathbf{N}_k^{-1}}^2.
 $$
 
 由于点云残差数量很大，系统采用信息形式更新。观测信息被累加到位姿 6 维块中，再与先验协方差融合：
 
 $$
 \left[
-\left(\tilde{\mathbf{P}}^{\kappa-}\right)^{-1}
+\left(\tilde{\mathbf{P}}_k^{\kappa-}\right)^{-1}
 +
-\mathbf{H}^{\mathsf{T}}\mathbf{N}^{-1}\mathbf{H}
+\left(\mathbf{H}_k^\kappa\right)^{\mathsf{T}}
+\mathbf{N}_k^{-1}
+\mathbf{H}_k^\kappa
 \right]
-\Delta\tilde{\mathbf{x}}
+\tilde{\boldsymbol{\mu}}_k^{\kappa+}
 =
-\mathbf{H}^{\mathsf{T}}\mathbf{N}^{-1}\mathbf{r}
+\left(\tilde{\mathbf{P}}_k^{\kappa-}\right)^{-1}
+\tilde{\boldsymbol{\mu}}_k^{\kappa-}
 -
-\left(\tilde{\mathbf{P}}^{\kappa-}\right)^{-1}
-\tilde{\boldsymbol{\mu}}^{\kappa-}.
+\left(\mathbf{H}_k^\kappa\right)^{\mathsf{T}}
+\mathbf{N}_k^{-1}
+\mathbf{r}_k^\kappa.
 $$
 
 求得增量后通过 $\boxplus$ 注入名义状态。若增量小于阈值或达到最大迭代次数，则结束当前帧更新。为了提高收敛稳定性，可启用 Anderson Acceleration；若加速后残差反而变大，则回退到上一可靠迭代状态。
 
-```mermaid
-flowchart TD
-    P[IMU 预测先验] --> M[当前状态投影点云到地图]
-    M --> N[iVOX 近邻搜索]
-    N --> F[局部平面拟合/对应筛选]
-    F --> R[构造残差和信息矩阵]
-    R --> U[信息形式 IEKF 更新]
-    U --> C{收敛?}
-    C -- 否 --> M
-    C -- 是 --> O[输出后验位姿]
-```
+![image-20260611164056695](./assets/image-20260611164056695.png)
 
-## 6. 局部地图与关键帧
-
-### 6.1 iVOX 局部地图
+### 5.6 iVOX 局部地图
 
 局部地图采用增量式体素索引结构。三维空间被划分为分辨率为 $r_v$ 的体素，每个体素只保存有限数量的代表点。查询某个点的邻域时，可在中心体素及其 6/18/26 邻域内查找候选点，并选择距离最近的若干点用于平面拟合。
 
@@ -530,20 +516,20 @@ $$
 {}^{i}\mathbf{t}_{il}
 \right)
 +
-{}^{w}\hat{\mathbf{p}}.
+{}^{w}\hat{\mathbf{p}}_{wi}.
 $$
 
 如果当前点所在体素中已有更靠近体素中心的代表点，则可拒绝加入；如果该区域稀疏或缺少近邻，则直接加入。这种自适应策略使地图在边缘和稀疏区域保留更多信息，在平坦密集区域抑制冗余点。
 
-### 6.2 关键帧策略
+### 5.7 关键帧策略
 
 关键帧是全局地图、回环检测和 2D 栅格地图的基本单元。当当前位姿相对上一关键帧满足任一条件时创建新关键帧：
 
 $$
 \left\|
-{}^{w}\mathbf{p}_{k}
+{}^{w}\mathbf{p}_{w n_k}
 -
-{}^{w}\mathbf{p}_{k_{\mathrm{last}}}
+{}^{w}\mathbf{p}_{w n_{k_{\mathrm{last}}}}
 \right\|
 >
 d_{\mathrm{kf}},
@@ -555,8 +541,8 @@ $$
 \left\|
 \operatorname{Log}
 \left(
-\mathbf{R}_{wi,k_{\mathrm{last}}}^{\mathsf{T}}
-\mathbf{R}_{wi,k}
+\mathbf{R}_{w n_{k_{\mathrm{last}}}}^{\mathsf{T}}
+\mathbf{R}_{w n_k}
 \right)
 \right\|
 >
@@ -566,51 +552,51 @@ $$
 关键帧保存当前去畸变点云、LIO 位姿、优化位姿和时间戳。LIO 位姿表示前端原始轨迹，优化位姿表示经过回环或后端修正后的全局一致轨迹。新关键帧的初始优化位姿由上一关键帧优化位姿递推得到：
 
 $$
-\mathbf{T}_{w k}^{\mathrm{opt}}
+\mathbf{T}_{w n_k}^{\mathrm{opt}}
 =
-\mathbf{T}_{w,k-1}^{\mathrm{opt}}
+\mathbf{T}_{w n_{k-1}}^{\mathrm{opt}}
 \left(
-\mathbf{T}_{w,k-1}^{\mathrm{lio}}
+\mathbf{T}_{w n_{k-1}}^{\mathrm{lio}}
 \right)^{-1}
-\mathbf{T}_{w k}^{\mathrm{lio}}.
+\mathbf{T}_{w n_k}^{\mathrm{lio}}.
 $$
 
 这样即使前端 LIO 轨迹后续被全局修正，关键帧序列仍能保持连续一致。
 
-## 7. 回环检测与全局优化
+## 6. 回环检测与全局优化
 
 前端 LIO 不可避免存在累积漂移。回环检测通过发现当前关键帧与历史关键帧的重复观测，构造长距离约束，并通过位姿图优化把漂移分摊到整条轨迹中。
 
-### 7.1 候选帧筛选
+### 6.1 候选帧筛选
 
-候选帧筛选同时使用时间和空间约束：
+候选帧筛选分为“是否触发检测”和“历史帧是否可作为候选”两个层次。前者控制计算频率，后者控制候选质量：
 
-| 约束 | 作用 |
-| --- | --- |
-| 关键帧间隔 | 避免每帧检测，降低计算成本 |
-| ID 最小间隔 | 排除时间上相邻的局部帧 |
-| 最近历史阈值 | 防止把短期重叠误认为回环 |
-| 平面距离阈值 | 只保留优化位姿下空间接近的历史帧 |
+| 参数 | 筛选层次 | 作用 |
+| --- | --- | --- |
+| 回环检测间隔 $N_{\mathrm{gap}}$ | 当前关键帧触发门限 | 当前关键帧距离上一次回环检测关键帧太近时，直接跳过本次检测，避免每个关键帧都做历史搜索和 NDT 验证 |
+| 当前-历史最小 ID 间隔 $N_{\mathrm{close}}$ | 候选帧时间排除 | 历史关键帧 $i$ 与当前关键帧 $k$ 的 ID 太近时，不认为是回环候选，避免把短期局部重叠误判为回环 |
+| 候选间最小 ID 间隔 $N_{\mathrm{cand}}$ | 候选集去冗余 | 已选中某个历史候选后，跳过其附近的历史关键帧，避免一段连续历史轨迹产生大量重复候选 |
+| 平面距离阈值 $d_{\mathrm{loop}}$ | 候选帧空间筛选 | 只保留优化位姿下 $xy$ 平面距离足够近的历史关键帧 |
 
-设当前关键帧为 $k$，历史关键帧为 $i$。若
+因此，“回环检测间隔”和“当前-历史最小 ID 间隔”的对象不同：前者判断当前关键帧 $k$ 要不要启动一次检测，后者判断某个历史关键帧 $i$ 能不能进入候选集。设当前关键帧为 $k$，历史关键帧为 $i$。候选帧首先需要满足：
 
 $$
-|k-i| > N_{\mathrm{id}},
+|k-i| > N_{\mathrm{close}},
 \quad
 \left\|
 \left(
-{}^{w}\mathbf{p}_{k}^{\mathrm{opt}}
+{}^{w}\mathbf{p}_{w n_k}^{\mathrm{opt}}
 -
-{}^{w}\mathbf{p}_{i}^{\mathrm{opt}}
+{}^{w}\mathbf{p}_{w n_i}^{\mathrm{opt}}
 \right)_{xy}
 \right\|
 <
 d_{\mathrm{loop}},
 $$
 
-则 $i$ 可作为回环候选。
+若 $i$ 被加入候选集，则后续与其 ID 距离小于 $N_{\mathrm{cand}}$ 的历史关键帧会被跳过。这样既保留长距离回环的可能性，又避免同一段历史轨迹产生过多相似候选。
 
-### 7.2 多分辨率 NDT 验证
+### 6.2 多分辨率 NDT 验证
 
 候选帧通过几何配准验证。系统围绕历史候选关键帧构建局部子图，将若干邻近关键帧点云按优化位姿拼接为目标子地图；当前关键帧或其局部点云作为源点云，使用多分辨率 NDT 从粗到细优化。
 
@@ -649,43 +635,43 @@ $$
 
 多分辨率策略先用大体素扩大收敛域，再用小体素细化位姿。若最终 NDT 概率分数超过阈值，则认为回环有效，并生成相对位姿约束。
 
-### 7.3 位姿图优化
+### 6.3 位姿图优化
 
 位姿图以关键帧位姿为顶点：
 
 $$
-\mathcal{V}=\{\mathbf{T}_{wk}\}.
+\mathcal{V}=\{\mathbf{T}_{w n_k}\}.
 $$
 
 边包括相邻关键帧运动约束、回环约束和可选高度约束：
 
 $$
-\min_{\{\mathbf{T}_{wk}\}}
-\sum_{(i,j)\in\mathcal{E}_{\mathrm{odom}}}
+\min_{\{\mathbf{T}_{w n_k}\}}
+\sum_{(a,b)\in\mathcal{E}_{\mathrm{odom}}}
 \left\|
 \operatorname{Log}
 \left(
-\mathbf{Z}_{ij}^{-1}
-\mathbf{T}_{wi}^{-1}
-\mathbf{T}_{wj}
+\left(\mathbf{T}_{n_a n_b}^{\mathrm{meas}}\right)^{-1}
+\mathbf{T}_{w n_a}^{-1}
+\mathbf{T}_{w n_b}
 \right)
-\right\|_{\boldsymbol{\Omega}_{ij}}^2
+\right\|_{\boldsymbol{\Omega}_{ab}}^2
 +
-\sum_{(i,j)\in\mathcal{E}_{\mathrm{loop}}}
+\sum_{(a,b)\in\mathcal{E}_{\mathrm{loop}}}
 \rho
 \left(
 \left\|
 \operatorname{Log}
 \left(
-\mathbf{Z}_{ij}^{-1}
-\mathbf{T}_{wi}^{-1}
-\mathbf{T}_{wj}
+\left(\mathbf{T}_{n_a n_b}^{\mathrm{meas}}\right)^{-1}
+\mathbf{T}_{w n_a}^{-1}
+\mathbf{T}_{w n_b}
 \right)
-\right\|_{\boldsymbol{\Omega}_{ij}}^2
+\right\|_{\boldsymbol{\Omega}_{ab}}^2
 \right).
 $$
 
-其中 $\mathbf{Z}_{ij}$ 是相对位姿观测，$\boldsymbol{\Omega}_{ij}$ 是信息矩阵，$\rho(\cdot)$ 是鲁棒核函数。运动约束通常权重更高，回环约束使用 Cauchy 等鲁棒核降低误匹配影响。
+其中 $\mathbf{T}_{n_a n_b}^{\mathrm{meas}}$ 是从关键帧坐标系 $\mathcal{F}_{n_b}$ 到 $\mathcal{F}_{n_a}$ 的相对位姿观测，$\boldsymbol{\Omega}_{ab}$ 是信息矩阵，$\rho(\cdot)$ 是鲁棒核函数。运动约束通常权重更高，回环约束使用 Cauchy 等鲁棒核降低误匹配影响。
 
 ```mermaid
 flowchart LR
@@ -708,9 +694,9 @@ $$
 
 作为先验约束，用于室外平面或单层场景抑制 Z 轴漂移。但在多层室内、坡道、立体结构场景中，高度约束可能压制真实三维运动，应谨慎开启。
 
-## 8. 地图构建与地图表达
+## 7. 地图构建与地图表达
 
-### 8.1 全局三维地图
+### 7.1 全局三维地图
 
 建图结束时，将所有关键帧点云按位姿拼接为全局地图：
 
@@ -719,12 +705,12 @@ $$
 =
 \bigcup_k
 \left\{
-\mathbf{T}_{wk}^{\mathrm{map}}
-{}^{k}\mathbf{p}_{j}
+\mathbf{T}_{w n_k}^{\mathrm{map}}
+{}^{n_k}\mathbf{p}_{n_k j}
 \right\},
 $$
 
-其中 $\mathbf{T}_{wk}^{\mathrm{map}}$ 根据是否启用回环，选择优化位姿或 LIO 位姿。全局地图通常进行体素滤波，平衡精度、体积和加载速度。
+其中 $\mathbf{T}_{w n_k}^{\mathrm{map}}$ 根据是否启用回环，选择优化位姿或 LIO 位姿；${}^{n_k}\mathbf{p}_{n_k j}$ 表示第 $k$ 个关键帧坐标系下的第 $j$ 个点。全局地图通常进行体素滤波，平衡精度、体积和加载速度。
 
 系统输出两类三维地图：
 
@@ -733,7 +719,7 @@ $$
 | 全局 PCD | 便于整体检查、可视化和离线评估 |
 | 分块点云地图 | 供定位阶段按需加载，支持大场景和动态层 |
 
-### 8.2 分块地图
+### 7.2 分块地图
 
 分块地图将全局点云按二维平面网格切分。设分块边长为 $s_c$，点 ${}^{w}\mathbf{p}$ 对应的块索引为：
 
@@ -770,7 +756,7 @@ $$
 
 远离当前位置的地图块会被卸载。这样可使定位计算量与局部环境大小相关，而不是与全局地图大小相关。
 
-### 8.3 动静态图层
+### 7.3 动静态图层
 
 定位阶段除了静态地图，还可维护动态点云层。静态地图来自建图结果，动态图层来自定位过程中可靠匹配后的在线扫描。动态图层的作用是适应临时障碍、场景布置变化和局部结构更新。
 
@@ -784,20 +770,20 @@ $$
 
 更新动态图层需要满足匹配成功、定位置信度足够高、与上次更新距离或时间超过阈值等条件。为避免把车辆自身或低矮地面噪声写入地图，更新前会进行高度过滤。
 
-### 8.4 3D 到 2D 栅格地图
+### 7.4 3D 到 2D 栅格地图
 
-可选的 g2p5 模块将三维关键帧点云投影为二维占据栅格。该模块假设 LiDAR 近似水平安装，或可通过地面估计获得地面平面：
+可选的 g2p5 模块将三维关键帧点云投影为二维占据栅格。该模块假设 LiDAR 近似水平安装，或可通过地面估计获得 LiDAR 系下的地面平面：
 
 $$
 \pi_f:\quad
-\mathbf{n}_f^{\mathsf{T}}\mathbf{p}+d_f=0.
+{}^{l}\mathbf{n}_f^{\mathsf{T}}{}^{l}\mathbf{p}_{lp}+d_f=0.
 $$
 
 对每个 LiDAR 点计算其到地面的高度：
 
 $$
 h_j =
-\mathbf{n}_f^{\mathsf{T}}{}^{l}\mathbf{p}_{j}+d_f.
+{}^{l}\mathbf{n}_f^{\mathsf{T}}{}^{l}\mathbf{p}_{lj}+d_f.
 $$
 
 若
@@ -830,26 +816,13 @@ flowchart TD
 
 2D 栅格主要服务导航和显示，不参与默认三维定位。回环发生后，由于关键帧优化位姿改变，需要触发全局重绘，以保持 2D 地图与优化后的三维轨迹一致。
 
-## 9. 在线定位方案
+## 8. 在线定位方案
 
-定位阶段的输入是在线 LiDAR/IMU 数据和建图阶段保存的分块地图。定位输出是世界系下的高频位姿 $\mathbf{T}_{wb}$ 或 $\mathbf{T}_{wl}$。
+定位阶段的输入是在线 LiDAR/IMU 数据和建图阶段保存的分块地图。定位输出是世界系下的高频位姿 $\mathbf{T}_{w b_t}$ 或 $\mathbf{T}_{w l_t}$。
 
-### 9.1 定位总体流程
+### 8.1 定位总体流程
 
-```mermaid
-flowchart TD
-    A[加载地图索引和功能点] --> B[设置外部初值/功能点初始化]
-    B --> C[LIO 输出短时相对运动]
-    C --> D[按预测位姿加载地图块]
-    D --> E[构建 NDT 目标地图]
-    E --> F[当前扫描 NDT 匹配]
-    F --> G[得到 LidarLoc 绝对观测]
-    C --> H[PGO 相对约束]
-    G --> I[定位滑窗 PGO]
-    H --> I
-    I --> J[DR/IMU 外推]
-    J --> K[平滑与 TF 输出]
-```
+![image-20260611164603215](./assets/image-20260611164603215.png)
 
 定位由两类信息共同决定：
 
@@ -858,33 +831,33 @@ flowchart TD
 
 系统不直接用全局匹配替代里程计输出，而是通过滑窗 PGO 和高频外推融合二者，使输出既平滑又不长期漂移。
 
-### 9.2 初始位姿
+### 8.2 初始位姿
 
 定位需要一个足够接近真实位置的初值。系统支持两类初值：
 
-1. **外部初值**：由人工、上位机、GNSS 或其他系统给定 $\mathbf{T}_{w0}$。
+1. **外部初值**：由人工、上位机、GNSS 或其他系统给定 $\mathbf{T}_{w b_0}$。
 2. **功能点初值**：地图索引中保存的功能点，如建图起点或恢复点。
 
 给定初值后，系统加载该位置附近地图块，并执行 NDT 匹配。如果置信度超过初始化阈值，则定位进入正常跟踪状态。若初值存在较大 yaw 不确定性，可采用 yaw 网格搜索：固定位置、roll、pitch，在一定角度范围内采样多个 yaw 初值，选择 NDT 分数最高者，再进入精配准。
 
-### 9.3 NDT 全局匹配
+### 8.3 NDT 全局匹配
 
 定位匹配使用 NDT_OMP。地图块被组合为当前目标点云，并预计算体素高斯分布。当前扫描以 LIO 递推位姿为初值：
 
 $$
-\mathbf{T}_{wk}^{\mathrm{guess}}
+\mathbf{T}_{w b_k}^{\mathrm{guess}}
 =
-\mathbf{T}_{w,k-1}^{\mathrm{abs}}
+\mathbf{T}_{w b_{k-1}}^{\mathrm{abs}}
 \left(
-\mathbf{T}_{o,k-1}^{\mathrm{lio}}
+\mathbf{T}_{o b_{k-1}}^{\mathrm{lio}}
 \right)^{-1}
-\mathbf{T}_{o,k}^{\mathrm{lio}},
+\mathbf{T}_{o b_k}^{\mathrm{lio}},
 $$
 
-其中 $\mathbf{T}_{w,k-1}^{\mathrm{abs}}$ 是上一帧绝对定位结果，$\mathbf{T}_{o,k}^{\mathrm{lio}}$ 是 LIO 在自身里程计坐标系中的位姿。NDT 在该初值附近求解：
+其中 $\mathbf{T}_{w b_{k-1}}^{\mathrm{abs}}$ 是上一帧绝对定位结果，$\mathbf{T}_{o b_k}^{\mathrm{lio}}$ 是载体系 $\mathcal{F}_{b_k}$ 相对 LIO 局部里程计系 $\mathcal{F}_o$ 的位姿。NDT 在该初值附近求解：
 
 $$
-\mathbf{T}_{wk}^{\mathrm{ndt}}
+\mathbf{T}_{w b_k}^{\mathrm{ndt}}
 =
 \arg\min_{\mathbf{T}}
 \sum_j
@@ -904,16 +877,16 @@ $$
 为了避免全局匹配在退化场景中产生跳变，可对 NDT 相对初值的修正量做比例融合：
 
 $$
-\mathbf{T}_{wk}^{\mathrm{loc}}
+\mathbf{T}_{w b_k}^{\mathrm{loc}}
 =
-\mathbf{T}_{wk}^{\mathrm{guess}}
+\mathbf{T}_{w b_k}^{\mathrm{guess}}
 \operatorname{Exp}
 \left(
 \alpha
 \operatorname{Log}
 \left[
-\left(\mathbf{T}_{wk}^{\mathrm{guess}}\right)^{-1}
-\mathbf{T}_{wk}^{\mathrm{ndt}}
+\left(\mathbf{T}_{w b_k}^{\mathrm{guess}}\right)^{-1}
+\mathbf{T}_{w b_k}^{\mathrm{ndt}}
 \right]
 \right),
 \quad
@@ -930,7 +903,7 @@ $$
 
 这适合平面车辆定位，但不适合多层、坡道或明显三维运动场景。
 
-### 9.4 定位滑窗 PGO
+### 8.4 定位滑窗 PGO
 
 定位 PGO 将低频绝对匹配和高频相对运动融合。每个定位帧为一个 SE(3) 顶点，约束包括：
 
@@ -944,159 +917,70 @@ $$
 优化目标为：
 
 $$
-\min_{\{\mathbf{T}_{wk}\}}
+\min_{\{\mathbf{T}_{w b_k}\}}
 \sum_k
 \left\|
 \operatorname{Log}
 \left[
-\left(\mathbf{Z}_{wk}^{\mathrm{loc}}\right)^{-1}
-\mathbf{T}_{wk}
+\left(\mathbf{T}_{w b_k}^{\mathrm{loc}}\right)^{-1}
+\mathbf{T}_{w b_k}
 \right]
 \right\|_{\boldsymbol{\Omega}_{\mathrm{loc}}}^2
 +
-\sum_{(i,j)}
+\sum_{(a,b)}
 \left\|
 \operatorname{Log}
 \left[
-\left(\mathbf{Z}_{ij}^{\mathrm{rel}}\right)^{-1}
-\mathbf{T}_{wi}^{-1}\mathbf{T}_{wj}
+\left(\mathbf{T}_{b_a b_b}^{\mathrm{rel}}\right)^{-1}
+\mathbf{T}_{w b_a}^{-1}\mathbf{T}_{w b_b}
 \right]
 \right\|_{\boldsymbol{\Omega}_{\mathrm{rel}}}^2.
 $$
 
 LidarLoc 分数较低时，绝对约束权重降低；LidarOdom 被判定异常时，其相对约束可被短时间降权或跳过。滑窗中早期帧收敛后可边缘化为先验约束，以限制计算规模。
 
-### 9.5 高频输出与平滑
+### 8.5 高频输出与平滑
 
 全局匹配通常低于 IMU 频率，且 NDT 匹配存在计算延迟。系统使用最新 PGO 结果作为低频基准，再用 DR/IMU 或 LIO 队列外推到最新时刻：
 
 $$
-\mathbf{T}_{w,t}^{\mathrm{out}}
+\mathbf{T}_{w b_t}^{\mathrm{out}}
 =
-\mathbf{T}_{w,k}^{\mathrm{pgo}}
+\mathbf{T}_{w b_k}^{\mathrm{pgo}}
 \left(
-\mathbf{T}_{r,k}^{-1}
-\mathbf{T}_{r,t}
+\mathbf{T}_{s b_k}^{-1}
+\mathbf{T}_{s b_t}
 \right),
 \quad
 t\geq t_k.
 $$
 
-其中 $\mathbf{T}_{r}$ 是相对运动源的位姿。最后通过平滑器抑制小幅抖动，输出稳定的 TF 或定位消息。若车辆处于静止状态，可直接保持上一定位结果，避免静止时匹配噪声导致位姿跳动。
+其中 $\mathbf{T}_{s b}$ 是载体系相对外推源坐标系 $\mathcal{F}_s$ 的位姿。最后通过平滑器抑制小幅抖动，输出稳定的 TF 或定位消息。若车辆处于静止状态，可直接保持上一定位结果，避免静止时匹配噪声导致位姿跳动。
 
-## 10. 关键质量控制
+## 9. 工程实施补充
 
-### 10.1 前端退化检测
+本章仅保留方案落地时需要关注的质量控制、参数取舍和适用边界，不再展开为独立算法章节。
 
-点云几何可能无法完整约束 6 自由度。例如：
+### 9.1 质量控制要点
 
-| 场景 | 弱约束方向 |
+| 环节 | 主要风险 | 处理原则 |
+| --- | --- | --- |
+| LIO 前端 | 单一地面、长走廊、稀疏开阔区域会造成几何退化 | 监测 $\mathbf{H}^{\mathsf{T}}\mathbf{H}$ 特征值，对弱约束方向降低更新强度，并适当膨胀协方差 |
+| 点云对应 | 近邻不足、平面拟合不稳定或动态物体干扰会产生错误残差 | 约束近邻数量、平面残差、点到面距离和有效匹配点数；必要时跳过 LiDAR 更新 |
+| 回环检测 | 重复结构或多层场景可能产生错误回环 | 同时检查时间间隔、空间距离、NDT 分数、鲁棒核误差和优化后残差 |
+| 在线定位 | 地图匹配失败、地图块加载异常或静止抖动会影响输出稳定性 | 监测 NDT 置信度、LIO/Loc 相对运动差异、地图加载状态；连续失败时降级为 LIO/DR 跟随或重新初始化 |
+
+### 9.2 参数配置原则
+
+| 参数组 | 配置原则 |
 | --- | --- |
-| 单一地面 | 平面内平移、绕法向旋转 |
-| 长走廊 | 沿走廊方向平移 |
-| 稀疏开阔区域 | 多个方向均弱 |
-| 动态物体占比高 | 对应关系不稳定 |
+| 前端参数 | 点云降采样、iVOX 分辨率和平面阈值应保证有效约束数量；ESKF 迭代次数通常取 3-5 次；IMU 噪声应依据设备标定设置 |
+| 关键帧与回环 | 关键帧阈值过小会导致地图冗余，过大会影响回环和栅格地图密度；回环搜索半径和 NDT 分数阈值应随场景重复度调节 |
+| 地图与定位 | 地图加载范围应覆盖匹配收敛域；NDT 多分辨率由粗到细设置；强制 2D 仅适用于平面车辆或固定高度场景 |
+| 动态与平滑 | 动态层策略根据环境变化周期选择；输出平滑因子需要在响应速度和抖动抑制之间折中 |
 
-系统通过 $\mathbf{H}^{\mathsf{T}}\mathbf{H}$ 的特征值判断观测退化。若最小特征值相对最大特征值过小，说明存在弱观测方向。处理方式包括：
+### 9.3 适用边界
 
-1. 对退化方向降低更新强度。
-2. 膨胀位姿协方差，避免过度自信。
-3. 引入 IMU、轮速、GNSS 或高度先验辅助约束。
-4. 延迟关键帧或地图更新，等待更好的几何视角。
+该方案适用于室外园区、道路、厂区、仓储、机器人巡检和室内外混合通道等具备稳定几何结构的场景。方案优势集中在 LiDAR-IMU 紧耦合前端、高效 iVOX 局部地图、NDT 回环验证、位姿图全局优化、分块地图加载和高频定位输出。
 
-### 10.2 对应关系筛选
-
-错误对应通常比优化器选择更容易导致失败。有效对应需要满足：
-
-1. 近邻数量足够。
-2. 局部平面拟合残差低于阈值。
-3. 点到平面距离不过大。
-4. 激光束方向与平面关系不过于退化。
-5. 当前帧有效匹配数量超过下限。
-
-若有效点数过少，应跳过 LiDAR 更新或降低观测权重，避免少量错误面片主导滤波结果。
-
-### 10.3 回环可靠性
-
-回环误匹配会破坏全局地图。可靠回环应满足：
-
-1. 候选帧与当前帧有足够时间间隔。
-2. 优化位姿下空间接近。
-3. 多分辨率 NDT 能稳定收敛。
-4. 配准分数超过阈值。
-5. 回环边经过鲁棒核和卡方误差检测。
-
-对多层建筑、重复走廊、货架区等强别名场景，应提高回环阈值，或加入高度、语义、强度、GNSS 等额外判别信息。
-
-### 10.4 定位健康度
-
-定位阶段需要同时监测绝对匹配和相对运动：
-
-| 指标 | 异常含义 |
-| --- | --- |
-| NDT 置信度连续偏低 | 当前扫描与地图不一致或初值偏差过大 |
-| LidarLoc 与 LidarOdom 相对运动差异过大 | LIO 漂移、地图匹配跳变或动态物体干扰 |
-| IMU/DR 断流 | 高频外推不可用 |
-| 地图块加载为空 | 初值偏离地图或分块索引异常 |
-| 静止状态位姿抖动 | 匹配噪声主导输出，需要静止保持 |
-
-若绝对匹配连续失败，可进入跟随 DR/LIO 状态；若失败持续时间过长，则应触发重新初始化或请求外部初值。
-
-## 11. 参数设计建议
-
-### 11.1 前端参数
-
-| 参数类别 | 建议 |
-| --- | --- |
-| 点云降采样 | 应保证有效点数充足；过大分辨率会导致平面约束不足 |
-| iVOX 分辨率 | 与场景结构尺度匹配；室内可小，室外大场景可适当增大 |
-| 平面拟合阈值 | 过小会丢弃有效面，过大会引入曲面和动态噪声 |
-| ESKF 最大迭代次数 | 通常 3-5 次即可，过多迭代收益有限且增加延迟 |
-| IMU 噪声 | 过小会过信 IMU，过大会使预测不稳定；应结合设备标定 |
-| 关键帧阈值 | 距离过小地图冗余，过大回环和栅格地图稀疏 |
-
-### 11.2 回环参数
-
-| 参数类别 | 建议 |
-| --- | --- |
-| 回环检测间隔 | 根据关键帧密度设置，避免高频无效检测 |
-| 空间搜索半径 | 过小漏检回环，过大增加误匹配 |
-| NDT 分数阈值 | 重复结构场景应更严格 |
-| 高度约束 | 单层平面场景可开启，多层三维场景应关闭 |
-| 鲁棒核阈值 | 应允许小漂移闭环，但拒绝明显错误边 |
-
-### 11.3 定位参数
-
-| 参数类别 | 建议 |
-| --- | --- |
-| 地图加载范围 | 应覆盖一次匹配可能收敛的空间范围 |
-| NDT 分辨率 | 粗分辨率扩大收敛域，细分辨率提高精度 |
-| 初始化阈值 | 应高于正常跟踪阈值，避免错误初始化 |
-| 强制 2D | 仅用于平面车辆或固定高度场景 |
-| 动态层策略 | 长期变化选 persistent，短时障碍选 short/long |
-| 平滑因子 | 过大跟随快但抖动，过小平滑但延迟 |
-
-## 12. 方案特点与适用边界
-
-### 12.1 技术特点
-
-1. **紧耦合 LIO 前端**：IMU 预测和 LiDAR 几何观测在同一 ESKF 框架内融合。
-2. **直接点云配准**：不依赖手工边缘/平面特征提取，适配 Livox、Velodyne、Ouster、RoboSense 等多种雷达。
-3. **高效局部地图**：iVOX 支持快速邻域查询和增量更新，适合实时 scan-to-map。
-4. **回环全局一致**：NDT 回环验证与位姿图优化可显著降低长距离漂移。
-5. **地图工程化表达**：同时支持全局 PCD、分块地图、功能点和 2D 栅格地图。
-6. **定位高频输出**：全局匹配低频修正，相对运动高频外推，兼顾精度和实时性。
-7. **动态场景适应**：通过动态图层在线更新缓解地图长期变化问题。
-
-### 12.2 适用场景
-
-该方案适用于室外园区、道路、厂区、仓储、机器人巡检、室内外混合通道等具备稳定几何结构的场景。若环境中存在足够墙面、地面、立柱、建筑轮廓或其他几何结构，点到面 LIO 和 NDT 定位通常能获得较高稳定性。
-
-### 12.3 局限性
-
-1. **强动态环境**：大量移动物体会污染局部地图和全局匹配。
-2. **几何退化场景**：长直隧道、开阔平面、玻璃墙面等会削弱点云约束。
-3. **初值依赖**：NDT/ICP 属于局部优化方法，定位初始化偏差过大时可能收敛到错误位置。
-4. **时间同步敏感**：逐点时间和 IMU-LiDAR 时间覆盖错误会直接影响去畸变。
-5. **多层场景回环困难**：仅依赖平面距离筛选候选时，多层结构可能产生错误候选或漏检。
-6. **外参依赖**：默认不在线估计外参，外参误差会体现为系统性配准残差。
+需要注意的是，大量动态物体、长直通道、开阔平面、玻璃墙面、多层强别名场景以及较大的初始化误差都会削弱系统稳定性。逐点时间、IMU-LiDAR 时间同步和外参标定是前端精度的基础；若这些输入存在系统误差，后续滤波、回环和定位匹配都会受到影响。

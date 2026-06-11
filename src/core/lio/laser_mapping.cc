@@ -215,8 +215,8 @@ bool LaserMapping::Run() {
         return true;
     }
 
-    // 可选跳帧：仍然完成了IMU预测和去畸变，但跳过耗时的地图匹配和ESKF观测更新。
-    // 这样UI可以继续显示预测位姿，前端计算负载也能降低。
+    // 可选跳帧：仍然完成了IMU预测和去畸变，但直接返回，跳过后续降采样、地图匹配、ESKF观测更新、关键帧判断和地图更新。
+    // 这样UI可以继续显示预测位姿，同时降低前端计算负载。
     if (enable_skip_lidar_) {
         skip_lidar_cnt_++;
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
@@ -399,6 +399,11 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
     }
 }
 
+/**
+ * @brief 创建当前Lidar帧对应的关键帧，并维护关键帧列表与局部地图。
+ * @details 关键帧会继承当前ESKF状态；优化位姿优先沿用上一关键帧的优化位姿递推。
+ *          SLAM模式下额外保存到全局关键帧序列，并将当前帧增量加入IVox局部地图。
+ */
 void LaserMapping::MakeKF() {
     // 创建关键帧对象，包含ID、点云和当前状态
     Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
@@ -671,20 +676,22 @@ void LaserMapping::MapIncremental() {
 
 /**
  * @brief 激光雷达点云配准观测模型，用于传入ESKF内
- * @details 计算当前激光雷达点云与地图的点-面距离残差和雅可比矩阵
+ * @details 计算当前激光雷达点云与IVox局部地图之间的残差，并累加成ESKF需要的信息矩阵形式。
  *
  * 算法流程：
- * 1. 将点云从机体坐标系转换到世界坐标系
- * 2. 在IVox地图中搜索最近邻平面点
- * 3. 计算点到平面的距离作为观测残差
- * 4. 计算观测雅可比矩阵 [∂r/∂p, ∂r/∂q, ∂r/∂v, ∂r/∂ba, ∂r/∂bg]
+ * 1. 使用当前迭代状态s，将scan_down_lidar_从Lidar系变换到世界系；
+ * 2. 在IVox地图中为每个点搜索最近邻，并尝试拟合局部平面；
+ * 3. 用点到平面的距离构造点面残差和位姿雅可比；
+ * 4. 可选地加入点到点ICP残差；
+ * 5. 将所有残差累加为 H^T H 和 H^T r，交给ESKF::Update()求解位姿增量。
  *
  * @param s[in] 当前ESKF状态，包含位姿、速度、零偏等
- * @param obs[out] 观测模型结构体，填充残差和雅可比矩阵
+ * @param obs[out] 观测模型结构体，填充valid_、HTH_、HTr_和残差统计信息
  */
 void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     int cnt_pts = scan_down_lidar_->size();
 
+    // 并行处理当前帧点云时使用的索引数组，避免在lambda里依赖递增变量。
     std::vector<size_t> index(cnt_pts);
     for (size_t i = 0; i < index.size(); ++i) {
         index[i] = i;
@@ -694,6 +701,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
 
     Timer::Evaluate(
         [&, this]() {
+            // 当前迭代状态s给出IMU到世界的位姿，offset_*是Lidar到IMU的固定外参。
+            // 因此 R_wl/t_wl 表示当前Lidar帧到世界系的变换。
             Mat3f R_wl = (s.rot_.matrix() * offset_R_lidar_fixed_).cast<float>();
             Vec3f t_wl = (s.rot_ * offset_t_lidar_fixed_ + s.pos_).cast<float>();
 
@@ -701,7 +710,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 PointType &point_lidar = scan_down_lidar_->points[i];
                 PointType &point_world = scan_down_world_->points[i];
 
-                /// 将点从机体坐标系变换到世界坐标系
+                /// 将点从当前帧Lidar坐标系变换到世界坐标系，用于在局部地图中查最近邻。
                 Vec3f p_lidar = point_lidar.getVector3fMap();
                 point_world.getVector3fMap() = R_wl * p_lidar + t_wl;
                 point_world.intensity = point_lidar.intensity;
@@ -709,13 +718,14 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 auto &points_near = nearest_points_[i];
                 points_near.clear();
 
-                /// 在IVox地图中搜索最近的平面点
+                /// 在IVox地图中搜索当前世界系点附近的地图点，后续用这些点拟合局部平面。
                 ivox_->GetClosestPoint(point_world, points_near, fasterlio::NUM_MATCH_POINTS);
                 point_selected_surf_[i] = points_near.size() >= fasterlio::MIN_NUM_MATCH_POINTS;
 
+                // 点到点ICP复用同一批最近邻。只有能找到足够最近邻的点才有资格参与点到点约束。
                 point_selected_icp_[i] = point_selected_surf_[i];
 
-                /// 能找到3个点以上，则估计平面
+                /// 最近邻数量足够时，尝试拟合局部平面，plane_coef_[i] = [nx, ny, nz, d]。
                 if (point_selected_surf_[i]) {
                     point_selected_surf_[i] =
                         math::esti_plane(plane_coef_[i], points_near, fasterlio::ESTI_PLANE_THRESHOLD);
@@ -725,8 +735,11 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                     auto temp = point_world.getVector4fMap();
                     temp[3] = 1.0;
                     float pd2 = plane_coef_[i].dot(temp);  ///< 计算点到平面的距离（有符号）
-                    // 剔除那些几乎与激光束平行的平面匹配
-                    // [gj-2025-11-28] p_lidar.norm() -> p_lidar.squaredNorm()
+                    // 根据点面残差和量测距离做经验筛选，剔除几何关系不可靠的匹配。
+                    // 该条件等价于 FAST-LIO 中的 s = 1 - 0.9 * fabs(pd2) / sqrt(range), s > 0.9。
+                    // 化简后得到 range > 81 * pd2^2，因此这里应使用 p_lidar.norm() 而不是 squaredNorm()。
+                    // 含义是远处点允许稍大的点面残差，近处点需要更严格的平面一致性。
+                    // 但是要踢掉点到面距离太离谱的匹配点
                     bool valid_corr = p_lidar.norm() > 81 * pd2 * pd2;
                     if (valid_corr) {
                         point_selected_surf_[i] = true;
@@ -742,6 +755,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     effect_feat_surf_ = 0;
     effect_feat_icp_ = 0;
 
+    // 将并行阶段筛选出的有效点压缩到corr_pts_/corr_norm_前部，便于后面只遍历有效点。
+    // corr_pts_前三维保存Lidar系点坐标，第4维保存点面有符号残差。
     corr_pts_.resize(cnt_pts);
     corr_norm_.resize(cnt_pts);
     for (int i = 0; i < cnt_pts; i++) {
@@ -761,6 +776,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     corr_pts_.resize(effect_feat_surf_);
     corr_norm_.resize(effect_feat_surf_);
 
+    // 有效点面约束太少时，观测模型不可用；ESKF::Update()会放弃本次更新并回退。
     if (effect_feat_surf_ < 20) {
         obs.valid_ = false;
         LOG(WARNING) << "No enough effective surface points: " << effect_feat_surf_ << ", icp: " << effect_feat_icp_
@@ -773,7 +789,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
     const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
 
-    /// 点面ICP部分
+    /// 点面ICP部分：每个有效点贡献一个标量残差 r = - point_to_plane_distance。
+    /// 观测只约束6维位姿，因此最终累加到6x6的HTH_和6x1的HTr_。
     obs.HTH_.setZero();
     obs.HTr_.setZero();
 
@@ -783,14 +800,17 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     std::vector<double> res_sq(index.size());
 
     std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
-        Vec3f point_this_be = corr_pts_[i].head<3>();  //< lidar坐标系下的点
+        Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
         Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
+        // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
         Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
 
         /*** get the normal vector of closest surface/corner ***/
         Vec3f norm_vec = corr_norm_[i].head<3>();
 
         /*** calculate the Measurement Jacobian matrix H ***/
+        // 残差是世界系点到世界系平面的距离。平移雅可比就是平面法向量；
+        // 姿态雅可比需要把世界系法向量转回IMU切空间，再与Lidar点在IMU系下的位置叉乘。
         Vec3f C(Rt * norm_vec);
         Vec3f A(point_crossmat * C);
 
@@ -798,6 +818,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         J.setZero();
         J << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2];
 
+        // corr_pts_[i][3]里保存的是点到平面的有符号距离pd2。
+        // 这里取负号，是为了让后续求解的dx沿着减小残差的方向更新。
         float res = -corr_pts_[i][3];
 
         // double w = huber_weight(res);
@@ -809,11 +831,13 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         res_sq[i] = res * res;
     });
 
+    // 并行阶段先把每个点的J^T J和J^T r保存下来，串行阶段再累加，避免并发写obs。
     for (int i = 0; i < index.size(); ++i) {
         obs.HTH_ += JTJ[i] * options_.plane_icp_weight_;
         obs.HTr_ += JTr[i] * options_.plane_icp_weight_;
     }
 
+    // 残差统计用于ESKF迭代过程中的收敛判断和AA回退判断。
     if (!res_sq.empty()) {
         std::sort(res_sq.begin(), res_sq.end());
         obs.lidar_residual_mean_ = res_sq[res_sq.size() / 2];
@@ -825,6 +849,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     /// 点到点ICP部分
 
     if (options_.enable_icp_part_) {
+        // 点到点ICP为每个有效点贡献3维残差：当前点世界坐标 - 最近地图点世界坐标。
+        // 它是点面约束的补充，权重由options_.icp_weight_控制。
         JTJ.resize(cnt_pts);
         JTr.resize(cnt_pts);
 
@@ -838,7 +864,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 return;
             }
 
-            /// TODO: 外参
+            /// q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
             Vec3d q = scan_down_lidar_->points[i].getVector3fMap().cast<double>();
             Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
 
@@ -851,8 +877,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             /// rotation 部分
             J.block<3, 3>(0, 3) = -(s.rot_.matrix() * offset_R_lidar_fixed_) * SO3::hat(q);
 
+            // 点到点残差：当前点世界坐标和最近地图点世界坐标之差。
             Vec3d e = qs - nearest_points_[i][0].getVector3fMap().cast<double>();
 
+            // 过大的点到点残差通常对应错误最近邻，直接剔除。
             if (e.norm() > 0.5) {
                 point_selected_icp_[i] = false;
                 return;
@@ -862,6 +890,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             JTr[i] = -J.transpose() * e;
         });
 
+        // 将点到点ICP的信息量累加到同一个6维位姿观测中。
         for (int i = 0; i < cnt_pts; ++i) {
             if (point_selected_icp_[i] == false) {
                 continue;

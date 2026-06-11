@@ -283,9 +283,12 @@ void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {
         return;
     }
 
+    // 先把不同类型的原始点云统一预处理并放入LIO缓存，再触发一次前端处理。
+    // Run()内部会完成时间同步、IMU去畸变、雷达观测更新，并在满足条件时创建新关键帧。
     lio_->ProcessPointCloud2(cloud);
     lio_->Run();
 
+    // 后端只关心新产生的关键帧；如果当前雷达帧没有触发MakeKF()，这里直接返回。
     auto kf = lio_->GetKeyframe();
     if (kf != cur_kf_) {
         cur_kf_ = kf;
@@ -297,6 +300,7 @@ void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {
         return;
     }
 
+    // 新关键帧按配置分发给回环、栅格建图和UI模块。
     if (options_.with_loop_closing_) {
         lc_->AddKF(cur_kf_);
     }

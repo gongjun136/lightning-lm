@@ -71,33 +71,38 @@ void LoopClosing::Init(const std::string yaml_path) {
 
 void LoopClosing::AddKF(Keyframe::Ptr kf) {
     if (options_.online_mode_) {
+        // 在线模式下不阻塞LIO前端，将关键帧交给后台线程异步检测回环。
         kf_thread_.AddMessage(kf);
     } else {
+        // 离线模式通常按数据顺序回放，直接同步处理便于保证流程确定性。
         HandleKF(kf);
     }
 }
 
 void LoopClosing::HandleKF(Keyframe::Ptr kf) {
+    // 同一个关键帧可能被外部重复投递，直接跳过避免重复加边和重复优化。
     if (kf == last_kf_) {
         return;
     }
 
+    // 记录当前关键帧，并加入历史序列；后续候选搜索和位姿图优化都依赖这个序列。
     cur_kf_ = kf;
     all_keyframes_.emplace_back(kf);
 
-    // 检测回环候选
+    // 先按关键帧ID间隔和空间距离，从历史关键帧中筛选可能形成回环的候选。
     DetectLoopCandidates();
 
     if (options_.verbose_) {
         LOG(INFO) << "lc: get kf " << cur_kf_->GetID() << " candi: " << candidates_.size();
     }
 
-    // 计算回环位姿
+    // 对候选帧做点云匹配，估计当前帧与历史帧之间的回环相对位姿。
     ComputeLoopCandidates();
 
-    // 位姿图优化
+    // 将里程计约束和有效回环约束加入位姿图，并更新关键帧优化位姿。
     PoseOptimization();
 
+    // 标记本帧已处理，用于下一次调用时去重。
     last_kf_ = kf;
 }
 

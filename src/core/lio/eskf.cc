@@ -35,21 +35,39 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
 
 namespace lightning {
 
+/**
+ * @brief IMU预测：用当前IMU输入传播名义状态和误差状态协方差。
+ *
+ * gyro/acce一般由上层ImuProcess传入，可能是相邻两帧IMU量测的均值。这里虽然可以使用
+ * 均值输入 u_avg，但状态导数和误差雅可比仍在当前状态 x_k 处计算，因此整体形式是
+ * x_{k+1} = x_k ⊕ f(x_k, u_avg) * dt 的一阶欧拉传播，而不是严格中值积分。
+ *
+ * @param dt IMU积分时间间隔，单位秒。
+ * @param Q 过程噪声协方差，噪声顺序需要和NavState::df_dw()保持一致。
+ * @param gyro 当前积分区间使用的角速度输入。
+ * @param acce 当前积分区间使用的加速度计输入。
+ */
 void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
-    Eigen::Matrix<double, NavState::full_dim, 1> f_ = x_.get_f(gyro, acce);       // 状态雅可比: f(x,u) - 刚体运动方程
-    Eigen::Matrix<double, NavState::full_dim, state_dim_> f_x_ = x_.df_dx(acce);  // 部分误差状态雅可比: ∂f/∂x - 用于线性化
+    // f_是名义状态连续时间导数 f(x,u)，例如位置导数、姿态角速度、速度导数。
+    // f_x_是连续动力学对误差状态的雅可比 F_c，后面会通过 I + F_c * dt 做一阶离散化。
+    Eigen::Matrix<double, NavState::full_dim, 1> f_ = x_.get_f(gyro, acce);
+    Eigen::Matrix<double, NavState::full_dim, state_dim_> f_x_ = x_.df_dx(acce);
 
-    Eigen::Matrix<double, NavState::full_dim, process_noise_dim_> f_w_ = x_.df_dw();  // 部分噪声雅可比: ∂f/∂w - 噪声传播矩阵
+    // f_w_是连续动力学对过程噪声的雅可比 G_c。
+    // NavState为了兼容SO3/S2等流形，先在full_dim空间里组织导数；P_实际是state_dim_维。
+    Eigen::Matrix<double, NavState::full_dim, process_noise_dim_> f_w_ = x_.df_dw();
     Eigen::Matrix<double, state_dim_, process_noise_dim_> f_w_final =
-        Eigen::Matrix<double, state_dim_, process_noise_dim_>::Zero();              // 23*12，噪声雅可比，需要*dt的项
+        Eigen::Matrix<double, state_dim_, process_noise_dim_>::Zero();
 
     NavState x_before = x_;  // 保存前一时刻状态（用于S2流形计算）
-    x_.oplus(f_, dt);        // 名义状态积分: x_{k+1} = x_k ⊕ f(x_k,u_k)*dt
+    x_.oplus(f_, dt);        // 名义状态积分: x_{k+1} = x_k ⊕ f(x_k,u)*dt
 
-    F_x1_ = CovType::Identity();  // 存储部分误差状态雅可比，不需要*dt部分
+    // F_x1_最终表示离散误差状态转移矩阵 Phi，先放入单位阵，再叠加各状态块的一阶传播项。
+    F_x1_ = CovType::Identity();
 
-    // 构建完整的状态雅可比和噪声雅可比
-    CovType f_x_final = CovType::Zero();  // 23x23，误差状态雅可比，需要*dt的项
+    // 普通向量状态块可以直接从full_dim导数空间拷贝到state_dim误差空间。
+    // 这些块使用线性加法，不需要SO3那样额外的李群切空间映射。
+    CovType f_x_final = CovType::Zero();
     for (auto st : x_.vect_states_) {
         int idx = st.idx_;
         int dim = st.dim_;
@@ -57,29 +75,34 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
 
         for (int i = 0; i < state_dim_; i++) {
             for (int j = 0; j < dof; j++) {
-                f_x_final(idx + j, i) = f_x_(dim + j, i);  // 填充向量状态的雅可比
+                f_x_final(idx + j, i) = f_x_(dim + j, i);
             }
         }
 
         for (int i = 0; i < process_noise_dim_; i++) {
             for (int j = 0; j < dof; j++) {
-                f_w_final(idx + j, i) = f_w_(dim + j, i);  // 填充向量状态的噪声传播
+                f_w_final(idx + j, i) = f_w_(dim + j, i);
             }
         }
     }
-    // 1.处理SO3旋转状态
+
+    // SO3状态块的误差定义在李代数切空间，不能像普通向量一样直接拷贝。
+    // 这里需要显式构造旋转误差自身传播项，以及连续雅可比到切空间的映射。
     Mat3d res_temp_SO3;
     Vec3d seg_SO3;
     for (auto st : x_.SO3_states_) {
         int idx = st.idx_;
         int dim = st.dim_;
         for (int i = 0; i < 3; i++) {
-            seg_SO3(i) = -1 * f_(dim + i) * dt;  // 角轴向量 = -ω*dt
+            // 右扰动误差下，旋转误差自身传播项含有 -omega*dt。
+            seg_SO3(i) = -1 * f_(dim + i) * dt;
         }
 
-        F_x1_.block<3, 3>(idx, idx) = math::exp(seg_SO3, 0.5).matrix();  // SO3状态转移矩阵
+        // Phi_RR：姿态误差对上一时刻姿态误差的离散传播。
+        F_x1_.block<3, 3>(idx, idx) = math::exp(seg_SO3, 0.5).matrix();
 
-        res_temp_SO3 = math::A_matrix(seg_SO3);  // -v代入= 李代数右雅可比
+        // A_matrix(seg_SO3)用于把连续雅可比项映射到SO3误差切空间。
+        res_temp_SO3 = math::A_matrix(seg_SO3);
         for (int i = 0; i < state_dim_; i++) {
             // [gj-2025-11-26] 为啥没有添加负号？？？
             // 答：这里不再额外加负号。seg_SO3 = -Omega，因此A_matrix(seg_SO3)=J_l(-Omega)=J_r(Omega)；
@@ -95,24 +118,41 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
         }
     }
 
+    // 一阶离散化误差传播：
+    //   Phi ~= I + F_c * dt
+    //   P_{k+1} = Phi P_k Phi^T + (G_c dt) Q (G_c dt)^T
+    // 这里没有构造中点状态处的F_c，因此属于起点状态线性化的欧拉式协方差传播。
     F_x1_ += f_x_final * dt;
     P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
+    // 轻微膨胀协方差，给线性化误差、时间同步误差和未建模误差留余量。
     P_ *= options_.predict_cov_inflation_;
+    // 数值保护：强制协方差对称，并限制对角线范围，避免后续更新阶段数值不稳定。
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
 }
 
 /**
+ * @brief 根据指定观测模型迭代修正ESKF状态和协方差。
+ *
+ * Update()使用的是迭代误差状态更新。每轮迭代都会：
+ * 1. 在当前名义状态x_处重新计算观测模型；
+ * 2. 将观测函数返回的 H^T H 和 H^T r 与预测协方差组合；
+ * 3. 求解当前误差增量dx_current，并通过boxplus()更新名义状态；
+ * 4. 判断收敛或到达最大迭代次数后，更新协方差P_。
+ *
  * 原版的迭代过程中，收敛次数大于1才会结果，所以需要两次收敛。
- * 在未收敛时，实际上不会计算最近邻，也就回避了一次ObsModel的计算
- * 如果这边对每次迭代都计算最近邻的话，时间明显会变长一些，并不是非常合理。。
+ * 在未收敛时，实际上不会计算最近邻，也就回避了一次ObsModel的计算。
+ * 如果这边对每次迭代都计算最近邻的话，时间明显会变长一些，并不是非常合理。
  *
  * @param obs 观测类型，包括LIDAR、WHEEL_SPEED、GPS等，决定使用哪种观测模型
  * @param R   观测噪声方差，控制观测对状态估计的权重（越小权重越高，典型值1e-3）
  */
 void ESKF::Update(ESKF::ObsType obs, const double& R) {
+    // 每次Update开始前先把观测模型标志恢复为可用状态，具体质量检查交给观测函数设置。
     custom_obs_model_.valid_ = true;
     custom_obs_model_.converge_ = true;
 
+    // P_propagated是IMU预测后的先验协方差。迭代过程中会多次临时变换P_，
+    // 每一轮重新从这个先验协方差开始，避免把上一轮临时线性化结果重复叠加。
     CovType P_propagated = P_;  // 保存预测阶段的协方差矩阵
 
     Eigen::Matrix<double, state_dim_, 1> K_r;           // 卡尔曼增益与残差的乘积项 K*r
@@ -133,8 +173,8 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
     for (int i = -1; i < maximum_iter_; i++) {
         custom_obs_model_.valid_ = true;
 
-        /// 计算observation function，主要是residual_, h_x_, s_
-        /// x_ 在每次迭代中都是更新的，线性化点也会更新
+        /// 计算observation function。这里不是直接返回H和r，而是返回已经累加好的 H^T H 和 H^T r。
+        /// x_ 在每次迭代中都会被boxplus()更新，所以观测模型的线性化点也随之更新。
         if (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) {
             lidar_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::WHEEL_SPEED) {
@@ -159,10 +199,11 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         if (use_aa_ && i > -1 && (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) &&
             custom_obs_model_.lidar_residual_mean_ >= last_lidar_res * 1.01) {
             x_ = last_x;  // 回退到上一步的状态
-            break;        // 跳出当前迭代循环
+            break;        // 跳出当前迭代循环，停止继续迭代
         }
         iterated_num += 1;
 
+        // 理论上上面valid=false已经return了，这里保留continue兼容早期逻辑。
         if (!custom_obs_model_.valid_) {
             continue;
         }
@@ -187,7 +228,9 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         /// 更新P 和 dx
         /// P = J*P*J^T
         /// dx = J * dx
-        // 处理SO3流形状态的协方差变换
+        // 处理SO3流形状态的协方差变换。
+        // 因为迭代起点start_x和当前线性化点x_不在同一个切空间，先验误差dx和协方差P_
+        // 需要通过流形雅可比映射到当前x_的切空间，再和本轮观测模型组合。
         for (auto it : x_.SO3_states_) {
             int idx = it.idx_;                       // SO3状态在向量中的索引
             Vec3d seg_SO3 = dx.block<3, 1>(idx, 0);  // 提取SO3状态的变化量
@@ -208,10 +251,14 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
+        // 观测函数返回的是6维位姿约束的信息形式：
+        // HTH = H^T H，HTr = H^T r。先做对称化，避免并行累加或数值误差导致特征分解不稳定。
         Mat6d HTH = custom_obs_model_.HTH_;
         Vec6d HTr = custom_obs_model_.HTr_;
         Mat6d HTH_sym = 0.5 * (HTH + HTH.transpose());
 
+        // 对观测信息矩阵做特征分解，用特征值大小判断哪些方向可观、哪些方向退化。
+        // 例如长直走廊中，某些平移/旋转方向可能缺乏几何约束，直接更新会过度相信不可靠残差。
         Eigen::SelfAdjointEigenSolver<Mat6d> eigen_solver(HTH_sym);
         if (eigen_solver.info() != Eigen::Success) {
             LOG(WARNING) << "Failed to decompose ESKF observation information matrix.";
@@ -227,6 +274,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         Vec6d observable_mask = Vec6d::Zero();
         int nullity = 0;
+        // 特征值相对最大特征值太小的方向被认为是退化方向，后面会被投影掉。
         for (int k = 0; k < observable_mask.size(); ++k) {
             if (eigen_values(k) > degeneracy_threshold) {
                 observable_mask(k) = 1.0;
@@ -235,15 +283,19 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
+        // 投影矩阵只保留可观方向。HTH_eff/HTr_eff是退化处理后的有效观测信息。
         const Mat6d observable_projector = eigen_vectors * observable_mask.asDiagonal() * eigen_vectors.transpose();
         const Mat6d HTH_eff = observable_projector * HTH_sym * observable_projector;
         const Vec6d HTr_eff = observable_projector * HTr;
 
+        // 信息形式更新。P_ / R 等价于把观测噪声缩放合并进先验权重；
+        // 再取逆得到先验信息矩阵 P^{-1} * R。
         CovType P_temp = (P_ / R).inverse();  // P阵上面已经更新
 
         /// 现在问题是这个权重太大，导致整体过于依赖先验 ...
         // P_temp.setIdentity();
 
+        // 当前观测只约束前6维位姿，因此只把HTH_eff加到信息矩阵左上角位姿块。
         P_temp.block<pose_obs_dim_, pose_obs_dim_>(0, 0) += HTH_eff;
         CovType Q_inv = P_temp.inverse();  // Q inv
 
@@ -262,6 +314,8 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         //           << ", prior: " << ((K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) *
         //           dx_current).transpose();
 
+        // 迭代误差状态更新公式。
+        // K_r来自当前观测残差，(K_H-I)dx_current用于把先验误差项带入当前线性化点。
         dx_current = K_r + (K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) * dx_current;
 
         // check nan
@@ -284,6 +338,8 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         // LOG(INFO) << "iter " << iterations_ << ", dx: " << dx_current.transpose();
         const double dx_translation = dx_current.head<3>().norm();
         const double dx_rotation_deg = dx_current.segment<3>(3).norm() * 180.0 / M_PI;
+        // 单次迭代修正过大通常意味着匹配错误、时间同步异常或初值偏差太大。
+        // 这里直接拒绝本次观测更新，回退到预测状态，避免把错误观测注入滤波器。
         if (dx_translation > options_.max_update_translation_step_ ||
             dx_rotation_deg > options_.max_update_rotation_step_deg_) {
             LOG(ERROR) << "Reject ESKF iter update, dtrans: " << dx_translation << ", drot_deg: " << dx_rotation_deg
@@ -294,6 +350,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
 
         if (!use_aa_) {
+            // 普通迭代：直接把误差状态增量施加到当前名义状态。
             x_ = x_.boxplus(dx_current);
         } else {
             // 转到起点的线性空间
@@ -311,7 +368,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         last_x = x_;
 
-        // update last res
+        // 记录本轮残差，下一轮Anderson加速时若残差明显变大，会回退到last_x。
         last_lidar_res = custom_obs_model_.lidar_residual_mean_;
         custom_obs_model_.converge_ = true;
         // 收敛性检查
@@ -374,11 +431,13 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 }
             }
 
+            // 最终协方差更新，对应信息形式下的 P = (I-KH)P，并结合上面的流形切空间映射。
             P_ = L_ - K_H.block<state_dim_, pose_obs_dim_>(0, 0) * P_.template block<pose_obs_dim_, state_dim_>(0, 0);
 
             if (nullity > 0) {
                 // LOG_EVERY_N(INFO, 50) << "ESKF observation degeneracy rank " << (pose_obs_dim_ - nullity) << "/"
                 //                      << pose_obs_dim_;
+                // 如果观测存在退化方向，适当膨胀位姿协方差，避免滤波器对这些方向过度自信。
                 P_.block<pose_obs_dim_, pose_obs_dim_>(0, 0) *= options_.degeneracy_cov_inflation_;
             }
 
@@ -386,6 +445,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         }
     }
 
+    // 最后统一做协方差数值保护，确保P_对称并且对角线处于合理范围。
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
 }
 

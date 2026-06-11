@@ -65,26 +65,28 @@ class ESKF {
     /**
      * @brief 一次观测线性化后的结果。
      *
-     * 观测由“观测函数”和“观测结果”两部分组成：
-     * - 观测函数负责根据当前状态计算残差、雅可比或信息矩阵；
-     * - 本结构体负责保存这些结果，供ESKF::Update()统一融合。
+     * ESKF::Update()本身不关心观测来自Lidar、轮速还是GPS，只要求外部观测函数把当前
+     * 线性化点处的观测信息填到这个结构体里。以Lidar点云为例，LaserMapping::ObsModel()
+     * 会完成数据关联、残差计算和雅可比计算，然后把所有有效点约束累加为信息形式
+     * H^T H和H^T r。
      *
-     * Lidar匹配点数量会变化，所以R_保留为动态矩阵。当前Update()主要使用
-     * HTH_ = H^T H 和 HTr_ = H^T r，这样不同残差项可以先在观测函数里累加成6维位姿约束。
+     * 这样做的原因是点云残差维度随匹配点数变化，直接传完整H会很大；传H^T H和H^T r
+     * 可以先把大量点约束压缩成6维位姿信息，
+     * ESKF::Update()再把它和先验协方差组合求解。
      */
     struct CustomObservationModel {
-        bool valid_ = true;     // 观测模型是否有效（数据质量检查）
-        bool converge_ = true;  // 优化是否收敛（迭代收敛状态）
+        bool valid_ = true;     // 观测模型是否有效；例如有效匹配点太少时会置false并放弃本次更新
+        bool converge_ = true;  // 当前迭代是否收敛，由ESKF::Update()根据dx阈值更新
 
-        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> R_;  // 观测噪声矩阵，保留给动态残差维度使用
+        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> R_;  // 预留的观测噪声矩阵，当前Update主流程未直接使用
 
-        /// NOTE 我们还是传H^T H 比较好，光传一个H会因为残差维度不对导致没法融合各类残差。
-        /// 观测函数只需要把每一项残差贡献累加到这两个量里。
-        Eigen::Matrix<double, pose_obs_dim_, pose_obs_dim_> HTH_;  // 位姿观测的信息矩阵近似 H^T H
-        Eigen::Matrix<double, pose_obs_dim_, 1> HTr_;              // 位姿观测的残差投影 H^T r
+        /// 信息矩阵近似：累加每个残差项的H_j^T H_j，当前只约束6维位姿。
+        Eigen::Matrix<double, pose_obs_dim_, pose_obs_dim_> HTH_;
+        /// 信息向量：累加每个残差项的H_j^T r_j，符号约定由观测函数中的残差定义决定。
+        Eigen::Matrix<double, pose_obs_dim_, 1> HTr_;
 
-        double lidar_residual_mean_ = 0;  // Lidar残差均值/鲁棒统计值，用于收敛和AA回退判断
-        double lidar_residual_max_ = 0;   // Lidar最大残差，用于调试观测质量
+        double lidar_residual_mean_ = 0;  // Lidar残差统计值，当前用平方残差中位数衡量本轮匹配质量
+        double lidar_residual_max_ = 0;   // Lidar最大平方残差，用于调试和异常观测分析
     };
 
     /// 用户定义的观测函数：输入当前线性化状态，输出CustomObservationModel中的矩阵和残差信息。
