@@ -903,11 +903,21 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
 
 ///////////////////////////  private method /////////////////////////////////////////////////////////////////////
 
+/**
+ * @brief 根据全部关键帧点云拼接全局地图。
+ * @param use_lio_pose true时使用前端LIO位姿，false时使用关键帧优化位姿。
+ * @param use_voxel 是否对单帧关键帧点云和最终全局点云执行体素滤波。
+ * @param res 体素滤波叶子尺寸，单位m。
+ * @return 拼接并设置好PCD元信息的全局点云。
+ */
 CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res) {
     CloudPtr global_map(new PointCloudType);
 
+    /// 体素滤波器在关键帧级和全局地图级复用，分辨率由调用方指定。
     pcl::VoxelGrid<PointType> voxel;
     voxel.setLeafSize(res, res, res);
+
+    /// 关键帧点云保存在Lidar坐标系下，拼接前需要先变换到IMU坐标系。
     SE3 T_imu_lidar(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized(), offset_t_lidar_fixed_);
 
     for (auto &kf : all_keyframes_) {
@@ -915,6 +925,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
         CloudPtr cloud_filter(new PointCloudType);
 
+        /// 可选地先对单个关键帧点云降采样，降低全局拼接的点数和内存占用。
         if (use_voxel) {
             voxel.setInputCloud(cloud);
             voxel.filter(*cloud_filter);
@@ -925,18 +936,21 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
         CloudPtr cloud_trans(new PointCloudType);
 
+        /// 保存调试地图时可使用原始LIO位姿；保存最终地图时通常使用回环优化后的位姿。
         if (use_lio_pose) {
             pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetLIOPose() * T_imu_lidar).matrix());
         } else {
             pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetOptPose() * T_imu_lidar).matrix());
         }
 
+        /// 将当前关键帧点云累加到世界坐标系下的全局点云。
         *global_map += *cloud_trans;
 
         LOG(INFO) << "kf " << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
     }
 
     CloudPtr global_map_filtered(new PointCloudType);
+    /// 拼接完成后再做一次全局体素滤波，合并关键帧重叠区域中的冗余点。
     if (use_voxel) {
         voxel.setInputCloud(global_map);
         voxel.filter(*global_map_filtered);
@@ -944,6 +958,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
         global_map_filtered = global_map;
     }
 
+    /// 补齐PCL保存PCD时需要的点云组织信息。
     global_map_filtered->is_dense = false;
     global_map_filtered->height = 1;
     global_map_filtered->width = global_map_filtered->size();

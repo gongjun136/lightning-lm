@@ -10,21 +10,32 @@
 
 namespace lightning {
 
+/**
+ * @brief 将完整PCD点云切分为静态chunk地图并保存到磁盘。
+ * @param map 输入的完整点云地图。
+ * @param start_pose 地图起点位姿，会作为功能点写入地图索引。
+ * @param map_path 分块地图保存目录。
+ * @return 转换和保存成功返回true。
+ */
 bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std::string& map_path) {
+    /// 离线转换时以世界坐标原点作为分块地图原点。
     origin_.setZero();
     assert(map != nullptr && !map->empty());
 
     options_.map_path_ = map_path;
+    /// 记录地图起点，后续LoadMapIndex会从索引文件恢复该功能点。
     func_points_.emplace_back(FunctionalPoint("start", start_pose));
 
     chunk_id_ = 0;
 
     for (const auto& pt : map->points) {
+        /// 根据点的二维平面坐标找到所属chunk网格。
         Vec2i grid = Pos2Grid(math::ToEigen<float, 2, PointType>(pt));
         auto iter = static_chunks_.find(grid);
         if (iter != static_chunks_.end()) {
             iter->second->AddPoint(pt);
         } else {
+            /// 首次遇到该网格时创建新的静态chunk，并建立ID到网格的反查表。
             int id = chunk_id_;
             auto new_chunk = std::make_shared<MapChunk>(id, grid, "");
             static_chunks_.emplace(grid, new_chunk);
@@ -33,6 +44,7 @@ bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std
         }
     }
 
+    /// 将切分后的静态chunk和索引文件写入目标目录。
     SaveToBin(false);
     return true;
 }

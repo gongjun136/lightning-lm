@@ -172,8 +172,14 @@ void SlamSystem::StartSLAM(std::string map_name) {
     running_ = true;
 }
 
+/**
+ * @brief ROS2保存地图服务回调。
+ * @param request 保存地图请求，map_id会作为当前地图名和默认目录名。
+ * @param response 保存地图响应，response为0表示已完成保存流程。
+ */
 void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
                          SaveMapService::Response::SharedPtr response) {
+    /// 服务请求中的地图ID覆盖当前地图名，确保后续默认路径与请求一致。
     map_name_ = request->map_id;
     std::string save_path = "./data/" + map_name_ + "/";
 
@@ -181,6 +187,13 @@ void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
     response->response = 0;
 }
 
+/**
+ * @brief 将当前SLAM地图保存到指定目录。
+ * @param path 地图保存目录；为空时使用./data/{map_name_}/作为默认目录。
+ *
+ * 保存内容包括全局点云global.pcd、分块地图数据，以及可选的ROS导航兼容栅格地图
+ * map.pgm和map.yaml。若目标目录已存在，会先清空再重新创建。
+ */
 void SlamSystem::SaveMap(const std::string& path) {
     std::string save_path = path;
     if (save_path.empty()) {
@@ -189,6 +202,7 @@ void SlamSystem::SaveMap(const std::string& path) {
 
     LOG(INFO) << "slam map saving to " << save_path;
 
+    /// 重建目标目录，避免旧地图文件残留影响本次保存结果。
     if (!std::filesystem::exists(save_path)) {
         std::filesystem::create_directories(save_path);
     } else {
@@ -197,9 +211,11 @@ void SlamSystem::SaveMap(const std::string& path) {
     }
 
     // auto global_map_no_loop = lio_->GetGlobalMap(true);
+    /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
     auto global_map = lio_->GetGlobalMap(!options_.with_loop_closing_);
     // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
 
+    /// 将完整点云转换为项目内部的分块地图格式，起始关键帧位姿用于建立局部地图基准。
     TiledMap::Options tm_options;
     tm_options.map_path_ = save_path;
 
@@ -212,11 +228,12 @@ void SlamSystem::SaveMap(const std::string& path) {
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
     if (options_.with_gridmap_) {
-        /// 存为ROS兼容的模式
+        /// 存为ROS导航兼容的栅格地图格式。
         auto map = g2p5_->GetNewestMap()->ToROS();
         const int width = map.info.width;
         const int height = map.info.height;
 
+        /// ROS OccupancyGrid原点在左下，PGM图像原点在左上，因此写图时需要翻转y轴。
         cv::Mat nav_image(height, width, CV_8UC1);
         for (int y = 0; y < height; ++y) {
             const int rowStartIndex = y * width;
@@ -235,7 +252,7 @@ void SlamSystem::SaveMap(const std::string& path) {
 
         cv::imwrite(save_path + "/map.pgm", nav_image);
 
-        /// yaml
+        /// 写入ROS导航地图元数据，与map.pgm组成标准可加载地图。
         std::ofstream yamlFile(save_path + "/map.yaml");
         if (!yamlFile.is_open()) {
             LOG(ERROR) << "failed to write map.yaml";

@@ -786,7 +786,7 @@ h_j =
 {}^{l}\mathbf{n}_f^{\mathsf{T}}{}^{l}\mathbf{p}_{lj}+d_f.
 $$
 
-若
+若在高度障碍物区间
 
 $$
 h_{\min} < h_j < h_{\max},
