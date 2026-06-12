@@ -154,12 +154,20 @@ inline void ImuProcess::SetGyrBiasCov(const Vec3d &b_g) { cov_bias_gyr_ = b_g; }
 
 inline void ImuProcess::SetAccBiasCov(const Vec3d &b_a) { cov_bias_acc_ = b_a; }
 
+/**
+ * @brief 使用静止阶段IMU量测初始化ESKF状态和IMU噪声统计。
+ *
+ * @param meas 当前Lidar帧对应的IMU量测集合。
+ * @param kf_state 待初始化的ESKF状态，函数会写入重力方向、陀螺零偏和初始协方差。
+ * @param N 初始化阶段累计使用的IMU样本数，函数内会随量测递增。
+ *
+ * @details 初始化阶段假设载体基本静止：加速度均值主要反映重力方向，
+ *          角速度均值作为初始陀螺零偏。函数同时用增量形式估计加速度计
+ *          和陀螺仪噪声方差，避免保存全部历史IMU样本。
+ */
 inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N) {
-    /** 1. initializing the gravity_, gyro bias, acc and gyro covariance
-     ** 2. normalize the acceleration measurenments to unit gravity_ **/
-
     Vec3d cur_acc, cur_gyr;
-    // 初始状态：b_first_frame_ 为 true 时，用第一个IMU数据初始化均值
+    // 首帧初始化均值和样本计数，后续量测在此基础上做在线统计。
     if (b_first_frame_) {
         Reset();
         N = 1;  // 数据量计数
@@ -169,22 +177,39 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
         mean_acc_ = imu_acc;
         mean_gyr_ = gyr_acc;
     }
-    // 增量更新：后续每个IMU数据到来时，使用增量公式更新
+
+    // 遍历当前批次IMU，在线更新加速度和角速度的均值、方差。
     for (const auto &imu : meas.imu_) {
         const auto &imu_acc = imu->linear_acceleration;
         const auto &gyr_acc = imu->angular_velocity;
         cur_acc = imu_acc;
         cur_gyr = gyr_acc;
 
-        mean_acc_ += (cur_acc - mean_acc_) / N;
-        mean_gyr_ += (cur_gyr - mean_gyr_) / N;
-        // [gj-2025-11-25] 修正：(N-1.0)/(N * N) -> 1.0 / (N + 1)
-        cov_acc_ = cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * 1.0 / (N + 1);
-        cov_gyr_ = cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * 1.0 / (N + 1);
+        // 先记录相对旧均值的偏差，再用该偏差更新均值和方差。
+        const Vec3d delta_acc = cur_acc - mean_acc_;
+        const Vec3d delta_gyr = cur_gyr - mean_gyr_;
+
+        mean_acc_ += delta_acc / N;
+        mean_gyr_ += delta_gyr / N;
+        // [gj-2025-11-25] 错误写法：这里的 mean_acc_/mean_gyr_ 已经更新，
+        // (cur - mean) 不再是文档公式中的旧均值差 delta。
+        // cov_acc_ = cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * (N - 1.0) / (N * N);
+        // cov_gyr_ = cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * (N - 1.0) / (N * N);
+        // 修正：当前 N 表示加入当前样本后的样本数，delta_* 是相对更新前均值的差。
+        // 按无偏样本方差递推式：
+        // cov_N = cov_{N-1} * (N - 2) / (N - 1) + delta^2 / N。
+        if (N == 1) {
+            cov_acc_.setZero();
+            cov_gyr_.setZero();
+        } else {
+            cov_acc_ = cov_acc_ * (N - 2.0) / (N - 1.0) + delta_acc.cwiseProduct(delta_acc) / N;
+            cov_gyr_ = cov_gyr_ * (N - 2.0) / (N - 1.0) + delta_gyr.cwiseProduct(delta_gyr) / N;
+        }
 
         N++;
     }
 
+    // 将静止统计结果写入ESKF：加速度均值反向为重力方向，角速度均值为陀螺零偏。
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
     init_state.grav_ = -mean_acc_ / mean_acc_.norm() * G_m_s2;
@@ -194,6 +219,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     // 计算并缓存IMU缩放因子
     // meas_acc_scale_ = G_m_s2 / mean_acc_.norm();  // TODO，解决冲突
 
+    // 初始化状态协方差；陀螺零偏给较小先验，其余块保持单位阵。
     auto init_P = kf_state.GetP();
     init_P.setIdentity();
     init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kBgIdx, NavState::kBgIdx) =
@@ -202,6 +228,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
     // LOG(INFO) << "P diag: " << init_P.diagonal().transpose();
 
+    // 缓存当前批次最后一条IMU，供后续点云去畸变形成跨帧积分区间。
     last_imu_ = meas.imu_.back();
 }
 
@@ -368,6 +395,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             // [gj-2025-11-26] 修正：使用 0.5*dt 以匹配 exp 的 2*scale*|vec| 定义
             // R_i表示该点采集时刻的IMU姿态：从区间起点姿态R_imu按角速度积分dt得到。
             Mat3d R_i(R_imu * math::exp(angvel_avr, 0.5 * dt).matrix());  // 计算点采集时刻的IMU旋转矩阵
+            // Mat3d R_i(R_imu * math::exp(angvel_avr, dt).matrix());
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);  // 点云原始位置
             // T_ei是“点采集时刻IMU位置”相对“扫描结束时刻IMU位置”的位移，表达在世界系。
@@ -429,8 +457,10 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
             imu_need_init_ = false;
 
             // 最终预测噪声使用外部配置的尺度参数，避免静止初始化统计值过小导致滤波器过度自信。
-            cov_acc_ = cov_acc_scale_;
-            cov_gyr_ = cov_gyr_scale_;
+            // 这发生在 IMU 初始化累计次数超过 max_init_count_ 后。
+            // 前面 IMUInit() 里在线估计出来的 cov_acc_ / cov_gyr_，到了这里会被外部配置的 cov_acc_scale_ / cov_gyr_scale_ 覆盖掉。
+            // cov_acc_ = cov_acc_scale_;
+            // cov_gyr_ = cov_gyr_scale_;
             const double mean_acc_norm = mean_acc_.norm();
 
             // 根据静止时加速度均值的模长推断原始加速度单位：

@@ -127,6 +127,8 @@ class LoopClosing {
     Mat6d info_motion_ = Mat6d::Identity();  ///< 相邻关键帧运动约束的信息矩阵。
     Mat6d info_loops_ = Mat6d::Identity();   ///< 回环约束的信息矩阵。
 
+    SE3 T_imu_lidar_ = SE3(Quatd::Identity(), Vec3d::Zero());  ///< Lidar到IMU的固定外参。
+
     std::vector<std::shared_ptr<miao::VertexSE3>> kf_vert_;  ///< 位姿图中的关键帧SE3顶点。
     std::vector<std::shared_ptr<miao::EdgeSE3>> edge_loops_;  ///< 回环检测生成的SE3约束边。
 

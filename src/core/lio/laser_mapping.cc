@@ -908,6 +908,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
     pcl::VoxelGrid<PointType> voxel;
     voxel.setLeafSize(res, res, res);
+    SE3 T_imu_lidar(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized(), offset_t_lidar_fixed_);
 
     for (auto &kf : all_keyframes_) {
         CloudPtr cloud = kf->GetCloud();
@@ -925,9 +926,9 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
         CloudPtr cloud_trans(new PointCloudType);
 
         if (use_lio_pose) {
-            pcl::transformPointCloud(*cloud_filter, *cloud_trans, kf->GetLIOPose().matrix());
+            pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetLIOPose() * T_imu_lidar).matrix());
         } else {
-            pcl::transformPointCloud(*cloud_filter, *cloud_trans, kf->GetOptPose().matrix());
+            pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetOptPose() * T_imu_lidar).matrix());
         }
 
         *global_map += *cloud_trans;

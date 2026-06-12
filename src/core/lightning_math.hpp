@@ -271,34 +271,27 @@ inline std::pair<scalar, scalar> cos_sinc_sqrt(const scalar& x2) {
 }
 
 /**
- * @brief SO(3) 李代数到李群的指数映射 exp : so(3) → SO(3)
+ * @brief 根据三维向量构造单位四元数形式的SO(3)旋转。
  *
- * 计算给定李代数向量 \p vec （轴角形式）在缩放因子 \p scale 下的 SO(3) 旋转。
+ * @param[in] vec 旋转轴相关向量，方向表示旋转轴，模长参与计算四元数半角。
+ * @param[in] scale 对 \p vec 的缩放系数，常用于传入时间步长或插值比例。
+ * @return 由单位四元数表示的SO(3)旋转。
  *
- * 数学含义（设 θ = ||vec||，ω = vec / θ，φ = scale * θ）：
- * - 本实现内部计算：
- *      cos_sinc_sqrt(scale² * θ²) = (cos(φ), sinc(φ)), 其中 sinc(φ) = sin(φ) / φ
- * - 随后构造四元数：
- *      q = [ cos(φ),  ω * sin(φ) ]
- * - 对应的 SO(3) 旋转角为：
- *      2φ = 2 * scale * θ
+ * @details 记 a = scale * ||vec||，axis = vec / ||vec||。本函数构造的
+ *          四元数实部为 cos(a)，虚部为 axis * sin(a)。代码中通过
+ *          sinc(a) = sin(a) / a 计算虚部，可以在 vec 很小时避免除零。
+ *          由于单位四元数用半角表示旋转，所以最终SO(3)旋转角是
+ *          theta = 2 * a。
  *
- * 因此：
- * - 当 scale = 1 时，旋转角为 2 * ||vec||；
- * - 若希望得到“标准”轴角旋转 exp(ωθ)（旋转角为 θ）
- *   1.可将输入改为 0.5 * ωθ，记 scale = 0.5;
- *   2.调用本函数时令 vec 预先缩放为 0.5 * vec。
- *
- * @param[in] vec   so(3) 李代数向量（轴角向量，方向为旋转轴，模长为基准角度 θ）
- * @param[in] scale 缩放因子（通常为时间步长 dt 或插值系数）
- * @return          对应的 SO(3) 旋转（以四元数形式存储）
+ * @note 如果 \p vec 表示标准轴角旋转向量，也就是 ||vec|| 已经等于
+ *       期望旋转角 theta，则应传入 \p scale = 0.5，或在调用前将
+ *       \p vec 缩放为一半。
  */
 inline SO3 exp(const Vec3d& vec, const double& scale = 1) {
     double norm2 = vec.squaredNorm();
     std::pair<double, double> cos_sinc = cos_sinc_sqrt(scale * scale * norm2);
-    // result = mult * vec = scale * sinc(φ) * vec
-    //         = scale * sinc(φ) * (ω * θ)
-    //         = ω * sin(φ)
+
+    // 四元数向量部：scale * sinc(a) * vec = axis * sin(a)。
     double mult = cos_sinc.second * scale;
     Vec3d result = mult * vec;
     return SO3(Quatd(cos_sinc.first, result[0], result[1], result[2]));
