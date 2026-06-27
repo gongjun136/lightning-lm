@@ -293,6 +293,15 @@ void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
     lio_->ProcessIMU(imu);
 }
 
+NavState SlamSystem::GetLioState() const {
+    if (!lio_) {
+        NavState state;
+        state.pose_is_ok_ = false;
+        return state;
+    }
+    return lio_->GetState();
+}
+
 // 模板化的点云处理函数实现
 template <typename PointCloudMsgType>
 void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {

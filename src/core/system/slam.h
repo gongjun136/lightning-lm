@@ -16,6 +16,7 @@
 #include "common/eigen_types.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
+#include "common/nav_state.h"
 
 namespace lightning {
 
@@ -107,6 +108,13 @@ class SlamSystem {
      */
     template <typename PointCloudMsgType>
     void ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud);
+
+    /**
+     * @brief 获取当前LIO前端状态。
+     *
+     * 离线评估程序用该接口导出TUM轨迹；若LIO尚未初始化，返回pose_is_ok_=false的无效状态。
+     */
+    NavState GetLioState() const;
 
     /**
      * @brief 在线模式下启动ROS2事件循环。

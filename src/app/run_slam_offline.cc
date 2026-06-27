@@ -5,6 +5,9 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <fstream>
+#include <iomanip>
+
 #include "core/system/slam.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
@@ -15,6 +18,21 @@
 
 DEFINE_string(input_bag, "", "输入数据包");
 DEFINE_string(config, "./config/default.yaml", "配置文件");
+DEFINE_string(output_tum, "", "输出TUM轨迹文件，为空则不导出");
+
+namespace {
+void WriteTumState(std::ofstream& tum, const lightning::NavState& state, double& last_timestamp) {
+    if (!tum.is_open() || !state.pose_is_ok_ || state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) {
+        return;
+    }
+
+    const auto q = state.rot_.unit_quaternion();
+    tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12)
+        << state.pos_.x() << " " << state.pos_.y() << " " << state.pos_.z() << " "
+        << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+    last_timestamp = state.timestamp_;
+}
+}  // namespace
 
 /// 运行一个LIO前端，带可视化
 int main(int argc, char** argv) {
@@ -51,31 +69,51 @@ int main(int argc, char** argv) {
 
     lightning::YAML_IO yaml(FLAGS_config);
     std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
+    std::string livox_lidar_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
     std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
 
-    rosbag
-        /// IMU 的处理
-        .AddImuHandle(imu_topic,
-                      [&slam](IMUPtr imu) {
-                          slam.ProcessIMU(imu);
-                          return true;
-                      })
+    std::ofstream tum;
+    double last_tum_timestamp = 0.0;
+    if (!FLAGS_output_tum.empty()) {
+        tum.open(FLAGS_output_tum);
+        if (!tum.is_open()) {
+            LOG(ERROR) << "failed to open output_tum: " << FLAGS_output_tum;
+            return -1;
+        }
+        LOG(INFO) << "writing TUM trajectory to " << FLAGS_output_tum;
+    }
 
-        /// lidar 的处理
-        .AddPointCloud2Handle(lidar_topic,
-                              [&slam](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-                                  slam.ProcessLidar(msg);
-                                  return true;
-                              })
-        /// livox 的处理
-        .AddLivoxCloudHandle("/livox/lidar",
-                             [&slam](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                                 slam.ProcessLidar(cloud);
-                                 return true;
-                             })
-        .Go();
+    /// IMU 的处理
+    rosbag.AddImuHandle(imu_topic,
+                        [&slam](IMUPtr imu) {
+                            slam.ProcessIMU(imu);
+                            return true;
+                        });
+
+    /// PointCloud2 lidar 的处理
+    if (!lidar_topic.empty() && lidar_topic != livox_lidar_topic) {
+        rosbag.AddPointCloud2Handle(lidar_topic,
+                                    [&slam, &tum, &last_tum_timestamp](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+                                        slam.ProcessLidar(msg);
+                                        WriteTumState(tum, slam.GetLioState(), last_tum_timestamp);
+                                        return true;
+                                    });
+    }
+
+    /// Livox CustomMsg lidar 的处理
+    rosbag.AddLivoxCloudHandle(livox_lidar_topic,
+                               [&slam, &tum, &last_tum_timestamp](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                                   slam.ProcessLidar(cloud);
+                                   WriteTumState(tum, slam.GetLioState(), last_tum_timestamp);
+                                   return true;
+                               });
+
+    rosbag.Go();
 
     slam.SaveMap("");
+    if (tum.is_open()) {
+        tum.close();
+    }
     Timer::PrintAll();
 
     LOG(INFO) << "done";
