@@ -1,5 +1,6 @@
 #include "pointcloud_preprocess.h"
 #include <execution>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include "common/constant.h"
 
 #include <glog/logging.h>
@@ -14,6 +15,10 @@ void PointCloudPreprocess::Set(LidarType lid_type, double bld, int pfilt_num) {
 
 void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg, PointCloudType::Ptr &pcl_out) {
     switch (lidar_type_) {
+        case LidarType::AVIA:
+            LivoxPointCloud2Handler(msg);
+            break;
+
         case LidarType::OUST64:
             Oust64Handler(msg);
             break;
@@ -31,6 +36,76 @@ void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 ::SharedP
             break;
     }
     *pcl_out = cloud_out_;
+}
+
+void PointCloudPreprocess::LivoxPointCloud2Handler(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+    cloud_out_.clear();
+    cloud_full_.clear();
+
+    const double head_time = msg->header.stamp.sec + msg->header.stamp.nanosec / 1e9;
+    constexpr double kAbsoluteTimeThreshold = 1e6;
+    const int filter_num = point_filter_num_ > 0 ? point_filter_num_ : 1;
+    cloud_out_.reserve(msg->width * msg->height / filter_num);
+
+    sensor_msgs::PointCloud2ConstIterator<float> iter_x(*msg, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_y(*msg, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_z(*msg, "z");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_intensity(*msg, "intensity");
+    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> iter_tag(*msg, "tag");
+    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> iter_line(*msg, "line");
+    sensor_msgs::PointCloud2ConstIterator<double> iter_timestamp(*msg, "timestamp");
+
+    int point_index = 0;
+    for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z, ++iter_intensity, ++iter_tag, ++iter_line,
+                               ++iter_timestamp, ++point_index) {
+        if (point_index % filter_num != 0) {
+            continue;
+        }
+
+        if (*iter_line >= num_scans_) {
+            continue;
+        }
+
+        const std::uint8_t tag = *iter_tag;
+        if (((tag & 0x30) != 0x10) && ((tag & 0x30) != 0x00)) {
+            continue;
+        }
+
+        const float x = *iter_x;
+        const float y = *iter_y;
+        const float z = *iter_z;
+        const double range = static_cast<double>(x) * x + static_cast<double>(y) * y + static_cast<double>(z) * z;
+        if (range < (blind_ * blind_)) {
+            continue;
+        }
+
+        if (z < height_min_ || z > height_max_) {
+            continue;
+        }
+
+        PointType added_pt;
+        added_pt.x = x;
+        added_pt.y = y;
+        added_pt.z = z;
+        added_pt.intensity = *iter_intensity;
+
+        const double timestamp = *iter_timestamp;
+        if (timestamp > kAbsoluteTimeThreshold) {
+            added_pt.time = (timestamp - head_time) * 1e3;
+        } else {
+            added_pt.time = timestamp * 1e3;
+        }
+
+        if (added_pt.time < -1e-3) {
+            continue;
+        }
+
+        cloud_out_.points.push_back(added_pt);
+    }
+
+    cloud_out_.width = cloud_out_.size();
+    cloud_out_.height = 1;
+    cloud_out_.is_dense = false;
 }
 
 void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg,

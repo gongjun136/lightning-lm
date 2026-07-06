@@ -256,6 +256,7 @@ class LaserMapping {
     NavState state_point_;  // 当前Lidar帧结束时刻的前端状态
 
     bool use_aa_ = false;  // ESKF观测更新是否使用Anderson Acceleration
+    bool propagate_velocity_ = false;  // 是否在ESKF名义状态中传播速度
 
     std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 

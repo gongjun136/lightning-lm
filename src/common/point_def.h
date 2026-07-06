@@ -10,6 +10,7 @@
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <cstdint>
 
 /// 地图点云的一些定义
 
@@ -78,6 +79,30 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
                                       (std::uint8_t, ring, ring)
                                       (std::uint16_t, ambient, ambient)
                                       (std::uint32_t, range, range)
+)
+// clang-format on
+
+namespace livox_ros {
+struct EIGEN_ALIGN16 Point {
+    PCL_ADD_POINT4D
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    float intensity;
+    std::uint8_t tag;
+    std::uint8_t line;
+    double timestamp;
+};
+}  // namespace livox_ros
+
+// clang-format off
+POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::Point,
+                                  (float, x, x)
+                                      (float, y, y)
+                                      (float, z, z)
+                                      (float, intensity, intensity)
+                                      (std::uint8_t, tag, tag)
+                                      (std::uint8_t, line, line)
+                                      (double, timestamp, timestamp)
 )
 // clang-format on
 

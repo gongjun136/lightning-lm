@@ -209,10 +209,16 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
         N++;
     }
 
-    // 将静止统计结果写入ESKF：加速度均值反向为重力方向，角速度均值为陀螺零偏。
+    // 将静止统计结果写入ESKF：用加速度均值对齐初始姿态，重力固定在世界系-z，角速度均值为陀螺零偏。
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
-    init_state.grav_ = -mean_acc_ / mean_acc_.norm() * G_m_s2;
+    const double mean_acc_norm = mean_acc_.norm();
+    if (mean_acc_norm > 1e-6) {
+        const Vec3d acc_dir = mean_acc_ / mean_acc_norm;
+        init_state.rot_ = SO3(Quatd::FromTwoVectors(acc_dir, Vec3d::UnitZ()).normalized());
+    }
+
+    init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;
     kf_state.ChangeX(init_state);
 
@@ -305,10 +311,14 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         acc = acc_avr;
         gyro = angvel_avr;
 
-        if (dt > 0.1) {
-            LOG(ERROR) << "get abnormal dt: " << dt;
-            kf_state.SetTime((*it_imu)->timestamp);
-            break;
+        if (dt <= 0.0) {
+            continue;
+        }
+
+        const double warn_dt = std::max(0.1, 1.5 * static_cast<double>(lo::lidar_time_interval));
+        if (dt > warn_dt) {
+            LOG(WARNING) << "propagate over long imu interval: " << dt << ", lidar: " << pcl_beg_time << " -> "
+                         << pcl_end_time;
         }
         // Q_是ESKF预测用的过程噪声。这里把初始化阶段估计出的陀螺仪、加速度计和零偏噪声写进去。
         // TODO.在IMU初始化完成后，其实这个方差就不会变

@@ -49,6 +49,7 @@ class PointCloudPreprocess {
     }
 
    private:
+    void LivoxPointCloud2Handler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
     void Oust64Handler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
     void RoboSenseHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
     void VelodyneHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);

@@ -51,6 +51,9 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     // f_是名义状态连续时间导数 f(x,u)，例如位置导数、姿态角速度、速度导数。
     // f_x_是连续动力学对误差状态的雅可比 F_c，后面会通过 I + F_c * dt 做一阶离散化。
     Eigen::Matrix<double, NavState::full_dim, 1> f_ = x_.get_f(gyro, acce);
+    if (!options_.propagate_velocity_) {
+        f_.template segment<NavState::kBlockDim>(NavState::kVelIdx).setZero();
+    }
     Eigen::Matrix<double, NavState::full_dim, state_dim_> f_x_ = x_.df_dx(acce);
 
     // f_w_是连续动力学对过程噪声的雅可比 G_c。

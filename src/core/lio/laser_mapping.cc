@@ -30,6 +30,7 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.epsi_ = 1e-3 * Eigen::Matrix<double, ESKF::state_dim_, 1>::Ones();
     // 使用Lambda表达式将LaserMapping::ObsModel方法绑定到lidar_obs_func_
     eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { ObsModel(s, obs); };
+    eskf_options.propagate_velocity_ = propagate_velocity_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
 
@@ -66,6 +67,9 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         ivox_options_.resolution_ = yaml["fasterlio"]["ivox_grid_resolution"].as<float>();
         ivox_nearby_type = yaml["fasterlio"]["ivox_nearby_type"].as<int>();
         use_aa_ = yaml["fasterlio"]["use_aa"].as<bool>();
+        if (yaml["fasterlio"]["propagate_velocity"]) {
+            propagate_velocity_ = yaml["fasterlio"]["propagate_velocity"].as<bool>();
+        }
 
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;

@@ -115,6 +115,7 @@ class ESKF {
         double predict_cov_inflation_ = 1.01;        // 预测后协方差膨胀系数，避免滤波器过度自信
         double min_cov_diag_ = 1e-9;                 // 协方差对角线下限，防止数值退化到非正定
         double degeneracy_threshold_ratio_ = 1e-3;   // 退化方向判定阈值，相对最大特征值设置
+        bool propagate_velocity_ = false;            // 是否在名义状态中传播速度；SANY MID360需打开以匹配Voxel-SLAM。
         double degeneracy_cov_inflation_ = 1.02;     // 发现退化方向后，对位姿协方差的膨胀系数
         double max_update_translation_step_ = 0.5;   // 单次迭代允许的最大平移修正量
         double max_update_rotation_step_deg_ = 5.0;  // 单次迭代允许的最大旋转修正量，单位deg
