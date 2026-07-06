@@ -47,9 +47,13 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     if (options_.with_ui_) {
         ui_ = std::make_shared<ui::PangolinWindow>();
         ui_->SetCurrentScanSize(1);
-        ui_->Init();
-
-        lidar_loc_->SetUI(ui_);
+        if (ui_->Init()) {
+            lidar_loc_->SetUI(ui_);
+        } else {
+            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            ui_.reset();
+            options_.with_ui_ = false;
+        }
 
         // lio_->SetUI(ui_);
     }

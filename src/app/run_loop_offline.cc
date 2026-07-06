@@ -37,7 +37,10 @@ int main(int argc, char** argv) {
     };
 
     auto ui = std::make_shared<ui::PangolinWindow>();
-    ui->Init();
+    if (!ui->Init()) {
+        LOG(ERROR) << "failed to init Pangolin UI";
+        return -1;
+    }
     lio.SetUI(ui);
 
     auto loop = std::make_shared<LoopClosing>();

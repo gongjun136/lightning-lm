@@ -19,6 +19,7 @@
 DEFINE_string(input_bag, "", "输入数据包");
 DEFINE_string(config, "./config/default.yaml", "配置文件");
 DEFINE_string(output_tum, "", "输出TUM轨迹文件，为空则不导出");
+DEFINE_bool(wait_ui, true, "离线处理完成后是否等待3D UI窗口关闭");
 
 namespace {
 void WriteTumState(std::ofstream& tum, const lightning::NavState& state, double& last_timestamp) {
@@ -115,6 +116,10 @@ int main(int argc, char** argv) {
         tum.close();
     }
     Timer::PrintAll();
+
+    if (FLAGS_wait_ui) {
+        slam.WaitForUIQuit();
+    }
 
     LOG(INFO) << "done";
 

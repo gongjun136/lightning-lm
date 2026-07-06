@@ -17,7 +17,10 @@ int main(int argc, char** argv) {
     google::ParseCommandLineFlags(&argc, &argv, true);
 
     lightning::ui::PangolinWindow ui;
-    ui.Init();
+    if (!ui.Init()) {
+        LOG(ERROR) << "failed to init Pangolin UI";
+        return -1;
+    }
 
     while (!ui.ShouldQuit()) {
         sleep(1);

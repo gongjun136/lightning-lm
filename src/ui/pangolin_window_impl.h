@@ -65,6 +65,9 @@ class PangolinWindowImpl {
     std::mutex mtx_reset_;
 
     std::atomic<bool> exit_flag_;
+    std::atomic<bool> should_quit_ = true;
+    std::atomic<bool> render_ready_ = false;
+    std::atomic<bool> render_finished_ = false;
 
     std::atomic<bool> cloud_global_need_update_;   // 全局点云是否需要更新
     std::atomic<bool> cloud_dynamic_need_update_;  // 动态点云是否需要更新

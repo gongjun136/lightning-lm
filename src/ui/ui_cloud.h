@@ -42,7 +42,11 @@ class UiCloud {
    private:
     Vec4f IntensityToRgbPCL(const float& intensity) const {
         int index = int(intensity * 3);
-        index = index % intensity_color_table_pcl_.size();
+        const int table_size = static_cast<int>(intensity_color_table_pcl_.size());
+        index = index % table_size;
+        if (index < 0) {
+            index += table_size;
+        }
         return intensity_color_table_pcl_[index];
     }
 

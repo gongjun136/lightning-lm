@@ -11,8 +11,10 @@
 #include "wrapper/ros_utils.h"
 
 #include <yaml-cpp/yaml.h>
+#include <chrono>
 #include <filesystem>
 #include <opencv2/opencv.hpp>
+#include <thread>
 
 namespace lightning {
 
@@ -70,10 +72,14 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     if (options_.with_visualization_) {
         LOG(INFO) << "slam with 3D UI";
         ui_ = std::make_shared<ui::PangolinWindow>();
-        ui_->Init();
-
-        // 将 UI 界面设置到 LIO 模块
-        lio_->SetUI(ui_);
+        if (ui_->Init()) {
+            // 将 UI 界面设置到 LIO 模块
+            lio_->SetUI(ui_);
+        } else {
+            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            ui_.reset();
+            options_.with_visualization_ = false;
+        }
     }
 
     // 根据配置初始化 3D 到 2D 栅格地图转换模块
@@ -347,6 +353,17 @@ template void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::
 void SlamSystem::Spin() {
     if (options_.online_mode_ && node_ != nullptr) {
         spin(node_);
+    }
+}
+
+void SlamSystem::WaitForUIQuit() const {
+    if (!ui_) {
+        return;
+    }
+
+    LOG(INFO) << "waiting for 3D UI window to close";
+    while (!ui_->ShouldQuit()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 

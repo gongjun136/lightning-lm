@@ -61,5 +61,14 @@ target_link_libraries(test_ui
         ${third_party_libs}
 )
 
+add_executable(test_ui_init_quit
+        test_ui_init_quit.cc
+)
+
+target_link_libraries(test_ui_init_quit
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
 install(TARGETS run_slam_offline run_slam_online run_loc_offline run_loc_online
         DESTINATION lib/${PROJECT_NAME})

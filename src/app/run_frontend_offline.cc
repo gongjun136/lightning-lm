@@ -46,7 +46,10 @@ int main(int argc, char** argv) {
     map.Init(FLAGS_config);
 
     auto ui = std::make_shared<ui::PangolinWindow>();
-    ui->Init();
+    if (!ui->Init()) {
+        LOG(ERROR) << "failed to init Pangolin UI";
+        return -1;
+    }
     lio.SetUI(ui);
 
     Keyframe::Ptr cur_kf = nullptr;

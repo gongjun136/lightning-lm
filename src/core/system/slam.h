@@ -121,6 +121,13 @@ class SlamSystem {
      */
     void Spin();
 
+    /**
+     * @brief 如果启用了3D UI，则阻塞等待用户关闭窗口。
+     *
+     * 离线bag回放结束后使用，避免可视化窗口在处理完成后立即析构关闭。
+     */
+    void WaitForUIQuit() const;
+
    private:
     /**
      * @brief ROS2保存地图服务的回调实现。

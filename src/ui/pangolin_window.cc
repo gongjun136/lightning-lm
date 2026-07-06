@@ -1,5 +1,8 @@
 #include "ui/pangolin_window_impl.h"
 
+#include <chrono>
+#include <thread>
+
 namespace lightning::ui {
 
 PangolinWindow::PangolinWindow() { impl_ = std::make_shared<PangolinWindowImpl>(); }
@@ -15,6 +18,15 @@ bool PangolinWindow::Init() {
     // 创建渲染线程
     if (inited) {
         impl_->render_thread_ = std::thread([this]() { impl_->Render(); });
+        while (!impl_->render_ready_.load() && !impl_->render_finished_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!impl_->render_ready_.load()) {
+            if (impl_->render_thread_.joinable()) {
+                impl_->render_thread_.join();
+            }
+            return false;
+        }
     }
     return inited;
 }
@@ -28,12 +40,7 @@ void PangolinWindow::Quit() {
     } else {
         return;
     }
-    impl_->DeInit();
-    // // [gj-2025-11-26] 待修复bug：
-    // 确保有当前上下文再做 OpenGL / Pangolin 清理
     LOG(INFO) << "PangolinWindow deconstruct";
-    // pangolin::BindToContext(impl_->GetWindowName());
-    // pangolin::DestroyWindow(impl_->GetWindowName());
 }
 
 void PangolinWindow::UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud) {
@@ -103,6 +110,6 @@ void PangolinWindow::SetCurrentScanSize(int current_scan_size) { impl_->max_size
 
 void PangolinWindow::SetTImuLidar(const SE3& T_imu_lidar) { impl_->T_imu_lidar_ = T_imu_lidar; }
 
-bool PangolinWindow::ShouldQuit() { return pangolin::ShouldQuit(); }
+bool PangolinWindow::ShouldQuit() { return impl_->should_quit_.load(); }
 
 }  // namespace lightning::ui

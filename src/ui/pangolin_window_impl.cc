@@ -1,8 +1,13 @@
 #include <pangolin/display/default_font.h>
 #include <iomanip>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <thread>
+
+#ifdef __linux__
+extern "C" int XInitThreads();
+#endif
 
 #include "common/options.h"
 #include "common/std_types.h"
@@ -12,17 +17,37 @@
 namespace lightning::ui {
 
 bool PangolinWindowImpl::Init() {
-    // create a window and bind its context to the main thread
-    pangolin::CreateWindowAndBind(win_name_, win_width_, win_height_);
+    exit_flag_.store(false);
+    should_quit_.store(false);
+    render_ready_.store(false);
+    render_finished_.store(false);
 
-    // 3D mouse handler requires depth testing to be enabled
-    glEnable(GL_DEPTH_TEST);
+    try {
+#ifdef __linux__
+        XInitThreads();
+#endif
+        // create a window and bind its context to the main thread
+        pangolin::CreateWindowAndBind(win_name_, win_width_, win_height_);
 
-    // opengl buffer
-    AllocateBuffer();
+        // 3D mouse handler requires depth testing to be enabled
+        glEnable(GL_DEPTH_TEST);
 
-    // unset the current context from the main thread
-    pangolin::GetBoundWindow()->RemoveCurrent();
+        // opengl buffer
+        AllocateBuffer();
+
+        // unset the current context from the main thread
+        pangolin::GetBoundWindow()->RemoveCurrent();
+    } catch (const std::exception &e) {
+        LOG(ERROR) << "failed to init Pangolin window: " << e.what();
+        should_quit_.store(true);
+        render_finished_.store(true);
+        return false;
+    } catch (...) {
+        LOG(ERROR) << "failed to init Pangolin window";
+        should_quit_.store(true);
+        render_finished_.store(true);
+        return false;
+    }
 
     // 雷达定位轨迹opengl设置
     traj_newest_state_.reset(new ui::UiTrajectory(Vec3f(1.0, 0.0, 0.0)));  // 红色
@@ -67,7 +92,6 @@ void PangolinWindowImpl::Reset(const std::vector<Keyframe::Ptr> &keyframes) {
 }
 
 bool PangolinWindowImpl::DeInit() {
-    ReleaseBuffer();
     return true;
 }
 
@@ -152,7 +176,7 @@ bool PangolinWindowImpl::UpdateCurrentScan() {
         // current_scan_ui_->SetRenderColor(ui::UiCloud::UseColor::CUSTOM_COLOR);
         current_scan_ui_->SetRenderColor(ui::UiCloud::UseColor::HEIGHT_COLOR);
         // current_scan_ui_->SetCustomColor(Vec4f(1.0, 1.0, 1.0, 1.0));
-        // current_scan_ui_->SetPointSize(2.0);
+        current_scan_ui_->SetPointSize(2.0);
 
         current_scan_need_update_.store(false);
 
@@ -358,7 +382,23 @@ void PangolinWindowImpl::CreateDisplayLayout() {
 }
 
 void PangolinWindowImpl::Render() {
-    pangolin::BindToContext(win_name_);
+    should_quit_.store(false);
+    render_ready_.store(false);
+    render_finished_.store(false);
+
+    try {
+        pangolin::BindToContext(win_name_);
+    } catch (const std::exception &e) {
+        LOG(ERROR) << "failed to init Pangolin render context: " << e.what();
+        should_quit_.store(true);
+        render_finished_.store(true);
+        return;
+    } catch (...) {
+        LOG(ERROR) << "failed to init Pangolin render context";
+        should_quit_.store(true);
+        render_finished_.store(true);
+        return;
+    }
 
     // Issue specific OpenGl we might need
     // 启用OpenGL深度测试和混合功能，以支持透明度等效果。
@@ -367,7 +407,7 @@ void PangolinWindowImpl::Render() {
 
     // menu
     pangolin::CreatePanel("menu").SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(menu_width_));
-    pangolin::Var<bool> menu_follow_loc("menu.Follow", false, true);                     // 跟踪实时定位
+    pangolin::Var<bool> menu_follow_loc("menu.Follow", following_loc_, true);            // 跟踪实时定位
     pangolin::Var<bool> menu_draw_frontend_traj("menu.Draw Frontend Traj", true, true);  // 前端实时轨迹
     pangolin::Var<bool> menu_draw_backend_traj("menu.Draw Backend Traj", true, true);    // 后端实时轨迹
     pangolin::Var<bool> menu_reset_3d_view("menu.Reset 3D View", false, false);          // 重置俯视视角
@@ -378,9 +418,15 @@ void PangolinWindowImpl::Render() {
 
     // display layout
     CreateDisplayLayout();
+    render_ready_.store(true);
 
-    exit_flag_.store(false);
-    while (!pangolin::ShouldQuit() && !exit_flag_) {
+    while (!exit_flag_) {
+        const bool should_quit = pangolin::ShouldQuit();
+        should_quit_.store(should_quit);
+        if (should_quit) {
+            break;
+        }
+
         // Clear entire screen
         glClearColor(20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 1.0);
         // 清除了颜色缓冲区（GL_COLOR_BUFFER_BIT）和深度缓冲区（GL_DEPTH_BUFFER_BIT）。
@@ -428,10 +474,11 @@ void PangolinWindowImpl::Render() {
         pangolin::FinishFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    // [gj-2025-11-26] 待修复bug：
-    // unset the current context from the main thread
-    pangolin::GetBoundWindow()->RemoveCurrent();
+    ReleaseBuffer();
     pangolin::DestroyWindow(GetWindowName());
+    should_quit_.store(true);
+    render_ready_.store(false);
+    render_finished_.store(true);
 }
 
 std::string PangolinWindowImpl::GetWindowName() const { return win_name_; }
@@ -446,6 +493,30 @@ void PangolinWindowImpl::AllocateBuffer() {
     gltext_label_state_ = font.Text("ba: [0.0000, 0.0000, 0.0000]");
 }
 
-void PangolinWindowImpl::ReleaseBuffer() {}
+void PangolinWindowImpl::ReleaseBuffer() {
+    plotter_vel_.reset();
+    plotter_vel_baselink_.reset();
+    plotter_bias_acc_.reset();
+    plotter_confidence_.reset();
+    plotter_err_.reset();
+    plotter_err_eval_.reset();
+
+    cloud_map_ui_.clear();
+    cloud_dyn_ui_.clear();
+    current_scan_ui_.reset();
+    scans_.clear();
+
+    if (traj_scans_) {
+        traj_scans_->Clear();
+        traj_scans_.reset();
+    }
+    if (traj_newest_state_) {
+        traj_newest_state_->Clear();
+        traj_newest_state_.reset();
+    }
+
+    gltext_label_global_ = pangolin::GlText();
+    gltext_label_state_ = pangolin::GlText();
+}
 
 }  // namespace lightning::ui
