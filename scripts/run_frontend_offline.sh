@@ -1,4 +1,43 @@
 #!/usr/bin/env bash
+# 通用前端 LIO 离线运行模板，对应 src/app/run_frontend_offline.cc。
+#
+# 适用场景：
+#   只运行前端 LIO，不进入后端 SLAM；用于快速验证里程计、ESKF 参数和前端轨迹精度。
+#
+# 必需环境变量：
+#   LIGHTNING_LM_INPUT_BAG=/path/to/rosbag2
+#       输入 ROS2 bag 目录，例如 .../data/Outdoor01_mid360_ros2。
+#
+# 常用可选环境变量：
+#   LIGHTNING_LM_CONFIG=/path/to/config.yaml
+#       配置文件；默认使用仓库 config/default.yaml。
+#   LIGHTNING_LM_OUT_ROOT=/path/to/output_root
+#       实验输出根目录；默认使用仓库 runs/。
+#   LIGHTNING_LM_WAIT_UI=true|false
+#       离线处理完是否等待 Pangolin UI 关闭；需要可视化时设为 true。
+#   LIGHTNING_LM_MAX_LIDAR_FRAMES=N
+#       只跑前 N 帧点云；0 表示完整运行。
+#   LIGHTNING_LM_OUTPUT_TUM=/path/to/output.tum
+#       前端逐帧 LIO TUM 轨迹；默认写入 results/<run_name>.tum。
+#   LIGHTNING_LM_REPO_DIR=/path/to/lightning-lm
+#       从数据集目录调用脚本时可显式指定仓库路径。
+#
+# 位置参数：
+#   第一个非 -- 开头参数作为 run_name；省略时自动生成带时间戳的名称。
+#   其余参数会原样追加给 run_frontend_offline，例如 --max_lidar_frames=300。
+#
+# 输出组织：
+#   $LIGHTNING_LM_OUT_ROOT/<run_name>/run_metadata.txt
+#   $LIGHTNING_LM_OUT_ROOT/<run_name>/logs/run_frontend_offline.{stdout,stderr}.log
+#   $LIGHTNING_LM_OUT_ROOT/<run_name>/results/<run_name>.tum
+#   程序会在 $LIGHTNING_LM_OUT_ROOT/<run_name>/ 内执行，便于归档相对路径产物。
+#
+# 示例：
+#   LIGHTNING_LM_INPUT_BAG=/path/to/rosbag2 \
+#   LIGHTNING_LM_CONFIG=/path/to/config.yaml \
+#   LIGHTNING_LM_OUT_ROOT=/path/to/repro/runs \
+#   LIGHTNING_LM_WAIT_UI=true \
+#   scripts/run_frontend_offline.sh outdoor01_frontend_test
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,16 +75,28 @@ if [[ -z "$bag_dir" ]]; then
   echo "LIGHTNING_LM_INPUT_BAG is required" >&2
   exit 2
 fi
+if [[ ! -e "$bag_dir" ]]; then
+  echo "input bag not found: $bag_dir" >&2
+  exit 2
+fi
 if [[ ! -f "$config_path" ]]; then
   echo "config not found: $config_path" >&2
   exit 2
 fi
 
+bag_dir="$(realpath "$bag_dir")"
+config_path="$(realpath "$config_path")"
+out_root="$(mkdir -p "$out_root" && cd "$out_root" && pwd)"
 run_dir="$out_root/$run_name"
 result_dir="$run_dir/results"
 log_dir="$run_dir/logs"
-tum_path="${LIGHTNING_LM_OUTPUT_TUM:-$result_dir/${run_name}.tum}"
 mkdir -p "$result_dir" "$log_dir"
+if [[ -n "${LIGHTNING_LM_OUTPUT_TUM:-}" ]]; then
+  tum_path="$LIGHTNING_LM_OUTPUT_TUM"
+  [[ "${tum_path:0:1}" != "/" ]] && tum_path="$run_dir/$tum_path"
+else
+  tum_path="$result_dir/${run_name}.tum"
+fi
 
 {
   echo "executable=run_frontend_offline"
@@ -61,12 +112,14 @@ mkdir -p "$result_dir" "$log_dir"
   date --iso-8601=seconds
 } > "$run_dir/run_metadata.txt"
 
-ros2 run lightning run_frontend_offline \
-  --input_bag "$bag_dir" \
-  --config "$config_path" \
-  --output_tum "$tum_path" \
-  --wait_ui="$wait_ui" \
-  --max_lidar_frames="$max_lidar_frames" \
-  "$@" \
-  > "$log_dir/run_frontend_offline.stdout.log" \
+(
+  cd "$run_dir"
+  ros2 run lightning run_frontend_offline \
+    --input_bag "$bag_dir" \
+    --config "$config_path" \
+    --output_tum "$tum_path" \
+    --wait_ui="$wait_ui" \
+    --max_lidar_frames="$max_lidar_frames" \
+    "$@"
+) > "$log_dir/run_frontend_offline.stdout.log" \
   2> "$log_dir/run_frontend_offline.stderr.log"
