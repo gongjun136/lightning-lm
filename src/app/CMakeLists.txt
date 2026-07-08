@@ -70,5 +70,5 @@ target_link_libraries(test_ui_init_quit
         ${third_party_libs}
 )
 
-install(TARGETS run_slam_offline run_slam_online run_loc_offline run_loc_online
+install(TARGETS run_frontend_offline run_slam_offline run_slam_online run_loc_offline run_loc_online
         DESTINATION lib/${PROJECT_NAME})

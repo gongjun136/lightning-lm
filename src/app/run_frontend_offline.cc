@@ -5,19 +5,39 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include "core/g2p5/g2p5.h"
+#include <chrono>
+#include <fstream>
+#include <iomanip>
+#include <memory>
+#include <thread>
+
+#include "common/options.h"
 #include "core/lio/laser_mapping.h"
+#include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/timer.h"
 #include "wrapper/bag_io.h"
-#include "wrapper/ros_utils.h"
 
-#include <opencv2/opencv.hpp>
+DEFINE_string(input_bag, "", "input ROS2 bag");
+DEFINE_string(config, "./config/default.yaml", "config yaml");
+DEFINE_string(output_tum, "", "output front-end LIO TUM trajectory; disabled when empty");
+DEFINE_bool(wait_ui, true, "wait for the 3D UI window to close after offline processing");
+DEFINE_int32(max_lidar_frames, 0, "stop after processing this many lidar frames; disabled when <= 0");
 
-DEFINE_string(input_bag, "", "输入数据包");
-DEFINE_string(config, "./config/default.yaml", "配置文件");
-DEFINE_bool(show_grid_map, false, "是否展示栅格地图");
+namespace {
+void WriteTumState(std::ofstream& tum, const lightning::NavState& state, double& last_timestamp) {
+    if (!tum.is_open() || !state.pose_is_ok_ || state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) {
+        return;
+    }
 
-/// 运行一个LIO前端，带可视化
+    const auto q = state.rot_.unit_quaternion();
+    tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << state.pos_.x()
+        << " " << state.pos_.y() << " " << state.pos_.z() << " " << q.x() << " " << q.y() << " " << q.z() << " "
+        << q.w() << "\n";
+    last_timestamp = state.timestamp_;
+}
+}  // namespace
+
 int main(int argc, char** argv) {
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
@@ -25,75 +45,106 @@ int main(int argc, char** argv) {
 
     google::ParseCommandLineFlags(&argc, &argv, true);
     if (FLAGS_input_bag.empty()) {
-        LOG(ERROR) << "未指定输入数据";
+        LOG(ERROR) << "input_bag is required";
         return -1;
     }
 
     using namespace lightning;
 
-    RosbagIO rosbag(FLAGS_input_bag);
-
     LaserMapping lio;
     if (!lio.Init(FLAGS_config)) {
         LOG(ERROR) << "failed to init lio";
         return -1;
-    };
-
-    g2p5::G2P5::Options map_opt;
-    map_opt.online_mode_ = false;
-
-    g2p5::G2P5 map(map_opt);
-    map.Init(FLAGS_config);
-
-    auto ui = std::make_shared<ui::PangolinWindow>();
-    if (!ui->Init()) {
-        LOG(ERROR) << "failed to init Pangolin UI";
-        return -1;
     }
-    lio.SetUI(ui);
 
-    Keyframe::Ptr cur_kf = nullptr;
+    YAML_IO yaml(FLAGS_config);
+    const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
+    const std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
+    const std::string livox_lidar_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
+    const std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
 
-    rosbag
-        .AddImuHandle("imu_raw",
-                      [&lio](IMUPtr imu) {
-                          lio.ProcessIMU(imu);
-                          return true;
-                      })
-        .AddPointCloud2Handle("points_raw",
-                              [&](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                                  lio.ProcessPointCloud2(cloud);
-                                  lio.Run();
+    std::shared_ptr<ui::PangolinWindow> ui;
+    if (with_ui) {
+        LOG(INFO) << "frontend with 3D UI";
+        ui = std::make_shared<ui::PangolinWindow>();
+        if (ui->Init()) {
+            lio.SetUI(ui);
+        } else {
+            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            ui.reset();
+        }
+    }
 
-                                  auto kf = lio.GetKeyframe();
-                                  if (cur_kf != kf) {
-                                      cur_kf = kf;
+    std::ofstream tum;
+    double last_tum_timestamp = 0.0;
+    int processed_lidar_frames = 0;
+    auto finish_lidar_frame = [&processed_lidar_frames]() {
+        if (FLAGS_max_lidar_frames <= 0) {
+            return;
+        }
+        processed_lidar_frames++;
+        if (processed_lidar_frames >= FLAGS_max_lidar_frames) {
+            LOG(INFO) << "reached max_lidar_frames=" << FLAGS_max_lidar_frames << ", stopping offline frontend";
+            lightning::debug::flg_exit = true;
+        }
+    };
+    if (!FLAGS_output_tum.empty()) {
+        tum.open(FLAGS_output_tum);
+        if (!tum.is_open()) {
+            LOG(ERROR) << "failed to open output_tum: " << FLAGS_output_tum;
+            return -1;
+        }
+        LOG(INFO) << "writing front-end TUM trajectory to " << FLAGS_output_tum;
+    }
 
-                                      // pcl::io::savePCDFile("./data/" + std::to_string(cur_kf->GetID()) + ".pcd",
-                                      //                      *cur_kf->GetCloud());
+    RosbagIO rosbag(FLAGS_input_bag);
+    rosbag.AddImuHandle(imu_topic,
+                        [&lio](IMUPtr imu) {
+                            lio.ProcessIMU(imu);
+                            return true;
+                        });
 
-                                      map.PushKeyframe(cur_kf);
+    if (!lidar_topic.empty() && lidar_topic != livox_lidar_topic) {
+        rosbag.AddPointCloud2Handle(lidar_topic,
+                                    [&lio, &tum, &last_tum_timestamp, &finish_lidar_frame](
+                                        sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                                        lio.ProcessPointCloud2(cloud);
+                                        lio.Run();
+                                        WriteTumState(tum, lio.GetState(), last_tum_timestamp);
+                                        finish_lidar_frame();
+                                        return true;
+                                    });
+    }
 
-                                      if (FLAGS_show_grid_map) {
-                                          cv::Mat image = map.GetNewestMap()->ToCV();
-                                          cv::imshow("map", image);
-                                          cv::waitKey(10);
-                                      }
-                                  }
+    if (!livox_lidar_topic.empty()) {
+        rosbag.AddLivoxCloudHandle(
+            livox_lidar_topic,
+            [&lio, &tum, &last_tum_timestamp, &finish_lidar_frame](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                lio.ProcessPointCloud2(cloud);
+                lio.Run();
+                WriteTumState(tum, lio.GetState(), last_tum_timestamp);
+                finish_lidar_frame();
+                return true;
+            });
+    }
 
-                                  return true;
-                              })
-        .Go();
+    rosbag.Go();
 
-    lio.SaveMap();
-    cv::Mat image = map.GetNewestMap()->ToCV();
-    cv::imwrite("./data/map.png", image);
-
+    if (tum.is_open()) {
+        tum.close();
+    }
     Timer::PrintAll();
 
-    ui->Quit();
+    if (ui && FLAGS_wait_ui) {
+        LOG(INFO) << "waiting for 3D UI window to close";
+        while (!ui->ShouldQuit()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    if (ui) {
+        ui->Quit();
+    }
 
     LOG(INFO) << "done";
-
     return 0;
 }
