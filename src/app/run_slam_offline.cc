@@ -7,6 +7,7 @@
 
 #include <fstream>
 #include <iomanip>
+#include <filesystem>
 
 #include "core/system/slam.h"
 #include "ui/pangolin_window.h"
@@ -112,6 +113,13 @@ int main(int argc, char** argv) {
     rosbag.Go();
 
     slam.SaveMap("");
+    if (!FLAGS_output_tum.empty()) {
+        const std::filesystem::path tum_path(FLAGS_output_tum);
+        const auto parent = tum_path.parent_path();
+        const auto stem = tum_path.stem().string();
+        slam.SaveKeyframeTrajectoryTum((parent / (stem + "_keyframes_lio.tum")).string(), true);
+        slam.SaveKeyframeTrajectoryTum((parent / (stem + "_keyframes_opt.tum")).string(), false);
+    }
     if (tum.is_open()) {
         tum.close();
     }

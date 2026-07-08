@@ -117,6 +117,11 @@ class SlamSystem {
     NavState GetLioState() const;
 
     /**
+     * @brief 导出关键帧轨迹；use_lio_pose=true导出前端LIO位姿，false导出后端优化位姿。
+     */
+    bool SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio_pose) const;
+
+    /**
      * @brief 在线模式下启动ROS2事件循环。
      */
     void Spin();

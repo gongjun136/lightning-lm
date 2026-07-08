@@ -7,15 +7,6 @@ target_link_libraries(run_frontend_offline
         ${third_party_libs}
 )
 
-add_executable(run_loop_offline
-        run_loop_offline.cc
-)
-
-target_link_libraries(run_loop_offline
-        ${PROJECT_NAME}.libs
-        ${third_party_libs}
-)
-
 add_executable(run_slam_offline
         run_slam_offline.cc
 )

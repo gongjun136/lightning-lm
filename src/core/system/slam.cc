@@ -13,6 +13,8 @@
 #include <yaml-cpp/yaml.h>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <opencv2/opencv.hpp>
 #include <thread>
 
@@ -306,6 +308,43 @@ NavState SlamSystem::GetLioState() const {
         return state;
     }
     return lio_->GetState();
+}
+
+bool SlamSystem::SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio_pose) const {
+    if (!lio_) {
+        LOG(ERROR) << "lio is not initialized, skip trajectory export";
+        return false;
+    }
+
+    std::ofstream tum(path);
+    if (!tum.is_open()) {
+        LOG(ERROR) << "failed to open keyframe trajectory: " << path;
+        return false;
+    }
+
+    double last_timestamp = 0.0;
+    int count = 0;
+    for (const auto& kf : lio_->GetAllKeyframes()) {
+        if (!kf) {
+            continue;
+        }
+
+        const auto state = kf->GetState();
+        if (state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) {
+            continue;
+        }
+
+        const auto pose = use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        const auto q = pose.unit_quaternion();
+        const auto p = pose.translation();
+        tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << p.x() << " "
+            << p.y() << " " << p.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+        last_timestamp = state.timestamp_;
+        count++;
+    }
+
+    LOG(INFO) << "wrote " << count << " keyframe poses to " << path;
+    return count > 0;
 }
 
 // 模板化的点云处理函数实现

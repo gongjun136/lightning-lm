@@ -31,9 +31,9 @@ void WriteTumState(std::ofstream& tum, const lightning::NavState& state, double&
     }
 
     const auto q = state.rot_.unit_quaternion();
-    tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << state.pos_.x()
-        << " " << state.pos_.y() << " " << state.pos_.z() << " " << q.x() << " " << q.y() << " " << q.z() << " "
-        << q.w() << "\n";
+    tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12)
+        << state.pos_.x() << " " << state.pos_.y() << " " << state.pos_.z() << " "
+        << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
     last_timestamp = state.timestamp_;
 }
 }  // namespace
