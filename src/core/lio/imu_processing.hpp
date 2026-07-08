@@ -13,7 +13,9 @@
 
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
+#include "common/options.h"
 #include "common/point_def.h"
+#include "core/lightning_math.hpp"
 #include "core/lio/eskf.hpp"
 #include "core/lio/imu_filter.h"
 #include "core/lio/pose6d.h"
@@ -71,6 +73,7 @@ class ImuProcess {
 
     /// 获取初始化阶段估计出的加速度均值模长，可用于检查静止初始化是否接近重力加速度。
     double GetMeanAccNorm() const { return mean_acc_.norm(); }
+    Vec3d ScaleAccelerationForPrediction(const Vec3d &acc) const { return acc * acc_scale_factor_; }
 
     // 这些噪声参数会在IMU初始化和ESKF预测中使用，保持public是为了兼容原框架的配置方式。
     Eigen::Matrix<double, 12, 12> Q_;  // ESKF过程噪声协方差矩阵，顺序需与NavState::df_dw()的噪声定义一致
@@ -220,16 +223,23 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
     init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;
+    init_state.ba_ = Vec3d::Zero();
     kf_state.ChangeX(init_state);
 
     // 计算并缓存IMU缩放因子
     // meas_acc_scale_ = G_m_s2 / mean_acc_.norm();  // TODO，解决冲突
 
-    // 初始化状态协方差；陀螺零偏给较小先验，其余块保持单位阵。
+    // Keep the initial covariance tight; the full ESKF lets lidar pose residuals update
+    // velocity/bias/gravity through cross-covariance, so a unit prior can inject huge velocity.
     auto init_P = kf_state.GetP();
     init_P.setIdentity();
+    init_P *= 1e-4;
     init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kBgIdx, NavState::kBgIdx) =
         0.0001 * Mat3d::Identity();
+    init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kBaIdx, NavState::kBaIdx) =
+        0.001 * Mat3d::Identity();
+    init_P.block<NavState::kBlockDim, NavState::kBlockDim>(NavState::kGravIdx, NavState::kGravIdx) =
+        1e-8 * Mat3d::Identity();
     kf_state.ChangeP(init_P);
 
     // LOG(INFO) << "P diag: " << init_P.diagonal().transpose();
@@ -299,7 +309,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         acc_avr = .5 * (head->linear_acceleration + tail->linear_acceleration);
 
         // 先把加速度计量测缩放到标定尺度，再交给ESKF预测；角速度这里没有做额外缩放。
-        acc_avr = acc_avr * acc_scale_factor_;  // 使用缓存的缩放因子进行加速度计标定
+        acc_avr = ScaleAccelerationForPrediction(acc_avr);  // 使用缓存的缩放因子进行加速度计标定
         // 如果head早于上一帧Lidar结束时刻，只积分 [last_lidar_end_time_, tail] 这一段。
         // 这样可以避免把上一帧已经积分过的IMU时间重复计入当前帧。
         if (head->timestamp < last_lidar_end_time_) {
@@ -325,6 +335,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
+        Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
         kf_state.Predict(dt, Q_, gyro, acc);
 
         // LOG(INFO) << "gyro: " << gyro.transpose() << ", dt: " << dt;
@@ -337,7 +348,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         // 保存去零偏后的角速度，以及转到世界系并扣除重力后的加速度。
         // 这些量后面会用于把区间内的点外推到其真实采集时刻。
         angvel_last_ = angvel_avr - imu_state.bg_;
-        acc_s_last_ = imu_state.rot_ * acc_avr;
+        acc_s_last_ = imu_state.rot_ * (acc_avr - imu_state.ba_);
         for (int i = 0; i < 3; i++) {
             acc_s_last_[i] += imu_state.grav_[i];  // 去除重力向量
         }
@@ -469,8 +480,8 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
             // 最终预测噪声使用外部配置的尺度参数，避免静止初始化统计值过小导致滤波器过度自信。
             // 这发生在 IMU 初始化累计次数超过 max_init_count_ 后。
             // 前面 IMUInit() 里在线估计出来的 cov_acc_ / cov_gyr_，到了这里会被外部配置的 cov_acc_scale_ / cov_gyr_scale_ 覆盖掉。
-            // cov_acc_ = cov_acc_scale_;
-            // cov_gyr_ = cov_gyr_scale_;
+            cov_acc_ = cov_acc_scale_;
+            cov_gyr_ = cov_gyr_scale_;
             const double mean_acc_norm = mean_acc_.norm();
 
             // 根据静止时加速度均值的模长推断原始加速度单位：
@@ -488,7 +499,8 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
             }
 
             LOG(INFO) << "imu init done, bg: " << imu_state.bg_.transpose() << ", grav: " << imu_state.grav_.transpose()
-                      << ", acc scale: " << acc_scale_factor_ << ", mean: " << mean_acc_.transpose() << ", "
+                      << ", acc scale: " << acc_scale_factor_ << ", cov_acc: " << cov_acc_.transpose()
+                      << ", cov_gyr: " << cov_gyr_.transpose() << ", mean: " << mean_acc_.transpose() << ", "
                       << mean_gyr_.transpose();
         } else {
             // 初始化未完成时继续等待更多IMU样本；当前帧不做点云去畸变输出。

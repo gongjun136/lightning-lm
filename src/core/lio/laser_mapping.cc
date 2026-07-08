@@ -31,6 +31,11 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     // 使用Lambda表达式将LaserMapping::ObsModel方法绑定到lidar_obs_func_
     eskf_options.lidar_obs_func_ = [this](NavState &s, ESKF::CustomObservationModel &obs) { ObsModel(s, obs); };
     eskf_options.propagate_velocity_ = propagate_velocity_;
+    eskf_options.lidar_update_pose_only_ = lidar_update_pose_only_;
+    eskf_options.lidar_update_inertial_states_ = lidar_update_inertial_states_;
+    eskf_options.max_update_gyro_bias_step_ = max_update_gyro_bias_step_;
+    eskf_options.max_update_acc_bias_step_ = max_update_acc_bias_step_;
+    eskf_options.max_update_gravity_step_ = max_update_gravity_step_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
 
@@ -69,6 +74,21 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         use_aa_ = yaml["fasterlio"]["use_aa"].as<bool>();
         if (yaml["fasterlio"]["propagate_velocity"]) {
             propagate_velocity_ = yaml["fasterlio"]["propagate_velocity"].as<bool>();
+        }
+        if (yaml["fasterlio"]["lidar_update_pose_only"]) {
+            lidar_update_pose_only_ = yaml["fasterlio"]["lidar_update_pose_only"].as<bool>();
+        }
+        if (yaml["fasterlio"]["lidar_update_inertial_states"]) {
+            lidar_update_inertial_states_ = yaml["fasterlio"]["lidar_update_inertial_states"].as<bool>();
+        }
+        if (yaml["fasterlio"]["max_update_gyro_bias_step"]) {
+            max_update_gyro_bias_step_ = yaml["fasterlio"]["max_update_gyro_bias_step"].as<double>();
+        }
+        if (yaml["fasterlio"]["max_update_acc_bias_step"]) {
+            max_update_acc_bias_step_ = yaml["fasterlio"]["max_update_acc_bias_step"].as<double>();
+        }
+        if (yaml["fasterlio"]["max_update_gravity_step"]) {
+            max_update_gravity_step_ = yaml["fasterlio"]["max_update_gravity_step"].as<double>();
         }
 
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
@@ -156,7 +176,8 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
 
     if (p_imu_->IsIMUInited()) {
         /// 更新最新imu状态
-        kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
+        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
+        kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity, acc);
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
 
@@ -353,8 +374,9 @@ bool LaserMapping::Run() {
         double t = measures_.imu_.back()->timestamp;
         for (auto &imu : imu_buffer_) {
             double dt = imu->timestamp - t;
-            // 这里直接使用原始IMU输入做高频显示预测，不参与Lidar帧的去畸变输出。
-            kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, imu->linear_acceleration);
+            // 这里做高频显示预测，不参与Lidar帧的去畸变输出。
+            const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
+            kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, acc);
             t = imu->timestamp;
         }
     }
@@ -366,6 +388,7 @@ bool LaserMapping::Run() {
 
     LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
               << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
+              << ", bg: " << state_point_.bg_.transpose() << ", ba: " << state_point_.ba_.transpose()
               << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
 
     return true;

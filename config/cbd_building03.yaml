@@ -28,6 +28,12 @@ fasterlio:
   esti_plane_threshold: 0.1
 
   use_aa: false
+  propagate_velocity: false
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
 
   acc_cov: 0.1
   gyr_cov: 0.1

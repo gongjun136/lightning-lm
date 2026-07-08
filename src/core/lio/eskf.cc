@@ -5,30 +5,108 @@
 #include "core/lio/eskf.hpp"
 #include "core/lightning_math.hpp"
 
+#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <string>
 
 namespace {
 
 using CovType = lightning::ESKF::CovType;
 
+bool DebugCovarianceEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("LIGHTNING_LM_DEBUG_ESKF_COV");
+        if (value == nullptr) {
+            return false;
+        }
+        const std::string flag(value);
+        return !flag.empty() && flag != "0" && flag != "false" && flag != "FALSE";
+    }();
+    return enabled;
+}
+
+void LogCovarianceStats(const CovType& P, const char* stage) {
+    if (!DebugCovarianceEnabled()) {
+        return;
+    }
+
+    const CovType sym = 0.5 * (P + P.transpose()).eval();
+    Eigen::SelfAdjointEigenSolver<CovType> solver(sym, Eigen::EigenvaluesOnly);
+    if (solver.info() != Eigen::Success) {
+        LOG(WARNING) << "ESKF covariance eigensolver failed at " << stage;
+        return;
+    }
+
+    double max_abs_corr = 0.0;
+    int corr_i = 0;
+    int corr_j = 0;
+    for (int r = 0; r < sym.rows(); ++r) {
+        for (int c = r + 1; c < sym.cols(); ++c) {
+            const double denom = std::sqrt(std::max(1e-24, std::abs(sym(r, r) * sym(c, c))));
+            const double corr = std::abs(sym(r, c)) / denom;
+            if (corr > max_abs_corr) {
+                max_abs_corr = corr;
+                corr_i = r;
+                corr_j = c;
+            }
+        }
+    }
+
+    const double min_eig = solver.eigenvalues().minCoeff();
+    const double max_eig = solver.eigenvalues().maxCoeff();
+    const double eig_tol = std::max(1e-8, std::abs(max_eig) * 1e-12);
+    const bool suspicious = min_eig < -eig_tol || max_abs_corr > 1.0 + 1e-6 || !std::isfinite(max_abs_corr);
+    if (suspicious) {
+        LOG(WARNING) << "ESKF covariance suspicious at " << stage << ", min_eig: " << min_eig
+                     << ", max_eig: " << max_eig << ", max_diag: " << sym.diagonal().maxCoeff()
+                     << ", max_abs_corr: " << max_abs_corr << " at (" << corr_i << "," << corr_j << ")";
+    } else {
+        LOG_EVERY_N(INFO, 200) << "ESKF covariance at " << stage << ", min_eig: " << min_eig
+                               << ", max_eig: " << max_eig << ", max_diag: " << sym.diagonal().maxCoeff()
+                               << ", max_abs_corr: " << max_abs_corr << " at (" << corr_i << "," << corr_j << ")";
+    }
+}
+
 void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
     P = 0.5 * (P + P.transpose()).eval();
 
     for (int i = 0; i < P.rows(); ++i) {
+        if (std::isnan(P(i, i)) || std::isinf(P(i, i))) {
+            P(i, i) = min_cov_diag;
+        }
         if (P(i, i) < min_cov_diag) {
             P(i, i) = min_cov_diag;
-        } else if (P(i, i) > 100.0) {
-            P(i, i) = 100.0;
         }
 
         for (int j = 0; j < P.cols(); ++j) {
             if (std::isnan(P(i, j)) || std::isinf(P(i, j))) {
                 LOG(WARNING) << "find nan or inf in P: " << P(i, j);
-                P(i, j) = 1.0;
+                P(i, j) = (i == j) ? min_cov_diag : 0.0;
             }
         }
     }
+
+    Eigen::LDLT<CovType> ldlt(P);
+    if (ldlt.info() == Eigen::Success && ldlt.isPositive()) {
+        return;
+    }
+
+    Eigen::SelfAdjointEigenSolver<CovType> solver(P);
+    if (solver.info() != Eigen::Success) {
+        LOG(WARNING) << "Failed to project ESKF covariance to PSD; reset to diagonal floor.";
+        P = CovType::Identity() * min_cov_diag;
+        return;
+    }
+
+    Eigen::Matrix<double, lightning::ESKF::state_dim_, 1> eigen_values = solver.eigenvalues();
+    for (int i = 0; i < eigen_values.size(); ++i) {
+        eigen_values(i) = std::max(eigen_values(i), min_cov_diag);
+    }
+    P = (solver.eigenvectors() * eigen_values.asDiagonal() * solver.eigenvectors().transpose()).eval();
+    P = 0.5 * (P + P.transpose()).eval();
 }
 
 }  // namespace
@@ -131,6 +209,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     P_ *= options_.predict_cov_inflation_;
     // 数值保护：强制协方差对称，并限制对角线范围，避免后续更新阶段数值不稳定。
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
+    LogCovarianceStats(P_, "predict");
 }
 
 /**
@@ -319,7 +398,76 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         // 迭代误差状态更新公式。
         // K_r来自当前观测残差，(K_H-I)dx_current用于把先验误差项带入当前线性化点。
-        dx_current = K_r + (K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) * dx_current;
+        const bool lidar_update_pose_only = options_.lidar_update_pose_only_ && obs == ObsType::LIDAR;
+        const bool is_lidar_update = obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR;
+        const bool check_velocity_step = options_.max_update_velocity_step_ > 0.0;
+        const bool allow_lidar_pose_only_fallback = is_lidar_update && check_velocity_step;
+        const StateVecType dx_linearization = dx_current;
+        auto lidar_inertial_step_too_large = [&](const StateVecType& candidate) {
+            if (!is_lidar_update || !options_.lidar_update_inertial_states_) {
+                return false;
+            }
+            const double dbg = candidate.template segment<NavState::kBlockDim>(NavState::kBgIdx).norm();
+            const double dba = candidate.template segment<NavState::kBlockDim>(NavState::kBaIdx).norm();
+            const double dgrav = candidate.template segment<NavState::kBlockDim>(NavState::kGravIdx).norm();
+            const bool bg_too_large = options_.max_update_gyro_bias_step_ > 0.0 && dbg > options_.max_update_gyro_bias_step_;
+            const bool ba_too_large = options_.max_update_acc_bias_step_ > 0.0 && dba > options_.max_update_acc_bias_step_;
+            const bool grav_too_large = options_.max_update_gravity_step_ > 0.0 && dgrav > options_.max_update_gravity_step_;
+            if (bg_too_large || ba_too_large || grav_too_large) {
+                LOG(WARNING) << "Fallback lidar ESKF iter update to preserve inertial states, dbg: " << dbg
+                             << ", dba: " << dba << ", dgrav: " << dgrav;
+                return true;
+            }
+            return false;
+        };
+        auto apply_lidar_limited_update = [&](bool pose_only, bool preserve_inertial) {
+            if (pose_only) {
+                K_r.template segment<NavState::kBlockDim>(NavState::kVelIdx).setZero();
+                K_H.template middleRows<NavState::kBlockDim>(NavState::kVelIdx).setZero();
+            }
+            if (preserve_inertial) {
+                K_r.template segment<NavState::kBlockDim>(NavState::kBgIdx).setZero();
+                K_r.template segment<NavState::kBlockDim>(NavState::kBaIdx).setZero();
+                K_r.template segment<NavState::kBlockDim>(NavState::kGravIdx).setZero();
+                K_H.template middleRows<NavState::kBlockDim>(NavState::kBgIdx).setZero();
+                K_H.template middleRows<NavState::kBlockDim>(NavState::kBaIdx).setZero();
+                K_H.template middleRows<NavState::kBlockDim>(NavState::kGravIdx).setZero();
+            }
+            dx_current =
+                K_r + (K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) * dx_linearization;
+            if (pose_only) {
+                dx_current.template segment<NavState::kBlockDim>(NavState::kVelIdx) =
+                    -dx.template segment<NavState::kBlockDim>(NavState::kVelIdx);
+            }
+            if (preserve_inertial) {
+                dx_current.template segment<NavState::kBlockDim>(NavState::kBgIdx) =
+                    -dx.template segment<NavState::kBlockDim>(NavState::kBgIdx);
+                dx_current.template segment<NavState::kBlockDim>(NavState::kBaIdx) =
+                    -dx.template segment<NavState::kBlockDim>(NavState::kBaIdx);
+                dx_current.template segment<NavState::kBlockDim>(NavState::kGravIdx) =
+                    -dx.template segment<NavState::kBlockDim>(NavState::kGravIdx);
+            }
+        };
+
+        if (lidar_update_pose_only) {
+            apply_lidar_limited_update(true, true);
+        } else {
+            if (is_lidar_update && !options_.lidar_update_inertial_states_) {
+                apply_lidar_limited_update(false, true);
+            } else {
+                dx_current = K_r + (K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) * dx_current;
+            }
+            if (lidar_inertial_step_too_large(dx_current)) {
+                apply_lidar_limited_update(false, true);
+            }
+            const double full_dx_velocity =
+                dx_current.segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
+            if (allow_lidar_pose_only_fallback && full_dx_velocity > options_.max_update_velocity_step_) {
+                LOG(WARNING) << "Fallback lidar ESKF iter update to pose-only, dvel: " << full_dx_velocity
+                             << ", limit: " << options_.max_update_velocity_step_;
+                apply_lidar_limited_update(true, true);
+            }
+        }
 
         // check nan
         for (int j = 0; j < state_dim_; ++j) {
@@ -341,12 +489,14 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         // LOG(INFO) << "iter " << iterations_ << ", dx: " << dx_current.transpose();
         const double dx_translation = dx_current.head<3>().norm();
         const double dx_rotation_deg = dx_current.segment<3>(3).norm() * 180.0 / M_PI;
+        const double dx_velocity = dx_current.segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
         // 单次迭代修正过大通常意味着匹配错误、时间同步异常或初值偏差太大。
         // 这里直接拒绝本次观测更新，回退到预测状态，避免把错误观测注入滤波器。
         if (dx_translation > options_.max_update_translation_step_ ||
-            dx_rotation_deg > options_.max_update_rotation_step_deg_) {
+            dx_rotation_deg > options_.max_update_rotation_step_deg_ ||
+            (check_velocity_step && dx_velocity > options_.max_update_velocity_step_)) {
             LOG(ERROR) << "Reject ESKF iter update, dtrans: " << dx_translation << ", drot_deg: " << dx_rotation_deg
-                       << ", dvel: " << dx_current.segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
+                       << ", dvel: " << dx_velocity;
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -450,6 +600,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
     // 最后统一做协方差数值保护，确保P_对称并且对角线处于合理范围。
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
+    LogCovarianceStats(P_, "update");
 }
 
 }  // namespace lightning

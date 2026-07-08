@@ -257,6 +257,11 @@ class LaserMapping {
 
     bool use_aa_ = false;  // ESKF观测更新是否使用Anderson Acceleration
     bool propagate_velocity_ = false;  // 是否在ESKF名义状态中传播速度
+    bool lidar_update_pose_only_ = false;  // Lidar观测是否只修正位姿
+    bool lidar_update_inertial_states_ = true;  // Lidar观测是否间接修正bg/ba/gravity
+    double max_update_gyro_bias_step_ = 0.05;
+    double max_update_acc_bias_step_ = 0.5;
+    double max_update_gravity_step_ = 0.05;
 
     std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 

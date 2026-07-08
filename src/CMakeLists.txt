@@ -78,4 +78,22 @@ target_link_libraries(${PROJECT_NAME}.libs
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
+add_executable(eskf_update_velocity_gate_test EXCLUDE_FROM_ALL
+        test/eskf_update_velocity_gate_test.cc
+)
+
+target_link_libraries(eskf_update_velocity_gate_test
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
+add_executable(nav_state_eskf_model_test EXCLUDE_FROM_ALL
+        test/nav_state_eskf_model_test.cc
+)
+
+target_link_libraries(nav_state_eskf_model_test
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
 add_subdirectory(app)

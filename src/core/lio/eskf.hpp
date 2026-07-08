@@ -119,7 +119,12 @@ class ESKF {
         double degeneracy_cov_inflation_ = 1.02;     // 发现退化方向后，对位姿协方差的膨胀系数
         double max_update_translation_step_ = 0.5;   // 单次迭代允许的最大平移修正量
         double max_update_rotation_step_deg_ = 5.0;  // 单次迭代允许的最大旋转修正量，单位deg
-        double max_update_velocity_step_ = 2.0;      // 预留的速度修正上限，当前Update实现未直接使用
+        double max_update_velocity_step_ = 2.0;      // <= 0 disables velocity-step rejection for full-state ESKF.
+        double max_update_gyro_bias_step_ = 0.05;    // rad/s, <= 0 disables lidar inertial-step fallback.
+        double max_update_acc_bias_step_ = 0.5;      // m/s^2, <= 0 disables lidar inertial-step fallback.
+        double max_update_gravity_step_ = 0.05;      // m/s^2, <= 0 disables lidar inertial-step fallback.
+        bool lidar_update_pose_only_ = false;        // Lidar pose observations do not directly update vel/bias/gravity.
+        bool lidar_update_inertial_states_ = true;   // Lidar pose observations may update bg/ba/gravity via covariance.
     };
 
     /**
