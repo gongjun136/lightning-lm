@@ -29,8 +29,36 @@ DEFINE_string(output_map, "", "output LIO map PCD; disabled when empty");
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
 DEFINE_bool(wait_ui, true, "wait for the 3D UI window to close after offline processing");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
+DEFINE_double(playback_rate, 0.0,
+              "pace bag callbacks by sensor time at this multiple of real time; disabled when <= 0");
 
 namespace {
+
+class InputPacer {
+   public:
+    explicit InputPacer(double playback_rate) : playback_rate_(playback_rate) {}
+
+    void Wait(double sensor_time) {
+        if (playback_rate_ <= 0.0 || sensor_time <= 0.0) return;
+        if (!initialized_) {
+            first_sensor_time_ = sensor_time;
+            first_wall_time_ = std::chrono::steady_clock::now();
+            initialized_ = true;
+            return;
+        }
+        const double elapsed_sensor_time = sensor_time - first_sensor_time_;
+        if (elapsed_sensor_time <= 0.0) return;
+        const auto target = first_wall_time_ + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                   std::chrono::duration<double>(elapsed_sensor_time / playback_rate_));
+        std::this_thread::sleep_until(target);
+    }
+
+   private:
+    double playback_rate_ = 0.0;
+    bool initialized_ = false;
+    double first_sensor_time_ = 0.0;
+    std::chrono::steady_clock::time_point first_wall_time_;
+};
 
 std::map<std::string, std::string> ReadBagTopicTypes(const std::string& bag_path) {
     std::map<std::string, std::string> types;
@@ -88,6 +116,10 @@ int main(int argc, char** argv) {
     google::ParseCommandLineFlags(&argc, &argv, true);
     if (FLAGS_input_bag.empty()) {
         LOG(ERROR) << "input_bag is required";
+        return 2;
+    }
+    if (FLAGS_playback_rate < 0.0) {
+        LOG(ERROR) << "playback_rate must be non-negative";
         return 2;
     }
 
@@ -205,8 +237,10 @@ int main(int argc, char** argv) {
         }
     };
 
+    InputPacer input_pacer(FLAGS_playback_rate);
     RosbagIO rosbag(FLAGS_input_bag);
     rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
+        input_pacer.Wait(imu->timestamp);
         lio.ProcessIMU(imu);
         drain();
         return true;
