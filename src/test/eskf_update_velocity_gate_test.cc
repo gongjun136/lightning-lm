@@ -84,6 +84,10 @@ bool FullLidarUpdateUsesCrossCovarianceForVelocity() {
     eskf.Update(ESKF::ObsType::LIDAR, 1.0);
 
     const auto& updated = eskf.GetX();
+    if (!eskf.LastUpdateAccepted()) {
+        std::cerr << "Valid lidar update was not marked accepted." << std::endl;
+        return false;
+    }
     if (NearZeroVelocity(updated)) {
         std::cerr << "Full lidar update did not propagate pose information to velocity. velocity="
                   << updated.vel_.transpose() << std::endl;
@@ -365,6 +369,21 @@ bool InformationFormMatchesDenseKalmanUpdate() {
     return true;
 }
 
+bool InvalidLidarUpdateIsNotMarkedAccepted() {
+    using namespace lightning;
+
+    ESKF eskf;
+    ESKF::Options options = MakeCrossCoupledLidarOptions();
+    options.lidar_obs_func_ = [](NavState&, ESKF::CustomObservationModel& obs) { obs.valid_ = false; };
+    eskf.Init(options);
+    eskf.Update(ESKF::ObsType::LIDAR, 1.0);
+    if (eskf.LastUpdateAccepted()) {
+        std::cerr << "Invalid lidar update was marked accepted." << std::endl;
+        return false;
+    }
+    return true;
+}
+
 bool ImuPredictionPathAppliesConfiguredAccelerationScale() {
     using namespace lightning;
 
@@ -395,9 +414,42 @@ bool ImuPredictionPathAppliesConfiguredAccelerationScale() {
 
     return true;
 }
+
+bool ImuInitializationRejectsInvalidMeanAccelerationNorm() {
+    using namespace lightning;
+
+    ImuProcess imu;
+    ImuProcess::InitializationOptions options;
+    options.min_duration = 0.1;
+    options.min_samples = 20;
+    options.min_mean_acc_norm = 0.5;
+    options.max_mean_acc_norm = 1.5;
+    imu.SetInitializationOptions(options);
+
+    ESKF eskf;
+    MeasureGroup meas;
+    for (int i = 0; i < 21; ++i) {
+        auto sample = std::make_shared<IMU>();
+        sample->timestamp = 0.01 * static_cast<double>(i);
+        sample->linear_acceleration = Vec3d(0.0, 0.0, 3.0);
+        sample->angular_velocity = Vec3d::Zero();
+        meas.imu_.push_back(sample);
+    }
+    CloudPtr scan;
+    imu.Process(meas, eskf, scan);
+    if (imu.IsIMUInited()) {
+        std::cerr << "IMU initialization accepted an invalid mean acceleration norm." << std::endl;
+        return false;
+    }
+    return true;
+}
 }  // namespace
 
 int main() {
+    if (!InvalidLidarUpdateIsNotMarkedAccepted()) {
+        return 1;
+    }
+
     if (!InformationFormMatchesDenseKalmanUpdate()) {
         return 1;
     }
@@ -427,6 +479,10 @@ int main() {
     }
 
     if (!ImuPredictionPathAppliesConfiguredAccelerationScale()) {
+        return 1;
+    }
+
+    if (!ImuInitializationRejectsInvalidMeanAccelerationNorm()) {
         return 1;
     }
 

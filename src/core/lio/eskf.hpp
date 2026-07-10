@@ -195,6 +195,7 @@ class ESKF {
     int GetIterations() const { return iterations_; }
     /// 最终平均观测误差
     double GetFinalRes() const { return final_res_; }
+    bool LastUpdateAccepted() const { return last_update_accepted_; }
 
    private:
     double stamp_ = 0.0;
@@ -212,6 +213,7 @@ class ESKF {
 
     int iterations_ = 0;        // 最近一次Update实际使用的迭代次数
     double final_res_ = 0.0;    // 最近一次Update的相对残差
+    bool last_update_accepted_ = false;
 
     /// 是否使用Anderson Acceleration加速迭代收敛。
     bool use_aa_ = false;

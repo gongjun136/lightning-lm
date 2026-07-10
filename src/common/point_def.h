@@ -8,9 +8,9 @@
 
 #include "common/eigen_types.h"
 
+#include <cstdint>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <cstdint>
 
 /// 地图点云的一些定义
 
@@ -18,13 +18,15 @@
 struct PointXYZIT {
     PCL_ADD_POINT4D
     PCL_ADD_INTENSITY
-    double time;
-    PointXYZIT() {}
+    double time = 0.0;
+    std::uint8_t lidar_id = 0;
+    PointXYZIT() = default;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZIT,
-                                  (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)(double, time, time))
+                                  (float, x, x)(float, y, y)(float, z, z)(float, intensity, intensity)
+                                      (double, time, time)(std::uint8_t, lidar_id, lidar_id))
 struct PointRobotSense {
     PCL_ADD_POINT4D
     PCL_ADD_INTENSITY

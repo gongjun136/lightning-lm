@@ -13,6 +13,7 @@
 #include "core/ivox3d/ivox3d.h"
 #include "core/lio/eskf.hpp"
 #include "core/lio/imu_processing.hpp"
+#include "core/lio/multi_lidar_fusion.h"
 #include "pointcloud_preprocess.h"
 
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -39,6 +40,8 @@ class PangolinWindow;
  */
 class LaserMapping {
    public:
+    enum class RunStatus { kNoData, kConsumed, kOutput };
+
     /**
      * @brief LaserMapping运行选项。
      *
@@ -83,6 +86,7 @@ class LaserMapping {
 
     /// 处理缓存中的一帧同步数据，完成去畸变、ESKF更新、关键帧判断和地图维护。
     bool Run();
+    RunStatus RunDetailed();
 
     // 三个ProcessPointCloud2函数处理逻辑：
     // 1.时间戳检查和回环检测：检查时间戳是否倒退，如果是则清空缓冲区
@@ -91,13 +95,18 @@ class LaserMapping {
     // 4.性能监控：使用 Timer::Evaluate 记录预处理耗时
     // callbacks of lidar and imu
     /// 处理标准ROS2 PointCloud2点云消息，完成预处理后写入Lidar缓存队列。
-    void ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
+    bool ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg);
+    bool ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, int lidar_id);
 
     /// 处理Livox自定义点云消息，完成预处理后写入Lidar缓存队列。
-    void ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
+    bool ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg);
+    bool ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg, int lidar_id);
 
     /// 处理已经转换好的点云，直接写入Lidar缓存队列。
-    void ProcessPointCloud2(CloudPtr cloud);
+    bool ProcessPointCloud2(CloudPtr cloud);
+    bool ProcessPointCloud2(CloudPtr cloud, int lidar_id);
+
+    void FlushMultiLidar();
 
     /// 处理一条IMU消息：写入IMU缓存，并在IMU初始化后维护一份高频kf_imu_状态供UI显示。
     void ProcessIMU(const lightning::IMUPtr &msg_in);
@@ -113,6 +122,25 @@ class LaserMapping {
 
     /// 获取激光的状态
     NavState GetState() const { return state_point_; }
+    bool IsInitialized() const { return !flg_first_scan_ && p_imu_->IsIMUInited(); }
+    bool IsTrackingHealthy() const { return last_tracking_healthy_; }
+    bool IsMultiLidarEnabled() const { return multi_lidar_config_.enabled; }
+    const MultiLidarConfig &GetMultiLidarConfig() const { return multi_lidar_config_; }
+    const MultiLidarFrameStats &GetCurrentFrameStats() const { return current_lidar_stats_; }
+    std::size_t GetMultiLidarLateDropCount() const { return multi_lidar_assembler_.LateDropCount(); }
+    std::size_t GetMultiLidarDuplicateDropCount() const { return multi_lidar_assembler_.DuplicateDropCount(); }
+    std::size_t GetMultiLidarToleranceDropCount() const { return multi_lidar_assembler_.ToleranceDropCount(); }
+    std::size_t GetMultiLidarInvalidDropCount() const { return multi_lidar_assembler_.InvalidDropCount(); }
+    std::size_t GetMultiLidarAssembledFrameCount() const { return multi_lidar_assembler_.EmittedFrameCount(); }
+    std::size_t GetMultiLidarInsufficientDropCount() const {
+        return multi_lidar_assembler_.InsufficientLidarDropCount();
+    }
+    std::size_t GetPendingLidarFrameCount() const { return lidar_buffer_.size(); }
+    std::size_t GetPreImuDropCount() const { return pre_imu_drop_count_; }
+    double GetLastFrameBeginTime() const { return measures_.lidar_begin_time_; }
+    double GetLastFrameEndTime() const { return measures_.lidar_end_time_; }
+    const Mat3d &GetLidarToImuRotation() const { return offset_R_lidar_fixed_; }
+    const Vec3d &GetLidarToImuTranslation() const { return offset_t_lidar_fixed_; }
 
     /// 获取IMU最新时刻状态；IMU未初始化时返回pose_is_ok_=false的无效状态。
     NavState GetIMUState() const {
@@ -163,7 +191,14 @@ class LaserMapping {
         po.y = p_global(1);
         po.z = p_global(2);
         po.intensity = pi.intensity;
+        po.time = pi.time;
+        po.lidar_id = pi.lidar_id;
     }
+
+    bool EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats = nullptr);
+    bool DrainAssembledFrames();
+    double PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
+                                 const NavState &state) const;
 
     /// 将当前帧降采样点云增量加入IVox局部地图，并根据邻近点做自适应下采样。
     void MapIncremental();
@@ -194,7 +229,17 @@ class LaserMapping {
     std::vector<double> extrinR_{9, 0.0};  // yaml读取的Lidar到IMU旋转外参
     Mat3d offset_R_lidar_fixed_ = Mat3d::Identity();  // Lidar到IMU的旋转矩阵形式
     Vec3d offset_t_lidar_fixed_ = Vec3d::Zero();      // Lidar到IMU的平移向量形式
-    std::string map_file_path_;                       // 地图保存路径，当前SaveMap使用固定路径
+    std::string map_file_path_;
+    double filter_size_scan_ = 0.0;
+    MultiLidarConfig multi_lidar_config_;
+    MultiLidarFrameAssembler multi_lidar_assembler_;
+
+    bool point_noise_enabled_ = false;
+    double range_noise_sigma_ = 0.02;
+    double angular_noise_sigma_rad_ = 0.05 * M_PI / 180.0;
+    double noise_reference_sigma_ = 0.05;
+    double min_information_scale_ = 0.25;
+    double max_information_scale_ = 4.0;
 
     std::vector<Keyframe::Ptr> all_keyframes_;  // 所有关键帧的存储列表
     Keyframe::Ptr last_kf_ = nullptr;           // 最近的关键帧指针（用于快速访问）
@@ -209,6 +254,7 @@ class LaserMapping {
     /// 点面相关
     std::vector<PointVector> nearest_points_;  // 当前帧每个点在IVox地图中的最近邻点
     std::vector<Vec4f> corr_pts_;              // 点面内点：[x,y,z,残差]，点坐标在Lidar系
+    std::vector<std::uint8_t> corr_lidar_ids_;
     std::vector<Vec4f> corr_norm_;             // 点面内点对应平面：[nx,ny,nz,d]，平面在世界系
     std::vector<float> residuals_;             // 点到平面有符号残差
     std::vector<char> point_selected_surf_;    // 点面约束是否有效
@@ -222,6 +268,7 @@ class LaserMapping {
 
     std::deque<PointCloudType::Ptr> lidar_buffer_;  // 激光雷达数据缓冲队列（用于与IMU时间同步）
     std::deque<lightning::IMUPtr> imu_buffer_;      // IMU数据缓冲队列（高频数据，用于状态预测）
+    std::deque<MultiLidarFrameStats> lidar_stats_buffer_;
 
     /// options
     bool keep_first_imu_estimation_ = false;  // 在没有建立地图前，是否要使用前几帧的IMU状态
@@ -244,6 +291,10 @@ class LaserMapping {
     double lidar_mean_scantime_ = 0.0;  // 激光雷达平均扫描时间（用于时间统计和性能监控）
     int scan_num_ = 0;                  // 当前扫描序列号
     int effect_feat_surf_ = 0, frame_num_ = 0, effect_feat_icp_ = 0;
+    MultiLidarFrameStats current_lidar_stats_;
+    bool last_tracking_healthy_ = false;
+    double current_max_imu_gap_ = 0.0;
+    std::size_t pre_imu_drop_count_ = 0;
 
     double last_lidar_time_ = 0;  // 上一帧激光雷达时间戳（用于时间同步和断流检测）
 
@@ -259,6 +310,7 @@ class LaserMapping {
     bool propagate_velocity_ = false;  // 是否在ESKF名义状态中传播速度
     bool lidar_update_pose_only_ = false;  // Lidar观测是否只修正位姿
     bool lidar_update_inertial_states_ = true;  // Lidar观测是否间接修正bg/ba/gravity
+    double max_update_velocity_step_ = 2.0;
     double max_update_gyro_bias_step_ = 0.05;
     double max_update_acc_bias_step_ = 0.5;
     double max_update_gravity_step_ = 0.05;

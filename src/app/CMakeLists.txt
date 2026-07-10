@@ -7,6 +7,15 @@ target_link_libraries(run_frontend_offline
         ${third_party_libs}
 )
 
+add_executable(run_frontend_online
+        run_frontend_online.cc
+)
+
+target_link_libraries(run_frontend_online
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
 add_executable(run_slam_offline
         run_slam_offline.cc
 )
@@ -61,5 +70,5 @@ target_link_libraries(test_ui_init_quit
         ${third_party_libs}
 )
 
-install(TARGETS run_frontend_offline run_slam_offline run_slam_online run_loc_offline run_loc_online
+install(TARGETS run_frontend_offline run_frontend_online run_slam_offline run_slam_online run_loc_offline run_loc_online
         DESTINATION lib/${PROJECT_NAME})

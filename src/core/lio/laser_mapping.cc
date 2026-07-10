@@ -1,5 +1,7 @@
 #include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 
 #include "common/options.h"
@@ -33,11 +35,15 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.propagate_velocity_ = propagate_velocity_;
     eskf_options.lidar_update_pose_only_ = lidar_update_pose_only_;
     eskf_options.lidar_update_inertial_states_ = lidar_update_inertial_states_;
+    eskf_options.max_update_velocity_step_ = max_update_velocity_step_;
     eskf_options.max_update_gyro_bias_step_ = max_update_gyro_bias_step_;
     eskf_options.max_update_acc_bias_step_ = max_update_acc_bias_step_;
     eskf_options.max_update_gravity_step_ = max_update_gravity_step_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
+
+    LOG(INFO) << "ESKF lidar velocity gate=" << max_update_velocity_step_
+              << " m/s, point covariance model=" << (point_noise_enabled_ ? "enabled" : "disabled");
 
     return true;
 }
@@ -81,6 +87,9 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         if (yaml["fasterlio"]["lidar_update_inertial_states"]) {
             lidar_update_inertial_states_ = yaml["fasterlio"]["lidar_update_inertial_states"].as<bool>();
         }
+        if (yaml["fasterlio"]["max_update_velocity_step"]) {
+            max_update_velocity_step_ = yaml["fasterlio"]["max_update_velocity_step"].as<double>();
+        }
         if (yaml["fasterlio"]["max_update_gyro_bias_step"]) {
             max_update_gyro_bias_step_ = yaml["fasterlio"]["max_update_gyro_bias_step"].as<double>();
         }
@@ -108,6 +117,31 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         bool use_imu_filter = yaml["fasterlio"]["imu_filter"].as<bool>();
         p_imu_->SetUseIMUFilter(use_imu_filter);
         options_.proj_kfs_ = yaml["fasterlio"]["proj_kfs"].as<bool>();
+
+        if (yaml["imu_initialization"]) {
+            const YAML::Node init = yaml["imu_initialization"];
+            ImuProcess::InitializationOptions init_options;
+            if (init["min_duration"]) init_options.min_duration = init["min_duration"].as<double>();
+            if (init["min_samples"]) init_options.min_samples = init["min_samples"].as<int>();
+            if (init["max_mean_gyro_norm"]) {
+                init_options.max_mean_gyro_norm = init["max_mean_gyro_norm"].as<double>();
+            }
+            if (init["max_gyro_std"]) init_options.max_gyro_std = init["max_gyro_std"].as<double>();
+            if (init["max_acc_std"]) init_options.max_acc_std = init["max_acc_std"].as<double>();
+            if (init["min_mean_acc_norm"]) {
+                init_options.min_mean_acc_norm = init["min_mean_acc_norm"].as<double>();
+            }
+            if (init["max_mean_acc_norm"]) {
+                init_options.max_mean_acc_norm = init["max_mean_acc_norm"].as<double>();
+            }
+            if (init_options.min_duration <= 0.0 || init_options.min_samples < 2 ||
+                init_options.min_mean_acc_norm < 0.0 ||
+                init_options.max_mean_acc_norm < init_options.min_mean_acc_norm) {
+                LOG(ERROR) << "invalid imu_initialization duration/sample count";
+                return false;
+            }
+            p_imu_->SetInitializationOptions(init_options);
+        }
 
     } catch (...) {
         LOG(ERROR) << "bad conversion";
@@ -145,7 +179,8 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY18;
     }
 
-    voxel_scan_.setLeafSize(filter_size_scan, filter_size_scan, filter_size_scan);
+    filter_size_scan_ = filter_size_scan;
+    voxel_scan_.setLeafSize(filter_size_scan_, filter_size_scan_, filter_size_scan_);
 
     offset_t_lidar_fixed_ = math::VecFromArray<double>(extrinT_);
     offset_R_lidar_fixed_ = math::MatFromArray<double>(extrinR_);
@@ -155,6 +190,40 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     p_imu_->SetAccCov(Vec3d(acc_cov, acc_cov, acc_cov));
     p_imu_->SetGyrBiasCov(Vec3d(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu_->SetAccBiasCov(Vec3d(b_acc_cov, b_acc_cov, b_acc_cov));
+
+    std::string multi_lidar_error;
+    if (!LoadMultiLidarConfig(yaml, multi_lidar_config_, &multi_lidar_error)) {
+        LOG(ERROR) << "invalid multi-lidar configuration: " << multi_lidar_error;
+        return false;
+    }
+    if (multi_lidar_config_.enabled) {
+        multi_lidar_assembler_.Reset(multi_lidar_config_);
+        LOG(INFO) << "multi-lidar frontend enabled with " << multi_lidar_config_.lidars.size()
+                  << " sensors, primary id=" << multi_lidar_config_.primary_lidar_id
+                  << ", reorder_window=" << multi_lidar_config_.reorder_window;
+    }
+
+    const YAML::Node noise = yaml["lidar_noise_model"];
+    if (noise) {
+        point_noise_enabled_ = noise["enabled"] ? noise["enabled"].as<bool>() : false;
+        if (noise["range_sigma"]) range_noise_sigma_ = noise["range_sigma"].as<double>();
+        if (noise["angular_sigma_deg"]) {
+            angular_noise_sigma_rad_ = noise["angular_sigma_deg"].as<double>() * M_PI / 180.0;
+        }
+        if (noise["reference_sigma"]) noise_reference_sigma_ = noise["reference_sigma"].as<double>();
+        if (noise["min_information_scale"]) {
+            min_information_scale_ = noise["min_information_scale"].as<double>();
+        }
+        if (noise["max_information_scale"]) {
+            max_information_scale_ = noise["max_information_scale"].as<double>();
+        }
+        if (point_noise_enabled_ &&
+            (range_noise_sigma_ <= 0.0 || angular_noise_sigma_rad_ <= 0.0 || noise_reference_sigma_ <= 0.0 ||
+             min_information_scale_ <= 0.0 || max_information_scale_ < min_information_scale_)) {
+            LOG(ERROR) << "invalid lidar_noise_model parameters";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -204,22 +273,32 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
  *
  * @return true表示本帧完成了有效前端处理，false表示同步失败、初始化等待、跳帧或点数不足。
  */
-bool LaserMapping::Run() {
+bool LaserMapping::Run() { return RunDetailed() == RunStatus::kOutput; }
+
+LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // SyncPackages()只在IMU已经覆盖当前Lidar扫描结束时间时才会成功。
     // 因此这里处理的可能不是最新进入缓存的点云，而是第一帧已经等到足够IMU的点云。
     if (!SyncPackages()) {
-        LOG(WARNING) << "sync package failed";
-        return false;
+        return RunStatus::kNoData;
+    }
+
+    if (measures_.imu_.empty()) {
+        ++pre_imu_drop_count_;
+        last_tracking_healthy_ = false;
+        return RunStatus::kConsumed;
     }
 
     // IMU处理包含两种情况：
     // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
     // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
+    // Keyframes keep the previous cloud pointer, so allocate a new output instead of clearing it in place.
+    scan_undistort_.reset(new PointCloudType());
     p_imu_->Process(measures_, kf_, scan_undistort_);
 
-    if (scan_undistort_->empty() || (scan_undistort_ == nullptr)) {
+    if (!scan_undistort_ || scan_undistort_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
-        return false;
+        last_tracking_healthy_ = false;
+        return RunStatus::kConsumed;
     }
 
     // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
@@ -237,7 +316,8 @@ bool LaserMapping::Run() {
         first_lidar_time_ = measures_.lidar_end_time_;
         state_point_.timestamp_ = lidar_end_time_;
         flg_first_scan_ = false;
-        return true;
+        last_tracking_healthy_ = true;
+        return RunStatus::kOutput;
     }
 
     // 可选跳帧：仍然完成了IMU预测和去畸变，但直接返回，跳过后续降采样、地图匹配、ESKF观测更新、关键帧判断和地图更新。
@@ -253,7 +333,7 @@ bool LaserMapping::Run() {
                 ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
             }
 
-            return false;
+            return RunStatus::kConsumed;
         }
     }
 
@@ -271,8 +351,12 @@ bool LaserMapping::Run() {
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
 
     // 对当前去畸变点云降采样，后续匹配和建图都使用scan_down_lidar_，避免逐点处理原始大点云。
-    voxel_scan_.setInputCloud(scan_undistort_);
-    voxel_scan_.filter(*scan_down_lidar_);
+    if (multi_lidar_config_.enabled) {
+        scan_down_lidar_ = DownsamplePreservingSource(scan_undistort_, filter_size_scan_);
+    } else {
+        voxel_scan_.setInputCloud(scan_undistort_);
+        voxel_scan_.filter(*scan_down_lidar_);
+    }
 
     // if (options_.proj_kfs_) {
     //     ProjectKFs();
@@ -285,10 +369,14 @@ bool LaserMapping::Run() {
     if (cur_pts < (scan_undistort_->size() * 0.1) || cur_pts < options_.min_pts) {
         /// 降采样太狠了,有效点数不够，用0.1分辨率代替
         // LOG(INFO) << "too few points, using 0.1 resol";
-        auto v = voxel_scan_;
-        v.setLeafSize(0.1, 0.1, 0.1);
-        v.setInputCloud(scan_undistort_);
-        v.filter(*scan_down_lidar_);
+        if (multi_lidar_config_.enabled) {
+            scan_down_lidar_ = DownsamplePreservingSource(scan_undistort_, 0.1);
+        } else {
+            auto v = voxel_scan_;
+            v.setLeafSize(0.1, 0.1, 0.1);
+            v.setInputCloud(scan_undistort_);
+            v.filter(*scan_down_lidar_);
+        }
 
         // LOG(INFO) << "Now pts: " << scan_down_lidar_->size() << ", before: " << cur_pts;
         cur_pts = scan_down_lidar_->size();
@@ -298,7 +386,8 @@ bool LaserMapping::Run() {
     if (cur_pts < 5) {
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", "
                      << scan_down_lidar_->size();
-        return false;
+        last_tracking_healthy_ = false;
+        return RunStatus::kConsumed;
     }
 
     scan_down_world_->resize(cur_pts);
@@ -321,6 +410,8 @@ bool LaserMapping::Run() {
     // 更新当前Lidar帧结束时刻的前端状态，供建图、关键帧和外部查询使用。
     state_point_ = kf_.GetX();
     state_point_.timestamp_ = measures_.lidar_end_time_;
+    last_tracking_healthy_ = kf_.LastUpdateAccepted() && effect_feat_surf_ >= 20 && current_max_imu_gap_ <= 0.25 &&
+                             state_point_.pos_.allFinite() && state_point_.rot_.matrix().allFinite();
 
     // 统计本次观测更新相对IMU预测的修正量，主要用于日志和异常诊断。
     const double delta_translation = (pred_state.pos_ - state_point_.pos_).norm();
@@ -391,7 +482,7 @@ bool LaserMapping::Run() {
               << ", bg: " << state_point_.bg_.transpose() << ", ba: " << state_point_.ba_.transpose()
               << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
 
-    return true;
+    return RunStatus::kOutput;
 }
 
 void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
@@ -487,76 +578,116 @@ void LaserMapping::MakeKF() {
     // }
 }
 
-void LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
-    UL lock(mtx_buffer_);
-    Timer::Evaluate(
-        [&, this]() {
-            scan_count_++;
-            double timestamp = ToSec(msg->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, dt: " << timestamp - last_timestamp_lidar_;
-                return;
-            }
-
-            LOG(INFO) << "get cloud at " << std::setprecision(14) << timestamp
-                      << ", latest imu: " << last_timestamp_imu_;
-
-            CloudPtr cloud(new PointCloudType());
-            preprocess_->Process(msg, cloud);
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
-        },
-        "Preprocess (Standard)");
+bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats) {
+    if (!cloud || cloud->empty()) {
+        return false;
+    }
+    if (timestamp < last_timestamp_lidar_) {
+        LOG(ERROR) << "fused lidar timestamp loop back, drop frame: " << std::setprecision(14) << timestamp
+                   << " < " << last_timestamp_lidar_;
+        return false;
+    }
+    lidar_buffer_.push_back(std::move(cloud));
+    time_buffer_.push_back(timestamp);
+    if (stats) {
+        lidar_stats_buffer_.push_back(*stats);
+    } else {
+        MultiLidarFrameStats single;
+        single.begin_time = timestamp;
+        single.present_lidar_ids = {multi_lidar_config_.primary_lidar_id};
+        single.points_by_lidar[multi_lidar_config_.primary_lidar_id] = lidar_buffer_.back()->size();
+        single.merged_points = lidar_buffer_.back()->size();
+        lidar_stats_buffer_.push_back(std::move(single));
+    }
+    last_timestamp_lidar_ = timestamp;
+    return true;
 }
 
-void LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg) {
-    UL lock(mtx_buffer_);
-    Timer::Evaluate(
-        [&, this]() {
-            scan_count_++;
-            double timestamp = ToSec(msg->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
-                lidar_buffer_.clear();
-            }
-
-            // LOG(INFO) << "get cloud at " << std::setprecision(14) << timestamp
-            //           << ", latest imu: " << last_timestamp_imu_;
-
-            CloudPtr cloud(new PointCloudType());
-            preprocess_->Process(msg, cloud);
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
-        },
-        "Preprocess (Standard)");
+bool LaserMapping::DrainAssembledFrames() {
+    bool enqueued = false;
+    FusedLidarFrame frame;
+    while (multi_lidar_assembler_.PopReady(frame)) {
+        enqueued = EnqueueCloud(frame.stats.begin_time, std::move(frame.cloud), &frame.stats) || enqueued;
+    }
+    return enqueued;
 }
 
-void LaserMapping::ProcessPointCloud2(CloudPtr cloud) {
+bool LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg) {
+    const int id = multi_lidar_config_.enabled ? multi_lidar_config_.primary_lidar_id : 0;
+    return ProcessPointCloud2(msg, id);
+}
+
+bool LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, int lidar_id) {
     UL lock(mtx_buffer_);
+    bool accepted = false;
     Timer::Evaluate(
         [&, this]() {
-            scan_count_++;
-
-            double timestamp = math::ToSec(cloud->header.stamp);
-            if (timestamp < last_timestamp_lidar_) {
-                LOG(ERROR) << "lidar loop back, clear buffer";
-                lidar_buffer_.clear();
+            ++scan_count_;
+            const double timestamp = ToSec(msg->header.stamp);
+            CloudPtr cloud(new PointCloudType());
+            preprocess_->Process(msg, cloud);
+            if (multi_lidar_config_.enabled) {
+                accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
+                DrainAssembledFrames();
+            } else {
+                accepted = EnqueueCloud(timestamp, cloud);
             }
-
-            lidar_buffer_.push_back(cloud);
-            time_buffer_.push_back(timestamp);
-            last_timestamp_lidar_ = timestamp;
         },
         "Preprocess (Standard)");
+    return accepted;
+}
+
+bool LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg) {
+    const int id = multi_lidar_config_.enabled ? multi_lidar_config_.primary_lidar_id : 0;
+    return ProcessPointCloud2(msg, id);
+}
+
+bool LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg, int lidar_id) {
+    UL lock(mtx_buffer_);
+    bool accepted = false;
+    Timer::Evaluate(
+        [&, this]() {
+            ++scan_count_;
+            const double timestamp = ToSec(msg->header.stamp);
+            CloudPtr cloud(new PointCloudType());
+            preprocess_->Process(msg, cloud);
+            if (multi_lidar_config_.enabled) {
+                accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
+                DrainAssembledFrames();
+            } else {
+                accepted = EnqueueCloud(timestamp, cloud);
+            }
+        },
+        "Preprocess (Livox)");
+    return accepted;
+}
+
+bool LaserMapping::ProcessPointCloud2(CloudPtr cloud) {
+    const int id = multi_lidar_config_.enabled ? multi_lidar_config_.primary_lidar_id : 0;
+    return ProcessPointCloud2(std::move(cloud), id);
+}
+
+bool LaserMapping::ProcessPointCloud2(CloudPtr cloud, int lidar_id) {
+    UL lock(mtx_buffer_);
+    if (!cloud) return false;
+    const double timestamp = math::ToSec(cloud->header.stamp);
+    if (multi_lidar_config_.enabled) {
+        const bool accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
+        DrainAssembledFrames();
+        return accepted;
+    }
+    return EnqueueCloud(timestamp, std::move(cloud));
+}
+
+void LaserMapping::FlushMultiLidar() {
+    UL lock(mtx_buffer_);
+    if (!multi_lidar_config_.enabled) return;
+    multi_lidar_assembler_.Flush();
+    DrainAssembledFrames();
 }
 
 bool LaserMapping::SyncPackages() {
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
-        LOG(INFO) << "lidar or imu is empty";
         return false;
     }
 
@@ -564,6 +695,7 @@ bool LaserMapping::SyncPackages() {
     if (!lidar_pushed_) {
         measures_.scan_ = lidar_buffer_.front();
         measures_.lidar_begin_time_ = time_buffer_.front();
+        current_lidar_stats_ = lidar_stats_buffer_.empty() ? MultiLidarFrameStats() : lidar_stats_buffer_.front();
 
         if (measures_.scan_->points.size() <= 1) {
             LOG(WARNING) << "Too few input point cloud!";
@@ -588,11 +720,12 @@ bool LaserMapping::SyncPackages() {
 
         // LOG(INFO) << "recompute lidar end time: " << std::setprecision(14) << lidar_end_time_;
         measures_.lidar_end_time_ = lidar_end_time_;
+        current_lidar_stats_.begin_time = measures_.lidar_begin_time_;
+        current_lidar_stats_.end_time = measures_.lidar_end_time_;
         lidar_pushed_ = true;
     }
 
     if (last_timestamp_imu_ < lidar_end_time_) {
-        LOG(INFO) << "sync failed: " << std::setprecision(14) << last_timestamp_imu_ << ", " << lidar_end_time_;
         return false;
     }
 
@@ -610,8 +743,15 @@ bool LaserMapping::SyncPackages() {
         imu_buffer_.pop_front();
     }
 
+    current_max_imu_gap_ = 0.0;
+    for (std::size_t i = 1; i < measures_.imu_.size(); ++i) {
+        current_max_imu_gap_ =
+            std::max(current_max_imu_gap_, measures_.imu_[i]->timestamp - measures_.imu_[i - 1]->timestamp);
+    }
+
     lidar_buffer_.pop_front();
     time_buffer_.pop_front();
+    if (!lidar_stats_buffer_.empty()) lidar_stats_buffer_.pop_front();
     lidar_pushed_ = false;
 
     // LOG(INFO) << "sync: " << std::setprecision(14) << measures_.lidar_begin_time_ << ", " <<
@@ -715,6 +855,27 @@ void LaserMapping::MapIncremental() {
  * @param s[in] 当前ESKF状态，包含位姿、速度、零偏等
  * @param obs[out] 观测模型结构体，填充valid_、HTH_、HTr_和残差统计信息
  */
+double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
+                                           const NavState &state) const {
+    if (!point_noise_enabled_) return 1.0;
+    Vec3d sensor_origin = Vec3d::Zero();
+    if (const auto *sensor = multi_lidar_config_.FindLidar(point.lidar_id)) {
+        sensor_origin = sensor->t_lidar_to_primary;
+    }
+    const Vec3d beam_primary = point.getVector3fMap().cast<double>() - sensor_origin;
+    const double range = beam_primary.norm();
+    if (range < 1e-6) return min_information_scale_;
+    const Mat3d R_world_primary = state.rot_.matrix() * offset_R_lidar_fixed_;
+    const Vec3d normal_primary = R_world_primary.transpose() * plane_normal_world.normalized();
+    const double cos_incidence = std::clamp(normal_primary.dot(beam_primary / range), -1.0, 1.0);
+    const double tangential_sigma = range * angular_noise_sigma_rad_;
+    const double variance = range_noise_sigma_ * range_noise_sigma_ * cos_incidence * cos_incidence +
+                            tangential_sigma * tangential_sigma * (1.0 - cos_incidence * cos_incidence);
+    const double reference_variance = noise_reference_sigma_ * noise_reference_sigma_;
+    return std::clamp(reference_variance / std::max(variance, 1e-9), min_information_scale_,
+                      max_information_scale_);
+}
+
 void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     int cnt_pts = scan_down_lidar_->size();
 
@@ -785,12 +946,14 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     // 将并行阶段筛选出的有效点压缩到corr_pts_/corr_norm_前部，便于后面只遍历有效点。
     // corr_pts_前三维保存Lidar系点坐标，第4维保存点面有符号残差。
     corr_pts_.resize(cnt_pts);
+    corr_lidar_ids_.resize(cnt_pts);
     corr_norm_.resize(cnt_pts);
     for (int i = 0; i < cnt_pts; i++) {
         if (point_selected_surf_[i]) {
             corr_norm_[effect_feat_surf_] = plane_coef_[i];
             corr_pts_[effect_feat_surf_] = scan_down_lidar_->points[i].getVector4fMap();
             corr_pts_[effect_feat_surf_][3] = residuals_[i];
+            corr_lidar_ids_[effect_feat_surf_] = scan_down_lidar_->points[i].lidar_id;
 
             effect_feat_surf_++;
         }
@@ -801,6 +964,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     }
 
     corr_pts_.resize(effect_feat_surf_);
+    corr_lidar_ids_.resize(effect_feat_surf_);
     corr_norm_.resize(effect_feat_surf_);
 
     // 有效点面约束太少时，观测模型不可用；ESKF::Update()会放弃本次更新并回退。
@@ -850,7 +1014,12 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         float res = -corr_pts_[i][3];
 
         // double w = huber_weight(res);
-        double w = 1.0;
+        PointType weighted_point;
+        weighted_point.x = point_this_be.x();
+        weighted_point.y = point_this_be.y();
+        weighted_point.z = point_this_be.z();
+        weighted_point.lidar_id = corr_lidar_ids_[i];
+        double w = PointInformationScale(weighted_point, norm_vec.cast<double>(), s);
 
         JTJ[i] = (J.transpose() * J).eval() * w;
         JTr[i] = J.transpose() * res * w;
@@ -949,17 +1118,23 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
     for (auto &kf : all_keyframes_) {
         CloudPtr cloud = kf->GetCloud();
+        if (!cloud || cloud->empty()) continue;
 
         CloudPtr cloud_filter(new PointCloudType);
 
         /// 可选地先对单个关键帧点云降采样，降低全局拼接的点数和内存占用。
         if (use_voxel) {
-            voxel.setInputCloud(cloud);
-            voxel.filter(*cloud_filter);
+            if (multi_lidar_config_.enabled) {
+                cloud_filter = DownsamplePreservingSource(cloud, res);
+            } else {
+                voxel.setInputCloud(cloud);
+                voxel.filter(*cloud_filter);
+            }
 
         } else {
             cloud_filter = cloud;
         }
+        if (!cloud_filter || cloud_filter->empty()) continue;
 
         CloudPtr cloud_trans(new PointCloudType);
 
@@ -979,8 +1154,12 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
     CloudPtr global_map_filtered(new PointCloudType);
     /// 拼接完成后再做一次全局体素滤波，合并关键帧重叠区域中的冗余点。
     if (use_voxel) {
-        voxel.setInputCloud(global_map);
-        voxel.filter(*global_map_filtered);
+        if (multi_lidar_config_.enabled) {
+            global_map_filtered = DownsamplePreservingSource(global_map, res);
+        } else {
+            voxel.setInputCloud(global_map);
+            voxel.filter(*global_map_filtered);
+        }
     } else {
         global_map_filtered = global_map;
     }

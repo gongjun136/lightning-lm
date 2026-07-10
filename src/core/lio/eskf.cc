@@ -229,6 +229,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
  * @param R   观测噪声方差，控制观测对状态估计的权重（越小权重越高，典型值1e-3）
  */
 void ESKF::Update(ESKF::ObsType obs, const double& R) {
+    last_update_accepted_ = false;
     // 每次Update开始前先把观测模型标志恢复为可用状态，具体质量检查交给观测函数设置。
     custom_obs_model_.valid_ = true;
     custom_obs_model_.converge_ = true;
@@ -586,6 +587,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
             // 最终协方差更新，对应信息形式下的 P = (I-KH)P，并结合上面的流形切空间映射。
             P_ = L_ - K_H.block<state_dim_, pose_obs_dim_>(0, 0) * P_.template block<pose_obs_dim_, state_dim_>(0, 0);
+            last_update_accepted_ = true;
 
             if (nullity > 0) {
                 // LOG_EVERY_N(INFO, 50) << "ESKF observation degeneracy rank " << (pose_obs_dim_ - nullity) << "/"

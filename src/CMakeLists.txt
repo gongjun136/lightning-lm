@@ -9,6 +9,7 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/lio/eskf.cc
         core/lio/laser_mapping.cc
+        core/lio/multi_lidar_fusion.cc
         core/lio/pointcloud_preprocess.cc
         core/loop_closing/loop_closing.cc
 
@@ -95,5 +96,28 @@ target_link_libraries(nav_state_eskf_model_test
         ${PROJECT_NAME}.libs
         ${third_party_libs}
 )
+
+add_executable(multi_lidar_fusion_test EXCLUDE_FROM_ALL
+        test/multi_lidar_fusion_test.cc
+)
+
+target_link_libraries(multi_lidar_fusion_test
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
+add_executable(rear_axle_pose_test EXCLUDE_FROM_ALL
+        test/rear_axle_pose_test.cc
+)
+
+target_link_libraries(rear_axle_pose_test
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
+if(BUILD_TESTING)
+    add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
+    add_test(NAME rear_axle_pose_test COMMAND $<TARGET_FILE:rear_axle_pose_test>)
+endif()
 
 add_subdirectory(app)

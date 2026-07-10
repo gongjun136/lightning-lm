@@ -9,6 +9,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 #include "common/eigen_types.h"
@@ -35,6 +36,16 @@ namespace lightning {
  */
 class ImuProcess {
    public:
+    struct InitializationOptions {
+        double min_duration = 0.05;
+        int min_samples = 20;
+        double max_mean_gyro_norm = std::numeric_limits<double>::infinity();
+        double max_gyro_std = std::numeric_limits<double>::infinity();
+        double max_acc_std = std::numeric_limits<double>::infinity();
+        double min_mean_acc_norm = 0.0;
+        double max_mean_acc_norm = std::numeric_limits<double>::infinity();
+    };
+
     /// Eigen固定大小矩阵成员需要对齐分配，避免在容器或new对象时出现内存对齐问题。
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -53,6 +64,7 @@ class ImuProcess {
     void SetGyrBiasCov(const Vec3d &b_g);
     /// 设置加速度计零偏随机游走噪声。
     void SetAccBiasCov(const Vec3d &b_a);
+    void SetInitializationOptions(const InitializationOptions &options) { init_options_ = options; }
 
     /**
      * @brief 处理一组同步后的Lidar和IMU量测。
@@ -73,6 +85,7 @@ class ImuProcess {
 
     /// 获取初始化阶段估计出的加速度均值模长，可用于检查静止初始化是否接近重力加速度。
     double GetMeanAccNorm() const { return mean_acc_.norm(); }
+    std::size_t GetInitializationSampleCount() const { return init_samples_.size(); }
     Vec3d ScaleAccelerationForPrediction(const Vec3d &acc) const { return acc * acc_scale_factor_; }
 
     // 这些噪声参数会在IMU初始化和ESKF预测中使用，保持public是为了兼容原框架的配置方式。
@@ -90,8 +103,7 @@ class ImuProcess {
     /// 正常运行阶段：用IMU积分预测状态，并把点云补偿到扫描结束时刻。
     void UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &pcl_out);
 
-    /// 初始化累计帧数阈值。达到该阈值后认为IMU均值和方差统计基本稳定。
-    static inline constexpr int max_init_count_ = 20;
+    bool InitializationReady() const;
 
     PointCloudType::Ptr cur_pcl_un_ = nullptr;  // 当前帧去畸变点云缓存，Reset时重新分配
     lightning::IMUPtr last_imu_ = nullptr;      // 上一帧最后一条IMU，用于和当前帧第一条IMU形成连续积分区间
@@ -113,6 +125,8 @@ class ImuProcess {
 
     bool use_imu_filter_ = true;  // 是否对参与积分的IMU量测做滤波
     IMUFilter filter_;            // IMU滤波器实例，仅处理当前帧IMU拷贝
+    InitializationOptions init_options_;
+    std::deque<lightning::IMUPtr> init_samples_;
 };
 
 inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
@@ -139,6 +153,7 @@ inline void ImuProcess::Reset() {
     imu_need_init_ = true;
     init_iter_num_ = 1;
     imu_queue_.clear();
+    init_samples_.clear();
     imu_pose_.clear();
     last_imu_.reset(new lightning::IMU());
     cur_pcl_un_.reset(new PointCloudType());
@@ -169,48 +184,36 @@ inline void ImuProcess::SetAccBiasCov(const Vec3d &b_a) { cov_bias_acc_ = b_a; }
  *          和陀螺仪噪声方差，避免保存全部历史IMU样本。
  */
 inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N) {
-    Vec3d cur_acc, cur_gyr;
-    // 首帧初始化均值和样本计数，后续量测在此基础上做在线统计。
     if (b_first_frame_) {
         Reset();
-        N = 1;  // 数据量计数
         b_first_frame_ = false;
-        const auto &imu_acc = meas.imu_.front()->linear_acceleration;
-        const auto &gyr_acc = meas.imu_.front()->angular_velocity;
-        mean_acc_ = imu_acc;
-        mean_gyr_ = gyr_acc;
     }
+    for (const auto &imu : meas.imu_) init_samples_.push_back(imu);
+    if (init_samples_.empty()) return;
+    const double retention_duration = std::max(1.0, 5.0 * init_options_.min_duration);
+    const double oldest_allowed = init_samples_.back()->timestamp - retention_duration;
+    while (init_samples_.size() > 1 && init_samples_[1]->timestamp <= oldest_allowed) init_samples_.pop_front();
 
-    // 遍历当前批次IMU，在线更新加速度和角速度的均值、方差。
-    for (const auto &imu : meas.imu_) {
-        const auto &imu_acc = imu->linear_acceleration;
-        const auto &gyr_acc = imu->angular_velocity;
-        cur_acc = imu_acc;
-        cur_gyr = gyr_acc;
-
-        // 先记录相对旧均值的偏差，再用该偏差更新均值和方差。
-        const Vec3d delta_acc = cur_acc - mean_acc_;
-        const Vec3d delta_gyr = cur_gyr - mean_gyr_;
-
-        mean_acc_ += delta_acc / N;
-        mean_gyr_ += delta_gyr / N;
-        // [gj-2025-11-25] 错误写法：这里的 mean_acc_/mean_gyr_ 已经更新，
-        // (cur - mean) 不再是文档公式中的旧均值差 delta。
-        // cov_acc_ = cov_acc_ * (N - 1.0) / N + (cur_acc - mean_acc_).cwiseProduct(cur_acc - mean_acc_) * (N - 1.0) / (N * N);
-        // cov_gyr_ = cov_gyr_ * (N - 1.0) / N + (cur_gyr - mean_gyr_).cwiseProduct(cur_gyr - mean_gyr_) * (N - 1.0) / (N * N);
-        // 修正：当前 N 表示加入当前样本后的样本数，delta_* 是相对更新前均值的差。
-        // 按无偏样本方差递推式：
-        // cov_N = cov_{N-1} * (N - 2) / (N - 1) + delta^2 / N。
-        if (N == 1) {
-            cov_acc_.setZero();
-            cov_gyr_.setZero();
-        } else {
-            cov_acc_ = cov_acc_ * (N - 2.0) / (N - 1.0) + delta_acc.cwiseProduct(delta_acc) / N;
-            cov_gyr_ = cov_gyr_ * (N - 2.0) / (N - 1.0) + delta_gyr.cwiseProduct(delta_gyr) / N;
-        }
-
-        N++;
+    mean_acc_.setZero();
+    mean_gyr_.setZero();
+    for (const auto &imu : init_samples_) {
+        mean_acc_ += imu->linear_acceleration;
+        mean_gyr_ += imu->angular_velocity;
     }
+    mean_acc_ /= static_cast<double>(init_samples_.size());
+    mean_gyr_ /= static_cast<double>(init_samples_.size());
+    cov_acc_.setZero();
+    cov_gyr_.setZero();
+    for (const auto &imu : init_samples_) {
+        const Vec3d da = imu->linear_acceleration - mean_acc_;
+        const Vec3d dg = imu->angular_velocity - mean_gyr_;
+        cov_acc_ += da.cwiseProduct(da);
+        cov_gyr_ += dg.cwiseProduct(dg);
+    }
+    const double denominator = std::max<std::size_t>(1, init_samples_.size() - 1);
+    cov_acc_ /= denominator;
+    cov_gyr_ /= denominator;
+    N = static_cast<int>(init_samples_.size());
 
     // 将静止统计结果写入ESKF：用加速度均值对齐初始姿态，重力固定在世界系-z，角速度均值为陀螺零偏。
     auto init_state = kf_state.GetX();
@@ -246,6 +249,17 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
 
     // 缓存当前批次最后一条IMU，供后续点云去畸变形成跨帧积分区间。
     last_imu_ = meas.imu_.back();
+}
+
+inline bool ImuProcess::InitializationReady() const {
+    if (init_samples_.size() < static_cast<std::size_t>(std::max(1, init_options_.min_samples))) return false;
+    if (init_samples_.back()->timestamp - init_samples_.front()->timestamp < init_options_.min_duration) return false;
+    const double gyro_std = std::sqrt(std::max(0.0, cov_gyr_.maxCoeff()));
+    const double acc_std = std::sqrt(std::max(0.0, cov_acc_.maxCoeff()));
+    const double mean_acc_norm = mean_acc_.norm();
+    return mean_gyr_.norm() <= init_options_.max_mean_gyro_norm && gyro_std <= init_options_.max_gyro_std &&
+           acc_std <= init_options_.max_acc_std && mean_acc_norm >= init_options_.min_mean_acc_norm &&
+           mean_acc_norm <= init_options_.max_mean_acc_norm;
 }
 
 /**
@@ -472,7 +486,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
         last_imu_ = meas.imu_.back();
 
         auto imu_state = kf_state.GetX();
-        if (init_iter_num_ > max_init_count_) {
+        if (InitializationReady()) {
             // cov_acc_ *= pow(meas_acc_scale_, 2);  // 使用缓存的缩放因子，方差则需要平方
             // 初始化累计足够多帧后，切换到正常预测/去畸变流程。
             imu_need_init_ = false;
@@ -504,7 +518,13 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
                       << mean_gyr_.transpose();
         } else {
             // 初始化未完成时继续等待更多IMU样本；当前帧不做点云去畸变输出。
-            LOG(INFO) << "waiting for imu init ... " << init_iter_num_;
+            const double duration = init_samples_.empty()
+                                        ? 0.0
+                                        : init_samples_.back()->timestamp - init_samples_.front()->timestamp;
+            LOG(INFO) << "waiting for stationary imu init, samples=" << init_samples_.size()
+                      << ", duration=" << duration << ", gyro_std="
+                      << std::sqrt(std::max(0.0, cov_gyr_.maxCoeff())) << ", acc_std="
+                      << std::sqrt(std::max(0.0, cov_acc_.maxCoeff()));
         }
 
         return;

@@ -1,0 +1,366 @@
+#include "core/lio/multi_lidar_fusion.h"
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <tuple>
+#include <utility>
+
+namespace lightning {
+namespace {
+
+void SetError(std::string* error, const std::string& message) {
+    if (error) {
+        *error = message;
+    }
+}
+
+std::string InferImuTopic(std::string lidar_topic) {
+    const std::string token = "/lidar_";
+    const auto pos = lidar_topic.find(token);
+    if (pos != std::string::npos) {
+        lidar_topic.replace(pos, token.size(), "/imu_");
+    }
+    return lidar_topic;
+}
+
+bool ParseId(const std::string& key, int& id) {
+    std::string digits;
+    for (const char c : key) {
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            digits.push_back(c);
+        }
+    }
+    if (digits.empty()) {
+        return false;
+    }
+    id = std::stoi(digits);
+    return true;
+}
+
+bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* error) {
+    if (!node) {
+        SetError(error, "missing lidar transform");
+        return false;
+    }
+    std::vector<double> values;
+    try {
+        values = node.as<std::vector<double>>();
+    } catch (const YAML::Exception& e) {
+        SetError(error, e.what());
+        return false;
+    }
+    if (values.size() != 12 && values.size() != 16) {
+        SetError(error, "lidar transform must contain 12 or 16 numbers");
+        return false;
+    }
+    if (!std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })) {
+        SetError(error, "lidar transform contains a non-finite value");
+        return false;
+    }
+    if (values.size() == 16 &&
+        (std::abs(values[12]) > 1e-9 || std::abs(values[13]) > 1e-9 || std::abs(values[14]) > 1e-9 ||
+         std::abs(values[15] - 1.0) > 1e-9)) {
+        SetError(error, "lidar transform bottom row must be [0, 0, 0, 1]");
+        return false;
+    }
+    R << values[0], values[1], values[2], values[4], values[5], values[6], values[8], values[9], values[10];
+    t << values[3], values[7], values[11];
+    const double orthogonality_error = (R.transpose() * R - Mat3d::Identity()).cwiseAbs().maxCoeff();
+    if (orthogonality_error > 1e-3 || std::abs(R.determinant() - 1.0) > 1e-3) {
+        SetError(error, "lidar rotation is not a valid SO(3) matrix");
+        return false;
+    }
+    return true;
+}
+
+bool ValidateConfig(const MultiLidarConfig& config, std::string* error) {
+    if (!config.enabled) {
+        return true;
+    }
+    if (config.frame_period <= 0.0 || config.match_tolerance <= 0.0 ||
+        config.match_tolerance >= 0.5 * config.frame_period || config.reorder_window < config.frame_period) {
+        SetError(error, "invalid multi_lidar timing parameters");
+        return false;
+    }
+    if (config.online_extrinsic_estimation) {
+        SetError(error, "online multi-lidar extrinsic estimation is not supported in the stable V1 frontend");
+        return false;
+    }
+    if (config.min_lidars < 1 || config.min_lidars > static_cast<int>(config.lidars.size())) {
+        SetError(error, "multi_lidar.min_lidars is outside the configured lidar count");
+        return false;
+    }
+    std::set<int> ids;
+    bool has_primary = false;
+    for (const auto& sensor : config.lidars) {
+        if (sensor.id < 0 || sensor.id > 255 || sensor.lidar_topic.empty() || !ids.insert(sensor.id).second) {
+            SetError(error, "invalid or duplicate multi-lidar sensor entry");
+            return false;
+        }
+        has_primary = has_primary || sensor.id == config.primary_lidar_id;
+    }
+    if (!has_primary) {
+        SetError(error, "primary lidar id is not configured");
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+const MultiLidarSensorConfig* MultiLidarConfig::FindLidar(int id) const {
+    for (const auto& lidar : lidars) {
+        if (lidar.id == id) {
+            return &lidar;
+        }
+    }
+    return nullptr;
+}
+
+bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std::string* error) {
+    config = MultiLidarConfig();
+    const YAML::Node multi = root["multi_lidar"];
+    if (!multi) {
+        return true;
+    }
+    try {
+        config.enabled = multi["enabled"] ? multi["enabled"].as<bool>() : true;
+        if (!config.enabled) {
+            return true;
+        }
+        if (multi["primary_lidar_id"]) config.primary_lidar_id = multi["primary_lidar_id"].as<int>();
+        if (multi["frame_period"]) config.frame_period = multi["frame_period"].as<double>();
+        if (multi["match_tolerance"]) config.match_tolerance = multi["match_tolerance"].as<double>();
+        if (multi["reorder_window"]) config.reorder_window = multi["reorder_window"].as<double>();
+        if (multi["min_lidars"]) config.min_lidars = multi["min_lidars"].as<int>();
+        if (multi["online_extrinsic_estimation"]) {
+            config.online_extrinsic_estimation = multi["online_extrinsic_estimation"].as<bool>();
+        }
+
+        const YAML::Node topics = multi["topics"];
+        const YAML::Node extrinsics = multi["extrinsics"];
+        if (!topics || !extrinsics) {
+            SetError(error, "multi_lidar.topics and multi_lidar.extrinsics are required");
+            return false;
+        }
+        std::map<int, MultiLidarSensorConfig> sensors;
+        for (const auto& item : topics) {
+            const std::string key = item.first.as<std::string>();
+            if (key.rfind("lidar", 0) != 0) {
+                continue;
+            }
+            int id = 0;
+            if (!ParseId(key, id)) {
+                continue;
+            }
+            MultiLidarSensorConfig sensor;
+            sensor.id = id;
+            sensor.lidar_topic = item.second.as<std::string>();
+            const std::string imu_key = "imu_" + std::to_string(id);
+            sensor.imu_topic = topics[imu_key] ? topics[imu_key].as<std::string>() : InferImuTopic(sensor.lidar_topic);
+            YAML::Node extrinsic = extrinsics["lidar" + std::to_string(id)];
+            if (!extrinsic) extrinsic = extrinsics["lidar_" + std::to_string(id)];
+            if (!extrinsic || !ReadTransform(extrinsic["T"], sensor.R_lidar_to_primary,
+                                             sensor.t_lidar_to_primary, error)) {
+                return false;
+            }
+            sensors.emplace(id, std::move(sensor));
+        }
+        for (auto& [id, sensor] : sensors) {
+            (void)id;
+            config.lidars.push_back(std::move(sensor));
+        }
+    } catch (const YAML::Exception& e) {
+        SetError(error, e.what());
+        return false;
+    }
+    return ValidateConfig(config, error);
+}
+
+CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size) {
+    CloudPtr filtered(new PointCloudType);
+    if (!cloud || cloud->empty() || leaf_size <= 0.0) {
+        if (cloud) *filtered = *cloud;
+        return filtered;
+    }
+    using Key = std::tuple<long long, long long, long long>;
+    struct Representative {
+        PointType point;
+        double center_distance = std::numeric_limits<double>::max();
+    };
+    std::map<Key, Representative> representatives;
+    for (const auto& point : cloud->points) {
+        const Vec3d p = point.getVector3fMap().cast<double>();
+        const long long ix = static_cast<long long>(std::floor(p.x() / leaf_size));
+        const long long iy = static_cast<long long>(std::floor(p.y() / leaf_size));
+        const long long iz = static_cast<long long>(std::floor(p.z() / leaf_size));
+        const Vec3d center((ix + 0.5) * leaf_size, (iy + 0.5) * leaf_size, (iz + 0.5) * leaf_size);
+        const double distance = (p - center).squaredNorm();
+        const Key key{ix, iy, iz};
+        auto it = representatives.find(key);
+        if (it == representatives.end() || distance < it->second.center_distance) {
+            representatives[key] = Representative{point, distance};
+        }
+    }
+    filtered->reserve(representatives.size());
+    for (const auto& [key, representative] : representatives) {
+        (void)key;
+        filtered->push_back(representative.point);
+    }
+    filtered->header = cloud->header;
+    filtered->width = filtered->size();
+    filtered->height = 1;
+    filtered->is_dense = false;
+    return filtered;
+}
+
+void MultiLidarFrameAssembler::Reset(MultiLidarConfig config) {
+    config_ = std::move(config);
+    expected_lidar_ids_.clear();
+    for (const auto& sensor : config_.lidars) expected_lidar_ids_.insert(sensor.id);
+    frames_.clear();
+    ready_frames_.clear();
+    anchor_initialized_ = false;
+    anchor_time_ = 0.0;
+    max_seen_time_ = -std::numeric_limits<double>::infinity();
+    last_emitted_bucket_ = std::numeric_limits<long long>::min();
+    late_drop_count_ = 0;
+    duplicate_drop_count_ = 0;
+    tolerance_drop_count_ = 0;
+    invalid_drop_count_ = 0;
+    emitted_frame_count_ = 0;
+    insufficient_lidar_drop_count_ = 0;
+}
+
+long long MultiLidarFrameAssembler::BucketFor(double timestamp) const {
+    return static_cast<long long>(std::llround((timestamp - anchor_time_) / config_.frame_period));
+}
+
+double MultiLidarFrameAssembler::BucketTime(long long bucket) const {
+    return anchor_time_ + static_cast<double>(bucket) * config_.frame_period;
+}
+
+bool MultiLidarFrameAssembler::IsComplete(const PartialFrame& frame) const {
+    return frame.clouds.size() == expected_lidar_ids_.size();
+}
+
+bool MultiLidarFrameAssembler::IsExpired(long long bucket) const {
+    return max_seen_time_ - BucketTime(bucket) >= config_.reorder_window;
+}
+
+bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr cloud) {
+    if (!cloud || !std::isfinite(timestamp) || expected_lidar_ids_.count(lidar_id) == 0) {
+        ++invalid_drop_count_;
+        return false;
+    }
+    if (!anchor_initialized_) {
+        anchor_time_ = timestamp;
+        anchor_initialized_ = true;
+    }
+    const long long bucket = BucketFor(timestamp);
+    if (bucket <= last_emitted_bucket_) {
+        ++late_drop_count_;
+        return false;
+    }
+    auto& frame = frames_[bucket];
+    if (frame.clouds.count(lidar_id) != 0) {
+        ++duplicate_drop_count_;
+        return false;
+    }
+    if (!frame.timestamps.empty()) {
+        double min_timestamp = timestamp;
+        double max_timestamp = timestamp;
+        for (const auto& [id, existing_timestamp] : frame.timestamps) {
+            (void)id;
+            min_timestamp = std::min(min_timestamp, existing_timestamp);
+            max_timestamp = std::max(max_timestamp, existing_timestamp);
+        }
+        if (max_timestamp - min_timestamp > config_.match_tolerance) {
+            ++tolerance_drop_count_;
+            return false;
+        }
+    }
+    frame.clouds.emplace(lidar_id, std::move(cloud));
+    frame.timestamps.emplace(lidar_id, timestamp);
+    max_seen_time_ = std::max(max_seen_time_, timestamp);
+    PromoteReady(false);
+    return true;
+}
+
+void MultiLidarFrameAssembler::PromoteReady(bool force) {
+    while (!frames_.empty()) {
+        auto it = frames_.begin();
+        if (!IsComplete(it->second) && !force && !IsExpired(it->first)) {
+            break;
+        }
+        if (static_cast<int>(it->second.clouds.size()) >= config_.min_lidars) {
+            ready_frames_.push_back(Assemble(it->second));
+            ++emitted_frame_count_;
+        } else {
+            ++insufficient_lidar_drop_count_;
+        }
+        last_emitted_bucket_ = it->first;
+        frames_.erase(it);
+    }
+}
+
+bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
+    if (ready_frames_.empty()) return false;
+    frame = std::move(ready_frames_.front());
+    ready_frames_.pop_front();
+    return true;
+}
+
+void MultiLidarFrameAssembler::Flush() { PromoteReady(true); }
+
+FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) const {
+    FusedLidarFrame fused;
+    fused.cloud.reset(new PointCloudType);
+    auto& stats = fused.stats;
+    stats.begin_time = std::numeric_limits<double>::infinity();
+    std::size_t total_points = 0;
+    for (const auto& [id, cloud] : frame.clouds) {
+        stats.begin_time = std::min(stats.begin_time, frame.timestamps.at(id));
+        stats.present_lidar_ids.push_back(id);
+        stats.points_by_lidar[id] = cloud ? cloud->size() : 0;
+        total_points += stats.points_by_lidar[id];
+    }
+    for (const int id : expected_lidar_ids_) {
+        if (frame.clouds.count(id) == 0) {
+            stats.missing_lidar_ids.push_back(id);
+            stats.points_by_lidar[id] = 0;
+        }
+    }
+    stats.partial = !stats.missing_lidar_ids.empty();
+    fused.cloud->reserve(total_points);
+    double max_relative_ms = 0.0;
+    for (const auto& [id, cloud] : frame.clouds) {
+        if (!cloud) continue;
+        const auto* sensor = config_.FindLidar(id);
+        const double header_offset_ms = (frame.timestamps.at(id) - stats.begin_time) * 1e3;
+        for (const auto& point : cloud->points) {
+            PointType transformed = point;
+            const Vec3d p_primary = sensor->R_lidar_to_primary * point.getVector3fMap().cast<double>() +
+                                    sensor->t_lidar_to_primary;
+            transformed.x = p_primary.x();
+            transformed.y = p_primary.y();
+            transformed.z = p_primary.z();
+            transformed.time = std::max(0.0, point.time + header_offset_ms);
+            transformed.lidar_id = static_cast<std::uint8_t>(id);
+            max_relative_ms = std::max(max_relative_ms, transformed.time);
+            fused.cloud->push_back(transformed);
+        }
+    }
+    std::sort(fused.cloud->points.begin(), fused.cloud->points.end(),
+              [](const PointType& lhs, const PointType& rhs) { return lhs.time < rhs.time; });
+    fused.cloud->width = fused.cloud->size();
+    fused.cloud->height = 1;
+    fused.cloud->is_dense = false;
+    fused.cloud->header.stamp = static_cast<std::uint64_t>(std::llround(stats.begin_time * 1e9));
+    stats.merged_points = fused.cloud->size();
+    stats.end_time = stats.begin_time + max_relative_ms * 1e-3;
+    return fused;
+}
+
+}  // namespace lightning
