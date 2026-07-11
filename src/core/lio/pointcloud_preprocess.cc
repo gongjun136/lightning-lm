@@ -113,51 +113,60 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     cloud_out_.clear();
     cloud_full_.clear();
 
-    int plsize = msg->point_num;
+    const std::size_t plsize = std::min<std::size_t>(msg->point_num, msg->points.size());
 
     cloud_out_.reserve(plsize);
     cloud_full_.resize(plsize);
 
+    if (plsize < 2) {
+        pcl_out = std::make_shared<PointCloudType>(cloud_out_);
+        return;
+    }
+
     std::vector<char> is_valid_pt(plsize, 0);
-    std::vector<uint> index(plsize - 1);
-    for (uint i = 0; i < plsize - 1; ++i) {
+    std::vector<std::size_t> index(plsize - 1);
+    for (std::size_t i = 0; i < plsize - 1; ++i) {
         index[i] = i + 1;  // 从1开始
     }
     // 因为Livox需要做重复点检测，而检测需要与前一个点比较，
     // 所以从索引1开始处理，避免访问cloud_full_[-1]造成数组越界。
 
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const uint &i) {
-        // if ((msg->points[i].line < num_scans_) &&
-        // ((msg->points[i].tag & 0x30) == 0x10 || (msg->points[i].tag & 0x30) == 0x00)) {
+    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const std::size_t &i) {
         if (i % point_filter_num_ != 0) {
             return;
         }
 
-        cloud_full_[i].x = msg->points[i].x;
-        cloud_full_[i].y = msg->points[i].y;
-        cloud_full_[i].z = msg->points[i].z;
-        cloud_full_[i].intensity = msg->points[i].reflectivity;
+        const auto &raw = msg->points[i];
+        const auto &previous = msg->points[i - 1];
+        const std::uint8_t return_type = raw.tag & 0x30;
+        if (raw.line >= num_scans_ || (return_type != 0x10 && return_type != 0x00)) {
+            return;
+        }
+
+        cloud_full_[i].x = raw.x;
+        cloud_full_[i].y = raw.y;
+        cloud_full_[i].z = raw.z;
+        cloud_full_[i].intensity = raw.reflectivity;
 
         // use curvature as time of each laser points, curvature unit: ms
-        cloud_full_[i].time = msg->points[i].offset_time / double(1000000);
+        cloud_full_[i].time = raw.offset_time / double(1000000);
 
         if (cloud_full_[i].z < height_min_ || cloud_full_[i].z > height_max_) {
             return;
         }
 
-        if ((abs(cloud_full_[i].x - cloud_full_[i - 1].x) > 1e-7) ||
-            (abs(cloud_full_[i].y - cloud_full_[i - 1].y) > 1e-7) ||
-            (abs(cloud_full_[i].z - cloud_full_[i - 1].z) > 1e-7) &&
-                (cloud_full_[i].x * cloud_full_[i].x + cloud_full_[i].y * cloud_full_[i].y +
-                     cloud_full_[i].z * cloud_full_[i].z >
-                 (blind_ * blind_))) {
+        const bool differs_from_previous = std::abs(raw.x - previous.x) > 1e-7 ||
+                                           std::abs(raw.y - previous.y) > 1e-7 ||
+                                           std::abs(raw.z - previous.z) > 1e-7;
+        const double range_squared = static_cast<double>(raw.x) * raw.x +
+                                     static_cast<double>(raw.y) * raw.y +
+                                     static_cast<double>(raw.z) * raw.z;
+        if (differs_from_previous && range_squared > blind_ * blind_) {
             is_valid_pt[i] = 1;
         }
-
-        // }
     });
 
-    for (uint i = 1; i < plsize; i++) {
+    for (std::size_t i = 1; i < plsize; i++) {
         if (is_valid_pt[i]) {
             cloud_out_.points.push_back(cloud_full_[i]);
         }
@@ -166,6 +175,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     cloud_out_.width = cloud_out_.size();
     cloud_out_.height = 1;
     cloud_out_.is_dense = false;
+    if (!pcl_out) pcl_out = std::make_shared<PointCloudType>();
     *pcl_out = cloud_out_;
 }
 
