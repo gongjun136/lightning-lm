@@ -157,6 +157,7 @@ def main() -> int:
     parser.add_argument("--max-clock-age-p95-s", type=float, default=0.20)
     parser.add_argument("--max-clock-age-s", type=float, default=0.30)
     parser.add_argument("--min-normal-state-ratio", type=float, default=0.80)
+    parser.add_argument("--max-lifecycle-reorder-s", type=float, default=0.15)
     args = parser.parse_args()
     try:
         expected_lidar_ids = tuple(sorted({int(value) for value in args.expected_lidar_ids.split(",")}))
@@ -177,6 +178,8 @@ def main() -> int:
         raise SystemExit("all ratio thresholds must be within [0,1]")
     if args.min_points_per_cloud < 1 or args.min_points_per_lidar_per_cloud < 1 or args.min_frame_time_span_s <= 0.0:
         raise SystemExit("cloud content thresholds must be positive")
+    if args.max_lifecycle_reorder_s < 0.0:
+        raise SystemExit("--max-lifecycle-reorder-s must be non-negative")
 
     reader = rosbag2_py.SequentialReader()
     reader.open(
@@ -347,6 +350,11 @@ def main() -> int:
     first_system_one_record_ns = next(
         (record_time for record_time, value in zip(record_times[SYSTEM], system_array) if value == 1), None
     )
+    lifecycle_first_one_delta_s = (
+        (first_state_one_record_ns - first_system_one_record_ns) * 1e-9
+        if first_state_one_record_ns is not None and first_system_one_record_ns is not None
+        else None
+    )
     if record_times[POSE] and record_times[CLOUD] and len(state_array):
         active_start_ns = max(record_times[POSE][0], record_times[CLOUD][0])
         active_end_ns = min(record_times[POSE][-1], record_times[CLOUD][-1])
@@ -385,6 +393,7 @@ def main() -> int:
         "slam_state_active_sample_count": int(len(active_state)),
         "slam_state_active_normal_ratio": float(np.mean(active_state == 1.0)) if len(active_state) else 0.0,
         "slam_state_first_one_record_ns": first_state_one_record_ns,
+        "slam_state_minus_system_state_first_one_receive_s": lifecycle_first_one_delta_s,
         "system_state_values_are_binary": bool(np.all(np.isin(system_array, (0, 1)))),
         "system_state_transition_count": int(np.count_nonzero(np.diff(system_array) != 0)) if len(system_array) >= 2 else 0,
         "system_state_zero_to_one_count": int(np.count_nonzero((system_array[:-1] == 0) & (system_array[1:] == 1))) if len(system_array) >= 2 else 0,
@@ -502,9 +511,9 @@ def main() -> int:
     if (
         checks["slam_state_first_one_record_ns"] is None
         or checks["system_state_first_one_record_ns"] is None
-        or checks["slam_state_first_one_record_ns"] < checks["system_state_first_one_record_ns"]
+        or checks["slam_state_minus_system_state_first_one_receive_s"] < -args.max_lifecycle_reorder_s
     ):
-        failures.append("slamState reaches normal before SystemState reports initialization")
+        failures.append("slamState/SystemState initialization order exceeds the allowed cross-topic receive reordering")
 
     result = {
         "bag": str(args.bag),
@@ -525,6 +534,7 @@ def main() -> int:
             "max_clock_age_p95_s": args.max_clock_age_p95_s,
             "max_clock_age_s": args.max_clock_age_s,
             "min_normal_state_ratio": args.min_normal_state_ratio,
+            "max_lifecycle_reorder_s": args.max_lifecycle_reorder_s,
             "enforced": args.enforce,
         },
         "topic_timing": topic_summary,
