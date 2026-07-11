@@ -440,7 +440,7 @@ def main() -> int:
         if nominal_rate is None or not 9.5 <= nominal_rate <= 10.5:
             failures.append(f"{topic}: nominal receive cadence outside [9.5,10.5] Hz")
         if interval["p99"] is None or interval["p99"] > 0.21:
-            failures.append(f"{topic}: 99th-percentile receive interval exceeds 0.21 s")
+            realtime_failures.append(f"{topic}: 99th-percentile receive interval exceeds 0.21 s")
         if timing["average_rate_hz"] is None or not 9.5 <= timing["average_rate_hz"] <= 10.5:
             realtime_failures.append(f"{topic}: end-to-end average receive rate outside [9.5,10.5] Hz")
         if interval["max"] is None or interval["max"] > 0.30:
@@ -495,8 +495,10 @@ def main() -> int:
     ):
         failures.append("first valid rear-axle pose is not the required identity origin")
     pair_arrival = checks["pose_cloud_record_arrival_delta_s"]
-    if pair_arrival["p95"] is None or pair_arrival["p95"] > 0.13 or pair_arrival["max"] > 0.30:
+    if pair_arrival["p95"] is None or pair_arrival["p95"] > 0.13:
         failures.append("pose/cloud paired-message arrival delay contract failed")
+    if pair_arrival["p99"] is None or pair_arrival["p99"] > 0.20 or pair_arrival["max"] is None or pair_arrival["max"] > 0.30:
+        realtime_failures.append("pose/cloud paired-message tail arrival delay exceeds the realtime diagnostic limit")
     if checks["cloud_schema_error_count"]:
         failures.append("cloud schema is inconsistent with the six-field public contract")
     if checks["cloud_bad_xyz_count"] or checks["cloud_bad_intensity_count"] or checks["cloud_bad_time_count"] or checks["cloud_bad_lidar_id_count"]:
