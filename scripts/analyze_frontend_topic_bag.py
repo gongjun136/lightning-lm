@@ -23,6 +23,14 @@ STATE = "/slamState_topic"
 SYSTEM = "/SystemState"
 CLOCK = "/clock"
 EXPECTED = (POSE, CLOUD, SAFETY, STATE, SYSTEM)
+EXPECTED_TYPES = {
+    POSE: "geometry_msgs/msg/PoseStamped",
+    CLOUD: "sensor_msgs/msg/PointCloud2",
+    SAFETY: "std_msgs/msg/Float64",
+    STATE: "std_msgs/msg/Float64",
+    SYSTEM: "std_msgs/msg/Int32",
+    CLOCK: "rosgraph_msgs/msg/Clock",
+}
 EXPECTED_CLOUD_SCHEMA = {
     "x": (0, 7, 1),
     "y": (4, 7, 1),
@@ -179,6 +187,13 @@ def main() -> int:
     missing = [topic for topic in EXPECTED if topic not in topic_types]
     if missing:
         raise SystemExit(f"recording lacks required topics: {missing}")
+    wrong_types = {
+        topic: {"actual": topic_types.get(topic), "expected": expected_type}
+        for topic, expected_type in EXPECTED_TYPES.items()
+        if topic in topic_types and topic_types[topic] != expected_type
+    }
+    if wrong_types:
+        raise SystemExit(f"recording has incorrect topic types: {wrong_types}")
     available_topics = (*EXPECTED, *((CLOCK,) if CLOCK in topic_types else ()))
     message_classes = {topic: get_message(topic_types[topic]) for topic in available_topics}
     record_times: dict[str, list[int]] = {topic: [] for topic in (*EXPECTED, CLOCK)}
@@ -186,6 +201,7 @@ def main() -> int:
     state_values: dict[str, list[float | int]] = {SAFETY: [], STATE: [], SYSTEM: []}
     latest_clock_ns: int | None = None
     last_clock_ns: int | None = None
+    clock_values_ns: list[int] = []
     clock_nonmonotonic_count = 0
     causal_clock_ages: dict[str, list[float]] = {POSE: [], CLOUD: []}
     header_record_times: dict[str, dict[int, list[int]]] = {POSE: {}, CLOUD: {}}
@@ -211,6 +227,8 @@ def main() -> int:
     cloud_frame_lidar_counts: list[list[int]] = [[], [], [], []]
     cloud_content_valid_frame_count = 0
     pose_nonfinite_count = 0
+    first_pose_translation_norm: float | None = None
+    first_pose_rotation_angle_deg: float | None = None
 
     while reader.has_next():
         topic, serialized, record_time = reader.read_next()
@@ -224,6 +242,7 @@ def main() -> int:
                 clock_nonmonotonic_count += 1
             last_clock_ns = clock_ns
             latest_clock_ns = clock_ns
+            clock_values_ns.append(clock_ns)
         elif topic == POSE:
             header_ns = stamp_ns(message.header.stamp)
             headers[POSE].append(header_ns)
@@ -241,6 +260,11 @@ def main() -> int:
             else:
                 norm = math.sqrt(quaternion.x**2 + quaternion.y**2 + quaternion.z**2 + quaternion.w**2)
                 quaternion_max_norm_error = max(quaternion_max_norm_error, abs(norm - 1.0))
+                if first_pose_translation_norm is None:
+                    first_pose_translation_norm = math.sqrt(sum(value * value for value in values[:3]))
+                    first_pose_rotation_angle_deg = math.degrees(
+                        2.0 * math.acos(min(1.0, abs(quaternion.w) / norm))
+                    ) if norm > 0.0 else math.inf
         elif topic == CLOUD:
             header_ns = stamp_ns(message.header.stamp)
             headers[CLOUD].append(header_ns)
@@ -317,6 +341,12 @@ def main() -> int:
     safety_values = np.asarray(state_values[SAFETY], dtype=np.float64)
     state_array = np.asarray(state_values[STATE], dtype=np.float64)
     system_array = np.asarray(state_values[SYSTEM], dtype=np.int64)
+    first_state_one_record_ns = next(
+        (record_time for record_time, value in zip(record_times[STATE], state_array) if value == 1.0), None
+    )
+    first_system_one_record_ns = next(
+        (record_time for record_time, value in zip(record_times[SYSTEM], system_array) if value == 1), None
+    )
     if record_times[POSE] and record_times[CLOUD] and len(state_array):
         active_start_ns = max(record_times[POSE][0], record_times[CLOUD][0])
         active_end_ns = min(record_times[POSE][-1], record_times[CLOUD][-1])
@@ -331,11 +361,18 @@ def main() -> int:
         "cloud_frame_ids": sorted(cloud_frames),
         "quaternion_max_norm_error": quaternion_max_norm_error,
         "pose_nonfinite_count": pose_nonfinite_count,
+        "first_rear_axle_pose_translation_norm_m": first_pose_translation_norm,
+        "first_rear_axle_pose_rotation_angle_deg": first_pose_rotation_angle_deg,
         "pose_cloud_exact_unique_stamp_pair_count": int(len(paired)),
         "pose_cloud_exact_unique_stamp_pair_ratio": float(len(paired) / pair_denominator),
         "pose_cloud_record_arrival_delta_s": distribution(pair_arrival_deltas),
         "common_record_duration_s": common_record_duration_s,
         "clock_nonmonotonic_count": clock_nonmonotonic_count,
+        "clock_value_duration_s": (
+            (clock_values_ns[-1] - clock_values_ns[0]) * 1e-9 if len(clock_values_ns) >= 2 else 0.0
+        ),
+        "clock_first_value_ns": clock_values_ns[0] if clock_values_ns else None,
+        "clock_last_value_ns": clock_values_ns[-1] if clock_values_ns else None,
         "safety_values_are_binary": bool(np.all(np.isin(safety_values, (0.0, 1.0)))),
         "safety_strict_alternation_ratio": (
             float(np.mean(np.diff(safety_values) != 0.0)) if len(safety_values) >= 2 else None
@@ -347,9 +384,11 @@ def main() -> int:
         "slam_state_active_window_end_record_ns": active_end_ns or None,
         "slam_state_active_sample_count": int(len(active_state)),
         "slam_state_active_normal_ratio": float(np.mean(active_state == 1.0)) if len(active_state) else 0.0,
+        "slam_state_first_one_record_ns": first_state_one_record_ns,
         "system_state_values_are_binary": bool(np.all(np.isin(system_array, (0, 1)))),
         "system_state_transition_count": int(np.count_nonzero(np.diff(system_array) != 0)) if len(system_array) >= 2 else 0,
         "system_state_zero_to_one_count": int(np.count_nonzero((system_array[:-1] == 0) & (system_array[1:] == 1))) if len(system_array) >= 2 else 0,
+        "system_state_first_one_record_ns": first_system_one_record_ns,
         "cloud_fields": cloud_fields,
         "cloud_point_count": cloud_point_count,
         "cloud_bad_xyz_count": cloud_bad_xyz,
@@ -406,6 +445,18 @@ def main() -> int:
         failures.append("recording lacks /clock")
     if checks["clock_nonmonotonic_count"]:
         failures.append("/clock is not strictly increasing")
+    output_header_min = min((values[0] for values in headers.values() if values), default=None)
+    output_header_max = max((values[-1] for values in headers.values() if values), default=None)
+    if (
+        checks["clock_value_duration_s"] < args.min_duration_s
+        or checks["clock_first_value_ns"] is None
+        or checks["clock_last_value_ns"] is None
+        or output_header_min is None
+        or output_header_max is None
+        or checks["clock_first_value_ns"] > output_header_min + 200_000_000
+        or checks["clock_last_value_ns"] < output_header_max - 200_000_000
+    ):
+        failures.append("/clock does not span the validated pose/cloud sensor-time window")
     if checks["common_record_duration_s"] < args.min_duration_s:
         failures.append("five topics do not share the minimum common recording window")
     if checks["pose_cloud_exact_unique_stamp_pair_ratio"] < 0.98:
@@ -414,6 +465,13 @@ def main() -> int:
         failures.append("pose quaternion norm error exceeds 1e-3")
     if checks["pose_nonfinite_count"]:
         failures.append("pose contains non-finite position or quaternion values")
+    if (
+        checks["first_rear_axle_pose_translation_norm_m"] is None
+        or checks["first_rear_axle_pose_translation_norm_m"] > 0.001
+        or checks["first_rear_axle_pose_rotation_angle_deg"] is None
+        or checks["first_rear_axle_pose_rotation_angle_deg"] > 0.05
+    ):
+        failures.append("first valid rear-axle pose is not the required identity origin")
     pair_arrival = checks["pose_cloud_record_arrival_delta_s"]
     if pair_arrival["p95"] is None or pair_arrival["p95"] > 0.13 or pair_arrival["max"] > 0.30:
         failures.append("pose/cloud paired-message arrival delay contract failed")
@@ -441,6 +499,12 @@ def main() -> int:
         failures.append("slamState does not sustain normal operation during the pose/cloud activity window")
     if checks["system_state_zero_to_one_count"] != 1 or checks["system_state_transition_count"] != 1:
         failures.append("SystemState does not contain exactly one 0-to-1 transition")
+    if (
+        checks["slam_state_first_one_record_ns"] is None
+        or checks["system_state_first_one_record_ns"] is None
+        or checks["slam_state_first_one_record_ns"] < checks["system_state_first_one_record_ns"]
+    ):
+        failures.append("slamState reaches normal before SystemState reports initialization")
 
     result = {
         "bag": str(args.bag),

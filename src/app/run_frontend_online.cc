@@ -270,12 +270,12 @@ class FrontendNode : public rclcpp::Node {
                 std_msgs::msg::Float64 safety;
                 safety.data = heartbeat_ ? 1.0 : 0.0;
                 safety_pub_->publish(safety);
-                std_msgs::msg::Float64 state_message;
-                state_message.data = tracking_normal ? 1.0 : 0.0;
-                state_pub_->publish(state_message);
                 std_msgs::msg::Int32 system_message;
                 system_message.data = system_initialized ? 1 : 0;
                 system_pub_->publish(system_message);
+                std_msgs::msg::Float64 state_message;
+                state_message.data = tracking_normal ? 1.0 : 0.0;
+                state_pub_->publish(state_message);
             } catch (const std::exception& error) {
                 if (publishing_.load() && rclcpp::ok()) LOG(ERROR) << "state publishing thread failed: " << error.what();
                 break;
