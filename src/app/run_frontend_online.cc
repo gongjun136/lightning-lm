@@ -10,10 +10,15 @@
 #include <yaml-cpp/yaml.h>
 
 #include <cmath>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/lio/laser_mapping.h"
@@ -137,10 +142,30 @@ class FrontendNode : public rclcpp::Node {
                     Drain();
                 }));
         }
-        publish_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]() { PublishLatest(); });
+        publishing_.store(true);
+        output_publish_thread_ = std::thread([this]() { OutputPublishLoop(); });
+        state_publish_thread_ = std::thread([this]() { StatePublishLoop(); });
+    }
+
+    ~FrontendNode() override {
+        publishing_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            output_queue_.clear();
+        }
+        output_ready_.notify_all();
+        if (output_publish_thread_.joinable()) output_publish_thread_.join();
+        if (state_publish_thread_.joinable()) state_publish_thread_.join();
     }
 
    private:
+    struct OutputSnapshot {
+        lightning::SE3 rear_pose;
+        lightning::CloudPtr cloud;
+        double begin_time = 0.0;
+        double end_time = 0.0;
+    };
+
     void OnImu(const sensor_msgs::msg::Imu::SharedPtr& message) {
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = lightning::ToSec(message->header.stamp);
@@ -156,10 +181,12 @@ class FrontendNode : public rclcpp::Node {
         while (true) {
             const auto status = lio_.RunDetailed();
             if (status == lightning::LaserMapping::RunStatus::kNoData) break;
-            last_consumed_stamp_ = lio_.GetLastFrameEndTime();
             const bool output = status == lightning::LaserMapping::RunStatus::kOutput;
-            system_initialized_ = system_initialized_ || lio_.IsInitialized();
-            const bool good = system_initialized_ && output && lio_.IsTrackingHealthy();
+            const bool initialized = lio_.IsInitialized();
+            const bool healthy = lio_.IsTrackingHealthy();
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            system_initialized_ = system_initialized_ || initialized;
+            const bool good = system_initialized_ && output && healthy;
             if (good) {
                 ++consecutive_good_;
                 consecutive_bad_ = 0;
@@ -171,38 +198,90 @@ class FrontendNode : public rclcpp::Node {
             }
             if (output) {
                 const auto state = lio_.GetState();
-                if (state.pose_is_ok_) {
-                    latest_rear_pose_ = rear_axle_.Transform(state);
-                    latest_cloud_ = lio_.GetScanUndist();
-                    latest_begin_time_ = lio_.GetLastFrameBeginTime();
-                    latest_end_time_ = lio_.GetLastFrameEndTime();
+                if (state.pose_is_ok_ && !output_publish_failed_) {
+                    constexpr std::size_t kMaxOutputQueue = 50;
+                    if (output_queue_.size() >= kMaxOutputQueue) {
+                        output_queue_.pop_front();
+                        tracking_normal_ = false;
+                        LOG_EVERY_N(WARNING, 100) << "online output publisher is falling behind; dropping oldest frame";
+                    }
+                    output_queue_.push_back(OutputSnapshot{rear_axle_.Transform(state), lio_.GetScanUndist(),
+                                                           lio_.GetLastFrameBeginTime(),
+                                                           lio_.GetLastFrameEndTime()});
                     last_output_wall_time_ = std::chrono::steady_clock::now();
                     has_output_ = true;
+                    output_ready_.notify_one();
                 }
             }
         }
     }
 
-    void PublishLatest() {
-        if (has_output_ &&
-            std::chrono::steady_clock::now() - last_output_wall_time_ > std::chrono::milliseconds(300)) {
-            tracking_normal_ = false;
+    void OutputPublishLoop() {
+        try {
+            while (publishing_.load() && rclcpp::ok()) {
+                OutputSnapshot snapshot;
+                {
+                    std::unique_lock<std::mutex> lock(state_mutex_);
+                    output_ready_.wait(lock, [this]() {
+                        return !publishing_.load() || !rclcpp::ok() || !output_queue_.empty();
+                    });
+                    if (!publishing_.load() || !rclcpp::ok()) {
+                        output_queue_.clear();
+                        break;
+                    }
+                    snapshot = std::move(output_queue_.front());
+                    output_queue_.pop_front();
+                }
+                pose_pub_->publish(MakePoseMessage(snapshot.rear_pose, snapshot.end_time, map_frame_));
+                cloud_pub_->publish(
+                    MakeCloudMessage(snapshot.cloud, snapshot.begin_time, snapshot.end_time, lidar_frame_));
+            }
+        } catch (const std::exception& error) {
+            if (publishing_.load() && rclcpp::ok()) {
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    output_publish_failed_ = true;
+                    tracking_normal_ = false;
+                    output_queue_.clear();
+                }
+                LOG(ERROR) << "output publishing thread failed: " << error.what();
+            }
         }
-        const double stamp = has_output_ ? latest_end_time_ : last_consumed_stamp_;
-        pose_pub_->publish(MakePoseMessage(has_output_ ? latest_rear_pose_ : lightning::SE3(), stamp, map_frame_));
-        cloud_pub_->publish(MakeCloudMessage(has_output_ ? latest_cloud_ : lightning::CloudPtr(),
-                                             has_output_ ? latest_begin_time_ : stamp, stamp, lidar_frame_));
+    }
 
-        heartbeat_ = !heartbeat_;
-        std_msgs::msg::Float64 safety;
-        safety.data = heartbeat_ ? 1.0 : 0.0;
-        safety_pub_->publish(safety);
-        std_msgs::msg::Float64 state_message;
-        state_message.data = tracking_normal_ ? 1.0 : 0.0;
-        state_pub_->publish(state_message);
-        std_msgs::msg::Int32 system_message;
-        system_message.data = system_initialized_ ? 1 : 0;
-        system_pub_->publish(system_message);
+    void StatePublishLoop() {
+        auto next = std::chrono::steady_clock::now();
+        while (publishing_.load() && rclcpp::ok()) {
+            next += std::chrono::milliseconds(100);
+            bool tracking_normal = false;
+            bool system_initialized = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                if (has_output_ && std::chrono::steady_clock::now() - last_output_wall_time_ >
+                                       std::chrono::milliseconds(300)) {
+                    tracking_normal_ = false;
+                }
+                tracking_normal = tracking_normal_;
+                if (output_publish_failed_) tracking_normal = false;
+                system_initialized = system_initialized_;
+                heartbeat_ = !heartbeat_;
+            }
+            try {
+                std_msgs::msg::Float64 safety;
+                safety.data = heartbeat_ ? 1.0 : 0.0;
+                safety_pub_->publish(safety);
+                std_msgs::msg::Float64 state_message;
+                state_message.data = tracking_normal ? 1.0 : 0.0;
+                state_pub_->publish(state_message);
+                std_msgs::msg::Int32 system_message;
+                system_message.data = system_initialized ? 1 : 0;
+                system_pub_->publish(system_message);
+            } catch (const std::exception& error) {
+                if (publishing_.load() && rclcpp::ok()) LOG(ERROR) << "state publishing thread failed: " << error.what();
+                break;
+            }
+            std::this_thread::sleep_until(next);
+        }
     }
 
     lightning::LaserMapping lio_;
@@ -216,17 +295,18 @@ class FrontendNode : public rclcpp::Node {
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr safety_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr state_pub_;
     rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr system_pub_;
-    rclcpp::TimerBase::SharedPtr publish_timer_;
-    lightning::SE3 latest_rear_pose_;
-    lightning::CloudPtr latest_cloud_;
+    std::mutex state_mutex_;
+    std::condition_variable output_ready_;
+    std::deque<OutputSnapshot> output_queue_;
+    std::atomic_bool publishing_{false};
+    std::thread output_publish_thread_;
+    std::thread state_publish_thread_;
     std::chrono::steady_clock::time_point last_output_wall_time_ = std::chrono::steady_clock::now();
-    double latest_begin_time_ = 0.0;
-    double latest_end_time_ = 0.0;
-    double last_consumed_stamp_ = 0.0;
     int consecutive_good_ = 0;
     int consecutive_bad_ = 0;
     bool system_initialized_ = false;
     bool tracking_normal_ = false;
+    bool output_publish_failed_ = false;
     bool heartbeat_ = false;
     bool has_output_ = false;
 };
