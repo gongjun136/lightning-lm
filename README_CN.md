@@ -114,9 +114,27 @@ Ubuntu 20.04 应该也可行，未测试。
 
 ### 编译
 
-```colcon build```本包即可。
+在仓库根目录直接构建，不再创建数据集专用构建目录：
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
 
 然后```source install/setup.bash```即可使用。
+
+### 统一离线前端模板
+
+所有 SQLite3 ROS2 bag 的单雷达/多雷达离线前端均使用同一个模板：
+
+```bash
+bash scripts/run_frontend_offline.sh \
+  --bag /path/to/rosbag2_directory \
+  --config /path/to/frontend.yaml \
+  --output-dir /path/to/new_run_directory
+```
+
+模板默认固定使用 CPU `0-7`，并统一生成 IMU、主 LiDAR、后轴轨迹、地图、帧统计、CPU/RSS 监控、输入/二进制哈希和严格完成度验收。多雷达模式由 YAML 中的 `multi_lidar.enabled` 控制，不使用另一套运行脚本。完整参数见 `bash scripts/run_frontend_offline.sh --help`。
 
 ### 编译结果
 
