@@ -1,135 +1,363 @@
-//
-// Created by xiang on 25-3-18.
-//
-
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <pcl/io/pcd_io.h>
+#include <yaml-cpp/yaml.h>
 
+#include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <filesystem>
+#include <map>
+#include <memory>
+#include <sstream>
+#include <thread>
 
-#include "core/system/slam.h"
+#include "common/options.h"
+#include "core/lio/laser_mapping.h"
+#include "core/maps/tiled_map.h"
+#include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
 #include "wrapper/bag_io.h"
 #include "wrapper/ros_utils.h"
 
-#include "io/yaml_io.h"
-
-DEFINE_string(input_bag, "", "输入数据包");
-DEFINE_string(config, "./config/default.yaml", "配置文件");
-DEFINE_string(output_tum, "", "输出TUM轨迹文件，为空则不导出");
-DEFINE_bool(wait_ui, true, "离线处理完成后是否等待3D UI窗口关闭");
+DEFINE_string(input_bag, "", "input ROS2 bag");
+DEFINE_string(config, "./config/default.yaml", "config yaml");
+DEFINE_string(output_tum, "", "output LIO TUM trajectory; disabled when empty");
+DEFINE_string(output_map_dir, "./data/new_map", "output tiled map directory");
+DEFINE_string(output_global_map, "", "output global map PCD; default is output_map_dir/global.pcd");
+DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
+DEFINE_bool(wait_ui, true, "wait for the 3D UI window to close after offline processing");
+DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
+DEFINE_double(playback_rate, 0.0,
+              "pace bag callbacks by sensor time at this multiple of real time; disabled when <= 0");
 
 namespace {
-void WriteTumState(std::ofstream& tum, const lightning::NavState& state, double& last_timestamp) {
-    if (!tum.is_open() || !state.pose_is_ok_ || state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) {
-        return;
+
+class InputPacer {
+   public:
+    explicit InputPacer(double playback_rate) : playback_rate_(playback_rate) {}
+
+    void Wait(double sensor_time) {
+        if (playback_rate_ <= 0.0 || sensor_time <= 0.0) return;
+        if (!initialized_) {
+            first_sensor_time_ = sensor_time;
+            first_wall_time_ = std::chrono::steady_clock::now();
+            initialized_ = true;
+            return;
+        }
+        const double elapsed_sensor_time = sensor_time - first_sensor_time_;
+        if (elapsed_sensor_time <= 0.0) return;
+        const auto target = first_wall_time_ + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                   std::chrono::duration<double>(elapsed_sensor_time / playback_rate_));
+        std::this_thread::sleep_until(target);
     }
 
-    const auto q = state.rot_.unit_quaternion();
-    tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12)
-        << state.pos_.x() << " " << state.pos_.y() << " " << state.pos_.z() << " "
-        << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
-    last_timestamp = state.timestamp_;
+   private:
+    double playback_rate_ = 0.0;
+    bool initialized_ = false;
+    double first_sensor_time_ = 0.0;
+    std::chrono::steady_clock::time_point first_wall_time_;
+};
+
+std::map<std::string, std::string> ReadBagTopicTypes(const std::string& bag_path) {
+    std::map<std::string, std::string> types;
+    const auto metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
+    if (!std::filesystem::exists(metadata_path)) return types;
+    try {
+        const YAML::Node root = YAML::LoadFile(metadata_path.string());
+        const YAML::Node topics = root["rosbag2_bagfile_information"]["topics_with_message_count"];
+        if (!topics || !topics.IsSequence()) return types;
+        for (const auto& item : topics) {
+            const YAML::Node metadata = item["topic_metadata"];
+            types[metadata["name"].as<std::string>()] = metadata["type"].as<std::string>();
+        }
+    } catch (const YAML::Exception& e) {
+        LOG(WARNING) << "failed to parse rosbag metadata: " << e.what();
+    }
+    return types;
 }
+
+bool IsLivoxCustomMsg(const std::map<std::string, std::string>& types, const std::string& topic) {
+    const auto it = types.find(topic);
+    return it != types.end() && it->second == "livox_ros_driver2/msg/CustomMsg";
+}
+
+void OpenOutput(std::ofstream& stream, const std::string& path, const char* label) {
+    if (path.empty()) return;
+    stream.open(path);
+    if (!stream.is_open()) throw std::runtime_error(std::string("failed to open ") + label + ": " + path);
+}
+
+void WriteTumPose(std::ofstream& stream, double timestamp, const lightning::SE3& pose, double& last_timestamp) {
+    if (!stream.is_open() || timestamp <= 0.0 || timestamp <= last_timestamp) return;
+    const auto q = pose.unit_quaternion();
+    stream << std::fixed << std::setprecision(9) << timestamp << " " << std::setprecision(12)
+           << pose.translation().x() << " " << pose.translation().y() << " " << pose.translation().z() << " "
+           << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+    last_timestamp = timestamp;
+}
+
+std::string JoinIds(const std::vector<int>& ids) {
+    std::ostringstream output;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (i != 0) output << ';';
+        output << ids[i];
+    }
+    return output.str();
+}
+
+bool SaveKeyframeTrajectoryTum(const std::vector<lightning::Keyframe::Ptr>& keyframes, const std::string& path,
+                               bool use_lio_pose) {
+    if (path.empty()) return true;
+    std::ofstream tum(path);
+    if (!tum.is_open()) {
+        LOG(ERROR) << "failed to open keyframe trajectory: " << path;
+        return false;
+    }
+    double last_timestamp = 0.0;
+    int count = 0;
+    for (const auto& kf : keyframes) {
+        if (!kf) continue;
+        const auto state = kf->GetState();
+        if (state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) continue;
+        const auto pose = use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        WriteTumPose(tum, state.timestamp_, pose, last_timestamp);
+        ++count;
+    }
+    LOG(INFO) << "wrote " << count << " keyframe poses to " << path;
+    return count > 0;
+}
+
 }  // namespace
 
-/// 运行一个LIO前端，带可视化
 int main(int argc, char** argv) {
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
-    std::string logfile = std::string(ROOT_DIR) + "/data/MapOffline_";
-	google::SetLogFilenameExtension(".log");
-	google::SetLogDestination(google::GLOG_INFO, logfile.c_str());
-
     google::ParseCommandLineFlags(&argc, &argv, true);
+
     if (FLAGS_input_bag.empty()) {
-        LOG(ERROR) << "未指定输入数据";
-        return -1;
+        LOG(ERROR) << "input_bag is required";
+        return 2;
+    }
+    if (FLAGS_output_map_dir.empty()) {
+        LOG(ERROR) << "output_map_dir is required";
+        return 2;
+    }
+    if (FLAGS_playback_rate < 0.0) {
+        LOG(ERROR) << "playback_rate must be non-negative";
+        return 2;
     }
 
     using namespace lightning;
 
-    RosbagIO rosbag(FLAGS_input_bag);
-
-    SlamSystem::Options options;
-    options.online_mode_ = false;
-
-    SlamSystem slam(options);
-
-    /// 实时模式好像掉帧掉的比较厉害？
-
-    if (!slam.Init(FLAGS_config)) {
-        LOG(ERROR) << "failed to init slam";
-        return -1;
+    LaserMapping lio;
+    bool lio_initialized = false;
+    Timer::Evaluate([&]() { lio_initialized = lio.Init(FLAGS_config); }, "Offline SLAM Initialization");
+    if (!lio_initialized) {
+        LOG(ERROR) << "failed to init lio";
+        return 2;
     }
 
-    slam.StartSLAM("new_map");
-
-    lightning::YAML_IO yaml(FLAGS_config);
-    std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
-    std::string livox_lidar_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
+    YAML_IO yaml(FLAGS_config);
+    const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
+    const std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
+    const std::string livox_lidar_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
     std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
-
-    std::ofstream tum;
-    double last_tum_timestamp = 0.0;
-    if (!FLAGS_output_tum.empty()) {
-        tum.open(FLAGS_output_tum);
-        if (!tum.is_open()) {
-            LOG(ERROR) << "failed to open output_tum: " << FLAGS_output_tum;
-            return -1;
+    if (lio.IsMultiLidarEnabled()) {
+        const auto* primary = lio.GetMultiLidarConfig().PrimaryLidar();
+        if (!primary) {
+            LOG(ERROR) << "multi-lidar primary sensor is missing";
+            return 2;
         }
-        LOG(INFO) << "writing TUM trajectory to " << FLAGS_output_tum;
+        imu_topic = primary->imu_topic;
     }
 
-    /// IMU 的处理
-    rosbag.AddImuHandle(imu_topic,
-                        [&slam](IMUPtr imu) {
-                            slam.ProcessIMU(imu);
-                            return true;
-                        });
-
-    /// PointCloud2 lidar 的处理
-    if (!lidar_topic.empty() && lidar_topic != livox_lidar_topic) {
-        rosbag.AddPointCloud2Handle(lidar_topic,
-                                    [&slam, &tum, &last_tum_timestamp](sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-                                        slam.ProcessLidar(msg);
-                                        WriteTumState(tum, slam.GetLioState(), last_tum_timestamp);
-                                        return true;
-                                    });
+    std::shared_ptr<ui::PangolinWindow> ui;
+    if (with_ui) {
+        ui = std::make_shared<ui::PangolinWindow>();
+        if (ui->Init()) {
+            lio.SetUI(ui);
+        } else {
+            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            ui.reset();
+        }
     }
 
-    /// Livox CustomMsg lidar 的处理
-    rosbag.AddLivoxCloudHandle(livox_lidar_topic,
-                               [&slam, &tum, &last_tum_timestamp](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                                   slam.ProcessLidar(cloud);
-                                   WriteTumState(tum, slam.GetLioState(), last_tum_timestamp);
-                                   return true;
-                               });
+    std::ofstream tum, frame_stats_csv;
+    try {
+        OpenOutput(tum, FLAGS_output_tum, "output_tum");
+        OpenOutput(frame_stats_csv, FLAGS_output_frame_stats_csv, "output_frame_stats_csv");
+    } catch (const std::exception& e) {
+        LOG(ERROR) << e.what();
+        return 2;
+    }
+    double last_tum_timestamp = 0.0;
 
-    rosbag.Go();
+    if (frame_stats_csv.is_open()) {
+        frame_stats_csv << "begin_time,end_time,partial,merged_points,present_lidar_ids,missing_lidar_ids";
+        for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
+            frame_stats_csv << ",points_lidar_" << sensor.id;
+        }
+        frame_stats_csv << "\n";
+    }
 
-    slam.SaveMap("");
+    int consumed_frames = 0;
+    int output_frames = 0;
+    int complete_frames = 0;
+    int partial_frames = 0;
+    std::map<int, std::size_t> frames_by_lidar;
+    std::map<int, std::size_t> points_by_lidar;
+
+    auto write_frame_stats = [&]() {
+        if (!lio.IsMultiLidarEnabled()) return;
+        const auto& stats = lio.GetCurrentFrameStats();
+        if (stats.partial) {
+            ++partial_frames;
+        } else {
+            ++complete_frames;
+        }
+        for (const int id : stats.present_lidar_ids) ++frames_by_lidar[id];
+        for (const auto& [id, points] : stats.points_by_lidar) points_by_lidar[id] += points;
+        if (!frame_stats_csv.is_open()) return;
+        frame_stats_csv << std::fixed << std::setprecision(9) << stats.begin_time << ',' << stats.end_time << ','
+                        << (stats.partial ? 1 : 0) << ',' << stats.merged_points << ",\""
+                        << JoinIds(stats.present_lidar_ids) << "\",\"" << JoinIds(stats.missing_lidar_ids) << '"';
+        for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
+            const auto it = stats.points_by_lidar.find(sensor.id);
+            frame_stats_csv << ',' << (it == stats.points_by_lidar.end() ? 0 : it->second);
+        }
+        frame_stats_csv << '\n';
+    };
+
+    auto drain = [&]() {
+        while (!debug::flg_exit) {
+            const auto status = lio.RunDetailed();
+            if (status == LaserMapping::RunStatus::kNoData) break;
+            ++consumed_frames;
+            write_frame_stats();
+            if (status == LaserMapping::RunStatus::kOutput) {
+                ++output_frames;
+                const NavState state = lio.GetState();
+                if (state.pose_is_ok_) {
+                    WriteTumPose(tum, state.timestamp_, state.GetPose(), last_tum_timestamp);
+                }
+            }
+            if (FLAGS_max_lidar_frames > 0 && consumed_frames >= FLAGS_max_lidar_frames) {
+                debug::flg_exit = true;
+            }
+        }
+    };
+
+    InputPacer input_pacer(FLAGS_playback_rate);
+    RosbagIO rosbag(FLAGS_input_bag);
+    rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
+        input_pacer.Wait(imu->timestamp);
+        lio.ProcessIMU(imu);
+        drain();
+        return true;
+    });
+
+    const auto topic_types = ReadBagTopicTypes(FLAGS_input_bag);
+    if (lio.IsMultiLidarEnabled()) {
+        for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
+            if (IsLivoxCustomMsg(topic_types, sensor.lidar_topic)) {
+                rosbag.AddLivoxCloudHandle(sensor.lidar_topic, [&, id = sensor.id](auto cloud) {
+                    lio.ProcessPointCloud2(cloud, id);
+                    drain();
+                    return true;
+                });
+            } else {
+                rosbag.AddPointCloud2Handle(sensor.lidar_topic, [&, id = sensor.id](auto cloud) {
+                    lio.ProcessPointCloud2(cloud, id);
+                    drain();
+                    return true;
+                });
+            }
+        }
+    } else {
+        if (!lidar_topic.empty() && lidar_topic != livox_lidar_topic) {
+            rosbag.AddPointCloud2Handle(lidar_topic, [&](auto cloud) {
+                lio.ProcessPointCloud2(cloud);
+                drain();
+                return true;
+            });
+        }
+        if (!livox_lidar_topic.empty()) {
+            rosbag.AddLivoxCloudHandle(livox_lidar_topic, [&](auto cloud) {
+                lio.ProcessPointCloud2(cloud);
+                drain();
+                return true;
+            });
+        }
+    }
+
+    Timer::Evaluate([&]() { rosbag.Go(); }, "Offline SLAM Bag Playback");
+    Timer::Evaluate(
+        [&]() {
+            lio.FlushMultiLidar();
+            drain();
+        },
+        "Offline SLAM Final Flush");
+
+    const auto keyframes = lio.GetAllKeyframes();
+    if (keyframes.empty()) {
+        LOG(ERROR) << "no keyframes were generated; cannot export tiled map";
+        Timer::PrintAll();
+        return 4;
+    }
+
+    const std::filesystem::path map_dir(FLAGS_output_map_dir);
+    const std::string global_map_path =
+        FLAGS_output_global_map.empty() ? (map_dir / "global.pcd").string() : FLAGS_output_global_map;
+    bool map_saved = false;
+    Timer::Evaluate(
+        [&]() {
+            if (std::filesystem::exists(map_dir)) {
+                std::filesystem::remove_all(map_dir);
+            }
+            std::filesystem::create_directories(map_dir);
+            const auto global_map = lio.GetGlobalMap(true);
+            TiledMap::Options tm_options;
+            tm_options.map_path_ = map_dir.string();
+            TiledMap tiled_map(tm_options);
+            tiled_map.ConvertFromFullPCD(global_map, keyframes.front()->GetOptPose(), map_dir.string());
+            map_saved = pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) == 0;
+        },
+        "Offline Tiled Map Export");
+    if (!map_saved) {
+        LOG(ERROR) << "failed to save global map: " << global_map_path;
+        Timer::PrintAll();
+        return 4;
+    }
+
     if (!FLAGS_output_tum.empty()) {
         const std::filesystem::path tum_path(FLAGS_output_tum);
         const auto parent = tum_path.parent_path();
         const auto stem = tum_path.stem().string();
-        slam.SaveKeyframeTrajectoryTum((parent / (stem + "_keyframes_lio.tum")).string(), true);
-        slam.SaveKeyframeTrajectoryTum((parent / (stem + "_keyframes_opt.tum")).string(), false);
+        SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_lio.tum")).string(), true);
+        SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_opt.tum")).string(), false);
     }
-    if (tum.is_open()) {
-        tum.close();
-    }
+
     Timer::PrintAll();
-
-    if (FLAGS_wait_ui) {
-        slam.WaitForUIQuit();
+    if (ui && FLAGS_wait_ui) {
+        while (!ui->ShouldQuit()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    if (ui) ui->Quit();
 
-    LOG(INFO) << "done";
-
+    LOG(INFO) << "done, consumed fused frames=" << consumed_frames << ", output frames=" << output_frames
+              << ", keyframes=" << keyframes.size() << ", tiled map=" << FLAGS_output_map_dir;
+    if (lio.IsMultiLidarEnabled()) {
+        LOG(INFO) << "multi-lidar SLAM synchronization: complete=" << complete_frames
+                  << ", partial=" << partial_frames << ", late_drops=" << lio.GetMultiLidarLateDropCount()
+                  << ", duplicate_drops=" << lio.GetMultiLidarDuplicateDropCount()
+                  << ", tolerance_drops=" << lio.GetMultiLidarToleranceDropCount()
+                  << ", invalid_drops=" << lio.GetMultiLidarInvalidDropCount();
+        for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
+            LOG(INFO) << "lidar " << sensor.id << ": present_frames=" << frames_by_lidar[sensor.id]
+                      << ", input_points=" << points_by_lidar[sensor.id];
+        }
+    }
     return 0;
 }

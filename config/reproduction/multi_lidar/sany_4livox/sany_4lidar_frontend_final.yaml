@@ -110,3 +110,56 @@ roi:
 
 system:
   with_ui: false
+  with_loop_closing: false
+  with_2dui: false
+  with_g2p5: false
+  step_on_kf: false
+  enable_lidar_loc_skip: false
+  enable_lidar_loc_rviz: false
+  enable_lidar_odom_skip: false
+  lidar_loc_skip_num: 1
+  lidar_odom_skip_num: 1
+  map_path: ./data/new_map/
+  pub_tf: true
+
+loop_closing:
+  with_height: false
+
+lidar_loc:
+  enable_dynamic_polygon: false
+  enable_parking_static: false
+  enable_icp_adjust: false
+  filter_intensity_max: 100.0
+  filter_intensity_min: 0.0
+  filter_z_max: 100.0
+  filter_z_min: -100.0
+  force_2d: false
+  grid_search_angle_range: 20.0
+  grid_search_angle_step: 20
+  lidar_loc_odom_th: 1.0
+  init_with_fp: false
+  min_init_confidence: 0.1
+  update_dynamic_cloud: false
+  update_err_h: 0.2
+  update_err_v: 0.2
+  update_kf_dis: 2.0
+  update_lidar_loc_score: 2.5
+  loc_on_kf: false
+  try_self_extrap: false
+
+maps:
+  delete_when_unload: false
+  dyn_cloud_policy: persistent
+  load_dyn_cloud: false
+  load_map_size: 2
+  max_pts_dyn_chunk: 100000
+  save_dyn_when_quit: false
+  save_dyn_when_unload: false
+  unload_map_size: 4
+  with_dyn_area: false
+
+offline_localization:
+  initial_pose:
+    enabled: true
+    translation: [0.0, 0.0, 0.0]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

@@ -65,6 +65,13 @@ class LidarLoc {
         std::string recover_pose_path_ = "./data/recover_pose.txt";
     };
 
+    struct MatchStats {
+        double confidence = 0.0;
+        int iterations = 0;
+        bool success = false;
+        int active_map_chunks = 0;
+    };
+
     explicit LidarLoc(Options options = Options());
     virtual ~LidarLoc();
 
@@ -128,6 +135,8 @@ class LidarLoc {
         UL lock(result_mutex_);
         return localization_result_;
     }
+
+    MatchStats GetLastMatchStats() const;
 
     void Finish();
 
@@ -236,6 +245,7 @@ class LidarLoc {
     SE3 current_abs_pose_;         // 本次的绝对定位
     bool last_abs_pose_set_ = false;
     double current_score_ = 1e5;  /// 设一个大分值，若定位一开始就匹配失败，则可以直接用GPS重置
+    MatchStats last_match_stats_;
     int match_fail_count_ = 0;
     int static_count_ = 0;
 

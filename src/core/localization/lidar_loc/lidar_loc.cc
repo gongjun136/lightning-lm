@@ -166,6 +166,12 @@ NavState LidarLoc::GetState() {
     return ns;
 }
 
+LidarLoc::MatchStats LidarLoc::GetLastMatchStats() const {
+    MatchStats stats = last_match_stats_;
+    stats.active_map_chunks = map_ ? map_->NumActiveChunks() : 0;
+    return stats;
+}
+
 bool LidarLoc::ProcessDR(const NavState& state) {
     // 未初始化成功的数据不接收
     if (!state.pose_is_ok_) {
@@ -823,6 +829,8 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     Eigen::Matrix4f trans;
     bool loc_success = false;
     Eigen::Matrix4f guess_pose = pose.matrix().cast<float>();
+    last_match_stats_ = MatchStats{};
+    last_match_stats_.active_map_chunks = map_ ? map_->NumActiveChunks() : 0;
 
     LOG(INFO) << "loc from: " << pose.translation().transpose();
 
@@ -844,6 +852,8 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     ndt->align(*output, guess_pose);
     trans = ndt->getFinalTransformation();
     confidence = ndt->getTransformationProbability();
+    last_match_stats_.confidence = confidence;
+    last_match_stats_.iterations = ndt->getFinalNumIteration();
 
     auto tgt = ndt->getInputTarget();
     if (!tgt->empty()) {
@@ -888,6 +898,8 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     pose = SE3(q_3d, t_3d);
 
     LOG(INFO) << "confidence: " << confidence << ", t: " << t_3d.transpose() << ", succ: " << loc_success;
+    last_match_stats_.success = loc_success;
+    last_match_stats_.active_map_chunks = map_ ? map_->NumActiveChunks() : 0;
 
     return loc_success;
 }

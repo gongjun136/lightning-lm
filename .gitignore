@@ -12,6 +12,7 @@ install_*/
 log_*/
 __pycache__/
 *.pyc
+runs/
 
 **cmake-build-debug**
 **cmake-build-release**
