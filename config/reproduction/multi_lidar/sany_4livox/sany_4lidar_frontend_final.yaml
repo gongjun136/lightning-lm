@@ -109,4 +109,4 @@ roi:
   height_min: -100.0
 
 system:
-  with_ui: true
+  with_ui: false
