@@ -12,7 +12,7 @@ Required:
   --output-root PATH      Parent directory for all batch outputs
 
 Options:
-  --config-dir PATH       YAML directory (default: repo/config/4livox)
+  --config-dir PATH       YAML directory (default: SANY four-LiDAR matrix configs)
   --config NAME_OR_PATH   Run only this YAML; may be specified multiple times
   --repeats COUNT         Runs per YAML (default: 1; use 3 for the formal 7x3 matrix)
   --dry-run               Print commands without creating outputs
@@ -29,7 +29,7 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
 runner="$script_dir/run_frontend_offline.sh"
-config_dir="$repo_dir/config/4livox"
+config_dir="$repo_dir/config/reproduction/multi_lidar/sany_4livox/matrix"
 bag_dir=""
 output_root=""
 repeats="1"

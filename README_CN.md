@@ -136,7 +136,7 @@ bash scripts/run_frontend_offline.sh \
 
 模板默认固定使用 CPU `0-7`，并统一生成 IMU、主 LiDAR、后轴轨迹、地图、帧统计、CPU/RSS 监控、输入/二进制哈希和严格完成度验收。多雷达模式由 YAML 中的 `multi_lidar.enabled` 控制，不使用另一套运行脚本。完整参数见 `bash scripts/run_frontend_offline.sh --help`。
 
-SANY 四 MID-360 的 7 组已验证实验配置保存在 `config/4livox/`。一次运行全部配置：
+单雷达与多雷达复现配置统一保存在 `config/reproduction/`；脚本说明见 `scripts/README.md`。SANY 四 MID-360 的 7 组已验证矩阵配置位于 `config/reproduction/multi_lidar/sany_4livox/matrix/`。一次运行全部配置：
 
 ```bash
 bash scripts/run_frontend_offline_batch.sh \
