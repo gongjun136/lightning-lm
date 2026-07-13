@@ -1,0 +1,170 @@
+common:
+  dataset: sany
+  lidar_topic: /livox/lidar_192_168_1_114
+  livox_lidar_topic: ''
+  imu_topic: /livox/imu_192_168_1_114
+multi_lidar:
+  enabled: true
+  primary_lidar_id: 0
+  frame_period: 0.1
+  match_tolerance: 0.002
+  reorder_window: 0.5
+  min_lidars: 1
+  online_extrinsic_estimation: false
+  topics:
+    lidar_0: /livox/lidar_192_168_1_114
+    lidar_1: /livox/lidar_192_168_1_127
+    lidar_2: /livox/lidar_192_168_1_187
+    lidar_3: /livox/lidar_192_168_1_195
+    imu_0: /livox/imu_192_168_1_114
+    imu_1: /livox/imu_192_168_1_127
+    imu_2: /livox/imu_192_168_1_187
+    imu_3: /livox/imu_192_168_1_195
+  extrinsics:
+    lidar0:
+      T:
+      - 1
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar1:
+      T:
+      - 0.519071
+      - 0.833662
+      - 0.18861
+      - 0.76589
+      - -0.335364
+      - -0.00432802
+      - 0.942079
+      - 0.836835
+      - 0.786191
+      - -0.552258
+      - 0.277334
+      - -0.47969
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar2:
+      T:
+      - 0.507464
+      - -0.849466
+      - 0.144527
+      - 0.734696
+      - 0.334484
+      - 0.0396211
+      - -0.941568
+      - -0.877796
+      - 0.794104
+      - 0.526154
+      - 0.304239
+      - -0.471682
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar3:
+      T:
+      - -0.455841
+      - -0.00754045
+      - 0.890029
+      - 1.50563
+      - -0.000118732
+      - -0.999964
+      - -0.00853264
+      - -0.0302673
+      - 0.890061
+      - -0.0039952
+      - 0.455824
+      - -0.93556
+      - 0
+      - 0
+      - 0
+      - 1
+imu_initialization:
+  min_duration: 2.0
+  min_samples: 300
+  max_mean_gyro_norm: 0.2
+  max_gyro_std: 0.1
+  max_acc_std: 0.5
+  min_mean_acc_norm: 0.5
+  max_mean_acc_norm: 1.5
+lidar_noise_model:
+  enabled: true
+  range_sigma: 0.02
+  angular_sigma_deg: 0.05
+  reference_sigma: 0.05
+  min_information_scale: 0.25
+  max_information_scale: 4.0
+output:
+  map_frame: map
+  lidar_frame: lidar_114
+  primary_lidar_position_in_body:
+  - 2.199
+  - 0.0
+  - 2.74
+fasterlio:
+  lidar_type: 1
+  scan_line: 4
+  blind: 0.5
+  time_scale: 1e-3
+  skip_lidar_num: 0
+  point_filter_num: 3
+  max_iteration: 4
+  filter_size_scan: 0.5
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  esti_plane_threshold: 0.1
+  use_aa: false
+  propagate_velocity: true
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_velocity_step: 0.5
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  acc_cov: 1.0
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T:
+  - -0.011
+  - -0.02329
+  - 0.04412
+  extrinsic_R:
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  keep_first_imu_estimation: false
+  kf_dis_th: -1.0
+  kf_angle_th: 0.0
+  enable_icp_part: false
+  plane_icp_weight: 300.0
+  min_pts: 300
+  imu_filter: false
+  proj_kfs: false
+roi:
+  height_max: 100.0
+  height_min: -100.0
+system:
+  with_ui: false

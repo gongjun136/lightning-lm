@@ -136,6 +136,16 @@ bash scripts/run_frontend_offline.sh \
 
 模板默认固定使用 CPU `0-7`，并统一生成 IMU、主 LiDAR、后轴轨迹、地图、帧统计、CPU/RSS 监控、输入/二进制哈希和严格完成度验收。多雷达模式由 YAML 中的 `multi_lidar.enabled` 控制，不使用另一套运行脚本。完整参数见 `bash scripts/run_frontend_offline.sh --help`。
 
+SANY 四 MID-360 的 7 组已验证实验配置保存在 `config/4livox/`。一次运行全部配置：
+
+```bash
+bash scripts/run_frontend_offline_batch.sh \
+  --bag /path/to/sany_rosbag2_directory \
+  --output-root /path/to/new_batch_directory
+```
+
+默认每个 YAML 运行一次；增加 `--repeats 3` 可执行 7×3 次。也可以多次指定 `--config` 只运行部分配置。批量脚本仅负责配置枚举、独立输出目录和结果汇总，每个子任务仍调用上述统一离线模板，因此监控与验收口径完全一致。完整参数见 `bash scripts/run_frontend_offline_batch.sh --help`。
+
 ### 编译结果
 
 编译后，会得到本包对应的在线/离线建图程序与定位程序。离线程序适用于存在离线数据包，快速得到建图/定位结果的方案，在线程序则适用于有实际传感器，得到实时结果的方案。
