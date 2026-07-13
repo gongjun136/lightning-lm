@@ -160,7 +160,8 @@ fi
 binary="$prefix/lib/lightning/run_frontend_offline"
 monitor="$script_dir/monitor_process_tree.py"
 inspector="$script_dir/inspect_rosbag2_sqlite.py"
-if [[ ! -x "$binary" || ! -f "$monitor" || ! -f "$inspector" ]]; then
+timing_extractor="$script_dir/extract_frontend_timing.py"
+if [[ ! -x "$binary" || ! -f "$monitor" || ! -f "$inspector" || ! -f "$timing_extractor" ]]; then
   echo "missing standard-build binary or runner helper; run colcon build first" >&2
   exit 2
 fi
@@ -311,6 +312,35 @@ elif awk -v actual="$last_stamp" -v expected="$expected_end" -v tol="$completion
   completion="reached_final_lidar"
 fi
 wall_ns=$((end_ns-start_ns))
+wall_time_s="$(awk -v value="$wall_ns" 'BEGIN { printf "%.6f", value/1000000000.0 }')"
+timing_csv="$run_dir/results/processing_timing.csv"
+timing_summary="$run_dir/results/processing_timing_summary.json"
+python3 "$timing_extractor" \
+  --log "$run_dir/logs/algorithm.stderr.log" \
+  --csv "$timing_csv" \
+  --summary "$timing_summary" \
+  --wall-time-s "$wall_time_s" \
+  --sensor-duration-s "$sensor_duration" \
+  --trajectory-frames "$trajectory_lines" \
+  --completion "$completion" \
+  --max-lidar-frames "$max_lidar_frames" \
+  --algorithm-rc "$algorithm_rc" \
+  --watchdog-status "$watchdog_status" \
+  --playback-rate "$playback_rate" \
+  --wait-ui "$wait_ui"
+readarray -t timing_checks < <(python3 -c 'import json,sys
+p=json.load(open(sys.argv[1],encoding="utf-8"))
+e=p["end_to_end"]
+print(p["status"]); print(p["stage_count"])
+for key in ("trajectory_frames_per_wall_s","wall_ms_per_trajectory_frame","realtime_factor","processing_speed_x"):
+    value=e[key]
+    print("null" if value is None else format(value,".9g"))' "$timing_summary")
+timing_status="${timing_checks[0]}"
+timing_stage_count="${timing_checks[1]}"
+trajectory_frames_per_wall_s="${timing_checks[2]}"
+wall_ms_per_trajectory_frame="${timing_checks[3]}"
+realtime_factor="${timing_checks[4]}"
+processing_speed_x="${timing_checks[5]}"
 
 {
   echo "method=lightning_lm"
@@ -340,6 +370,8 @@ wall_ns=$((end_ns-start_ns))
   echo "output_rear_axle_tum=$rear_tum"
   echo "output_map=$map_pcd"
   echo "output_frame_stats=$frame_stats"
+  echo "output_processing_timing_csv=$timing_csv"
+  echo "output_processing_timing_summary=$timing_summary"
   echo "max_lidar_frames=$max_lidar_frames"
   echo "watchdog_status=$watchdog_status"
   echo "watchdog_timeout_s=$watchdog_timeout"
@@ -349,7 +381,13 @@ wall_ns=$((end_ns-start_ns))
   echo "completion_tolerance_s=$completion_tolerance"
   echo "completion=$completion"
   echo "algorithm_rc=$algorithm_rc"
-  echo "wall_time_s=$(awk -v value="$wall_ns" 'BEGIN { printf "%.6f", value/1000000000.0 }')"
+  echo "wall_time_s=$wall_time_s"
+  echo "processing_timing_status=$timing_status"
+  echo "processing_timing_stage_count=$timing_stage_count"
+  echo "trajectory_frames_per_wall_s=$trajectory_frames_per_wall_s"
+  echo "wall_ms_per_trajectory_frame=$wall_ms_per_trajectory_frame"
+  echo "realtime_factor=$realtime_factor"
+  echo "processing_speed_x=$processing_speed_x"
   echo "trajectory_lines=$trajectory_lines"
   echo "last_stamp=$last_stamp"
   echo "invalid_count=$invalid_count"
@@ -363,12 +401,14 @@ wall_ns=$((end_ns-start_ns))
 expected_completion="reached_final_lidar"
 if [[ "$max_lidar_frames" -gt 0 ]]; then expected_completion="limited_frame_run"; fi
 missing_output=0
-for output in "$imu_tum" "$lidar_tum" "$rear_tum" "$map_pcd" "$frame_stats" "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json"; do
+for output in "$imu_tum" "$lidar_tum" "$rear_tum" "$map_pcd" "$frame_stats" "$timing_csv" "$timing_summary" \
+              "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json"; do
   if [[ ! -s "$output" ]]; then echo "missing or empty output: $output" >&2; missing_output=1; fi
 done
 if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion" != "$expected_completion" || \
       "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || "$nonmonotonic_count" -ne 0 || \
-      "$excessive_output_gap_count" -ne 0 || "$missing_output" -ne 0 ]]; then
+      "$excessive_output_gap_count" -ne 0 || "$timing_status" != "ok" || "$timing_stage_count" -lt 1 || \
+      "$missing_output" -ne 0 ]]; then
   echo "run failed contract: rc=$algorithm_rc watchdog=$watchdog_status completion=$completion lines=$trajectory_lines gaps=$excessive_output_gap_count" >&2
   exit 4
 fi

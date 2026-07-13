@@ -125,7 +125,9 @@ int main(int argc, char** argv) {
 
     using namespace lightning;
     LaserMapping lio;
-    if (!lio.Init(FLAGS_config)) {
+    bool lio_initialized = false;
+    Timer::Evaluate([&]() { lio_initialized = lio.Init(FLAGS_config); }, "Offline Initialization");
+    if (!lio_initialized) {
         LOG(ERROR) << "failed to init lio";
         return 2;
     }
@@ -280,14 +282,25 @@ int main(int argc, char** argv) {
         }
     }
 
-    rosbag.Go();
-    lio.FlushMultiLidar();
-    drain();
+    Timer::Evaluate([&]() { rosbag.Go(); }, "Offline Bag Playback");
+    Timer::Evaluate(
+        [&]() {
+            lio.FlushMultiLidar();
+            drain();
+        },
+        "Offline Final Flush");
 
     if (!FLAGS_output_map.empty() && !lio.GetAllKeyframes().empty()) {
-        const auto map = lio.GetGlobalMap(true);
-        if (pcl::io::savePCDFileBinaryCompressed(FLAGS_output_map, *map) != 0) {
+        bool map_saved = false;
+        Timer::Evaluate(
+            [&]() {
+                const auto map = lio.GetGlobalMap(true);
+                map_saved = pcl::io::savePCDFileBinaryCompressed(FLAGS_output_map, *map) == 0;
+            },
+            "Offline Map Export");
+        if (!map_saved) {
             LOG(ERROR) << "failed to save output map: " << FLAGS_output_map;
+            Timer::PrintAll();
             return 3;
         }
     }

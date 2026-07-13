@@ -6,7 +6,7 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `run_frontend_offline.sh` | 单个 SQLite3 ROS2 bag 的统一离线前端入口。单雷达/多雷达由 YAML 控制，并输出轨迹、地图、帧统计、资源监控和验收元数据。 |
+| `run_frontend_offline.sh` | 单个 SQLite3 ROS2 bag 的统一离线前端入口。单雷达/多雷达由 YAML 控制，并输出轨迹、地图、帧统计、处理耗时、资源监控和验收元数据。 |
 | `run_frontend_offline_batch.sh` | 对同一个 bag 依次运行多个 YAML；默认运行 SANY C0—C6，可用 `--repeats` 重复实验。每个子任务仍调用 `run_frontend_offline.sh`。 |
 | `run_frontend_online.sh` | 启动在线前端节点，供实时传感器或 ROS2 bag 在线回放使用。 |
 | `run_slam_offline.sh` | 运行完整离线 SLAM。 |
@@ -16,12 +16,120 @@
 | `save_default_map.sh` | 调用保存地图服务。 |
 | `install_dep.sh` | 安装 Ubuntu 22.04 下的基础依赖。 |
 
+### run_frontend_offline.sh
+
+run_frontend_offline.sh 输出文件说明：
+
+* `results/trajectory_lidar114.tum`：主 LiDAR 位姿轨迹，脚本主要拿它做完整性检查、时间戳单调性检查、轨迹间隔检查。
+
+* `results/trajectory_imu.tum`：IMU 坐标系轨迹。
+
+* `results/trajectory_rear_axle.tum`：后轴坐标系轨迹，通常用于车辆轨迹评估或和车体参考点对齐。
+
+* `results/map_lio.pcd`：LIO 建出的点云地图。
+
+* `results/frame_stats.csv`：每个融合帧的统计，包括时间范围、是否 partial、融合点数、各雷达是否到齐、每个雷达点数。
+
+* `run_metadata.txt`：这次运行的核心摘要，包括 bag/config/binary 哈希、输出路径、验收结果、最后轨迹时间、资源参数等。
+
+  `run_metadata.txt` 是这次离线运行的“总账本”：它把输入数据、配置、二进制版本、输出文件、资源限制、验收结果都记录下来，方便复现实验和定位失败原因。
+
+  **重点字段**
+
+  | 字段                                             | 作用                                                         |
+  | ------------------------------------------------ | ------------------------------------------------------------ |
+  | `method=lightning_lm`                            | 标记本次运行的方法/算法名。                                  |
+  | `sequence=SANY_4lidar`                           | 数据序列标签，是你命令里传的 `--sequence`，用于区分是哪组数据。 |
+  | `repeat=1`                                       | 重复实验编号，是你命令里传的 `--repeat`，用于多次重复运行时区分结果。 |
+  | `bag=...`                                        | 输入 rosbag 路径。                                           |
+  | `config=...`                                     | 本次使用的 YAML 配置文件路径。                               |
+  | `primary_lidar_topic=/livox/lidar_192_168_1_114` | 脚本认为用于验收的主 LiDAR topic。                           |
+  | `sensor_duration_s=120.222785744`                | 这包数据的传感器时间跨度，约 120.22 秒。                     |
+  | `expected_last_lidar_end_s=1782898362.7087536`   | 主 LiDAR 在 bag 里的最后一帧时间，也是脚本期望轨迹至少接近到达的终点。 |
+  | `completion_tolerance_s=0.25`                    | 允许轨迹尾部比主 LiDAR 最后一帧早多少秒，默认 0.25 秒。      |
+  | `completion=incomplete`                          | 完整性验收结果。这次表示输出轨迹没有跑到主 LiDAR 末尾附近。  |
+  | `algorithm_rc=0`                                 | 算法进程返回码。`0` 表示程序本身正常退出。                   |
+  | `watchdog_status=completed`                      | watchdog 结果。`completed` 表示没有超时、没有被强杀。        |
+  | `trajectory_lines=1083`                          | 输出的主 LiDAR 轨迹行数，也就是有效位姿数量。                |
+  | `last_stamp=1782898360.9002664`                  | 输出轨迹最后一个时间戳。失败主要就是因为它距离 `expected_last_lidar_end_s` 还差约 1.81 秒。 |
+  | `invalid_count=0`                                | 轨迹格式/数值非法的行数。这里为 0，说明轨迹格式没问题。      |
+  | `nonmonotonic_count=0`                           | 时间戳非递增的行数。这里为 0，说明轨迹时间顺序正常。         |
+  | `maximum_output_gap_s=0.100343...`               | 输出轨迹中相邻两帧最大时间间隔。                             |
+  | `excessive_output_gap_count=0`                   | 超过允许间隔的 gap 数量。这里为 0，说明中间没有异常大断帧。  |
+
+* `bag_contract.json`：脚本从 rosbag 和配置里推导出的“应跑到哪里”的合同，比如主雷达 topic、第一帧/最后一帧时间、消息数量。
+
+* `logs/algorithm.stderr.log`：算法日志，虽然叫 stderr，但 glog 的 INFO 也在这里。
+
+* `results/processing_timing.csv` 和 `results/processing_timing_summary.json`：处理耗时明细。CSV 便于横向比较各算法阶段；JSON 同时记录整次离线运行的墙钟耗时、输出轨迹吞吐率，以及完整处理全包时的实时因子和处理倍速。
+
+  阶段统计目前包括离线初始化、bag 回放、尾部冲刷、地图导出，以及预处理、点云去畸变、LiDAR 观测匹配、增量建图和 IVox 插点。字段包括 `average_ms`、`median_ms`、`p95_ms`、`retained_samples`。底层计时器每个阶段最多保留最近 2000 个样本；`sample_window_limit_reached=true` 表示已经达到该上限，统计值可能只代表尾部窗口。不同阶段可能嵌套或重叠，例如 bag 回放包含逐帧算法阶段，因此 `retained_window_estimated_total_ms` 不能相加后当作整次墙钟耗时。
+
+  只有完整处理到 bag 主 LiDAR 末帧、进程和 watchdog 正常结束且未等待 UI 时，JSON 才计算 `realtime_factor`（墙钟耗时/传感器时长）和 `processing_speed_x`（传感器时长/墙钟耗时）。限帧、尾部不完整或 `--wait-ui true` 的运行会把不可靠的性能字段置为 `null`，并通过 `performance_ratio_suppressed_reasons` 说明原因。`playback_rate>0` 表示墙钟指标包含主动限速，比较算法最大吞吐能力时应使用 `--playback-rate 0`。
+
+* `resource_samples.csv` 和 `resource_summary.json`：CPU/RSS 资源监控采样和汇总。
+
+   `resource_summary.json` 相关字段：
+
+  | 字段                         | 作用                      | 例子         |
+  | ---------------------------- | ------------------------- | ------------ |
+  | `samples`                    | 资源采样次数              | `677` 次     |
+  | `duration_s`                 | 资源监控持续时间          | `139.06s`    |
+  | `mean_cpu_cores`             | 平均用了多少个 CPU 核     | `1.24` 核    |
+  | `peak_cpu_cores`             | 峰值用了多少个 CPU 核     | `2.62` 核    |
+  | `p95_cpu_cores`              | 95 分位 CPU 使用核数      | `1.95` 核    |
+  | `mean_cpu_pct_of_allocation` | 相对分配 CPU 的平均占用率 | `15.52%`     |
+  | `peak_cpu_pct_of_allocation` | 相对分配 CPU 的峰值占用率 | `32.81%`     |
+  | `mean_rss_mb`                | 平均内存占用 RSS          | `997.42 MB`  |
+  | `peak_rss_mb`                | 峰值内存占用 RSS          | `2990.04 MB` |
+
+  `resource_samples.csv` 相关字段：
+
+  | 字段                    | 作用                             |
+  | ----------------------- | -------------------------------- |
+  | `elapsed_s`             | 从运行开始到该采样点经过了多少秒 |
+  | `processes`             | 当前被监控到的进程数量           |
+  | `cpu_cores`             | 该时刻等效用了多少个 CPU 核      |
+  | `cpu_pct_of_allocation` | 相对分配 CPU 的占用百分比        |
+  | `rss_mb`                | 该时刻 RSS 内存占用，单位 MB     |
+
+* `watchdog_status.json`：watchdog 是否超时。
+
+  以一下内容为例：
+
+  ```
+  {
+    "margin_s": 300.0,
+    "playback_rate": 0.0,
+    "sensor_duration_s": 120.222785744,
+    "status": "completed",
+    "timeout_s": 421.0,
+    "updated_wall_ns": 1783925136865566082
+  }
+  ```
+
+  | 字段                | 含义                                          | 这次的值说明                                                 |
+  | ------------------- | --------------------------------------------- | ------------------------------------------------------------ |
+  | `margin_s`          | watchdog 额外宽限时间，单位秒                 | `300.0`，在数据时长之外额外允许跑 300 秒                     |
+  | `playback_rate`     | 回放倍率，用来估算 watchdog 超时时间          | `0.0`，表示离线尽快处理，不按传感器时间节奏慢速回放          |
+  | `sensor_duration_s` | bag 里传感器数据的时间跨度，单位秒            | `120.222785744`，这包数据约 120.22 秒                        |
+  | `status`            | watchdog 对进程的最终判断                     | `completed`，说明算法在超时前正常结束，没有被 watchdog 杀掉  |
+  | `timeout_s`         | watchdog 给本次运行设置的最大墙钟时间，单位秒 | `421.0`，约等于 `120.22 + 300` 后取整                        |
+  | `updated_wall_ns`   | watchdog 最后更新状态的墙钟时间戳，单位纳秒   | `1783925136865566082`，主要用于机器记录/排查日志时间，不影响算法结果 |
+
+
+
+
+
+
+
 ## 公共辅助工具
 
 | 脚本 | 用途 |
 |---|---|
 | `inspect_rosbag2_sqlite.py` | 读取 SQLite3 ROS2 bag 和 YAML，核对 Topic 合同、主 LiDAR 末帧、数据时长及输入哈希。由离线前端入口调用。 |
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
+| `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |
 | `analyze_frontend_topic_bag.py` | 审计在线前端录制的五个公开 Topic，包括消息类型、字段、频率、时间戳和 `lidar_id`。 |
 
 ## 公共复现工具
