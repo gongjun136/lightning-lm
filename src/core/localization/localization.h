@@ -76,16 +76,20 @@ class Localization {
     void LidarLocProcCloud(CloudPtr);
 
     using TFCallback = std::function<void(const geometry_msgs::msg::TransformStamped& odom)>;
+    using LocalizationResultCallback = std::function<void(const LocalizationResult& result)>;
+    using ProcessedCloudCallback = std::function<void(const CloudPtr& cloud, const LocalizationResult& result)>;
     using LocStateCallback = std::function<void(const std_msgs::msg::Int32& state)>;
     using PointcloudBodyCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
     using PointcloudWorldCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
 
     void SetTFCallback(TFCallback&& callback);
+    void SetLocalizationResultCallback(LocalizationResultCallback&& callback);
+    void SetProcessedCloudCallback(ProcessedCloudCallback&& callback);
+    void SetLocStateCallback(LocStateCallback&& callback);
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
     // void SetPointcloudWorldCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
     // void SetPointcloudBodyCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
-    // void SetLocStateCallback(std::function<void(const std_msgs::msg::Int32& state)>&& callback);
     // void SetHealthDiagNormalCallback(interface::health_diag_normal_callback&& callback);
 
    private:
@@ -118,6 +122,8 @@ class Localization {
 
     /// 框架相关
     TFCallback tf_callback_;
+    LocalizationResultCallback localization_result_callback_;
+    ProcessedCloudCallback processed_cloud_callback_;
     LocStateCallback loc_state_callback_;
     PointcloudBodyCallback pointcloud_body_callback_;
     PointcloudWorldCallback pointcloud_world_callback_;

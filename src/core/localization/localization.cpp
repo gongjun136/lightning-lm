@@ -107,6 +107,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
             ui_->UpdateNavState(loc_result_.ToNavState());
             ui_->UpdateRecentPose(loc_result_.pose_);
         }
+
+        if (localization_result_callback_) {
+            localization_result_callback_(loc_result_);
+        }
     });
 
     /// 预处理器
@@ -253,6 +257,10 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
         loc_state_callback_(*loc_state);
     }
 
+    if (processed_cloud_callback_) {
+        processed_cloud_callback_(scan_undist, res);
+    }
+
     // cv::Mat img(100, 100, CV_8UC3, cv::Scalar(255, 255, 255));
     // cv::imshow("img", img);
     // cv::waitKey(0);
@@ -351,5 +359,17 @@ void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vec
 }
 
 void Localization::SetTFCallback(Localization::TFCallback&& callback) { tf_callback_ = callback; }
+
+void Localization::SetLocalizationResultCallback(Localization::LocalizationResultCallback&& callback) {
+    localization_result_callback_ = std::move(callback);
+}
+
+void Localization::SetProcessedCloudCallback(Localization::ProcessedCloudCallback&& callback) {
+    processed_cloud_callback_ = std::move(callback);
+}
+
+void Localization::SetLocStateCallback(Localization::LocStateCallback&& callback) {
+    loc_state_callback_ = std::move(callback);
+}
 
 }  // namespace lightning::loc
