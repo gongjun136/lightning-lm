@@ -1,0 +1,117 @@
+#include <cmath>
+#include <iostream>
+#include <memory>
+
+#include "core/backend/btc_loop_detector.h"
+
+namespace {
+
+lightning::CloudPtr MakeStructuredCloud() {
+    auto cloud = std::make_shared<lightning::PointCloudType>();
+    auto add_point = [&](double x, double y, double z, float intensity) {
+        lightning::PointType point;
+        point.x = static_cast<float>(x);
+        point.y = static_cast<float>(y);
+        point.z = static_cast<float>(z);
+        point.intensity = intensity;
+        cloud->push_back(point);
+    };
+
+    for (int x = -30; x <= 30; ++x) {
+        for (int y = -30; y <= 30; ++y) add_point(0.2 * x, 0.2 * y, 0.0, 1.0F);
+    }
+    for (int along = -30; along <= 30; ++along) {
+        for (int height = 0; height <= 24; ++height) {
+            const double a = 0.2 * along;
+            const double z = 0.2 * height;
+            add_point(-6.0, a, z, 2.0F);
+            add_point(6.0, a, z, 3.0F);
+            add_point(a, -6.0, z, 4.0F);
+            if (along < 5 || along > 20) add_point(a, 6.0, z, 5.0F);
+        }
+    }
+    for (int angle = 0; angle < 72; ++angle) {
+        const double theta = angle * M_PI / 36.0;
+        for (int height = 0; height <= 24; ++height) {
+            add_point(2.0 + 0.45 * std::cos(theta), -1.5 + 0.45 * std::sin(theta),
+                      0.2 * height, 8.0F);
+        }
+    }
+    return cloud;
+}
+
+lightning::Keyframe::Ptr MakeKeyframe(unsigned long id, double timestamp, double x,
+                                      const lightning::CloudPtr& cloud) {
+    lightning::NavState state;
+    state.timestamp_ = timestamp;
+    state.SetPose(lightning::SE3(lightning::Quatd::Identity(), lightning::Vec3d(x, 0.0, 0.0)));
+    return std::make_shared<lightning::Keyframe>(id, cloud, state);
+}
+
+}  // namespace
+
+int main() {
+    lightning::backend::BtcLoopDetectorOptions options;
+    options.descriptor_submap_size = 2;
+    options.max_points_per_submap = 30000;
+    options.min_points_per_submap = 100;
+    options.downsample_leaf_size = 0.15;
+    options.min_loop_score = 0.10;
+    options.max_drift_ratio = 0.5;
+    options.refine_with_plane_icp = false;
+    options.confirmation_count = 1;
+    options.descriptor.skip_near_num_ = 1;
+    options.descriptor.icp_threshold_ = 0.05;
+    options.descriptor.similarity_threshold_ = 0.5;
+    options.descriptor.summary_min_thre_ = 2.0;
+    options.descriptor.non_max_suppression_radius_ = 0.5;
+    options.descriptor.line_filter_enable_ = 0;
+    options.descriptor.useful_corner_num_ = 200;
+
+    lightning::backend::BtcLoopDetector detector(options);
+    const auto cloud = MakeStructuredCloud();
+    const double positions[] = {-0.1, 0.0, 1.9, 2.0, -0.1, 0.0};
+    std::optional<lightning::backend::BtcLoopResult> result;
+    for (unsigned long index = 0; index < 6; ++index) {
+        const auto current = detector.AddKeyframe(
+            MakeKeyframe(index, static_cast<double>(index), positions[index], cloud),
+            lightning::SE3());
+        if (index % 2 == 0 && current.has_value()) {
+            std::cerr << "descriptor submap triggered before two frames" << std::endl;
+            return 1;
+        }
+        if (current) {
+            std::cout << "BTC submap " << current->current_descriptor_id
+                      << ": descriptors=" << current->descriptor_count
+                      << ", candidate=" << current->history_descriptor_id
+                      << ", score=" << current->score
+                      << ", reason=" << current->rejection_reason << std::endl;
+            result = current;
+        }
+    }
+
+    if (detector.Entries().size() != 3 || detector.PendingKeyframes() != 0) {
+        std::cerr << "unexpected BTC database state: entries=" << detector.Entries().size()
+                  << ", pending=" << detector.PendingKeyframes() << std::endl;
+        return 2;
+    }
+    if (!result || !result->descriptor_generated || result->descriptor_count == 0) {
+        std::cerr << "BTC failed to generate descriptors" << std::endl;
+        return 3;
+    }
+    if (!result->candidate_found || result->history_descriptor_id != 0) {
+        std::cerr << "BTC failed global revisit retrieval: candidate=" << result->history_descriptor_id
+                  << ", reason=" << result->rejection_reason << std::endl;
+        return 4;
+    }
+    if (!result->accepted) {
+        std::cerr << "BTC revisit was rejected: score=" << result->score
+                  << ", drift_ratio=" << result->drift_ratio
+                  << ", reason=" << result->rejection_reason << std::endl;
+        return 5;
+    }
+
+    std::cout << "btc_loop_detector_test passed: descriptors=" << result->descriptor_count
+              << ", score=" << result->score << ", drift_ratio=" << result->drift_ratio << std::endl;
+    return 0;
+}

@@ -3,6 +3,7 @@
 #include <pcl/io/pcd_io.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -13,7 +14,9 @@
 #include <thread>
 
 #include "common/options.h"
+#include "core/backend/backend_pipeline.h"
 #include "core/lio/laser_mapping.h"
+#include "core/loop_closing/loop_closing.h"
 #include "core/maps/tiled_map.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
@@ -27,6 +30,8 @@ DEFINE_string(output_tum, "", "output LIO TUM trajectory; disabled when empty");
 DEFINE_string(output_map_dir, "./data/new_map", "output tiled map directory");
 DEFINE_string(output_global_map, "", "output global map PCD; default is output_map_dir/global.pcd");
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
+DEFINE_string(output_backend_diagnostics, "",
+              "backend diagnostics directory; default is output_map_dir/backend_diagnostics");
 DEFINE_bool(wait_ui, true, "wait for the 3D UI window to close after offline processing");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
 DEFINE_double(playback_rate, 0.0,
@@ -85,6 +90,10 @@ bool IsLivoxCustomMsg(const std::map<std::string, std::string>& types, const std
 
 void OpenOutput(std::ofstream& stream, const std::string& path, const char* label) {
     if (path.empty()) return;
+    const std::filesystem::path output_path(path);
+    if (!output_path.parent_path().empty()) {
+        std::filesystem::create_directories(output_path.parent_path());
+    }
     stream.open(path);
     if (!stream.is_open()) throw std::runtime_error(std::string("failed to open ") + label + ": " + path);
 }
@@ -129,6 +138,55 @@ bool SaveKeyframeTrajectoryTum(const std::vector<lightning::Keyframe::Ptr>& keyf
     return count > 0;
 }
 
+struct TimedPose {
+    double timestamp = 0.0;
+    lightning::SE3 pose;
+};
+
+bool SaveCorrectedFrameTrajectoryTum(const std::vector<TimedPose>& frames,
+                                     const std::vector<lightning::Keyframe::Ptr>& keyframes,
+                                     const std::string& path) {
+    if (path.empty() || frames.empty() || keyframes.empty()) return false;
+    std::vector<double> keyframe_times;
+    std::vector<lightning::SE3> corrections;
+    keyframe_times.reserve(keyframes.size());
+    corrections.reserve(keyframes.size());
+    for (const auto& keyframe : keyframes) {
+        if (!keyframe) continue;
+        keyframe_times.push_back(keyframe->GetState().timestamp_);
+        corrections.push_back(keyframe->GetOptPose() * keyframe->GetLIOPose().inverse());
+    }
+    if (corrections.empty()) return false;
+
+    std::ofstream output(path);
+    if (!output.is_open()) return false;
+    double last_timestamp = 0.0;
+    std::size_t upper = 0;
+    for (const auto& frame : frames) {
+        while (upper < keyframe_times.size() && keyframe_times[upper] < frame.timestamp) ++upper;
+        lightning::SE3 correction;
+        if (upper == 0) {
+            correction = corrections.front();
+        } else if (upper >= keyframe_times.size()) {
+            correction = corrections.back();
+        } else {
+            const std::size_t lower = upper - 1;
+            const double duration = keyframe_times[upper] - keyframe_times[lower];
+            const double ratio = duration > 1e-9
+                                     ? std::clamp((frame.timestamp - keyframe_times[lower]) / duration, 0.0, 1.0)
+                                     : 0.0;
+            const lightning::Vec3d translation =
+                (1.0 - ratio) * corrections[lower].translation() + ratio * corrections[upper].translation();
+            const lightning::Quatd rotation = corrections[lower].unit_quaternion().slerp(
+                ratio, corrections[upper].unit_quaternion());
+            correction = lightning::SE3(rotation.normalized(), translation);
+        }
+        WriteTumPose(output, frame.timestamp, correction * frame.pose, last_timestamp);
+    }
+    LOG(INFO) << "wrote " << frames.size() << " corrected frame poses to " << path;
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -162,6 +220,24 @@ int main(int argc, char** argv) {
 
     YAML_IO yaml(FLAGS_config);
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
+    const bool with_backend = yaml.GetValue<bool>("system", "with_loop_closing");
+    const backend::BackendMode backend_mode =
+        with_backend ? backend::ReadBackendMode(FLAGS_config) : backend::BackendMode::kDisabled;
+    std::shared_ptr<backend::BackendPipeline> new_backend;
+    std::shared_ptr<LoopClosing> legacy_backend;
+    if (backend_mode == backend::BackendMode::kBaBtcHba) {
+        new_backend = std::make_shared<backend::BackendPipeline>();
+        if (!new_backend->Init(FLAGS_config, false)) {
+            LOG(ERROR) << "failed to initialize ba_btc_hba backend";
+            return 2;
+        }
+    } else if (backend_mode == backend::BackendMode::kLegacy) {
+        LoopClosing::Options loop_options;
+        loop_options.online_mode_ = false;
+        legacy_backend = std::make_shared<LoopClosing>(loop_options);
+        legacy_backend->Init(FLAGS_config);
+    }
+    LOG(INFO) << "offline backend mode: " << backend::BackendModeName(backend_mode);
     const std::string lidar_topic = yaml.GetValue<std::string>("common", "lidar_topic");
     const std::string livox_lidar_topic = yaml.GetValue<std::string>("common", "livox_lidar_topic");
     std::string imu_topic = yaml.GetValue<std::string>("common", "imu_topic");
@@ -207,6 +283,8 @@ int main(int argc, char** argv) {
     int output_frames = 0;
     int complete_frames = 0;
     int partial_frames = 0;
+    std::size_t dispatched_keyframes = 0;
+    std::vector<TimedPose> frame_poses;
     std::map<int, std::size_t> frames_by_lidar;
     std::map<int, std::size_t> points_by_lidar;
 
@@ -242,7 +320,14 @@ int main(int argc, char** argv) {
                 const NavState state = lio.GetState();
                 if (state.pose_is_ok_) {
                     WriteTumPose(tum, state.timestamp_, state.GetPose(), last_tum_timestamp);
+                    frame_poses.push_back({state.timestamp_, state.GetPose()});
                 }
+            }
+            const auto current_keyframes = lio.GetAllKeyframes();
+            while (dispatched_keyframes < current_keyframes.size()) {
+                const auto& keyframe = current_keyframes[dispatched_keyframes++];
+                if (new_backend) new_backend->AddKeyframe(keyframe);
+                if (legacy_backend) legacy_backend->AddKF(keyframe);
             }
             if (FLAGS_max_lidar_frames > 0 && consumed_frames >= FLAGS_max_lidar_frames) {
                 debug::flg_exit = true;
@@ -301,6 +386,10 @@ int main(int argc, char** argv) {
         },
         "Offline SLAM Final Flush");
 
+    if (new_backend) {
+        Timer::Evaluate([&]() { new_backend->WaitUntilIdle(true); }, "Offline Backend Final Optimization");
+    }
+
     const auto keyframes = lio.GetAllKeyframes();
     if (keyframes.empty()) {
         LOG(ERROR) << "no keyframes were generated; cannot export tiled map";
@@ -318,7 +407,7 @@ int main(int argc, char** argv) {
                 std::filesystem::remove_all(map_dir);
             }
             std::filesystem::create_directories(map_dir);
-            const auto global_map = lio.GetGlobalMap(true);
+            const auto global_map = lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
             TiledMap::Options tm_options;
             tm_options.map_path_ = map_dir.string();
             TiledMap tiled_map(tm_options);
@@ -338,6 +427,16 @@ int main(int argc, char** argv) {
         const auto stem = tum_path.stem().string();
         SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_lio.tum")).string(), true);
         SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_opt.tum")).string(), false);
+        SaveCorrectedFrameTrajectoryTum(frame_poses, keyframes, (parent / (stem + "_opt.tum")).string());
+    }
+
+    if (new_backend) {
+        const std::string diagnostics = FLAGS_output_backend_diagnostics.empty()
+                                            ? (map_dir / "backend_diagnostics").string()
+                                            : FLAGS_output_backend_diagnostics;
+        if (!new_backend->SaveDiagnostics(diagnostics)) {
+            LOG(WARNING) << "failed to save backend diagnostics to " << diagnostics;
+        }
     }
 
     Timer::PrintAll();

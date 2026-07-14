@@ -11,6 +11,11 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/lio/laser_mapping.cc
         core/lio/multi_lidar_fusion.cc
         core/lio/pointcloud_preprocess.cc
+        core/backend/backend_pipeline.cc
+        core/backend/btc_loop_detector.cc
+        core/backend/hierarchical_bundle_adjustment.cc
+        core/backend/voxel_bundle_adjustment.cc
+        core/backend/third_party/voxel_slam_btc/BTC.cpp
         core/loop_closing/loop_closing.cc
 
         core/g2p5/g2p5_map.cc
@@ -95,11 +100,19 @@ if(BUILD_TESTING)
     add_executable(pointcloud_preprocess_test test/pointcloud_preprocess_test.cc)
     target_link_libraries(pointcloud_preprocess_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(voxel_bundle_adjustment_test test/voxel_bundle_adjustment_test.cc)
+    target_link_libraries(voxel_bundle_adjustment_test ${PROJECT_NAME}.libs ${third_party_libs})
+
+    add_executable(btc_loop_detector_test test/btc_loop_detector_test.cc)
+    target_link_libraries(btc_loop_detector_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_test(NAME eskf_update_velocity_gate_test COMMAND $<TARGET_FILE:eskf_update_velocity_gate_test>)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
     add_test(NAME rear_axle_pose_test COMMAND $<TARGET_FILE:rear_axle_pose_test>)
     add_test(NAME pointcloud_preprocess_test COMMAND $<TARGET_FILE:pointcloud_preprocess_test>)
+    add_test(NAME voxel_bundle_adjustment_test COMMAND $<TARGET_FILE:voxel_bundle_adjustment_test>)
+    add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)
 endif()
 
 add_subdirectory(app)

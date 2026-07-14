@@ -8,7 +8,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <string>
+#include <tf2_ros/transform_broadcaster.h>
 
 #include "lightning/srv/save_map.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -22,6 +24,9 @@ namespace lightning {
 
 class LaserMapping;  //  lio 前端
 class LoopClosing;   // 回环检测
+namespace backend {
+class BackendPipeline;
+}
 
 namespace ui {
 class PangolinWindow;
@@ -140,6 +145,9 @@ class SlamSystem {
      * @param response 保存地图服务响应。
      */
     void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
+    void OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr request,
+                         std_srvs::srv::Trigger::Response::SharedPtr response);
+    void PublishMapToOdom();
 
     Options options_;                  ///< 系统运行选项。
     std::atomic_bool running_ = false;  ///< 系统是否处于建图运行状态。
@@ -150,6 +158,7 @@ class SlamSystem {
 
     std::shared_ptr<LaserMapping> lio_ = nullptr;       ///< LIO前端。
     std::shared_ptr<LoopClosing> lc_ = nullptr;         ///< 回环检测模块。
+    std::shared_ptr<backend::BackendPipeline> backend_ = nullptr;
     std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  ///< 3D可视化UI。
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        ///< 2.5D/2D栅格地图模块。
 
@@ -163,6 +172,8 @@ class SlamSystem {
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;  ///< IMU订阅器。
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;  ///< 标准点云订阅器。
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;  ///< Livox点云订阅器。
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr optimize_backend_service_ = nullptr;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
 };
 }  // namespace lightning
 

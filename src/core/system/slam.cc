@@ -3,6 +3,7 @@
 //
 
 #include "core/system/slam.h"
+#include "core/backend/backend_pipeline.h"
 #include "core/g2p5/g2p5.h"
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
@@ -63,11 +64,19 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
     // 根据配置初始化回环检测模块
     if (options_.with_loop_closing_) {
-        LOG(INFO) << "slam with loop closing";
-        LoopClosing::Options options;
-        options.online_mode_ = options_.online_mode_;
-        lc_ = std::make_shared<LoopClosing>(options);
-        lc_->Init(yaml_path);
+        const backend::BackendMode mode = backend::ReadBackendMode(yaml_path);
+        LOG(INFO) << "slam backend mode: " << backend::BackendModeName(mode);
+        if (mode == backend::BackendMode::kBaBtcHba) {
+            backend_ = std::make_shared<backend::BackendPipeline>();
+            if (!backend_->Init(yaml_path, options_.online_mode_)) return false;
+        } else if (mode == backend::BackendMode::kLegacy) {
+            LoopClosing::Options options;
+            options.online_mode_ = options_.online_mode_;
+            lc_ = std::make_shared<LoopClosing>(options);
+            lc_->Init(yaml_path);
+        } else {
+            options_.with_loop_closing_ = false;
+        }
     }
 
     // 根据配置初始化 3D 可视化模块
@@ -93,7 +102,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         g2p5_->Init(yaml_path);
 
         // 如果启用回环检测，设置回环回调函数
-        if (options_.with_loop_closing_) {
+        if (lc_) {
             /// 当发生回环时，触发一次重绘
             lc_->SetLoopClosedCB([this]() { g2p5_->RedrawGlobalMap(); });
         }
@@ -120,6 +129,13 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
         /// 创建 ROS2 节点
         node_ = std::make_shared<rclcpp::Node>("lightning_slam");
+        if (backend_) {
+            tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
+            backend_->SetOptimizedCallback([this]() {
+                PublishMapToOdom();
+                if (g2p5_) g2p5_->RedrawGlobalMap();
+            });
+        }
 
         // 从配置文件读取话题名称
         imu_topic_ = yaml["common"]["imu_topic"].as<std::string>();
@@ -162,6 +178,10 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         savemap_service_ = node_->create_service<SaveMapService>(
             "lightning/save_map", [this](const SaveMapService::Request::SharedPtr& req,
                                          SaveMapService::Response::SharedPtr res) { SaveMap(req, res); });
+        optimize_backend_service_ = node_->create_service<std_srvs::srv::Trigger>(
+            "lightning/optimize_backend",
+            [this](const std_srvs::srv::Trigger::Request::SharedPtr req,
+                   std_srvs::srv::Trigger::Response::SharedPtr res) { OptimizeBackend(req, res); });
 
         LOG(INFO) << "online slam node has been created.";
     }
@@ -170,6 +190,10 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 }
 
 SlamSystem::~SlamSystem() {
+    if (backend_) {
+        backend_->WaitUntilIdle(true);
+        backend_->Shutdown();
+    }
     if (ui_) {
         ui_->Quit();
     }
@@ -209,6 +233,7 @@ void SlamSystem::SaveMap(const std::string& path) {
     }
 
     LOG(INFO) << "slam map saving to " << save_path;
+    if (backend_) backend_->WaitUntilIdle(true);
 
     /// 重建目标目录，避免旧地图文件残留影响本次保存结果。
     if (!std::filesystem::exists(save_path)) {
@@ -232,6 +257,7 @@ void SlamSystem::SaveMap(const std::string& path) {
     tm.ConvertFromFullPCD(global_map, start_pose, save_path);
 
     pcl::io::savePCDFileBinaryCompressed(save_path + "/global.pcd", *global_map);
+    if (backend_) backend_->SaveDiagnostics(save_path + "/backend_diagnostics");
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
@@ -372,7 +398,9 @@ void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {
     }
 
     // 新关键帧按配置分发给回环、栅格建图和UI模块。
-    if (options_.with_loop_closing_) {
+    if (backend_) {
+        backend_->AddKeyframe(cur_kf_);
+    } else if (lc_) {
         lc_->AddKF(cur_kf_);
     }
 
@@ -388,6 +416,36 @@ void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {
 // 显式实例化
 template void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
 template void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+
+void SlamSystem::OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr,
+                                 std_srvs::srv::Trigger::Response::SharedPtr response) {
+    if (!backend_) {
+        response->success = false;
+        response->message = "ba_btc_hba backend is not active";
+        return;
+    }
+    backend_->RequestGlobalOptimization("ros_service");
+    response->success = true;
+    response->message = "global backend optimization requested";
+}
+
+void SlamSystem::PublishMapToOdom() {
+    if (!backend_ || !node_ || !tf_broadcaster_) return;
+    const SE3 transform = backend_->GetMapToOdom();
+    geometry_msgs::msg::TransformStamped message;
+    message.header.stamp = node_->now();
+    message.header.frame_id = "map";
+    message.child_frame_id = "odom";
+    message.transform.translation.x = transform.translation().x();
+    message.transform.translation.y = transform.translation().y();
+    message.transform.translation.z = transform.translation().z();
+    const auto rotation = transform.unit_quaternion();
+    message.transform.rotation.x = rotation.x();
+    message.transform.rotation.y = rotation.y();
+    message.transform.rotation.z = rotation.z();
+    message.transform.rotation.w = rotation.w();
+    tf_broadcaster_->sendTransform(message);
+}
 
 void SlamSystem::Spin() {
     if (options_.online_mode_ && node_ != nullptr) {
