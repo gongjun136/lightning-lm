@@ -31,7 +31,7 @@ fi
 mkdir -p "$run_dir/logs" "$run_dir/results" \
   "$run_dir/data/new_map/backend_diagnostics" "$run_dir/voxel_output"
 run_dir="$(realpath "$run_dir")"
-trajectory="$run_dir/voxel_output/$sequence/alidarState.txt"
+trajectory=""
 output_tum="$run_dir/results/trajectory_slam_opt.tum"
 
 export ROS_MASTER_URI="http://127.0.0.1:$ros_port"
@@ -115,7 +115,11 @@ play_pid=""
 rosparam set /finish true
 
 deadline=$(( $(date +%s) + finish_timeout ))
-while [[ ! -s "$trajectory" ]]; do
+while [[ -z "$trajectory" ]]; do
+  trajectory="$(find "$run_dir/voxel_output" -mindepth 2 -maxdepth 2 \
+    -name alidarState.txt -type f -size +0c -printf '%T@ %p\n' 2>/dev/null \
+    | sort -nr | head -n1 | cut -d' ' -f2-)"
+  [[ -n "$trajectory" ]] && break
   kill -0 "$algorithm_pid" 2>/dev/null || { echo "Voxel-SLAM exited before saving trajectory" >&2; exit 4; }
   (( $(date +%s) < deadline )) || { echo "Voxel-SLAM backend finish timeout" >&2; exit 4; }
   sleep 2

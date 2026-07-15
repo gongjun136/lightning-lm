@@ -314,6 +314,18 @@ class LaserMapping {
     double max_update_gyro_bias_step_ = 0.05;
     double max_update_acc_bias_step_ = 0.5;
     double max_update_gravity_step_ = 0.05;
+    bool adaptive_velocity_propagation_ = false;
+    double velocity_innovation_ema_alpha_ = 0.05;
+    double velocity_innovation_enable_threshold_ = 0.16;
+    double velocity_innovation_disable_threshold_ = 0.10;
+    int velocity_propagation_max_active_updates_ = 200;
+    int velocity_propagation_cooldown_updates_ = 100;
+    bool velocity_innovation_initialized_ = false;
+    double velocity_innovation_ema_ = 0.0;
+    bool velocity_propagation_active_ = false;
+    int velocity_propagation_active_updates_ = 0;
+    int velocity_propagation_cooldown_remaining_ = 0;
+    bool velocity_propagation_safety_lockout_ = false;
 
     std::list<Keyframe::Ptr> proj_kfs_;  // 投影到当前帧的关键帧
 

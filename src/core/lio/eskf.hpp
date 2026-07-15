@@ -196,6 +196,8 @@ class ESKF {
     /// 最终平均观测误差
     double GetFinalRes() const { return final_res_; }
     bool LastUpdateAccepted() const { return last_update_accepted_; }
+    void SetPropagateVelocity(bool enabled) { options_.propagate_velocity_ = enabled; }
+    bool PropagateVelocity() const { return options_.propagate_velocity_; }
 
    private:
     double stamp_ = 0.0;

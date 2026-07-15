@@ -248,9 +248,6 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
         Eigen::Matrix3d rotation = transform.second;
         if (result.score < options_.min_loop_score) {
             result.rejection_reason = "score_below_threshold";
-        } else if (options_.max_odom_revisit_distance > 0.0 &&
-                   result.odom_revisit_distance > options_.max_odom_revisit_distance) {
-            result.rejection_reason = "odom_revisit_distance_exceeded";
         } else {
             RefineSummary refine;
             if (options_.refine_with_plane_icp) {
@@ -285,6 +282,9 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
                 result.rejection_reason = "plane_icp_rejected";
             } else if (!history_entry.endpoint) {
                 result.rejection_reason = "missing_history_endpoint";
+            } else if (options_.max_odom_revisit_distance > 0.0 &&
+                       result.odom_revisit_distance > options_.max_odom_revisit_distance) {
+                result.rejection_reason = "odom_revisit_distance_exceeded";
             } else {
                 result.T_history_lidar_current_lidar =
                     SE3(Quatd(rotation).normalized(), translation);

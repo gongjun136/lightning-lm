@@ -41,9 +41,11 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.max_update_gravity_step_ = max_update_gravity_step_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
+    velocity_propagation_active_ = propagate_velocity_;
 
     LOG(INFO) << "ESKF lidar velocity gate=" << max_update_velocity_step_
-              << " m/s, point covariance model=" << (point_noise_enabled_ ? "enabled" : "disabled");
+              << " m/s, adaptive velocity propagation=" << adaptive_velocity_propagation_
+              << ", point covariance model=" << (point_noise_enabled_ ? "enabled" : "disabled");
 
     return true;
 }
@@ -99,7 +101,38 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         if (yaml["fasterlio"]["max_update_gravity_step"]) {
             max_update_gravity_step_ = yaml["fasterlio"]["max_update_gravity_step"].as<double>();
         }
-
+        if (yaml["fasterlio"]["adaptive_velocity_propagation"]) {
+            adaptive_velocity_propagation_ =
+                yaml["fasterlio"]["adaptive_velocity_propagation"].as<bool>();
+        }
+        if (yaml["fasterlio"]["velocity_innovation_ema_alpha"]) {
+            velocity_innovation_ema_alpha_ =
+                yaml["fasterlio"]["velocity_innovation_ema_alpha"].as<double>();
+        }
+        if (yaml["fasterlio"]["velocity_innovation_enable_threshold"]) {
+            velocity_innovation_enable_threshold_ =
+                yaml["fasterlio"]["velocity_innovation_enable_threshold"].as<double>();
+        }
+        if (yaml["fasterlio"]["velocity_innovation_disable_threshold"]) {
+            velocity_innovation_disable_threshold_ =
+                yaml["fasterlio"]["velocity_innovation_disable_threshold"].as<double>();
+        }
+        if (yaml["fasterlio"]["velocity_propagation_max_active_updates"]) {
+            velocity_propagation_max_active_updates_ =
+                yaml["fasterlio"]["velocity_propagation_max_active_updates"].as<int>();
+        }
+        if (yaml["fasterlio"]["velocity_propagation_cooldown_updates"]) {
+            velocity_propagation_cooldown_updates_ =
+                yaml["fasterlio"]["velocity_propagation_cooldown_updates"].as<int>();
+        }
+        if (velocity_innovation_ema_alpha_ <= 0.0 || velocity_innovation_ema_alpha_ > 1.0 ||
+            velocity_innovation_disable_threshold_ < 0.0 ||
+            velocity_innovation_enable_threshold_ <= velocity_innovation_disable_threshold_ ||
+            velocity_propagation_max_active_updates_ < 0 ||
+            velocity_propagation_cooldown_updates_ < 0) {
+            LOG(ERROR) << "invalid adaptive velocity propagation thresholds";
+            return false;
+        }
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
         enable_skip_lidar_ = skip_lidar_num_ > 0;
 
@@ -419,6 +452,55 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     const double delta_velocity = (pred_state.vel_ - state_point_.vel_).norm();
 
     const double current_speed = state_point_.vel_.norm();
+
+    if (adaptive_velocity_propagation_ && kf_.LastUpdateAccepted()) {
+        if (!velocity_innovation_initialized_) {
+            velocity_innovation_ema_ = delta_translation;
+            velocity_innovation_initialized_ = true;
+        } else {
+            velocity_innovation_ema_ =
+                (1.0 - velocity_innovation_ema_alpha_) * velocity_innovation_ema_ +
+                velocity_innovation_ema_alpha_ * delta_translation;
+        }
+        if (velocity_propagation_cooldown_remaining_ > 0) {
+            --velocity_propagation_cooldown_remaining_;
+        }
+
+        bool requested = velocity_propagation_active_;
+        const char *transition_reason = "innovation threshold";
+        if (requested) {
+            ++velocity_propagation_active_updates_;
+            if (velocity_innovation_ema_ < velocity_innovation_disable_threshold_) {
+                requested = false;
+            } else if (velocity_propagation_max_active_updates_ > 0 &&
+                       velocity_propagation_active_updates_ >=
+                           velocity_propagation_max_active_updates_) {
+                requested = false;
+                transition_reason = "active-update safety limit";
+                velocity_propagation_cooldown_remaining_ =
+                    velocity_propagation_cooldown_updates_;
+                velocity_propagation_safety_lockout_ = true;
+            }
+        } else {
+            velocity_propagation_active_updates_ = 0;
+            if (velocity_propagation_safety_lockout_ &&
+                velocity_innovation_ema_ < velocity_innovation_disable_threshold_) {
+                velocity_propagation_safety_lockout_ = false;
+            }
+            if (!velocity_propagation_safety_lockout_ &&
+                velocity_propagation_cooldown_remaining_ == 0 &&
+                velocity_innovation_ema_ > velocity_innovation_enable_threshold_) {
+                requested = true;
+            }
+        }
+        if (requested != velocity_propagation_active_) {
+            velocity_propagation_active_ = requested;
+            kf_.SetPropagateVelocity(requested);
+            LOG(WARNING) << "Adaptive velocity propagation " << (requested ? "enabled" : "disabled")
+                         << ", reason: " << transition_reason
+                         << ", lidar innovation EMA: " << velocity_innovation_ema_;
+        }
+    }
 
     LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
               << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "

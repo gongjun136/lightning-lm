@@ -30,7 +30,7 @@ Features of Lightning-LM:
     side (online localization 0.8 cores, mapping 1.2 cores, 32-line LiDAR, without UI).
 
 Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_ba_btc_hba.md) and
-[benchmark results](./doc/backend_ba_btc_hba_m3dgr_results.md).
+[five-sequence algorithm report](./doc/backend_ba_btc_hba_five_sequence_algorithm_report_20260715.md).
 
 ## Updates
 
