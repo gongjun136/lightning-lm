@@ -1,0 +1,132 @@
+{
+  "primary_method": "lightning_current",
+  "improvement_baseline_method": "lightning_previous",
+  "validation": {
+    "minimum_gt_coverage": 0.98,
+    "require_primary_completion": "reached_final_lidar",
+    "require_primary_algorithm_rc": 0,
+    "require_shared_primary_config": true,
+    "require_shared_primary_binary": true
+  },
+  "methods_order": ["legacy", "lightning_previous", "lightning_current", "ws_voxel_slam"],
+  "methods_display": {
+    "legacy": "Legacy Lightning",
+    "lightning_previous": "Previous BA+BTC+HBA",
+    "lightning_current": "Optimized BA+BTC+HBA",
+    "ws_voxel_slam": "ws_voxel_slam"
+  },
+  "sequences": {
+    "Grass02": {
+      "gt": "F:/datasets/M3DGR/GT/Wheel_Slippage/Outdoor/Grass02.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Grass02/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_previous": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Grass02/lightning_new/results/trajectory_slam_opt.tum"
+        },
+        "lightning_current": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_results/Grass02.json",
+          "run_label": "final_v2",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_runs/Grass02/ba_btc_hba/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Grass02/ws_voxel_slam_full_run/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Outdoor04": {
+      "gt": "F:/datasets/M3DGR/GT/Standard/Outdoor04.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Outdoor04/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_previous": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Outdoor04/lightning_final/results/trajectory_slam_opt.tum"
+        },
+        "lightning_current": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_results/Outdoor04.json",
+          "run_label": "final_v2",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_runs/Outdoor04/ba_btc_hba/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Outdoor04/ws_voxel_slam_full_run/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Z-Rough-Road01": {
+      "gt": "F:/datasets/M3DGR/GT/Wheel_Slippage/Outdoor/Z-Rough-Road01.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v3/runs/Z-Rough-Road01/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_previous": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Z-Rough-Road01/lightning_final/results/trajectory_slam_opt.tum"
+        },
+        "lightning_current": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_results/Z-Rough-Road01.json",
+          "run_label": "final_v2",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_runs/Z-Rough-Road01/ba_btc_hba/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Z-Rough-Road01/ws_voxel_slam_full/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Dark01": {
+      "gt": "F:/datasets/M3DGR/GT/Visual_Challenge/Outdoor/Dark01.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v3/runs/Dark01/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_previous": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Dark01/lightning_new/results/trajectory_slam_opt.tum"
+        },
+        "lightning_current": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_results/Dark01.json",
+          "run_label": "final_v2",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v4/final_v2_runs/Dark01/ba_btc_hba/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Dark01/ws_voxel_slam_full/results/trajectory_slam_opt.tum"
+        }
+      }
+    }
+  },
+  "ablations": [
+    {"label": "Previous default", "ate_rmse_m": 12.5653106472, "color": "#7f8c8d"},
+    {"label": "Current propagation + 0.5 gate", "ate_rmse_m": 0.3915568211, "color": "#2471a3"},
+    {"label": "ws_voxel_slam", "ate_rmse_m": 0.2948280673, "color": "#d68910"},
+    {"label": "IMU acc cov = 1.0", "ate_rmse_m": 3.0528968883, "color": "#c0392b"},
+    {"label": "Scan leaf = 0.2 m", "ate_rmse_m": 4.1050095886, "color": "#c0392b"},
+    {"label": "Velocity gate = 2.0 m/s", "ate_rmse_m": 20772.5587363543, "color": "#c0392b"},
+    {"label": "Velocity gate = 0.25 m/s", "ate_rmse_m": 62960.4346657177, "color": "#c0392b"},
+    {"label": "2nd-order nominal + covariance", "ate_rmse_m": 60453.6042714049, "color": "#c0392b"},
+    {"label": "Weak BA prior", "ate_rmse_m": 0.3914648069, "color": "#5d6d7e"},
+    {"label": "Geometry-dominant BA", "ate_rmse_m": 0.4026382915, "color": "#c0392b"}
+  ]
+}

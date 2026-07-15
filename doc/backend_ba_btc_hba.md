@@ -35,6 +35,14 @@ updates are rolled back unless a validated BTC constraint changed the pose
 graph. This prevents a forced end-of-data pass from degrading an already
 consistent LIO trajectory. Set it to `false` for an HBA-only experiment.
 
+The validated single-Mid360 M3DGR default also enables continuous nominal
+velocity propagation, keeps the LiDAR velocity-update guard at `0.5 m/s`, and
+uses a `0.60` BTC acceptance threshold. These values were selected with one
+shared configuration across Grass02, Outdoor04, Z-Rough-Road01, and Dark01;
+see the [four-sequence optimization report](./backend_ba_btc_hba_four_sequence_optimization_report_20260715.md).
+Outdoor01 is excluded from that comparison because the reference
+ws_voxel_slam run does not produce a complete comparable trajectory.
+
 Generate self-contained ablation files with:
 
 ```bash

@@ -40,9 +40,11 @@ fasterlio:
   ivox_nearby_type: 18
   esti_plane_threshold: 0.1
   use_aa: false
-  propagate_velocity: false
-  # The innovation-adaptive model remains available for ablation, but is off
-  # in the unified default after the five-sequence safety regression.
+  # Propagate the nominal velocity with the built-in Mid360 IMU. The 0.5 m/s
+  # lidar-update guard below is required by the four-sequence stability sweep.
+  propagate_velocity: true
+  # The innovation-adaptive model remains available for historical ablation,
+  # but the unified M3DGR default now uses continuous propagation.
   adaptive_velocity_propagation: false
   velocity_innovation_ema_alpha: 0.05
   velocity_innovation_enable_threshold: 0.16
@@ -53,7 +55,7 @@ fasterlio:
   velocity_propagation_cooldown_updates: 100
   lidar_update_pose_only: false
   lidar_update_inertial_states: true
-  max_update_velocity_step: 2.0
+  max_update_velocity_step: 0.5
   max_update_gyro_bias_step: 0.05
   max_update_acc_bias_step: 0.5
   max_update_gravity_step: 0.05
@@ -119,7 +121,9 @@ backend:
     max_points_per_submap: 100000
     min_points_per_submap: 100
     downsample_leaf_size: 0.0
-    min_loop_score: 0.29
+    # Four-sequence RTK tuning: Outdoor04 true loops scored 0.615/0.635,
+    # while accepted false positives stayed below 0.506.
+    min_loop_score: 0.60
     # Dimensionless post-geometry safety bound. This is correction/path length,
     # not an odometry-distance loop retrieval gate.
     max_drift_ratio: 0.005
@@ -131,7 +135,7 @@ backend:
     # Planar outdoor loops can be rank-deficient. They may pass only when BTC
     # confidence is high and the plane refinement has converged with many pairs.
     allow_degenerate_plane_icp: true
-    degenerate_min_loop_score: 0.29
+    degenerate_min_loop_score: 0.60
     degenerate_min_matches: 60
     confirmation_count: 2
     confirmation_max_current_gap: 10

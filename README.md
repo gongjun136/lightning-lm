@@ -29,8 +29,9 @@ Features of Lightning-LM:
 13. [done] High-performance computing: All the above features can run using less than one CPU core on the pure CPU
     side (online localization 0.8 cores, mapping 1.2 cores, 32-line LiDAR, without UI).
 
-Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_ba_btc_hba.md) and
-[five-sequence algorithm report](./doc/backend_ba_btc_hba_five_sequence_algorithm_report_20260715.md).
+Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_ba_btc_hba.md),
+[four-sequence optimization report](./doc/backend_ba_btc_hba_four_sequence_optimization_report_20260715.md), and
+[historical five-sequence report](./doc/backend_ba_btc_hba_five_sequence_algorithm_report_20260715.md).
 
 ## Updates
 

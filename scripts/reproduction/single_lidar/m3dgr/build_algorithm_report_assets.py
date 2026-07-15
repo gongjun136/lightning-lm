@@ -17,6 +17,8 @@ from evaluate_backend_runs import align_se3, interpolate_positions, load_tum
 
 COLORS = {
     "legacy": "#7f8c8d",
+    "lightning_previous": "#85c1e9",
+    "lightning_current": "#2471a3",
     "lightning_final": "#2471a3",
     "ws_voxel_slam": "#d68910",
 }
@@ -48,6 +50,12 @@ def method_labels(manifest: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     return order, display
 
 
+def subplot_grid(item_count: int) -> tuple[int, int]:
+    columns = 2 if item_count > 1 else 1
+    rows = (item_count + columns - 1) // columns
+    return rows, columns
+
+
 def collect_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for sequence, sequence_cfg in manifest["sequences"].items():
@@ -74,6 +82,12 @@ def collect_rows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
                     "loop_recall": loop.get("recall"),
                     "loops_accepted": backend.get("loops_accepted"),
                     "loops_applied": backend.get("loops_applied"),
+                    "hba_runs": backend.get("hba_runs"),
+                    "hba_accepted": backend.get("hba_accepted"),
+                    "config_sha256": metadata.get("config_sha256"),
+                    "binary_sha256": metadata.get("algorithm_binary_sha256"),
+                    "completion": metadata.get("completion"),
+                    "algorithm_rc": metadata.get("algorithm_rc"),
                 }
             )
     return rows
@@ -88,6 +102,81 @@ def write_tables(rows: list[dict[str, Any]], output_dir: Path) -> None:
         writer.writerows(rows)
 
 
+def validate_and_summarize(
+    manifest: dict[str, Any], rows: list[dict[str, Any]], output_dir: Path
+) -> None:
+    validation = manifest.get("validation", {})
+    primary_method = manifest.get("primary_method")
+    primary_rows = [row for row in rows if row["method"] == primary_method]
+    if primary_method and len(primary_rows) != len(manifest["sequences"]):
+        raise ValueError(f"primary method {primary_method!r} is missing one or more sequences")
+
+    minimum_coverage = validation.get("minimum_gt_coverage")
+    if minimum_coverage is not None:
+        failed = [
+            row["sequence"] for row in primary_rows
+            if row["gt_coverage"] is None or row["gt_coverage"] < minimum_coverage
+        ]
+        if failed:
+            raise ValueError(f"primary RTK coverage below {minimum_coverage}: {failed}")
+
+    required_completion = validation.get("require_primary_completion")
+    if required_completion is not None:
+        failed = [row["sequence"] for row in primary_rows if row["completion"] != required_completion]
+        if failed:
+            raise ValueError(f"primary runs are incomplete: {failed}")
+
+    required_rc = validation.get("require_primary_algorithm_rc")
+    if required_rc is not None:
+        failed = [row["sequence"] for row in primary_rows if float(row["algorithm_rc"]) != float(required_rc)]
+        if failed:
+            raise ValueError(f"primary runs returned a non-zero status: {failed}")
+
+    config_hashes = sorted({row["config_sha256"] for row in primary_rows if row["config_sha256"]})
+    binary_hashes = sorted({row["binary_sha256"] for row in primary_rows if row["binary_sha256"]})
+    if validation.get("require_shared_primary_config") and len(config_hashes) != 1:
+        raise ValueError(f"primary runs do not share one config hash: {config_hashes}")
+    if validation.get("require_shared_primary_binary") and len(binary_hashes) != 1:
+        raise ValueError(f"primary runs do not share one binary hash: {binary_hashes}")
+
+    methods, _ = method_labels(manifest)
+    aggregates: dict[str, dict[str, float]] = {}
+    for method in methods:
+        method_rows = [row for row in rows if row["method"] == method and row["valid_for_primary"]]
+        aggregates[method] = {
+            "mean_ate_rmse_m": float(np.mean([row["ate_rmse_m"] for row in method_rows])),
+            "mean_rpe_10m_rmse_m": float(np.mean([row["rpe_10m_rmse_m"] for row in method_rows])),
+            "mean_peak_rss_mb": float(np.mean([row["peak_rss_mb"] for row in method_rows])),
+        }
+
+    summary: dict[str, Any] = {
+        "status": "passed",
+        "sequence_count": len(manifest["sequences"]),
+        "row_count": len(rows),
+        "primary_method": primary_method,
+        "primary_config_sha256": config_hashes,
+        "primary_binary_sha256": binary_hashes,
+        "aggregates": aggregates,
+    }
+    baseline_method = manifest.get("improvement_baseline_method")
+    if primary_method and baseline_method:
+        current = aggregates[primary_method]
+        baseline = aggregates[baseline_method]
+        summary["improvement_over_baseline_pct"] = {
+            "mean_ate_rmse": 100.0 * (
+                baseline["mean_ate_rmse_m"] - current["mean_ate_rmse_m"]
+            ) / baseline["mean_ate_rmse_m"],
+            "mean_rpe_10m_rmse": 100.0 * (
+                baseline["mean_rpe_10m_rmse_m"] - current["mean_rpe_10m_rmse_m"]
+            ) / baseline["mean_rpe_10m_rmse_m"],
+            "mean_peak_rss": 100.0 * (
+                baseline["mean_peak_rss_mb"] - current["mean_peak_rss_mb"]
+            ) / baseline["mean_peak_rss_mb"],
+        }
+    with (output_dir / "validation_summary.json").open("w", encoding="utf-8") as stream:
+        json.dump(summary, stream, ensure_ascii=False, indent=2)
+
+
 def row_index(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
     return {(row["sequence"], row["method"]): row for row in rows}
 
@@ -97,7 +186,7 @@ def plot_accuracy(manifest: dict[str, Any], rows: list[dict[str, Any]], output_d
     methods, display = method_labels(manifest)
     lookup = row_index(rows)
     x = np.arange(len(sequences), dtype=float)
-    width = 0.24
+    width = min(0.8 / max(len(methods), 1), 0.24)
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.8), constrained_layout=True)
     for method_i, method in enumerate(methods):
         offset = (method_i - (len(methods) - 1) / 2.0) * width
@@ -140,8 +229,10 @@ def aligned_series(gt_path: Path, trajectory_path: Path) -> tuple[np.ndarray, np
 def plot_trajectories(manifest: dict[str, Any], output_dir: Path) -> None:
     methods, display = method_labels(manifest)
     sequences = list(manifest["sequences"])
-    fig, axes = plt.subplots(2, 3, figsize=(15, 9), constrained_layout=True)
-    for axis, sequence in zip(axes.flat, sequences):
+    rows, columns = subplot_grid(len(sequences))
+    fig, axes = plt.subplots(rows, columns, figsize=(7.2 * columns, 4.8 * rows), constrained_layout=True)
+    axes_array = np.atleast_1d(axes).flat
+    for axis, sequence in zip(axes_array, sequences):
         cfg = manifest["sequences"][sequence]
         gt = load_tum(Path(cfg["gt"]), ground_truth=True)
         axis.plot(gt[:, 1], gt[:, 2], color="#202020", linewidth=1.4, label="RTK")
@@ -161,9 +252,10 @@ def plot_trajectories(manifest: dict[str, Any], output_dir: Path) -> None:
         axis.grid(alpha=0.2)
         axis.set_xlabel("x / m")
         axis.set_ylabel("y / m")
-    for axis in axes.flat[len(sequences):]:
+    axes_array = np.atleast_1d(axes).flat
+    for axis in list(axes_array)[len(sequences):]:
         axis.axis("off")
-    axes.flat[0].legend(frameon=False, fontsize=8)
+    np.atleast_1d(axes).flat[0].legend(frameon=False, fontsize=8)
     fig.savefig(output_dir / "trajectory_xy_overlays.png", dpi=180)
     plt.close(fig)
 
@@ -171,8 +263,10 @@ def plot_trajectories(manifest: dict[str, Any], output_dir: Path) -> None:
 def plot_error_curves(manifest: dict[str, Any], output_dir: Path) -> None:
     methods, display = method_labels(manifest)
     sequences = list(manifest["sequences"])
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
-    for axis, sequence in zip(axes.flat, sequences):
+    rows, columns = subplot_grid(len(sequences))
+    fig, axes = plt.subplots(rows, columns, figsize=(7.2 * columns, 4.4 * rows), constrained_layout=True)
+    axes_array = np.atleast_1d(axes).flat
+    for axis, sequence in zip(axes_array, sequences):
         cfg = manifest["sequences"][sequence]
         for method in methods:
             entry = cfg["methods"].get(method)
@@ -185,9 +279,10 @@ def plot_error_curves(manifest: dict[str, Any], output_dir: Path) -> None:
         axis.set_xlabel("associated trajectory progress / %")
         axis.set_ylabel("translation error / m")
         axis.grid(alpha=0.2)
-    for axis in axes.flat[len(sequences):]:
+    axes_array = np.atleast_1d(axes).flat
+    for axis in list(axes_array)[len(sequences):]:
         axis.axis("off")
-    axes.flat[0].legend(frameon=False, fontsize=8)
+    np.atleast_1d(axes).flat[0].legend(frameon=False, fontsize=8)
     fig.savefig(output_dir / "translation_error_curves.png", dpi=180)
     plt.close(fig)
 
@@ -197,7 +292,7 @@ def plot_resources_and_loops(manifest: dict[str, Any], rows: list[dict[str, Any]
     methods, display = method_labels(manifest)
     lookup = row_index(rows)
     x = np.arange(len(sequences), dtype=float)
-    width = 0.24
+    width = min(0.8 / max(len(methods), 1), 0.24)
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.8), constrained_layout=True)
     for method_i, method in enumerate(methods):
         offset = (method_i - (len(methods) - 1) / 2.0) * width
@@ -219,7 +314,8 @@ def plot_resources_and_loops(manifest: dict[str, Any], rows: list[dict[str, Any]
     plt.close(fig)
 
     fig, axis = plt.subplots(figsize=(10.5, 5.2), constrained_layout=True)
-    loop_rows = [lookup.get((sequence, "lightning_final"), {}) for sequence in sequences]
+    loop_method = manifest.get("primary_method", "lightning_final")
+    loop_rows = [lookup.get((sequence, loop_method), {}) for sequence in sequences]
     precision = [0.0 if row.get("loop_precision") is None else row["loop_precision"] for row in loop_rows]
     recall = [0.0 if row.get("loop_recall") is None else row["loop_recall"] for row in loop_rows]
     x_loop = np.arange(len(sequences), dtype=float)
@@ -232,10 +328,42 @@ def plot_resources_and_loops(manifest: dict[str, Any], rows: list[dict[str, Any]
     axis.set_ylim(0.0, 1.0)
     axis.set_xticks(x_loop, sequences, rotation=18, ha="right")
     axis.set_ylabel("score")
-    axis.set_title("Lightning BTC accepted-loop precision / recall")
+    axis.set_title(f"{display[loop_method]} BTC accepted-loop precision / recall")
     axis.legend(frameon=False)
     axis.grid(axis="y", alpha=0.25)
     fig.savefig(output_dir / "loop_precision_recall.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_improvements(manifest: dict[str, Any], rows: list[dict[str, Any]], output_dir: Path) -> None:
+    current_method = manifest.get("primary_method")
+    baseline_method = manifest.get("improvement_baseline_method")
+    if not current_method or not baseline_method:
+        return
+    sequences = list(manifest["sequences"])
+    lookup = row_index(rows)
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.8), constrained_layout=True)
+    for axis, field, title in (
+        (axes[0], "ate_rmse_m", "ATE improvement over previous backend"),
+        (axes[1], "rpe_10m_rmse_m", "10 m RPE improvement over previous backend"),
+    ):
+        values = []
+        for sequence in sequences:
+            current = lookup[(sequence, current_method)][field]
+            baseline = lookup[(sequence, baseline_method)][field]
+            values.append(100.0 * (baseline - current) / baseline)
+        colors = ["#229954" if value >= 0.0 else "#c0392b" for value in values]
+        bars = axis.bar(np.arange(len(sequences)), values, color=colors)
+        axis.axhline(0.0, color="#202020", linewidth=0.8)
+        axis.set_title(title)
+        axis.set_ylabel("improvement / %")
+        axis.set_xticks(np.arange(len(sequences)), sequences, rotation=18, ha="right")
+        axis.grid(axis="y", alpha=0.25)
+        for bar, value in zip(bars, values):
+            vertical = "bottom" if value >= 0.0 else "top"
+            offset = 1.2 if value >= 0.0 else -1.2
+            axis.text(bar.get_x() + bar.get_width() / 2, value + offset, f"{value:.1f}%", ha="center", va=vertical, fontsize=8)
+    fig.savefig(output_dir / "improvement_vs_previous.png", dpi=180)
     plt.close(fig)
 
 
@@ -268,10 +396,12 @@ def main() -> None:
     if not rows:
         raise SystemExit("manifest contains no runs")
     write_tables(rows, args.output_dir)
+    validate_and_summarize(manifest, rows, args.output_dir)
     plot_accuracy(manifest, rows, args.output_dir)
     plot_trajectories(manifest, args.output_dir)
     plot_error_curves(manifest, args.output_dir)
     plot_resources_and_loops(manifest, rows, args.output_dir)
+    plot_improvements(manifest, rows, args.output_dir)
     plot_ablations(manifest, args.output_dir)
     print(args.output_dir)
 

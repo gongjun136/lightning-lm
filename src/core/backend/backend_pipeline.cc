@@ -288,13 +288,12 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
                 UpdateMapToOdomAndNotify();
             }
         }
-        // A geometrically verified loop always triggers the background HBA
-        // workflow.  When its residual is already below the graph-update gate,
-        // HBA still runs as requested but the transactional commit guard keeps
-        // the current trajectory unchanged.
-        if (accepted) {
-            RequestHba(false, apply_constraint ? "accepted_btc_loop"
-                                               : "verified_btc_loop_no_graph_update");
+        // HBA is useful only after a loop constraint has actually entered the
+        // graph. A verified revisit whose correction is below the graph-update
+        // gate must not launch an expensive point-level optimization that is
+        // guaranteed to be rolled back by the transactional commit guard.
+        if (apply_constraint) {
+            RequestHba(false, "accepted_btc_loop");
         }
     }
     UpdateMapToOdomAndNotify();

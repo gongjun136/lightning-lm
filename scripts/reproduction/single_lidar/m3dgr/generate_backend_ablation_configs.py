@@ -20,12 +20,38 @@ VARIANTS = {
             "max_update_velocity_step": 0.5,
         },
     },
+    "frontend_velocity_propagation_strict": {
+        "mode": "disabled",
+        "fasterlio": {
+            "propagate_velocity": True,
+            "adaptive_velocity_propagation": False,
+            "max_update_velocity_step": 0.25,
+        },
+    },
     "frontend_velocity_propagation_relaxed": {
         "mode": "disabled",
         "fasterlio": {
             "propagate_velocity": True,
             "adaptive_velocity_propagation": False,
             "max_update_velocity_step": 2.0,
+        },
+    },
+    "frontend_velocity_propagation_acc1": {
+        "mode": "disabled",
+        "fasterlio": {
+            "propagate_velocity": True,
+            "adaptive_velocity_propagation": False,
+            "max_update_velocity_step": 0.5,
+            "acc_cov": 1.0,
+        },
+    },
+    "frontend_velocity_propagation_dense": {
+        "mode": "disabled",
+        "fasterlio": {
+            "propagate_velocity": True,
+            "adaptive_velocity_propagation": False,
+            "max_update_velocity_step": 0.5,
+            "filter_size_scan": 0.2,
         },
     },
     "frontend_innovation_adaptive": {
@@ -76,6 +102,40 @@ VARIANTS = {
             "propagate_velocity": True,
             "adaptive_velocity_propagation": False,
             "max_update_velocity_step": 0.5,
+        },
+    },
+    "ba_btc_hba_velocity_weak_ba_prior": {
+        "mode": "ba_btc_hba",
+        "local_ba": True,
+        "btc": True,
+        "hba": True,
+        "fasterlio": {
+            "propagate_velocity": True,
+            "adaptive_velocity_propagation": False,
+            "max_update_velocity_step": 0.5,
+        },
+        "local_ba_overrides": {
+            "correction_prior_rotation": 4.0,
+            "correction_prior_translation": 1.0,
+            "correction_smoothness_rotation": 4.0,
+            "correction_smoothness_translation": 1.0,
+        },
+    },
+    "ba_btc_hba_velocity_geometry_ba": {
+        "mode": "ba_btc_hba",
+        "local_ba": True,
+        "btc": True,
+        "hba": True,
+        "fasterlio": {
+            "propagate_velocity": True,
+            "adaptive_velocity_propagation": False,
+            "max_update_velocity_step": 0.5,
+        },
+        "local_ba_overrides": {
+            "correction_prior_rotation": 0.001,
+            "correction_prior_translation": 0.001,
+            "correction_smoothness_rotation": 0.001,
+            "correction_smoothness_translation": 0.001,
         },
     },
     "btc_context20": {
@@ -150,6 +210,8 @@ def set_variant(base: dict, name: str) -> dict:
     for module in ("local_ba", "btc", "hba"):
         if module in settings:
             backend.setdefault(module, {})["enabled"] = settings[module]
+    for key, value in settings.get("local_ba_overrides", {}).items():
+        backend.setdefault("local_ba", {})[key] = value
     for key, value in settings.get("btc_overrides", {}).items():
         backend.setdefault("btc", {})[key] = value
     for key, value in settings.get("fasterlio", {}).items():
