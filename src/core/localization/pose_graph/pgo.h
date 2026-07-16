@@ -37,6 +37,8 @@ class PGO {
     using GlobalOutputHandleFunction = std::function<void(const LocalizationResult& output_result)>;
     void SetGlobalOutputHandleFunction(GlobalOutputHandleFunction handle);
     void SetHighFrequencyGlobalOutputHandleFunction(GlobalOutputHandleFunction handle);
+    void SetDrSmoothingEnabled(bool enabled) { dr_smoothing_enabled_ = enabled; }
+    void SetDrExtrapolationEnabled(bool enabled) { dr_extrapolation_enabled_ = enabled; }
 
     /// 处理lidarOdom信息
     bool ProcessDR(const NavState& dr_result);
@@ -100,7 +102,10 @@ class PGO {
     int localization_unusual_thd_ = 10;      // 激光定位失效次数阈值
     int localization_unusual_count_ = 0;     // 定位异常次数
     double last_lidar_loc_time_ = 0.;        // 上次激光定位时间戳
+    double last_lidar_loc_input_time_ = -1.;
     bool is_parking_ = false;
+    bool dr_smoothing_enabled_ = true;
+    bool dr_extrapolation_enabled_ = true;
 };
 
 }  // namespace lightning::loc

@@ -5,6 +5,7 @@
 #include "core/maps/tiled_map.h"
 #include "io/file_io.h"
 
+#include <limits>
 #include <pcl/io/pcd_io.h>
 #include <opencv2/opencv.hpp>
 
@@ -397,6 +398,26 @@ CloudPtr TiledMap::GetAllMap() {
     }
 
     return cloud;
+}
+
+bool TiledMap::GetGlobalStaticBounds(Vec3d& min_point, Vec3d& max_point, std::size_t& point_count) {
+    min_point = Vec3d::Constant(std::numeric_limits<double>::infinity());
+    max_point = Vec3d::Constant(-std::numeric_limits<double>::infinity());
+    point_count = 0;
+
+    UL lock(static_data_mutex_);
+    for (const auto& [grid, chunk] : static_chunks_) {
+        (void)grid;
+        if (!chunk || !chunk->cloud_) continue;
+        for (const auto& point : chunk->cloud_->points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
+            const Vec3d position(point.x, point.y, point.z);
+            min_point = min_point.cwiseMin(position);
+            max_point = max_point.cwiseMax(position);
+            ++point_count;
+        }
+    }
+    return point_count > 0 && min_point.allFinite() && max_point.allFinite();
 }
 
 std::map<int, CloudPtr> TiledMap::GetStaticCloud() {

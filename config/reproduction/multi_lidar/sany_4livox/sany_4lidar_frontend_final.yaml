@@ -110,7 +110,7 @@ roi:
 
 system:
   with_ui: false
-  with_loop_closing: false
+  with_loop_closing: true
   with_2dui: false
   with_g2p5: false
   step_on_kf: false
@@ -122,8 +122,127 @@ system:
   map_path: ./data/new_map/
   pub_tf: true
 
+# BA + BTC + HBA backend used for the SANY four-Livox map that is later
+# consumed by multi-LiDAR localization and BTC relocalization.
+backend:
+  mode: ba_btc_hba
+  verbose: true
+  local_ba:
+    enabled: true
+    window_size: 10
+    window_stride: 1
+    max_iterations: 3
+    max_points_per_frame: 3000
+    min_points_per_voxel: 20
+    min_frames_per_voxel: 2
+    max_voxel_depth: 2
+    voxel_size: 1.0
+    planarity_ratio: 0.10
+    correction_prior_rotation: 400.0
+    correction_prior_translation: 100.0
+    correction_smoothness_rotation: 400.0
+    correction_smoothness_translation: 100.0
+    max_rotation_step_deg: 2.0
+    max_translation_step: 0.30
+    max_total_rotation_deg: 3.0
+    max_total_translation: 0.30
+    initial_damping: 0.01
+  btc:
+    enabled: true
+    descriptor_submap_size: 10
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.20
+    min_loop_score: 0.60
+    max_drift_ratio: 0.005
+    max_rotation_correction_deg: 45.0
+    refine_with_plane_icp: true
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    allow_degenerate_plane_icp: true
+    degenerate_min_loop_score: 0.60
+    degenerate_min_matches: 60
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    loop_cooldown_descriptors: 10
+    max_odom_revisit_distance: 0.0
+    min_optimization_translation: 0.20
+    min_optimization_rotation_deg: 2.0
+    descriptor:
+      useful_corner_num: 200
+      plane_merge_normal_threshold: 0.10
+      plane_merge_distance_threshold: 0.30
+      plane_detection_threshold: 0.01
+      voxel_size: 1.0
+      voxel_init_points: 10
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      projection_height_increment: 0.1
+      projection_min_distance: 0.0
+      projection_max_distance: 5.0
+      summary_min_threshold: 10.0
+      line_filter: 1
+      touch_filter: 0
+      descriptor_near_count: 15
+      descriptor_min_length: 2.0
+      descriptor_max_length: 50.0
+      non_max_suppression_radius: 2.0
+      triangle_side_resolution: 0.2
+      skip_near_descriptors: 30
+      candidate_count: 50
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.50
+      internal_icp_threshold: 0.15
+      normal_threshold: 0.20
+      plane_distance_threshold: 0.50
+  pose_graph:
+    iterations: 20
+    outlier_iterations: 10
+    motion_translation_noise: 0.10
+    motion_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.20
+    loop_rotation_noise_deg: 3.0
+    robust_kernel_delta: 1.0
+    loop_outlier_chi2: 25.0
+  hba:
+    enabled: true
+    leaf_submap_size: 10
+    branching_factor: 4
+    max_levels: 4
+    max_points_per_submap: 50000
+    level_voxel_scale: 2.0
+    global_top_level: true
+    final_local_refinement: true
+    require_applied_loop_for_commit: true
+    optimizer:
+      enabled: true
+      max_iterations: 3
+      max_points_per_frame: 4000
+      min_points_per_voxel: 20
+      min_frames_per_voxel: 2
+      max_voxel_depth: 2
+      voxel_size: 1.0
+      planarity_ratio: 0.10
+      correction_prior_rotation: 100.0
+      correction_prior_translation: 25.0
+      correction_smoothness_rotation: 100.0
+      correction_smoothness_translation: 25.0
+      max_rotation_step_deg: 2.0
+      max_translation_step: 0.30
+      max_total_rotation_deg: 8.0
+      max_total_translation: 2.0
+      initial_damping: 0.01
+
 loop_closing:
   with_height: false
+
+localization_pgo:
+  # Preserve the established localization output path. These switches remain
+  # explicit so isolated A/B diagnostics can disable either stage if needed.
+  enable_dr_extrapolation: true
+  enable_dr_smoothing: true
 
 lidar_loc:
   enable_dynamic_polygon: false
@@ -138,7 +257,8 @@ lidar_loc:
   grid_search_angle_step: 20
   lidar_loc_odom_th: 1.0
   init_with_fp: false
-  min_init_confidence: 0.1
+  min_init_confidence: 0.5
+  min_tracking_confidence: 0.4
   update_dynamic_cloud: false
   update_err_h: 0.2
   update_err_v: 0.2
@@ -146,6 +266,31 @@ lidar_loc:
   update_lidar_loc_score: 2.5
   loc_on_kf: false
   try_self_extrap: false
+
+relocalization:
+  enabled: true
+  database_subdirectory: btc_relocalization
+  lost_frame_threshold: 5
+  query_submap_size: 10
+  max_points_per_submap: 50000
+  min_points_per_submap: 100
+  downsample_leaf_size: 0.20
+  # BTC is only the coarse global-search gate. NDT map registration below is
+  # the authoritative geometric check, so keep this just above BTC's 0.15
+  # internal ICP threshold to preserve cross-session recall.
+  min_btc_score: 0.16
+  # A BTC candidate must also place the fused four-lidar scan inside and on the
+  # static map.  The thresholds are calibrated below against the known-good
+  # 20260701 identity localization run.
+  enable_map_consistency: true
+  map_bounds_margin: 0.5
+  map_nearest_neighbor_distance: 0.5
+  map_min_inside_xy_ratio: 0.90
+  map_min_overlap_ratio: 0.20
+  # Both sessions are gravity-aligned by LIO. Reject floor/ceiling-symmetric
+  # BTC/NDT matches that would flip the map and odometry vertical axes.
+  map_min_gravity_alignment_cos: 0.95
+  map_consistency_max_points: 50000
 
 maps:
   delete_when_unload: false

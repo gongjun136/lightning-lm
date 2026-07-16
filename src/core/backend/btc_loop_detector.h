@@ -90,6 +90,8 @@ class BtcLoopDetector {
                                              const SE3& T_imu_lidar);
     BtcLoopResult ProcessSubmap(const std::vector<Keyframe::Ptr>& keyframes,
                                 const SE3& T_imu_lidar);
+    bool SaveRelocalizationDatabase(const std::string& directory,
+                                    const SE3& T_imu_lidar) const;
 
     const BtcLoopDetectorOptions& GetOptions() const { return options_; }
     const std::vector<BtcDescriptorEntry>& Entries() const { return entries_; }
@@ -114,6 +116,7 @@ class BtcLoopDetector {
     STDescManager manager_;
     std::vector<Keyframe::Ptr> pending_keyframes_;
     std::vector<BtcDescriptorEntry> entries_;
+    std::vector<std::vector<Keyframe::Ptr>> descriptor_keyframes_;
     Keyframe::Ptr last_keyframe_;
     double journey_ = 0.0;
     int last_confirmation_current_ = -1;

@@ -437,6 +437,12 @@ int main(int argc, char** argv) {
         if (!new_backend->SaveDiagnostics(diagnostics)) {
             LOG(WARNING) << "failed to save backend diagnostics to " << diagnostics;
         }
+        if (new_backend->GetOptions().btc.enabled &&
+            !new_backend->SaveRelocalizationDatabase((map_dir / "btc_relocalization").string())) {
+            LOG(ERROR) << "failed to save required BTC relocalization database under " << map_dir;
+            Timer::PrintAll();
+            return 4;
+        }
     }
 
     Timer::PrintAll();

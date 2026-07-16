@@ -1,0 +1,13 @@
+{
+  "surface": "Markdown technical report with static PNG figures",
+  "palette": "blue/gold roots plus neutral grey; edge and labels remain legible without color",
+  "figures": [
+    "sany_20260701_accuracy.png",
+    "sany_three_trajectory_consistency.png",
+    "sany_startup_trajectory_overlays.png",
+    "sany_relocalization_modes.png",
+    "sany_gravity_gate_evidence.png",
+    "m3dgr_single_lidar_regression.png"
+  ],
+  "manifest": "doc/multi_lidar_btc_relocalization_and_m3dgr_regression_manifest_20260716.json"
+}

@@ -73,6 +73,11 @@ bool PGOImpl::Reset() {
     frames_by_id_.clear();
     current_frame_ = nullptr;
     last_frame_ = nullptr;
+    lidar_loc_pose_queue_.clear();
+    output_pose_queue_.clear();
+    accumulated_frame_id_ = 0;
+    result_ = LocalizationResult{};
+    is_in_map_ = false;
     return true;
 }
 
@@ -110,7 +115,6 @@ void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
 
     pgo_frame->frame_id_ = accumulated_frame_id_++;
     current_frame_ = pgo_frame;
-    frames_by_id_.emplace(pgo_frame->frame_id_, pgo_frame);
 
     // 由于到达时间可能不一致，最好是插到正确的位置（仅限多线程，单线程没这问题）
     // 2023-02-16：在唯一触发源唯一的情况下，无需考虑到达时间不一致问题
@@ -130,6 +134,11 @@ void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
 
     /// 需要时，删除一部分
     SlideWindowAdaptively();
+
+    // Incremental replacement can reuse the evicted optimizer vertex id.
+    // Rebuild the auxiliary lookup after the matching old frame is removed.
+    frames_by_id_.clear();
+    for (const auto& frame : frames_) frames_by_id_[frame->frame_id_] = frame;
 
     last_frame_ = current_frame_;
 }
@@ -341,6 +350,7 @@ void PGOImpl::AddLidarLocFactors() {
 
 void PGOImpl::AddLidarOdomFactors() {
     size_t num = lo_relative_constraints_num_;
+    size_t constraints_considered = 0;
 
     // 该循环负责在不直接相邻的帧之间也添加相对位姿约束，每一帧最多向后找‘num’帧；这个策略让graph更稳定
     for (auto iter = frames_.rbegin(); iter != frames_.rend(); ++iter) {
@@ -349,9 +359,7 @@ void PGOImpl::AddLidarOdomFactors() {
             continue;
         }
 
-        if ((current_frame_->frame_id_ - frame->frame_id_) >= num) {
-            continue;
-        }
+        if (constraints_considered++ >= num) break;
 
         auto pre_key_frame = frame;
         auto cur_key_frame = current_frame_;

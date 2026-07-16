@@ -26,6 +26,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/maps/tiled_map_chunk.cc
 
         core/localization/localization_result.cc
+        core/localization/btc_relocalizer.cc
         core/localization/lidar_loc/lidar_loc.cc
         core/localization/lidar_loc/pclomp/ndt_omp.cpp
         core/localization/lidar_loc/pclomp/voxel_grid_covariance_omp.cpp
@@ -106,6 +107,9 @@ if(BUILD_TESTING)
     add_executable(btc_loop_detector_test test/btc_loop_detector_test.cc)
     target_link_libraries(btc_loop_detector_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(localization_pgo_test test/localization_pgo_test.cc)
+    target_link_libraries(localization_pgo_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_test(NAME eskf_update_velocity_gate_test COMMAND $<TARGET_FILE:eskf_update_velocity_gate_test>)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
@@ -113,6 +117,7 @@ if(BUILD_TESTING)
     add_test(NAME pointcloud_preprocess_test COMMAND $<TARGET_FILE:pointcloud_preprocess_test>)
     add_test(NAME voxel_bundle_adjustment_test COMMAND $<TARGET_FILE:voxel_bundle_adjustment_test>)
     add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)
+    add_test(NAME localization_pgo_test COMMAND $<TARGET_FILE:localization_pgo_test>)
 endif()
 
 add_subdirectory(app)

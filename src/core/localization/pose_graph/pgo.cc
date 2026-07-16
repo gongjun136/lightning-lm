@@ -49,7 +49,7 @@ void PGO::PubResult() {
         }
 
         auto result = impl_->result_;
-        ExtrapolateLocResult(result);
+        if (dr_extrapolation_enabled_) ExtrapolateLocResult(result);
         double dt = result.timestamp_ - impl_->result_.timestamp_;
 
         bool extrap_success = true;
@@ -98,7 +98,7 @@ void PGO::PubResult() {
             }
         }
 
-        if (!impl_->dr_pose_queue_.empty()) {
+        if (dr_smoothing_enabled_ && !impl_->dr_pose_queue_.empty()) {
             smoother_->PushDRPose(impl_->dr_pose_queue_.back().GetPose());
         }
 
@@ -106,8 +106,10 @@ void PGO::PubResult() {
         impl_->result_.pose_ = result.pose_;
 
         SE3 extra_pose = result.pose_;
-        smoother_->PushPose(result.pose_);
-        result.pose_ = smoother_->GetPose();
+        if (dr_smoothing_enabled_) {
+            smoother_->PushPose(result.pose_);
+            result.pose_ = smoother_->GetPose();
+        }
 
         // 输出force 2d
         // common::PoseRPY RPYXYZ = common::math::SE3ToRollPitchYaw(smoother_->GetPose());
@@ -241,17 +243,16 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     }
 
     // 不允许时间回退
-    static double last_lidar_loc_timestamp = -1;
-    double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_timestamp;
-    if (last_lidar_loc_timestamp > 0) {
+    double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_input_time_;
+    if (last_lidar_loc_input_time_ > 0) {
         if (lidar_loc_delta_t < 0) {
             LOG(ERROR) << "lidar loc 时间回退: " << lidar_loc_delta_t;
             return false;
         } else {
-            last_lidar_loc_timestamp = loc_result.timestamp_;
+            last_lidar_loc_input_time_ = loc_result.timestamp_;
         }
     } else {
-        last_lidar_loc_timestamp = loc_result.timestamp_;
+        last_lidar_loc_input_time_ = loc_result.timestamp_;
     }
 
     // 增加一个PGO Frame并触发一次PGO
@@ -315,6 +316,12 @@ std::shared_ptr<PGOFrame> PGO::GetCurrentPGOFrame() const { return impl_->curren
 bool PGO::Reset() {
     UL lock(impl_->data_mutex_);
     smoother_->Reset();
+    localization_unusual_count_ = 0;
+    localization_unusual_tag_ = false;
+    last_lidar_loc_time_ = 0.0;
+    last_lidar_loc_input_time_ = -1.0;
+    high_freq_result_ = LocalizationResult{};
+    parking_result_ = LocalizationResult{};
     return impl_->Reset();
 }
 

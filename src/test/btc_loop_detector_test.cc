@@ -1,8 +1,12 @@
 #include <cmath>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 
 #include "core/backend/btc_loop_detector.h"
+#include "core/localization/btc_relocalizer.h"
 
 namespace {
 
@@ -111,7 +115,51 @@ int main() {
         return 5;
     }
 
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path temporary_root =
+        std::filesystem::temp_directory_path() / ("lightning_btc_relocalizer_test_" + std::to_string(unique));
+    const std::filesystem::path database_path = temporary_root / "btc_relocalization";
+    if (!detector.SaveRelocalizationDatabase(database_path.string(), lightning::SE3())) {
+        std::cerr << "failed to save BTC relocalization database" << std::endl;
+        return 6;
+    }
+    const std::filesystem::path config_path = temporary_root / "config.yaml";
+    {
+        std::ofstream config(config_path);
+        config << "relocalization:\n"
+                  "  enabled: true\n"
+                  "  query_submap_size: 2\n"
+                  "  min_points_per_submap: 100\n"
+                  "  min_btc_score: 0.10\n";
+    }
+
+    lightning::loc::BtcRelocalizer relocalizer;
+    if (!relocalizer.Init(config_path.string(), temporary_root.string(), lightning::SE3()) ||
+        !relocalizer.IsReady() || relocalizer.DatabaseSize() != detector.Entries().size()) {
+        std::cerr << "failed to reload BTC relocalization database" << std::endl;
+        return 7;
+    }
+    if (relocalizer.AddFrame(cloud, lightning::SE3(lightning::Quatd::Identity(),
+                                                   lightning::Vec3d(-0.1, 0.0, 0.0)),
+                             10.0)) {
+        std::cerr << "BTC relocalization query triggered before two frames" << std::endl;
+        return 8;
+    }
+    const auto relocalization = relocalizer.AddFrame(
+        cloud, lightning::SE3(lightning::Quatd::Identity(), lightning::Vec3d(0.0, 0.0, 0.0)), 11.0);
+    if (!relocalization || !relocalization->candidate_found || !relocalization->accepted ||
+        relocalization->candidate_id != 0) {
+        std::cerr << "BTC database reload query failed: candidate="
+                  << (relocalization ? relocalization->candidate_id : -1)
+                  << ", score=" << (relocalization ? relocalization->score : 0.0)
+                  << ", reason=" << (relocalization ? relocalization->reason : "no_result") << std::endl;
+        return 9;
+    }
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(temporary_root, cleanup_error);
+
     std::cout << "btc_loop_detector_test passed: descriptors=" << result->descriptor_count
-              << ", score=" << result->score << ", drift_ratio=" << result->drift_ratio << std::endl;
+              << ", score=" << result->score << ", drift_ratio=" << result->drift_ratio
+              << ", reload_score=" << relocalization->score << std::endl;
     return 0;
 }

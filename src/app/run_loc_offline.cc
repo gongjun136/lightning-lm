@@ -44,7 +44,11 @@ DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline pr
 DEFINE_bool(publish_topics, true,
             "publish localization outputs on /slamPoseRaw_topic, /final_points_topic, /slamSafety_topic, "
             "/slamState_topic, and /SystemState");
+DEFINE_bool(use_config_initial_pose, true,
+            "use offline_localization.initial_pose from YAML; disable to require global initialization");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
+DEFINE_int32(force_relocalization_frame, 0,
+             "offline test hook: request global relocalization immediately before this localization frame");
 DEFINE_double(playback_rate, 0.0,
               "pace bag callbacks by sensor time at this multiple of real time; disabled when <= 0");
 
@@ -348,6 +352,10 @@ bool ReadInitialPose(const std::string& config_path, lightning::SE3& pose) {
 void WriteLocalizationCsvHeader(std::ofstream& csv) {
     if (!csv.is_open()) return;
     csv << "frame_index,timestamp,status,valid,lidar_loc_valid,confidence,match_iterations,match_success,"
+           "relocalization_attempted,relocalization_candidate_found,relocalization_accepted,"
+           "relocalization_candidate_id,relocalization_score,"
+           "map_consistency_evaluated,map_consistency_passed,map_consistency_points,"
+           "map_inside_xy_ratio,map_inside_xyz_ratio,map_overlap_ratio,map_gravity_alignment_cos,"
            "active_map_chunks,processing_ms,loc_odom_delta,loc_odom_error_normal,smooth_flag,"
            "lo_x,lo_y,lo_z,lo_qx,lo_qy,lo_qz,lo_qw,"
            "lidar_loc_x,lidar_loc_y,lidar_loc_z,lidar_loc_qx,lidar_loc_qy,lidar_loc_qz,lidar_loc_qw,"
@@ -436,6 +444,10 @@ int main(int argc, char** argv) {
     loc_options.force_2d_ = yaml.GetValue<bool>("lidar_loc", "force_2d");
     loc_options.map_option_.enable_dynamic_polygon_ = false;
     loc_options.map_option_.map_path_ = FLAGS_map_path;
+    if (!FLAGS_output_csv.empty()) {
+        loc_options.relocalization_debug_dir_ =
+            (std::filesystem::path(FLAGS_output_csv).parent_path() / "relocalization_debug").string();
+    }
 
     auto lidar_loc = std::make_shared<loc::LidarLoc>(loc_options);
     std::shared_ptr<ui::PangolinWindow> ui;
@@ -456,12 +468,16 @@ int main(int argc, char** argv) {
     }
 
     try {
-        SE3 initial_pose;
-        if (ReadInitialPose(FLAGS_config, initial_pose)) {
-            lidar_loc->SetInitialPose(initial_pose);
-            LOG(INFO) << "offline localization initial pose: " << initial_pose.translation().transpose();
+        if (FLAGS_use_config_initial_pose) {
+            SE3 initial_pose;
+            if (ReadInitialPose(FLAGS_config, initial_pose)) {
+                lidar_loc->SetInitialPose(initial_pose);
+                LOG(INFO) << "offline localization initial pose: " << initial_pose.translation().transpose();
+            } else {
+                LOG(WARNING) << "offline localization initial pose is not configured; global initialization required";
+            }
         } else {
-            LOG(WARNING) << "offline localization initial pose is not configured; fallback to map functional points";
+            LOG(INFO) << "configured initial pose disabled; global BTC initialization required";
         }
     } catch (const std::exception& e) {
         LOG(ERROR) << "invalid offline localization initial pose: " << e.what();
@@ -470,6 +486,16 @@ int main(int argc, char** argv) {
 
     loc::PGO pgo;
     pgo.SetDebug(false);
+    const YAML::Node localization_pgo = YAML::LoadFile(FLAGS_config)["localization_pgo"];
+    const bool enable_dr_smoothing =
+        localization_pgo ? localization_pgo["enable_dr_smoothing"].as<bool>(true) : true;
+    const bool enable_dr_extrapolation =
+        localization_pgo ? localization_pgo["enable_dr_extrapolation"].as<bool>(true) : true;
+    pgo.SetDrSmoothingEnabled(enable_dr_smoothing);
+    pgo.SetDrExtrapolationEnabled(enable_dr_extrapolation);
+    LOG(INFO) << "localization PGO DR smoothing: " << (enable_dr_smoothing ? "enabled" : "disabled");
+    LOG(INFO) << "localization PGO DR extrapolation: "
+              << (enable_dr_extrapolation ? "enabled" : "disabled");
     loc::LocalizationResult latest_final_result;
     bool latest_final_result_set = false;
     auto capture_final_result = [&](const loc::LocalizationResult& result) {
@@ -547,6 +573,12 @@ int main(int argc, char** argv) {
 
                 const auto current_scan = lio.GetScanUndist();
                 const auto scan = lio.GetProjCloud();
+                if (FLAGS_force_relocalization_frame > 0 &&
+                    loc_frames + 1 == FLAGS_force_relocalization_frame) {
+                    LOG(WARNING) << "offline fault injection: forcing global relocalization before frame "
+                                 << FLAGS_force_relocalization_frame;
+                    lidar_loc->RequestGlobalRelocalization();
+                }
                 const auto start = std::chrono::steady_clock::now();
                 lidar_loc->ProcessCloud(scan);
                 const auto end = std::chrono::steady_clock::now();
@@ -555,6 +587,11 @@ int main(int argc, char** argv) {
 
                 const loc::LocalizationResult loc_result = lidar_loc->GetLocalizationResult();
                 const auto match_stats = lidar_loc->GetLastMatchStats();
+                if (match_stats.relocalization_accepted) {
+                    pgo.Reset();
+                    latest_final_result_set = false;
+                    LOG(WARNING) << "reset localization PGO after accepted BTC relocalization";
+                }
                 pgo.ProcessLidarLoc(loc_result);
 
                 loc::LocalizationResult final_result = loc_result;
@@ -593,7 +630,20 @@ int main(int argc, char** argv) {
                         << static_cast<int>(loc_result.status_) << ',' << (IsUsableLocResult(final_result) ? 1 : 0)
                         << ',' << (loc_result.lidar_loc_valid_ ? 1 : 0) << ',' << std::setprecision(12)
                         << loc_result.confidence_ << ',' << match_stats.iterations << ','
-                        << (match_stats.success ? 1 : 0) << ',' << match_stats.active_map_chunks << ','
+                        << (match_stats.success ? 1 : 0) << ','
+                        << (match_stats.relocalization_attempted ? 1 : 0) << ','
+                        << (match_stats.relocalization_candidate_found ? 1 : 0) << ','
+                        << (match_stats.relocalization_accepted ? 1 : 0) << ','
+                        << match_stats.relocalization_candidate_id << ','
+                        << match_stats.relocalization_score << ','
+                        << (match_stats.map_consistency_evaluated ? 1 : 0) << ','
+                        << (match_stats.map_consistency_passed ? 1 : 0) << ','
+                        << match_stats.map_consistency_points << ','
+                        << match_stats.map_inside_xy_ratio << ','
+                        << match_stats.map_inside_xyz_ratio << ','
+                        << match_stats.map_overlap_ratio << ','
+                        << match_stats.map_gravity_alignment_cos << ','
+                        << match_stats.active_map_chunks << ','
                         << processing_ms << ',' << loc_result.lidar_loc_odom_delta_ << ','
                         << (loc_result.lidar_loc_odom_error_normal_ ? 1 : 0) << ','
                         << (loc_result.lidar_loc_smooth_flag_ ? 1 : 0);

@@ -631,4 +631,13 @@ bool BackendPipeline::SaveDiagnostics(const std::string& directory) const {
     return true;
 }
 
+bool BackendPipeline::SaveRelocalizationDatabase(const std::string& directory) const {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    if (!btc_) {
+        LOG(ERROR) << "cannot save BTC relocalization database: BTC is not initialized";
+        return false;
+    }
+    return btc_->SaveRelocalizationDatabase(directory, T_imu_lidar_);
+}
+
 }  // namespace lightning::backend

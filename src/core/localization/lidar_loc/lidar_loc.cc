@@ -1,11 +1,17 @@
 #include <algorithm>
+#include <array>
 #include <execution>
+#include <filesystem>
+#include <limits>
+#include <stdexcept>
 
 #include <pcl/common/transforms.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/pcl_base.h>
 #include <pcl/registration/ndt.h>
+#include <yaml-cpp/yaml.h>
 
 #include "pclomp/ndt_omp_impl.hpp"
 #include "pclomp/voxel_grid_covariance_omp_impl.hpp"
@@ -13,6 +19,8 @@
 #include "core/localization/lidar_loc/lidar_loc.h"
 
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "glog/logging.h"
 #include "io/file_io.h"
@@ -21,6 +29,28 @@
 #include "utils/timer.h"
 
 namespace lightning::loc {
+namespace {
+
+SE3 ReadLidarToImu(const YAML::Node& root) {
+    Mat3d rotation = Mat3d::Identity();
+    Vec3d translation = Vec3d::Zero();
+    const YAML::Node fasterlio = root["fasterlio"];
+    if (fasterlio && fasterlio["extrinsic_R"]) {
+        const auto values = fasterlio["extrinsic_R"].as<std::vector<double>>();
+        if (values.size() != 9) throw std::runtime_error("fasterlio.extrinsic_R must have 9 values");
+        for (int row = 0; row < 3; ++row) {
+            for (int col = 0; col < 3; ++col) rotation(row, col) = values[row * 3 + col];
+        }
+    }
+    if (fasterlio && fasterlio["extrinsic_T"]) {
+        const auto values = fasterlio["extrinsic_T"].as<std::vector<double>>();
+        if (values.size() != 3) throw std::runtime_error("fasterlio.extrinsic_T must have 3 values");
+        translation = Vec3d(values[0], values[1], values[2]);
+    }
+    return SE3(Quatd(rotation).normalized(), translation);
+}
+
+}  // namespace
 
 LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
     pcl_ndt_.reset(new NDTType());
@@ -58,6 +88,7 @@ LidarLoc::~LidarLoc() {
 
 bool LidarLoc::Init(const std::string& config_path) {
     YAML_IO yaml(config_path);
+    const YAML::Node root = YAML::LoadFile(config_path);
     options_.map_option_.enable_dynamic_polygon_ = yaml.GetValue<bool>("maps", "with_dyn_area");
     options_.map_option_.max_pts_in_dyn_chunk_ = yaml.GetValue<int>("maps", "max_pts_dyn_chunk");
     options_.map_option_.load_map_size_ = yaml.GetValue<int>("maps", "load_map_size");
@@ -66,6 +97,55 @@ bool LidarLoc::Init(const std::string& config_path) {
     options_.update_kf_dis_ = yaml.GetValue<double>("lidar_loc", "update_kf_dis");
     options_.update_lidar_loc_score_ = yaml.GetValue<double>("lidar_loc", "update_lidar_loc_score");
     options_.min_init_confidence_ = yaml.GetValue<float>("lidar_loc", "min_init_confidence");
+    if (root["lidar_loc"] && root["lidar_loc"]["min_tracking_confidence"]) {
+        options_.min_tracking_confidence_ = root["lidar_loc"]["min_tracking_confidence"].as<float>();
+    } else {
+        options_.min_tracking_confidence_ = options_.min_init_confidence_;
+    }
+    if (root["relocalization"] && root["relocalization"]["lost_frame_threshold"]) {
+        options_.relocalization_lost_frame_threshold_ =
+            std::max(1, root["relocalization"]["lost_frame_threshold"].as<int>());
+    }
+    const YAML::Node relocalization = root["relocalization"];
+    if (relocalization && relocalization["enable_map_consistency"]) {
+        options_.enable_relocalization_map_consistency_ =
+            relocalization["enable_map_consistency"].as<bool>();
+    }
+    if (relocalization && relocalization["map_bounds_margin"]) {
+        options_.relocalization_bounds_margin_ = relocalization["map_bounds_margin"].as<double>();
+    }
+    if (relocalization && relocalization["map_nearest_neighbor_distance"]) {
+        options_.relocalization_nearest_neighbor_distance_ =
+            relocalization["map_nearest_neighbor_distance"].as<double>();
+    }
+    if (relocalization && relocalization["map_min_inside_xy_ratio"]) {
+        options_.relocalization_min_inside_xy_ratio_ =
+            relocalization["map_min_inside_xy_ratio"].as<double>();
+    }
+    if (relocalization && relocalization["map_min_overlap_ratio"]) {
+        options_.relocalization_min_overlap_ratio_ =
+            relocalization["map_min_overlap_ratio"].as<double>();
+    }
+    if (relocalization && relocalization["map_min_gravity_alignment_cos"]) {
+        options_.relocalization_min_gravity_alignment_cos_ =
+            relocalization["map_min_gravity_alignment_cos"].as<double>();
+    }
+    if (relocalization && relocalization["map_consistency_max_points"]) {
+        options_.relocalization_map_consistency_max_points_ =
+            relocalization["map_consistency_max_points"].as<int>();
+    }
+    if (options_.relocalization_bounds_margin_ < 0.0 ||
+        options_.relocalization_nearest_neighbor_distance_ <= 0.0 ||
+        options_.relocalization_min_inside_xy_ratio_ < 0.0 ||
+        options_.relocalization_min_inside_xy_ratio_ > 1.0 ||
+        options_.relocalization_min_overlap_ratio_ < 0.0 ||
+        options_.relocalization_min_overlap_ratio_ > 1.0 ||
+        options_.relocalization_min_gravity_alignment_cos_ < -1.0 ||
+        options_.relocalization_min_gravity_alignment_cos_ > 1.0 ||
+        options_.relocalization_map_consistency_max_points_ <= 0) {
+        LOG(ERROR) << "invalid relocalization map-consistency configuration";
+        return false;
+    }
 
     // options_.filter_z_min_ = yaml.GetValue<double>("lidar_loc", "filter_z_min");
     // options_.filter_z_max_ = yaml.GetValue<double>("lidar_loc", "filter_z_max");
@@ -82,7 +162,8 @@ bool LidarLoc::Init(const std::string& config_path) {
     lidar_loc::grid_search_angle_step = yaml.GetValue<double>("lidar_loc", "grid_search_angle_step");
     lidar_loc::grid_search_angle_range = yaml.GetValue<double>("lidar_loc", "grid_search_angle_range");
 
-    LOG(INFO) << "min init confidence: " << options_.min_init_confidence_;
+    LOG(INFO) << "min init confidence: " << options_.min_init_confidence_
+              << ", min tracking confidence: " << options_.min_tracking_confidence_;
 
     std::string map_policy = yaml.GetValue<std::string>("maps", "dyn_cloud_policy");
     if (map_policy == "short") {
@@ -106,6 +187,11 @@ bool LidarLoc::Init(const std::string& config_path) {
         map_->LoadOnPose(fps.front().pose_);
         /// 更新一次地图，保证有初始数据
         UpdateGlobalMap();
+    }
+
+    btc_relocalizer_ = std::make_unique<BtcRelocalizer>();
+    if (!btc_relocalizer_->Init(config_path, options_.map_option_.map_path_, ReadLidarToImu(root))) {
+        LOG(WARNING) << "BTC relocalization is unavailable; NDT localization remains enabled";
     }
 
     /// load recover pose if exist
@@ -301,6 +387,10 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     CloudPtr output_cloud(new PointCloudType);
     // loc_inited_ = YawSearch(pose_esti, fitness_score, input, output_cloud);
     loc_inited_ = Localize(pose_esti, fitness_score, input, output_cloud);
+    if (loc_inited_ && !ValidateRelocalizationMapConsistency(input, pose_esti)) {
+        loc_inited_ = false;
+        last_match_stats_.success = false;
+    }
 
     if (loc_inited_) {
         current_timestamp_ = math::ToSec(input->header.stamp);
@@ -337,6 +427,222 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
         fp_last_tried_time_ = 1e-6 * static_cast<double>(input->header.stamp);
     }
     return loc_inited_;
+}
+
+bool LidarLoc::TryBtcRelocalization(const CloudPtr& input) {
+    if (!btc_relocalizer_ || !btc_relocalizer_->IsReady() || !current_lo_pose_set_) return false;
+
+    const auto result = btc_relocalizer_->AddFrame(input, current_lo_pose_, current_timestamp_);
+    if (!result) return false;
+
+    last_match_stats_.relocalization_attempted = result->attempted;
+    last_match_stats_.relocalization_candidate_found = result->candidate_found;
+    last_match_stats_.relocalization_candidate_id = result->candidate_id;
+    last_match_stats_.relocalization_score = result->score;
+    if (!result->accepted) {
+        LOG(WARNING) << "BTC_RELOCALIZATION rejected: reason=" << result->reason
+                     << ", candidate=" << result->candidate_id << ", score=" << result->score
+                     << ", points=" << result->point_count
+                     << ", descriptors=" << result->descriptor_count;
+        return false;
+    }
+
+    map_->LoadOnPose(result->T_world_imu);
+    UpdateGlobalMap();
+    const bool ndt_accepted = InitWithFP(input, result->T_world_imu);
+    last_match_stats_.relocalization_attempted = true;
+    last_match_stats_.relocalization_candidate_found = true;
+    last_match_stats_.relocalization_accepted = ndt_accepted;
+    last_match_stats_.relocalization_candidate_id = result->candidate_id;
+    last_match_stats_.relocalization_score = result->score;
+    if (!ndt_accepted) {
+        LOG(WARNING) << "BTC_RELOCALIZATION NDT verification failed: candidate="
+                     << result->candidate_id << ", BTC score=" << result->score
+                     << ", NDT confidence=" << last_match_stats_.confidence;
+        return false;
+    }
+
+    match_fail_count_ = 0;
+    initial_pose_set_ = false;
+    btc_relocalizer_->ResetQuery();
+    LOG(INFO) << "BTC_RELOCALIZATION accepted: candidate=" << result->candidate_id
+              << ", BTC score=" << result->score
+              << ", NDT confidence=" << last_match_stats_.confidence
+              << ", pose=" << current_abs_pose_.translation().transpose();
+    return true;
+}
+
+bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose) {
+    if (!options_.enable_relocalization_map_consistency_) return true;
+
+    last_match_stats_.map_consistency_evaluated = true;
+    last_match_stats_.map_consistency_passed = false;
+    if (!input || input->empty() || !map_ || !current_lo_pose_set_) return false;
+
+    Vec3d map_min;
+    Vec3d map_max;
+    std::size_t global_map_points = 0;
+    if (!map_->GetGlobalStaticBounds(map_min, map_max, global_map_points)) {
+        LOG(ERROR) << "MAP_CONSISTENCY cannot determine global static-map bounds";
+        return false;
+    }
+
+    CloudPtr static_map(new PointCloudType);
+    const auto chunks = map_->GetStaticCloud();
+    for (const auto& [id, cloud] : chunks) {
+        (void)id;
+        if (cloud) *static_map += *cloud;
+    }
+    if (static_map->empty()) {
+        LOG(WARNING) << "MAP_CONSISTENCY candidate has no active static-map points";
+        return false;
+    }
+
+    pcl::KdTreeFLANN<PointType> kdtree;
+    kdtree.setInputCloud(static_map);
+    CloudPtr scan_world(new PointCloudType);
+    const std::size_t maximum =
+        static_cast<std::size_t>(options_.relocalization_map_consistency_max_points_);
+    const std::size_t stride = std::max<std::size_t>(1, (input->size() + maximum - 1) / maximum);
+    scan_world->reserve(std::min(input->size(), maximum));
+
+    std::size_t finite_index = 0;
+    std::size_t inside_xy = 0;
+    std::size_t inside_xyz = 0;
+    std::size_t overlap = 0;
+    Vec3d scan_min = Vec3d::Constant(std::numeric_limits<double>::infinity());
+    Vec3d scan_max = Vec3d::Constant(-std::numeric_limits<double>::infinity());
+    const double margin = options_.relocalization_bounds_margin_;
+    const double maximum_distance_sq = options_.relocalization_nearest_neighbor_distance_ *
+                                       options_.relocalization_nearest_neighbor_distance_;
+    std::vector<int> nearest_index(1);
+    std::vector<float> nearest_distance_sq(1);
+    for (const auto& source : input->points) {
+        if (!std::isfinite(source.x) || !std::isfinite(source.y) || !std::isfinite(source.z)) continue;
+        if (finite_index++ % stride != 0) continue;
+
+        const Vec3d position = pose * Vec3d(source.x, source.y, source.z);
+        if (!position.allFinite()) continue;
+        PointType transformed = source;
+        transformed.x = static_cast<float>(position.x());
+        transformed.y = static_cast<float>(position.y());
+        transformed.z = static_cast<float>(position.z());
+        scan_world->push_back(transformed);
+        scan_min = scan_min.cwiseMin(position);
+        scan_max = scan_max.cwiseMax(position);
+
+        const bool xy_ok = position.x() >= map_min.x() - margin && position.x() <= map_max.x() + margin &&
+                           position.y() >= map_min.y() - margin && position.y() <= map_max.y() + margin;
+        const bool xyz_ok = xy_ok && position.z() >= map_min.z() - margin && position.z() <= map_max.z() + margin;
+        if (xy_ok) ++inside_xy;
+        if (xyz_ok) ++inside_xyz;
+        if (kdtree.nearestKSearch(transformed, 1, nearest_index, nearest_distance_sq) > 0 &&
+            nearest_distance_sq[0] <= maximum_distance_sq) {
+            ++overlap;
+        }
+    }
+
+    last_match_stats_.map_consistency_points = scan_world->size();
+    if (scan_world->empty()) return false;
+    const double denominator = static_cast<double>(scan_world->size());
+    last_match_stats_.map_inside_xy_ratio = static_cast<double>(inside_xy) / denominator;
+    last_match_stats_.map_inside_xyz_ratio = static_cast<double>(inside_xyz) / denominator;
+    last_match_stats_.map_overlap_ratio = static_cast<double>(overlap) / denominator;
+    const SE3 T_map_odom = pose * current_lo_pose_.inverse();
+    last_match_stats_.map_gravity_alignment_cos = T_map_odom.rotationMatrix()(2, 2);
+    last_match_stats_.map_consistency_passed =
+        last_match_stats_.map_inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
+        last_match_stats_.map_overlap_ratio >= options_.relocalization_min_overlap_ratio_ &&
+        last_match_stats_.map_gravity_alignment_cos >=
+            options_.relocalization_min_gravity_alignment_cos_;
+
+    SaveRelocalizationBirdseye(static_map, scan_world, map_min, map_max, last_match_stats_);
+    LOG(INFO) << "MAP_CONSISTENCY points=" << scan_world->size()
+              << ", global_map_points=" << global_map_points
+              << ", inside_xy=" << last_match_stats_.map_inside_xy_ratio
+              << ", inside_xyz=" << last_match_stats_.map_inside_xyz_ratio
+              << ", overlap=" << last_match_stats_.map_overlap_ratio
+              << ", gravity_alignment_cos=" << last_match_stats_.map_gravity_alignment_cos
+              << ", map_z=[" << map_min.z() << ", " << map_max.z() << "]"
+              << ", scan_z=[" << scan_min.z() << ", " << scan_max.z() << "]"
+              << ", passed=" << last_match_stats_.map_consistency_passed;
+    return last_match_stats_.map_consistency_passed;
+}
+
+void LidarLoc::SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
+                                          const Vec3d& map_min, const Vec3d& map_max,
+                                          const MatchStats& stats) {
+    if (options_.relocalization_debug_dir_.empty() || !static_map || !scan_world) return;
+
+    try {
+        const std::filesystem::path directory(options_.relocalization_debug_dir_);
+        std::filesystem::create_directories(directory);
+        const int index = ++relocalization_debug_index_;
+        std::ostringstream stem;
+        stem << "map_consistency_" << std::setw(4) << std::setfill('0') << index;
+        pcl::io::savePCDFileBinaryCompressed((directory / (stem.str() + "_scan_world.pcd")).string(),
+                                             *scan_world);
+
+        Vec3d view_min = map_min;
+        Vec3d view_max = map_max;
+        for (const auto& point : scan_world->points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+            view_min.x() = std::min(view_min.x(), static_cast<double>(point.x));
+            view_min.y() = std::min(view_min.y(), static_cast<double>(point.y));
+            view_max.x() = std::max(view_max.x(), static_cast<double>(point.x));
+            view_max.y() = std::max(view_max.y(), static_cast<double>(point.y));
+        }
+        view_min.x() -= 2.0;
+        view_min.y() -= 2.0;
+        view_max.x() += 2.0;
+        view_max.y() += 2.0;
+        constexpr int image_size = 1600;
+        constexpr int padding = 40;
+        cv::Mat image(image_size, image_size, CV_8UC3, cv::Scalar(20, 20, 20));
+        const double range_x = std::max(1e-6, view_max.x() - view_min.x());
+        const double range_y = std::max(1e-6, view_max.y() - view_min.y());
+        const double scale = std::min((image_size - 2.0 * padding) / range_x,
+                                      (image_size - 2.0 * padding) / range_y);
+        auto pixel = [&](double x, double y) {
+            return cv::Point(static_cast<int>(padding + (x - view_min.x()) * scale),
+                             static_cast<int>(image_size - padding - (y - view_min.y()) * scale));
+        };
+
+        for (const auto& point : static_map->points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+            const cv::Point p = pixel(point.x, point.y);
+            if (p.x >= 0 && p.x < image.cols && p.y >= 0 && p.y < image.rows) {
+                image.at<cv::Vec3b>(p) = cv::Vec3b(95, 95, 95);
+            }
+        }
+        cv::rectangle(image, pixel(map_min.x(), map_max.y()), pixel(map_max.x(), map_min.y()),
+                      cv::Scalar(0, 210, 255), 2);
+        const std::array<cv::Scalar, 4> lidar_colors = {
+            cv::Scalar(255, 120, 40), cv::Scalar(80, 220, 80),
+            cv::Scalar(40, 200, 255), cv::Scalar(220, 80, 220)};
+        const double margin = options_.relocalization_bounds_margin_;
+        for (const auto& point : scan_world->points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+            const bool inside = point.x >= map_min.x() - margin && point.x <= map_max.x() + margin &&
+                                point.y >= map_min.y() - margin && point.y <= map_max.y() + margin;
+            const cv::Scalar color = inside ? lidar_colors[static_cast<std::size_t>(point.lidar_id) % 4]
+                                            : cv::Scalar(30, 30, 255);
+            cv::circle(image, pixel(point.x, point.y), 1, color, -1, cv::LINE_AA);
+        }
+        std::ostringstream label;
+        label << std::fixed << std::setprecision(3)
+              << "inside_xy=" << stats.map_inside_xy_ratio
+              << " inside_xyz=" << stats.map_inside_xyz_ratio
+              << " overlap=" << stats.map_overlap_ratio
+              << " gravity=" << stats.map_gravity_alignment_cos
+              << " pass=" << (stats.map_consistency_passed ? "yes" : "no");
+        cv::putText(image, label.str(), cv::Point(45, 32), cv::FONT_HERSHEY_SIMPLEX, 0.75,
+                    stats.map_consistency_passed ? cv::Scalar(80, 230, 80) : cv::Scalar(50, 80, 255), 2,
+                    cv::LINE_AA);
+        cv::imwrite((directory / (stem.str() + "_birdseye.png")).string(), image);
+    } catch (const std::exception& error) {
+        LOG(WARNING) << "failed to save relocalization birdseye debug output: " << error.what();
+    }
 }
 
 void LidarLoc::ResetLastPose(const SE3& last_pose) {
@@ -443,6 +749,16 @@ void LidarLoc::SetInitialPose(SE3 init_pose) {
     LOG(INFO) << "Set initial pose is: " << initial_pose_.translation().transpose();
 }
 
+void LidarLoc::RequestGlobalRelocalization() {
+    UL lock(initial_pose_mutex_);
+    loc_inited_ = false;
+    initial_pose_set_ = false;
+    match_fail_count_ = 0;
+    last_match_stats_ = MatchStats{};
+    if (btc_relocalizer_) btc_relocalizer_->ResetQuery();
+    LOG(WARNING) << "BTC_RELOCALIZATION global relocalization requested";
+}
+
 void LidarLoc::Align(const CloudPtr& input) {
     // 输入必须非空
     assert(input != nullptr);
@@ -486,6 +802,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         UL lock_init(initial_pose_mutex_);
         LOG(INFO) << "initing lidarloc";
         SetInitRltState();
+        last_match_stats_ = MatchStats{};
 
         if (initial_pose_set_) {
             /// 尝试在给定点初始化
@@ -538,6 +855,8 @@ void LidarLoc::Align(const CloudPtr& input) {
                 fp_init_fail_pose_vec_.clear();
             }
         }
+
+        if (TryBtcRelocalization(input)) return;
 
         /// 初始化未成功时，不往下走流程
         return;
@@ -674,7 +993,6 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     LOG(INFO) << "adjust current pose to : " << current_pose_esti.translation().transpose();
     // }
 
-    current_abs_pose_ = current_pose_esti;
     current_score_ = fitness_score;
     double delta_rel_abs_pose = 0;
     bool lidar_loc_odom_valid = true;
@@ -687,15 +1005,25 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     if (loc_success) {
         lidar_loc_odom_valid = CheckLidarOdomValid(current_pose_esti, delta_rel_abs_pose);
-        last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
         match_fail_count_ = 0;
+        last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
     } else {
         current_score_ = fitness_score;
         LOG(WARNING) << "localization failed! score: " << current_score_;
-
-        ///  若连续3帧匹配失败就设一个大分值
         ++match_fail_count_;
+        // Do not propagate a rejected NDT transform. Lidar odometry remains
+        // the short-term motion source while global relocalization starts.
+        current_pose_esti = guess_from_lo;
+        if (btc_relocalizer_ && btc_relocalizer_->IsReady() &&
+            match_fail_count_ >= options_.relocalization_lost_frame_threshold_) {
+            loc_inited_ = false;
+            btc_relocalizer_->ResetQuery();
+            LOG(WARNING) << "BTC_RELOCALIZATION tracking lost after " << match_fail_count_
+                         << " consecutive rejected NDT matches";
+        }
     }
+
+    current_abs_pose_ = current_pose_esti;
 
     /// 确定激光定位是否满足平滑性要求
     Vec3d dpred = current_abs_pose_.translation() - guess_from_self.translation();
@@ -718,16 +1046,15 @@ void LidarLoc::Align(const CloudPtr& input) {
         UL lock(result_mutex_);
         localization_result_.timestamp_ = current_timestamp_;
         localization_result_.confidence_ = fitness_score;
-        if (match_fail_count_ < 100) {
+        if (!loc_inited_) {
+            localization_result_.lidar_loc_valid_ = false;
+            localization_result_.status_ = LocalizationStatus::INITIALIZING;
+        } else if (loc_success && lidar_loc_odom_valid) {
             localization_result_.lidar_loc_valid_ = true;
             localization_result_.status_ = LocalizationStatus::GOOD;
-        } else if (match_fail_count_ >= 100 && match_fail_count_ < 300) {
+        } else {
             localization_result_.lidar_loc_valid_ = false;
             localization_result_.status_ = LocalizationStatus::FOLLOWING_DR;
-        } else {
-            match_fail_count_ = 300;
-            localization_result_.lidar_loc_valid_ = false;
-            localization_result_.status_ = LocalizationStatus::FAIL;
         }
 
         localization_result_.lidar_loc_odom_delta_ = delta_rel_abs_pose;
@@ -855,18 +1182,12 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     last_match_stats_.confidence = confidence;
     last_match_stats_.iterations = ndt->getFinalNumIteration();
 
-    auto tgt = ndt->getInputTarget();
-    if (!tgt->empty()) {
-        pcl::io::savePCDFile("./data/tgt.pcd", *tgt);
-    }
+    const double confidence_threshold =
+        loc_inited_ ? options_.min_tracking_confidence_ : options_.min_init_confidence_;
+    loc_success = ndt->hasConverged() && std::isfinite(confidence) && trans.allFinite() &&
+                  confidence >= confidence_threshold;
 
-    if (loc_inited_ == false && confidence > options_.min_init_confidence_) {
-        loc_success = true;
-    } else {
-        loc_success = true;
-    }
-
-    if (options_.enable_icp_adjust_ && loc_inited_) {
+    if (options_.enable_icp_adjust_ && loc_inited_ && loc_success) {
         Eigen::Matrix4f adjust_trans;
         CloudPtr input_voxel(new PointCloudType);
         pcl::VoxelGrid<PointType> voxel_icp;
@@ -891,11 +1212,18 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         }
     }
 
-    Eigen::Matrix3d rot = trans.block<3, 3>(0, 0).cast<double>();
-    Quatd q_3d = Quatd(rot);
-    Vec3d t_3d = trans.block<3, 1>(0, 3).cast<double>();
-    q_3d.normalize();
-    pose = SE3(q_3d, t_3d);
+    Vec3d t_3d = pose.translation();
+    if (trans.allFinite()) {
+        Eigen::Matrix3d rot = trans.block<3, 3>(0, 0).cast<double>();
+        Quatd q_3d = Quatd(rot);
+        t_3d = trans.block<3, 1>(0, 3).cast<double>();
+        if (q_3d.norm() > 1e-9 && q_3d.coeffs().allFinite()) {
+            q_3d.normalize();
+            pose = SE3(q_3d, t_3d);
+        } else {
+            loc_success = false;
+        }
+    }
 
     LOG(INFO) << "confidence: " << confidence << ", t: " << t_3d.transpose() << ", succ: " << loc_success;
     last_match_stats_.success = loc_success;

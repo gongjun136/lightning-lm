@@ -31,6 +31,25 @@ def primary_lidar_topic(config: dict) -> str:
     return str(common.get("lidar_topic") or common.get("livox_lidar_topic") or "")
 
 
+def primary_imu_topic(config: dict) -> str:
+    common = config.get("common") or {}
+    multi = config.get("multi_lidar") or {}
+    if bool(multi.get("enabled", False)):
+        primary_id = int(multi.get("primary_lidar_id", 0))
+        topic = (multi.get("topics") or {}).get(f"imu_{primary_id}", "")
+        if topic:
+            return str(topic)
+    return str(common.get("imu_topic") or "")
+
+
+def topic_aliases(topic: str) -> list[str]:
+    aliases = [topic]
+    alternate = topic[1:] if topic.startswith("/") else f"/{topic}"
+    if alternate and alternate not in aliases:
+        aliases.append(alternate)
+    return aliases
+
+
 def inventory_contract(path: Path, sequence: str) -> tuple[float, float] | None:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     rows = payload if isinstance(payload, list) else payload.get("sequences", payload.get("items", []))
@@ -61,17 +80,19 @@ def main() -> int:
     if not payloads or any(not path.is_file() or path.suffix != ".db3" for path in payloads):
         raise SystemExit("metadata does not identify valid .db3 payloads")
 
-    configured_topic = primary_lidar_topic(yaml.safe_load(args.config.read_text(encoding="utf-8-sig")) or {})
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8-sig")) or {}
+    configured_topic = primary_lidar_topic(config)
+    configured_imu_topic = primary_imu_topic(config)
     if not configured_topic:
         raise SystemExit("configuration does not define a primary lidar topic")
-    candidates = [configured_topic]
-    alternate = configured_topic[1:] if configured_topic.startswith("/") else f"/{configured_topic}"
-    if alternate and alternate not in candidates:
-        candidates.append(alternate)
+    candidates = topic_aliases(configured_topic)
+    imu_candidates = topic_aliases(configured_imu_topic) if configured_imu_topic else []
 
-    global_min = global_max = topic_min = topic_max = None
+    global_min = global_max = topic_min = topic_max = imu_min = imu_max = None
     topic_count = 0
+    imu_count = 0
     resolved_topic = configured_topic
+    resolved_imu_topic = configured_imu_topic
     for payload in payloads:
         connection = sqlite3.connect(f"file:{payload.as_posix()}?mode=ro", uri=True)
         try:
@@ -91,6 +112,18 @@ def main() -> int:
                     topic_min = row[0] if topic_min is None else min(topic_min, row[0])
                     topic_max = row[1] if topic_max is None else max(topic_max, row[1])
                     break
+            for candidate in imu_candidates:
+                row = connection.execute(
+                    "SELECT MIN(messages.timestamp), MAX(messages.timestamp), COUNT(*) "
+                    "FROM messages JOIN topics ON messages.topic_id=topics.id WHERE topics.name=?",
+                    (candidate,),
+                ).fetchone()
+                if row and row[2]:
+                    resolved_imu_topic = candidate
+                    imu_count += int(row[2])
+                    imu_min = row[0] if imu_min is None else min(imu_min, row[0])
+                    imu_max = row[1] if imu_max is None else max(imu_max, row[1])
+                    break
         finally:
             connection.close()
     if global_min is None or global_max is None:
@@ -100,6 +133,13 @@ def main() -> int:
     if topic_max is None:
         expected_end_ns = global_max
         source = "bag_end_fallback"
+    elif imu_max is not None:
+        # A lidar frame cannot be propagated past the last primary IMU sample.
+        # Using only the final lidar timestamp makes complete multi-sensor runs
+        # fail their contract when one recorder stops a little later than the
+        # other, even though every processable frame was consumed.
+        expected_end_ns = min(topic_max, imu_max)
+        source = "primary_lidar_and_imu_sqlite"
     else:
         expected_end_ns = topic_max
         source = "primary_lidar_sqlite"
@@ -125,6 +165,11 @@ def main() -> int:
         "primary_lidar_message_count": topic_count,
         "primary_lidar_first_s": topic_min / 1e9 if topic_min is not None else None,
         "primary_lidar_last_s": topic_max / 1e9 if topic_max is not None else None,
+        "primary_imu_topic_configured": configured_imu_topic,
+        "primary_imu_topic": resolved_imu_topic,
+        "primary_imu_message_count": imu_count,
+        "primary_imu_first_s": imu_min / 1e9 if imu_min is not None else None,
+        "primary_imu_last_s": imu_max / 1e9 if imu_max is not None else None,
         "bag_first_s": global_min / 1e9,
         "bag_last_s": global_max / 1e9,
         "expected_last_lidar_s": expected_end_ns / 1e9,

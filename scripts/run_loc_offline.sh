@@ -23,8 +23,13 @@ Options:
   --cpu-count COUNT             Allocated logical CPUs (default: 8)
   --completion-tolerance SEC    Allowed trajectory tail difference (default: 0.25)
   --max-output-gap SEC          Maximum adjacent localization pose gap (default: 0.30)
+  --max-trajectory-speed MPS   Diagnostic speed threshold (default: 4.0)
+  --max-trajectory-z-range M   Diagnostic Z-range threshold (default: 1.0)
+  --max-trajectory-axis-range M  Diagnostic X/Y-range threshold (default: 40.0)
   --watchdog-margin SEC         Extra watchdog wall time (default: 300)
   --wait-ui BOOL                Wait for UI close (default: false)
+  --publish-topics BOOL         Initialize ROS 2 publishers (default: false)
+  --use-config-initial-pose BOOL  Use YAML initial pose (default: true)
   -h, --help                    Show this help
 
 Arguments after `--` are forwarded unchanged to run_loc_offline.
@@ -55,8 +60,13 @@ cpu_set="0-7"
 allocated_cpus="8"
 completion_tolerance="0.25"
 max_output_gap="0.30"
+max_trajectory_speed="4.0"
+max_trajectory_z_range="1.0"
+max_trajectory_axis_range="40.0"
 watchdog_margin="300"
 wait_ui="false"
+publish_topics="false"
+use_config_initial_pose="true"
 extra_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -74,8 +84,13 @@ while [[ $# -gt 0 ]]; do
     --cpu-count) allocated_cpus="${2:?missing value for --cpu-count}"; shift 2 ;;
     --completion-tolerance) completion_tolerance="${2:?missing value for --completion-tolerance}"; shift 2 ;;
     --max-output-gap) max_output_gap="${2:?missing value for --max-output-gap}"; shift 2 ;;
+    --max-trajectory-speed) max_trajectory_speed="${2:?missing value for --max-trajectory-speed}"; shift 2 ;;
+    --max-trajectory-z-range) max_trajectory_z_range="${2:?missing value for --max-trajectory-z-range}"; shift 2 ;;
+    --max-trajectory-axis-range) max_trajectory_axis_range="${2:?missing value for --max-trajectory-axis-range}"; shift 2 ;;
     --watchdog-margin) watchdog_margin="${2:?missing value for --watchdog-margin}"; shift 2 ;;
     --wait-ui) wait_ui="${2:?missing value for --wait-ui}"; shift 2 ;;
+    --publish-topics) publish_topics="${2:?missing value for --publish-topics}"; shift 2 ;;
+    --use-config-initial-pose) use_config_initial_pose="${2:?missing value for --use-config-initial-pose}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; extra_args=("$@"); break ;;
     *)
@@ -228,6 +243,8 @@ setsid taskset -c "$cpu_set" "$binary" \
   --playback_rate="$playback_rate" \
   --max_lidar_frames="$max_lidar_frames" \
   --wait_ui="$wait_ui" \
+  --publish_topics="$publish_topics" \
+  --use_config_initial_pose="$use_config_initial_pose" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &
 algorithm_pid=$!
@@ -322,7 +339,9 @@ python3 "$timing_extractor" \
   --wait-ui "$wait_ui"
 
 analyzer_args=(--localization-csv "$localization_csv" --trajectory-tum "$trajectory_tum" \
-  --summary-json "$analysis_summary" --errors-csv "$error_csv")
+  --lidar-loc-tum "$lidar_loc_tum" --summary-json "$analysis_summary" --errors-csv "$error_csv" \
+  --max-speed "$max_trajectory_speed" --max-z-range "$max_trajectory_z_range" \
+  --max-axis-range "$max_trajectory_axis_range")
 if [[ -n "$reference_tum" ]]; then analyzer_args+=(--reference-tum "$reference_tum"); fi
 if [[ -s "$localization_csv" && -s "$trajectory_tum" ]]; then
   python3 "$analyzer" "${analyzer_args[@]}"
@@ -357,6 +376,8 @@ processing_speed_x="${timing_checks[5]}"
   echo "cpu_set=$cpu_set"
   echo "allocated_cpus=$allocated_cpus"
   echo "play_rate=$playback_rate"
+  echo "publish_topics=$publish_topics"
+  echo "use_config_initial_pose=$use_config_initial_pose"
   echo "config=$config_path"
   echo "config_sha256=$(sha256sum "$config_path" | awk '{print $1}')"
   echo "algorithm_binary=$binary"
@@ -395,6 +416,9 @@ processing_speed_x="${timing_checks[5]}"
   echo "maximum_allowed_output_gap_s=$max_output_gap"
   echo "maximum_output_gap_s=$maximum_output_gap_s"
   echo "excessive_output_gap_count=$excessive_output_gap_count"
+  echo "max_trajectory_speed_mps=$max_trajectory_speed"
+  echo "max_trajectory_z_range_m=$max_trajectory_z_range"
+  echo "max_trajectory_axis_range_m=$max_trajectory_axis_range"
   echo "completed_at=$(date --iso-8601=seconds)"
 } >"$run_dir/run_metadata.txt"
 
@@ -405,11 +429,17 @@ for output in "$trajectory_tum" "$lidar_loc_tum" "$localization_csv" "$frame_sta
               "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json"; do
   if [[ ! -s "$output" ]]; then echo "missing or empty output: $output" >&2; missing_output=1; fi
 done
+physical_diagnostic_pass=0
+if [[ -s "$analysis_summary" ]]; then
+  physical_diagnostic_pass="$(python3 -c 'import json,sys
+p=json.load(open(sys.argv[1],encoding="utf-8"))
+print(int(bool(p["trajectory"]["motion"]["passed"]) and bool(p["lidar_loc_trajectory"]["motion"]["passed"])))' "$analysis_summary")"
+fi
 if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion" != "$expected_completion" || \
       "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || "$nonmonotonic_count" -ne 0 || \
       "$excessive_output_gap_count" -ne 0 || "$timing_status" != "ok" || "$timing_stage_count" -lt 1 || \
       "$missing_output" -ne 0 ]]; then
-  echo "run failed contract: rc=$algorithm_rc watchdog=$watchdog_status completion=$completion lines=$trajectory_lines gaps=$excessive_output_gap_count" >&2
+  echo "run failed contract: rc=$algorithm_rc watchdog=$watchdog_status completion=$completion lines=$trajectory_lines gaps=$excessive_output_gap_count physical_diagnostic=$physical_diagnostic_pass" >&2
   exit 4
 fi
-echo "completed method=lightning_lm_offline_localization sequence=$sequence repeat=$repeat lines=$trajectory_lines output=$run_dir"
+echo "completed method=lightning_lm_offline_localization sequence=$sequence repeat=$repeat lines=$trajectory_lines physical_diagnostic=$physical_diagnostic_pass output=$run_dir"

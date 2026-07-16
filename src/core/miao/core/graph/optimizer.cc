@@ -174,6 +174,12 @@ int Optimizer::Optimize(int iterations) {
 
     for (int i = 0; i < iterations && !Terminate() && ok; i++) {
         result = algorithm_->Solve(i);
+        if (i == 0 && config_.incremental_mode_) {
+            // BuildStructureInc consumes these one-shot deltas during the
+            // first solve iteration. Keeping them until the next frame would
+            // insert duplicate active pointers and Hessian blocks.
+            ClearNewElements();
+        }
         ok = (result == OptimizationAlgorithm::SolverResult::OK);
 
         ComputeActiveErrors();

@@ -181,6 +181,8 @@ class TiledMap {
     /// 获取当前载入chunk拼接后的完整点云地图。
     CloudPtr GetAllMap();
 
+    bool GetGlobalStaticBounds(Vec3d& min_point, Vec3d& max_point, std::size_t& point_count);
+
     /**
      * @brief 使用最近配准之后的scan更新动态图层。
      * @param cloud_world 世界坐标系下点云。

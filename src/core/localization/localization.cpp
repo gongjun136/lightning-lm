@@ -63,6 +63,13 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     /// pose graph
     pgo_ = std::make_shared<PGO>();
     pgo_->SetDebug(false);
+    const YAML::Node localization_pgo = YAML::LoadFile(yaml_path)["localization_pgo"];
+    pgo_->SetDrSmoothingEnabled(localization_pgo
+                                    ? localization_pgo["enable_dr_smoothing"].as<bool>(true)
+                                    : true);
+    pgo_->SetDrExtrapolationEnabled(localization_pgo
+                                        ? localization_pgo["enable_dr_extrapolation"].as<bool>(true)
+                                        : true);
 
     ///  各模块的异步调用
     options_.enable_lidar_loc_skip_ = yaml.GetValue<bool>("system", "enable_lidar_loc_skip");
@@ -243,6 +250,10 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     lidar_loc_->ProcessCloud(scan_undist);
 
     auto res = lidar_loc_->GetLocalizationResult();
+    if (lidar_loc_->GetLastMatchStats().relocalization_accepted) {
+        pgo_->Reset();
+        LOG(WARNING) << "reset localization PGO after accepted BTC relocalization";
+    }
     pgo_->ProcessLidarLoc(res);
 
     if (ui_) {
@@ -355,6 +366,7 @@ void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vec
     /// 设置外部重定位的pose
     if (lidar_loc_) {
         lidar_loc_->SetInitialPose(SE3(q, t));
+        if (pgo_) pgo_->Reset();
     }
 }
 

@@ -9,6 +9,7 @@
 
 #include "common/nav_state.h"
 #include "common/timed_pose.h"
+#include "core/localization/btc_relocalizer.h"
 #include "core/localization/localization_result.h"
 #include "core/maps/tiled_map.h"
 
@@ -41,6 +42,8 @@ class LidarLoc {
         bool with_height_ = true;                      // 建图期间是否带有高度约束？
         bool force_2d_ = true;                         // 强制在2D空间
         float min_init_confidence_ = 0.1;              // 初始化时要求的最小分值
+        float min_tracking_confidence_ = 0.1;
+        int relocalization_lost_frame_threshold_ = 5;
         bool init_with_fp_ = true;                     // 是否使用功能点进行初始化
         bool enable_parking_static_ = false;           // 是否在静止时输出固定位置
         bool enable_icp_adjust_ = false;               // 是否使用icp调整ndt匹配结果提高定位精度
@@ -63,6 +66,14 @@ class LidarLoc {
 
         double max_update_cache_dis_ = 30.0;  // 更新动态图层的缓冲距离
         std::string recover_pose_path_ = "./data/recover_pose.txt";
+        bool enable_relocalization_map_consistency_ = true;
+        double relocalization_bounds_margin_ = 0.5;
+        double relocalization_nearest_neighbor_distance_ = 0.5;
+        double relocalization_min_inside_xy_ratio_ = 0.90;
+        double relocalization_min_overlap_ratio_ = 0.20;
+        double relocalization_min_gravity_alignment_cos_ = 0.95;
+        int relocalization_map_consistency_max_points_ = 50000;
+        std::string relocalization_debug_dir_;
     };
 
     struct MatchStats {
@@ -70,6 +81,18 @@ class LidarLoc {
         int iterations = 0;
         bool success = false;
         int active_map_chunks = 0;
+        bool relocalization_attempted = false;
+        bool relocalization_candidate_found = false;
+        bool relocalization_accepted = false;
+        int relocalization_candidate_id = -1;
+        double relocalization_score = 0.0;
+        bool map_consistency_evaluated = false;
+        bool map_consistency_passed = false;
+        std::size_t map_consistency_points = 0;
+        double map_inside_xy_ratio = 0.0;
+        double map_inside_xyz_ratio = 0.0;
+        double map_overlap_ratio = 0.0;
+        double map_gravity_alignment_cos = 0.0;
     };
 
     explicit LidarLoc(Options options = Options());
@@ -130,6 +153,11 @@ class LidarLoc {
     /// 设置init pose
     void SetInitialPose(SE3 init_pose);
 
+    /// Clear the current map alignment and restart global BTC initialization.
+    /// This is also useful when an external health monitor detects localization
+    /// failure before the internal consecutive-match threshold is reached.
+    void RequestGlobalRelocalization();
+
     /// 获取定位结果
     LocalizationResult GetLocalizationResult() {
         UL lock(result_mutex_);
@@ -189,6 +217,11 @@ class LidarLoc {
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
+    bool TryBtcRelocalization(const CloudPtr& input);
+    bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
+    void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
+                                    const Vec3d& map_min, const Vec3d& map_max,
+                                    const MatchStats& stats);
 
     // 成员变量  ==========================================================================
     Options options_;
@@ -268,7 +301,9 @@ class LidarLoc {
     bool update_map_quit_ = false;
     std::thread update_map_thread_;            // 地图更新
     std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
+    std::unique_ptr<BtcRelocalizer> btc_relocalizer_;
     double map_height_ = 0;
+    int relocalization_debug_index_ = 0;
 
     bool has_set_pose_ = false;  // 外部set_pose标志位，若存在则本次动态图层不落盘
 

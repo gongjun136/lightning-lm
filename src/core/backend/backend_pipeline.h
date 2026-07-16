@@ -71,6 +71,7 @@ class BackendPipeline {
     std::vector<BtcLoopResult> GetLoopResults() const;
     BackendRuntimeSummary GetRuntimeSummary() const;
     bool SaveDiagnostics(const std::string& directory) const;
+    bool SaveRelocalizationDatabase(const std::string& directory) const;
     const BackendPipelineOptions& GetOptions() const { return options_; }
 
    private:

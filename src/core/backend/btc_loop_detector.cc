@@ -3,12 +3,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <utility>
 
 #include <Eigen/Eigenvalues>
+#include <glog/logging.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
+#include <yaml-cpp/yaml.h>
 
 namespace lightning::backend {
 namespace {
@@ -34,6 +41,7 @@ void BtcLoopDetector::Reset() {
     manager_ = STDescManager(options_.descriptor);
     pending_keyframes_.clear();
     entries_.clear();
+    descriptor_keyframes_.clear();
     last_keyframe_.reset();
     journey_ = 0.0;
     last_confirmation_current_ = -1;
@@ -208,7 +216,10 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
 
     const auto generation_begin = std::chrono::steady_clock::now();
     std::vector<STD> descriptors;
-    manager_.GenerateSTDescs(cloud, descriptors, static_cast<int>(current_endpoint->GetID()));
+    // BTC returns the frame_number_ stored in each descriptor.  Entries are
+    // indexed by descriptor submap, not by the (usually much larger)
+    // keyframe id, so these ids must stay dense and identical to entries_.
+    manager_.GenerateSTDescs(cloud, descriptors, result.current_descriptor_id);
     result.generation_time_ms = ElapsedMilliseconds(generation_begin);
     result.descriptor_generated = true;
     result.descriptor_count = descriptors.size();
@@ -337,7 +348,116 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
 
     manager_.AddSTDescs(descriptors);
     entries_.push_back(std::move(current_entry));
+    descriptor_keyframes_.push_back(keyframes);
     return result;
+}
+
+bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
+                                                  const SE3& T_imu_lidar) const {
+    if (entries_.empty() || entries_.size() != descriptor_keyframes_.size()) {
+        LOG(ERROR) << "BTC relocalization database is incomplete: entries=" << entries_.size()
+                   << ", submaps=" << descriptor_keyframes_.size();
+        return false;
+    }
+
+    namespace fs = std::filesystem;
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error) {
+        LOG(ERROR) << "failed to create BTC relocalization directory " << directory << ": "
+                   << error.message();
+        return false;
+    }
+
+    YAML::Node root;
+    root["schema_version"] = 1;
+    root["descriptor_submap_size"] = options_.descriptor_submap_size;
+    root["max_points_per_submap"] = options_.max_points_per_submap;
+    root["downsample_leaf_size"] = options_.downsample_leaf_size;
+
+    const ConfigSetting& config = options_.descriptor;
+    YAML::Node descriptor;
+    descriptor["useful_corner_num"] = config.useful_corner_num_;
+    descriptor["plane_merge_normal_threshold"] = config.plane_merge_normal_thre_;
+    descriptor["plane_merge_distance_threshold"] = config.plane_merge_dis_thre_;
+    descriptor["plane_detection_threshold"] = config.plane_detection_thre_;
+    descriptor["voxel_size"] = config.voxel_size_;
+    descriptor["voxel_init_points"] = config.voxel_init_num_;
+    descriptor["projection_plane_count"] = config.proj_plane_num_;
+    descriptor["projection_resolution"] = config.proj_image_resolution_;
+    descriptor["projection_height_increment"] = config.proj_image_high_inc_;
+    descriptor["projection_min_distance"] = config.proj_dis_min_;
+    descriptor["projection_max_distance"] = config.proj_dis_max_;
+    descriptor["summary_min_threshold"] = config.summary_min_thre_;
+    descriptor["line_filter"] = config.line_filter_enable_;
+    descriptor["touch_filter"] = config.touch_filter_enable_;
+    descriptor["descriptor_near_count"] = config.descriptor_near_num_;
+    descriptor["descriptor_min_length"] = config.descriptor_min_len_;
+    descriptor["descriptor_max_length"] = config.descriptor_max_len_;
+    descriptor["non_max_suppression_radius"] = config.non_max_suppression_radius_;
+    descriptor["triangle_side_resolution"] = config.std_side_resolution_;
+    descriptor["skip_near_descriptors"] = config.skip_near_num_;
+    descriptor["candidate_count"] = config.candidate_num_;
+    descriptor["rough_distance_threshold"] = config.rough_dis_threshold_;
+    descriptor["similarity_threshold"] = config.similarity_threshold_;
+    descriptor["internal_icp_threshold"] = config.icp_threshold_;
+    descriptor["normal_threshold"] = config.normal_threshold_;
+    descriptor["plane_distance_threshold"] = config.dis_threshold_;
+    root["descriptor"] = descriptor;
+
+    YAML::Node yaml_entries(YAML::NodeType::Sequence);
+    for (std::size_t index = 0; index < entries_.size(); ++index) {
+        if (descriptor_keyframes_[index].empty() || !entries_[index].endpoint) {
+            LOG(ERROR) << "invalid BTC relocalization entry " << index;
+            return false;
+        }
+        // Rebuild at save time so every submap uses the final optimized poses,
+        // including corrections applied after the descriptor was first made.
+        const auto cloud = BuildSubmap(descriptor_keyframes_[index], T_imu_lidar);
+        if (!cloud || cloud->empty()) {
+            LOG(ERROR) << "failed to rebuild BTC relocalization submap " << index;
+            return false;
+        }
+        std::ostringstream filename;
+        filename << "submap_" << std::setw(6) << std::setfill('0') << index << ".pcd";
+        const fs::path cloud_path = fs::path(directory) / filename.str();
+        if (pcl::io::savePCDFileBinaryCompressed(cloud_path.string(), *cloud) != 0) {
+            LOG(ERROR) << "failed to save BTC relocalization submap " << cloud_path;
+            return false;
+        }
+
+        const BtcDescriptorEntry& entry = entries_[index];
+        const SE3 T_world_lidar = entry.endpoint->GetOptPose() * T_imu_lidar;
+        const Vec3d translation = T_world_lidar.translation();
+        const Quatd quaternion = T_world_lidar.unit_quaternion();
+        YAML::Node yaml_entry;
+        yaml_entry["descriptor_id"] = entry.descriptor_id;
+        yaml_entry["first_keyframe_id"] = entry.first_keyframe_id;
+        yaml_entry["last_keyframe_id"] = entry.last_keyframe_id;
+        yaml_entry["timestamp"] = entry.timestamp;
+        yaml_entry["cloud"] = filename.str();
+        yaml_entry["pose_xyzw"] = std::vector<double>{
+            translation.x(), translation.y(), translation.z(), quaternion.x(),
+            quaternion.y(), quaternion.z(), quaternion.w()};
+        yaml_entries.push_back(yaml_entry);
+    }
+    root["entries"] = yaml_entries;
+
+    const fs::path manifest_path = fs::path(directory) / "database.yaml";
+    std::ofstream manifest(manifest_path);
+    if (!manifest) {
+        LOG(ERROR) << "failed to open BTC relocalization manifest " << manifest_path;
+        return false;
+    }
+    manifest << root;
+    manifest.close();
+    if (!manifest) {
+        LOG(ERROR) << "failed to write BTC relocalization manifest " << manifest_path;
+        return false;
+    }
+    LOG(INFO) << "saved BTC relocalization database: entries=" << entries_.size()
+              << ", path=" << directory;
+    return true;
 }
 
 }  // namespace lightning::backend

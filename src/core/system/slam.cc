@@ -257,7 +257,10 @@ void SlamSystem::SaveMap(const std::string& path) {
     tm.ConvertFromFullPCD(global_map, start_pose, save_path);
 
     pcl::io::savePCDFileBinaryCompressed(save_path + "/global.pcd", *global_map);
-    if (backend_) backend_->SaveDiagnostics(save_path + "/backend_diagnostics");
+    if (backend_) {
+        backend_->SaveDiagnostics(save_path + "/backend_diagnostics");
+        backend_->SaveRelocalizationDatabase(save_path + "/btc_relocalization");
+    }
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 

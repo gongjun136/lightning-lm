@@ -106,6 +106,8 @@ class PoseSmoother {
     void Reset() {
         UL lock(data_mutex_);
         pose_queue_.clear();
+        dr_queue_.clear();
+        output_pose_ = SE3();
         motion_effective_ = false;
     }
 

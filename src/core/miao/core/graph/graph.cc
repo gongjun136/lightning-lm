@@ -110,7 +110,7 @@ bool Graph::RemoveEdge(Edge* e) {
             continue;
         }
 
-        vit->RemoveEdge((*it).get());
+        vit->RemoveEdge(edge_to_remove.get());
     }
     return true;
 }
