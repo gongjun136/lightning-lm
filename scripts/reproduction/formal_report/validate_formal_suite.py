@@ -24,7 +24,9 @@ ANALYSES = {
 EXPECTED_FIGURES = 10
 FRONTEND_COMPUTE_RUNS = 48
 EXPECTED_COMPUTE_FIGURES = 4
-STATISTICAL_RUN_COUNT = 195
+CONTROLLED_BACKEND_RUNS = 60
+EXPECTED_CONTROLLED_BACKEND_FIGURES = 4
+STATISTICAL_RUN_COUNT = 255
 
 
 def sha256(path: Path) -> str:
@@ -178,6 +180,89 @@ def main() -> int:
             "artifact_sha256": {path.name: sha256(path) for path in compute_required},
         }
 
+    controlled_name = "m3dgr_backend_controlled_20260721"
+    controlled_directory = analysis_root / controlled_name
+    controlled_required = [
+        controlled_directory / "validation.json",
+        controlled_directory / "run_metrics.csv",
+        controlled_directory / "summary_metrics.csv",
+        controlled_directory / "aligned_samples.csv",
+        controlled_directory / "backend_activity.csv",
+        controlled_directory / "loop_candidates.csv",
+        controlled_directory / "endpoint_loop_diagnostics.csv",
+        controlled_directory / "paired_effects.csv",
+        controlled_directory / "analysis_manifest.json",
+    ]
+    controlled_missing = [str(path) for path in controlled_required if not path.is_file()]
+    if controlled_missing:
+        failures.extend(f"missing analysis artifact: {path}" for path in controlled_missing)
+    else:
+        validation = json.loads(controlled_required[0].read_text(encoding="utf-8"))
+        run_rows = read_csv(controlled_required[1])
+        summary_rows = read_csv(controlled_required[2])
+        if validation.get("status") not in {"passed", "passed_with_warnings"}:
+            failures.append(f"{controlled_name}: validation status={validation.get('status')}")
+        if validation.get("required_run_count") != CONTROLLED_BACKEND_RUNS:
+            failures.append(
+                f"{controlled_name}: required_run_count={validation.get('required_run_count')} "
+                f"expected={CONTROLLED_BACKEND_RUNS}"
+            )
+        if validation.get("evaluated_run_count") != CONTROLLED_BACKEND_RUNS or len(run_rows) != CONTROLLED_BACKEND_RUNS:
+            failures.append(
+                f"{controlled_name}: evaluated={validation.get('evaluated_run_count')} "
+                f"csv_rows={len(run_rows)} expected={CONTROLLED_BACKEND_RUNS}"
+            )
+        bad_repeats = [row for row in summary_rows if row.get("successful_repeats") != "3"]
+        if bad_repeats:
+            failures.append(
+                f"{controlled_name}: {len(bad_repeats)} summary cells do not contain 3 successful repeats"
+            )
+        frontend_hashes = validation.get("frontend_lio_hashes", {})
+        if set(frontend_hashes) != {"Grass02", "Outdoor04", "Z-Rough-Road01", "Dark01"}:
+            failures.append(f"{controlled_name}: incomplete frontend hash groups")
+        elif any(len(hashes) != 1 for hashes in frontend_hashes.values()):
+            failures.append(f"{controlled_name}: frontend LIO hashes are not identical within sequence")
+        for index, row in enumerate(run_rows, 2):
+            for field in ("ate_rmse_m", "wall_ms_per_output_frame", "peak_rss_mb"):
+                try:
+                    value = float(row[field])
+                except (KeyError, TypeError, ValueError):
+                    failures.append(f"{controlled_name}: run_metrics.csv:{index} invalid {field}")
+                    continue
+                if not math.isfinite(value) or value < 0:
+                    failures.append(f"{controlled_name}: run_metrics.csv:{index} non-finite/negative {field}")
+        controlled_warnings = validation.get("warnings", [])
+        warnings.extend(f"{controlled_name}: {item}" for item in controlled_warnings)
+        evidence[controlled_name] = {
+            "validation_status": validation.get("status"),
+            "run_count": len(run_rows),
+            "summary_cell_count": len(summary_rows),
+            "warning_count": len(controlled_warnings),
+            "artifact_sha256": {path.name: sha256(path) for path in controlled_required},
+        }
+
+    controlled_figure_manifest = controlled_directory / "figure_manifest.json"
+    if not controlled_figure_manifest.is_file():
+        failures.append(f"missing controlled backend figure manifest: {controlled_figure_manifest}")
+    else:
+        controlled_figures = json.loads(controlled_figure_manifest.read_text(encoding="utf-8"))
+        outputs = controlled_figures.get("outputs", {})
+        if len(outputs) != EXPECTED_CONTROLLED_BACKEND_FIGURES:
+            failures.append(
+                f"controlled backend figure count={len(outputs)} "
+                f"expected={EXPECTED_CONTROLLED_BACKEND_FIGURES}"
+            )
+        for name, artifact in outputs.items():
+            try:
+                path = Path(artifact["path"])
+                expected_hash = artifact["sha256"]
+            except (KeyError, TypeError):
+                failures.append(f"invalid controlled backend figure manifest entry: {name}")
+                continue
+            if not path.is_file() or sha256(path) != expected_hash:
+                failures.append(f"missing or changed controlled backend figure: {path}")
+        evidence["controlled_backend_figure_manifest_sha256"] = sha256(controlled_figure_manifest)
+
     references: dict[str, object] = {}
     reference_root = args.formal_root / "sany_voxel114_reference"
     for dataset in ("data_20260701", "data1", "data2"):
@@ -261,11 +346,13 @@ def main() -> int:
             if "TODO" in report_text:
                 failures.append("final report still contains TODO")
             for filename in (
-                "m3dgr_frontend_summary.png", "m3dgr_backend_summary.png",
+                "m3dgr_frontend_summary.png",
                 "m3dgr_localization_summary.png", "sany_mapping_summary.png",
                 "sany_relocalization_summary.png", "m3dgr_frontend_compute_summary.png",
                 "lightning_lio_timing_stage_summary.png", "lightning_lio_timing_distribution.png",
                 "lightning_lio_timing_timeseries.png",
+                "m3dgr_backend_controlled_precision.png", "m3dgr_backend_controlled_ablation.png",
+                "m3dgr_backend_controlled_loop_effect.png", "m3dgr_backend_controlled_resources.png",
             ):
                 if filename not in report_text:
                     failures.append(f"final report does not reference {filename}")
@@ -302,7 +389,7 @@ def main() -> int:
     result = {
         "schema_version": 2,
         "status": status,
-        "required_formal_run_count": 198,
+        "required_formal_run_count": 258,
         "statistical_run_count": STATISTICAL_RUN_COUNT,
         "proxy_reference_run_count": 3,
         "failures": failures,

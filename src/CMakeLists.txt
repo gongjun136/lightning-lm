@@ -47,6 +47,7 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/system/slam.cc
         core/system/loc_system.cc
+        core/system/sany_localization_output.cc
 
         wrapper/bag_io.cc
 )
@@ -67,6 +68,7 @@ ament_target_dependencies(
 
 add_dependencies(${PROJECT_NAME}.libs
         livox_interfaces2__rosidl_typesupport_cpp
+        geosun_msgs__rosidl_typesupport_cpp
         ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
@@ -79,6 +81,7 @@ target_link_libraries(${PROJECT_NAME}.libs
         miao.core
         miao.utils
         livox_interfaces2__rosidl_typesupport_cpp
+        geosun_msgs__rosidl_typesupport_cpp
         ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
@@ -98,6 +101,9 @@ if(BUILD_TESTING)
     add_executable(rear_axle_pose_test test/rear_axle_pose_test.cc)
     target_link_libraries(rear_axle_pose_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(sany_localization_output_test test/sany_localization_output_test.cc)
+    target_link_libraries(sany_localization_output_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(pointcloud_preprocess_test test/pointcloud_preprocess_test.cc)
     target_link_libraries(pointcloud_preprocess_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -114,6 +120,7 @@ if(BUILD_TESTING)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
     add_test(NAME rear_axle_pose_test COMMAND $<TARGET_FILE:rear_axle_pose_test>)
+    add_test(NAME sany_localization_output_test COMMAND $<TARGET_FILE:sany_localization_output_test>)
     add_test(NAME pointcloud_preprocess_test COMMAND $<TARGET_FILE:pointcloud_preprocess_test>)
     add_test(NAME voxel_bundle_adjustment_test COMMAND $<TARGET_FILE:voxel_bundle_adjustment_test>)
     add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)

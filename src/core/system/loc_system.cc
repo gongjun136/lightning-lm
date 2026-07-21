@@ -4,32 +4,16 @@
 
 #include "core/system/loc_system.h"
 
-#include <cmath>
-#include <cstdint>
 #include <utility>
 #include <vector>
 
 #include "core/localization/localization.h"
 #include "io/yaml_io.h"
 #include "wrapper/ros_utils.h"
-#include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "yaml-cpp/yaml.h"
 
 namespace lightning {
 namespace {
-
-builtin_interfaces::msg::Time ToRosStamp(double seconds) {
-    const std::int64_t nanoseconds = static_cast<std::int64_t>(std::llround(seconds * 1e9));
-    builtin_interfaces::msg::Time stamp;
-    stamp.sec = static_cast<std::int32_t>(nanoseconds / 1000000000LL);
-    stamp.nanosec = static_cast<std::uint32_t>(nanoseconds % 1000000000LL);
-    return stamp;
-}
-
-std::int64_t SteadyNowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 double CloudStampSec(const CloudPtr& cloud) {
     if (!cloud) return 0.0;
@@ -38,57 +22,6 @@ double CloudStampSec(const CloudPtr& cloud) {
 
 bool IsUsableResult(const loc::LocalizationResult& result) {
     return result.valid_ || result.lidar_loc_valid_;
-}
-
-geometry_msgs::msg::PoseStamped MakePoseMessage(const SE3& pose, double stamp, const std::string& frame_id) {
-    geometry_msgs::msg::PoseStamped message;
-    message.header.stamp = ToRosStamp(stamp);
-    message.header.frame_id = frame_id;
-    const auto quaternion = pose.unit_quaternion().normalized();
-    message.pose.position.x = pose.translation().x();
-    message.pose.position.y = pose.translation().y();
-    message.pose.position.z = pose.translation().z();
-    message.pose.orientation.x = quaternion.x();
-    message.pose.orientation.y = quaternion.y();
-    message.pose.orientation.z = quaternion.z();
-    message.pose.orientation.w = quaternion.w();
-    return message;
-}
-
-sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double stamp, const std::string& frame_id) {
-    sensor_msgs::msg::PointCloud2 message;
-    message.header.stamp = ToRosStamp(stamp);
-    message.header.frame_id = frame_id;
-    sensor_msgs::PointCloud2Modifier modifier(message);
-    modifier.setPointCloud2Fields(6, "x", 1, sensor_msgs::msg::PointField::FLOAT32, "y", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "z", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "intensity", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "time", 1,
-                                  sensor_msgs::msg::PointField::FLOAT64, "lidar_id", 1,
-                                  sensor_msgs::msg::PointField::UINT8);
-    const std::size_t size = cloud ? cloud->size() : 0;
-    modifier.resize(size);
-    sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"),
-        intensity(message, "intensity");
-    sensor_msgs::PointCloud2Iterator<double> time(message, "time");
-    sensor_msgs::PointCloud2Iterator<std::uint8_t> lidar_id(message, "lidar_id");
-    if (cloud) {
-        for (const auto& point : cloud->points) {
-            *x = point.x;
-            *y = point.y;
-            *z = point.z;
-            *intensity = point.intensity;
-            *time = point.time * 1e-3;
-            *lidar_id = point.lidar_id;
-            ++x;
-            ++y;
-            ++z;
-            ++intensity;
-            ++time;
-            ++lidar_id;
-        }
-    }
-    return message;
 }
 
 Mat3d ReadMatrix3(const YAML::Node& node) {
@@ -134,8 +67,9 @@ bool LocSystem::Init(const std::string &yaml_path) {
     std::string map_path = yaml.GetValue<std::string>("system", "map_path");
     const YAML::Node root = YAML::LoadFile(yaml_path);
     map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
-    lidar_frame_ =
-        root["output"] && root["output"]["lidar_frame"] ? root["output"]["lidar_frame"].as<std::string>() : "lidar_114";
+    rear_axle_frame_ = root["output"] && root["output"]["rear_axle_frame"]
+                           ? root["output"]["rear_axle_frame"].as<std::string>()
+                           : "rear_axle";
     const Vec3d primary_lidar_position =
         ReadVector3(root["output"] ? root["output"]["primary_lidar_position_in_body"] : YAML::Node(),
                     Vec3d(2.199, 0.0, 2.740), "output.primary_lidar_position_in_body");
@@ -145,6 +79,7 @@ bool LocSystem::Init(const std::string &yaml_path) {
         ReadVector3(root["fasterlio"] ? root["fasterlio"]["extrinsic_T"] : YAML::Node(), Vec3d::Zero(),
                     "fasterlio.extrinsic_T");
     rear_axle_ = RearAxlePoseTransformer(R_lidar_to_imu, t_lidar_to_imu, primary_lidar_position);
+    T_rear_lidar_ = SE3(SO3(), primary_lidar_position);
 
     LOG(INFO) << "online mode, creating ros2 node ... ";
 
@@ -178,12 +113,12 @@ bool LocSystem::Init(const std::string &yaml_path) {
             Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
         });
 
-    pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", 10);
-    cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/final_points_topic", 10);
-    safety_pub_ = node_->create_publisher<std_msgs::msg::Float64>("/slamSafety_topic", 10);
-    state_pub_ = node_->create_publisher<std_msgs::msg::Float64>("/slamState_topic", 10);
-    system_pub_ = node_->create_publisher<std_msgs::msg::Int32>("/SystemState", 10);
-    state_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { PublishStateTopics(); });
+    const auto pose_qos = rclcpp::QoS(rclcpp::KeepLast(1000));
+    const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+    pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
+    pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
+    inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
+    map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
 
     if (options_.pub_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
@@ -237,39 +172,26 @@ void LocSystem::Spin() {
 }
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
-    if (!pose_pub_ || !result.valid_ || result.timestamp_ <= 0.0) return;
+    if (!pos_res_pub_ || !pose_pub_ || !result.valid_ || result.timestamp_ <= 0.0) return;
     const NavState state = result.ToNavState();
-    pose_pub_->publish(MakePoseMessage(rear_axle_.Transform(state), result.timestamp_, map_frame_));
-    system_initialized_.store(true);
-    tracking_normal_.store(result.status_ == loc::LocalizationStatus::GOOD);
-    has_output_.store(true);
-    last_output_wall_ns_.store(SteadyNowNs());
+    const auto position =
+        sany_output::MakePosResMessage(rear_axle_.Transform(state), result.vel_b_.x(), result.timestamp_, map_frame_);
+    pos_res_pub_->publish(position);
+    pose_pub_->publish(sany_output::MakePoseMessage(position));
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
-    if (!cloud_pub_ || !cloud || cloud->empty() || !IsUsableResult(result)) return;
-    const double stamp = result.timestamp_ > 0.0 ? result.timestamp_ : CloudStampSec(cloud);
-    if (stamp <= 0.0) return;
-    cloud_pub_->publish(MakeCloudMessage(cloud, stamp, lidar_frame_));
-}
-
-void LocSystem::PublishStateTopics() {
-    heartbeat_ = !heartbeat_;
-    std_msgs::msg::Float64 safety;
-    safety.data = heartbeat_ ? 1.0 : 0.0;
-    safety_pub_->publish(safety);
-
-    bool tracking_normal = tracking_normal_.load();
-    if (has_output_.load() && SteadyNowNs() - last_output_wall_ns_.load() > 500000000LL) {
-        tracking_normal = false;
+    if (!inv_cloud_pub_ || !map_cloud_pub_ || !cloud || cloud->empty() || !IsUsableResult(result)) return;
+    const double begin_time = CloudStampSec(cloud);
+    const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
+    if (begin_time <= 0.0 || end_time <= 0.0) return;
+    const SE3 rear_axle_pose = rear_axle_.Transform(result.ToNavState());
+    inv_cloud_pub_->publish(
+        sany_output::MakeCloudMessage(cloud, begin_time, end_time, T_rear_lidar_, rear_axle_frame_));
+    if (map_cloud_decimator_.Tick()) {
+        map_cloud_pub_->publish(sany_output::MakeCloudMessage(cloud, begin_time, end_time,
+                                                              rear_axle_pose * T_rear_lidar_, map_frame_));
     }
-    std_msgs::msg::Float64 state;
-    state.data = tracking_normal ? 1.0 : 0.0;
-    state_pub_->publish(state);
-
-    std_msgs::msg::Int32 system_state;
-    system_state.data = system_initialized_.load() ? 1 : 0;
-    system_pub_->publish(system_state);
 }
 
 }  // namespace lightning

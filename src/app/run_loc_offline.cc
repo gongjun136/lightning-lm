@@ -3,12 +3,8 @@
 #include <glog/logging.h>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <sensor_msgs/point_cloud2_iterator.hpp>
-#include <std_msgs/msg/float64.hpp>
-#include <std_msgs/msg/int32.hpp>
 #include <yaml-cpp/yaml.h>
 
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -27,6 +23,7 @@
 #include "core/lio/rear_axle_pose.h"
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/pose_graph/pgo.h"
+#include "core/system/sany_localization_output.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
 #include "utils/timer.h"
@@ -42,8 +39,7 @@ DEFINE_string(output_csv, "", "output per-localization-frame CSV; disabled when 
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
 DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline processing");
 DEFINE_bool(publish_topics, true,
-            "publish localization outputs on /slamPoseRaw_topic, /final_points_topic, /slamSafety_topic, "
-            "/slamState_topic, and /SystemState");
+            "publish SANY localization outputs on /PosRes, /slamPoseRaw_topic, /LidarDataInv, and /LidarDataInL");
 DEFINE_bool(use_config_initial_pose, true,
             "use offline_localization.initial_pose from YAML; disable to require global initialization");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
@@ -53,72 +49,6 @@ DEFINE_double(playback_rate, 0.0,
               "pace bag callbacks by sensor time at this multiple of real time; disabled when <= 0");
 
 namespace {
-
-builtin_interfaces::msg::Time ToRosStamp(double seconds) {
-    const std::int64_t nanoseconds = static_cast<std::int64_t>(std::llround(seconds * 1e9));
-    builtin_interfaces::msg::Time stamp;
-    stamp.sec = static_cast<std::int32_t>(nanoseconds / 1000000000LL);
-    stamp.nanosec = static_cast<std::uint32_t>(nanoseconds % 1000000000LL);
-    return stamp;
-}
-
-sensor_msgs::msg::PointCloud2 MakeCloudMessage(const lightning::CloudPtr& cloud, double begin_time, double end_time,
-                                                const std::string& frame_id) {
-    sensor_msgs::msg::PointCloud2 message;
-    message.header.stamp = ToRosStamp(end_time);
-    message.header.frame_id = frame_id;
-    sensor_msgs::PointCloud2Modifier modifier(message);
-    modifier.setPointCloud2Fields(6, "x", 1, sensor_msgs::msg::PointField::FLOAT32, "y", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "z", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "intensity", 1,
-                                  sensor_msgs::msg::PointField::FLOAT32, "time", 1,
-                                  sensor_msgs::msg::PointField::FLOAT64, "lidar_id", 1,
-                                  sensor_msgs::msg::PointField::UINT8);
-    const std::size_t size = cloud ? cloud->size() : 0;
-    modifier.resize(size);
-    sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"),
-        intensity(message, "intensity");
-    sensor_msgs::PointCloud2Iterator<double> time(message, "time");
-    sensor_msgs::PointCloud2Iterator<std::uint8_t> lidar_id(message, "lidar_id");
-    if (cloud) {
-        for (const auto& point : cloud->points) {
-            *x = point.x;
-            *y = point.y;
-            *z = point.z;
-            *intensity = point.intensity;
-            *time = point.time * 1e-3 - (end_time - begin_time);
-            *lidar_id = point.lidar_id;
-            ++x;
-            ++y;
-            ++z;
-            ++intensity;
-            ++time;
-            ++lidar_id;
-        }
-    }
-    return message;
-}
-
-geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::SE3& pose, double stamp,
-                                                 const std::string& frame_id) {
-    geometry_msgs::msg::PoseStamped message;
-    message.header.stamp = ToRosStamp(stamp);
-    message.header.frame_id = frame_id;
-    const auto quaternion = pose.unit_quaternion().normalized();
-    message.pose.position.x = pose.translation().x();
-    message.pose.position.y = pose.translation().y();
-    message.pose.position.z = pose.translation().z();
-    message.pose.orientation.x = quaternion.x();
-    message.pose.orientation.y = quaternion.y();
-    message.pose.orientation.z = quaternion.z();
-    message.pose.orientation.w = quaternion.w();
-    return message;
-}
-
-std::int64_t SteadyNowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 class RosContextGuard {
    public:
@@ -130,76 +60,46 @@ class RosContextGuard {
 
 class OfflineLocalizationPublisher {
    public:
-    OfflineLocalizationPublisher(std::string map_frame, std::string lidar_frame)
+    OfflineLocalizationPublisher(std::string map_frame, std::string rear_axle_frame,
+                                 const lightning::Vec3d& primary_lidar_position_in_body)
         : node_(std::make_shared<rclcpp::Node>("offline_multi_lidar_localization")),
           map_frame_(std::move(map_frame)),
-          lidar_frame_(std::move(lidar_frame)) {
-        pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", 10);
-        cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/final_points_topic", 10);
-        safety_pub_ = node_->create_publisher<std_msgs::msg::Float64>("/slamSafety_topic", 10);
-        state_pub_ = node_->create_publisher<std_msgs::msg::Float64>("/slamState_topic", 10);
-        system_pub_ = node_->create_publisher<std_msgs::msg::Int32>("/SystemState", 10);
-        publishing_.store(true);
-        state_thread_ = std::thread([this]() { StateLoop(); });
+          rear_axle_frame_(std::move(rear_axle_frame)),
+          T_rear_lidar_(lightning::SO3(), primary_lidar_position_in_body),
+          map_cloud_decimator_(10) {
+        const auto pose_qos = rclcpp::QoS(rclcpp::KeepLast(1000));
+        const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+        pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
+        pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
+        inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
+        map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
     }
 
-    ~OfflineLocalizationPublisher() { Stop(); }
-
-    void PublishOutput(const lightning::SE3& rear_axle_pose, const lightning::CloudPtr& cloud, double begin_time,
-                       double end_time, bool system_initialized, bool tracking_normal) {
-        if (!publishing_.load() || !rclcpp::ok()) return;
-        if (system_initialized) system_initialized_.store(true);
-        tracking_normal_.store(tracking_normal);
-        has_output_.store(true);
-        last_output_wall_ns_.store(SteadyNowNs());
-        pose_pub_->publish(MakePoseMessage(rear_axle_pose, end_time, map_frame_));
-        cloud_pub_->publish(MakeCloudMessage(cloud, begin_time, end_time, lidar_frame_));
-    }
-
-    void Stop() {
-        const bool was_publishing = publishing_.exchange(false);
-        if (!was_publishing) return;
-        if (state_thread_.joinable()) state_thread_.join();
-    }
-
-   private:
-    void StateLoop() {
-        auto next = std::chrono::steady_clock::now();
-        while (publishing_.load() && rclcpp::ok()) {
-            next += std::chrono::milliseconds(100);
-            bool tracking_normal = tracking_normal_.load();
-            if (has_output_.load() && SteadyNowNs() - last_output_wall_ns_.load() > 500000000LL) {
-                tracking_normal = false;
-            }
-            heartbeat_ = !heartbeat_;
-            std_msgs::msg::Float64 safety;
-            safety.data = heartbeat_ ? 1.0 : 0.0;
-            safety_pub_->publish(safety);
-            std_msgs::msg::Float64 state_message;
-            state_message.data = tracking_normal ? 1.0 : 0.0;
-            state_pub_->publish(state_message);
-            std_msgs::msg::Int32 system_message;
-            system_message.data = system_initialized_.load() ? 1 : 0;
-            system_pub_->publish(system_message);
-            std::this_thread::sleep_until(next);
+    void PublishOutput(const lightning::SE3& rear_axle_pose, double vehicle_speed,
+                       const lightning::CloudPtr& cloud, double begin_time, double end_time) {
+        if (!rclcpp::ok()) return;
+        const auto position =
+            lightning::sany_output::MakePosResMessage(rear_axle_pose, vehicle_speed, end_time, map_frame_);
+        pos_res_pub_->publish(position);
+        pose_pub_->publish(lightning::sany_output::MakePoseMessage(position));
+        inv_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
+            cloud, begin_time, end_time, T_rear_lidar_, rear_axle_frame_));
+        if (map_cloud_decimator_.Tick()) {
+            map_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
+                cloud, begin_time, end_time, rear_axle_pose * T_rear_lidar_, map_frame_));
         }
     }
 
+   private:
     rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
-    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr safety_pub_;
-    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr state_pub_;
-    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr system_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
     std::string map_frame_;
-    std::string lidar_frame_;
-    std::atomic_bool publishing_{false};
-    std::atomic_bool system_initialized_{false};
-    std::atomic_bool tracking_normal_{false};
-    std::atomic_bool has_output_{false};
-    std::atomic<std::int64_t> last_output_wall_ns_{0};
-    std::thread state_thread_;
-    bool heartbeat_ = false;
+    std::string rear_axle_frame_;
+    lightning::SE3 T_rear_lidar_;
+    lightning::sany_output::FrameDecimator map_cloud_decimator_;
 };
 
 class InputPacer {
@@ -410,8 +310,10 @@ int main(int argc, char** argv) {
     const YAML::Node root = YAML::LoadFile(FLAGS_config);
     const std::string map_frame =
         root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
-    const std::string lidar_frame =
-        root["output"] && root["output"]["lidar_frame"] ? root["output"]["lidar_frame"].as<std::string>() : "lidar_114";
+    const std::string rear_axle_frame =
+        root["output"] && root["output"]["rear_axle_frame"]
+            ? root["output"]["rear_axle_frame"].as<std::string>()
+            : "rear_axle";
     Vec3d lidar_position(2.199, 0.0, 2.740);
     if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
         const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
@@ -423,7 +325,8 @@ int main(int argc, char** argv) {
     }
     RearAxlePoseTransformer rear_axle(lio.GetLidarToImuRotation(), lio.GetLidarToImuTranslation(), lidar_position);
     if (ros_context) {
-        topic_publisher = std::make_unique<OfflineLocalizationPublisher>(map_frame, lidar_frame);
+        topic_publisher =
+            std::make_unique<OfflineLocalizationPublisher>(map_frame, rear_axle_frame, lidar_position);
     }
 
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
@@ -616,11 +519,9 @@ int main(int argc, char** argv) {
                         ui->UpdateScan(current_scan ? current_scan : scan, final_result.pose_);
                     }
                     if (topic_publisher) {
-                        const bool tracking_normal = loc_result.status_ == loc::LocalizationStatus::GOOD &&
-                                                     final_result.status_ == loc::LocalizationStatus::GOOD;
-                        topic_publisher->PublishOutput(rear_axle.Transform(final_state),
+                        topic_publisher->PublishOutput(rear_axle.Transform(final_state), final_result.vel_b_.x(),
                                                        current_scan ? current_scan : scan, lio.GetLastFrameBeginTime(),
-                                                       lio.GetLastFrameEndTime(), true, tracking_normal);
+                                                       lio.GetLastFrameEndTime());
                     }
                 }
 

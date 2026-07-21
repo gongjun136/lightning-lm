@@ -1,0 +1,106 @@
+#include "core/system/sany_localization_output.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+
+namespace lightning::sany_output {
+namespace {
+
+constexpr double kDegreesPerRadian = 180.0 / M_PI;
+constexpr double kRadiansPerDegree = M_PI / 180.0;
+
+builtin_interfaces::msg::Time ToRosStamp(double seconds) {
+    const std::int64_t nanoseconds = static_cast<std::int64_t>(std::llround(seconds * 1e9));
+    builtin_interfaces::msg::Time stamp;
+    stamp.sec = static_cast<std::int32_t>(nanoseconds / 1000000000LL);
+    stamp.nanosec = static_cast<std::uint32_t>(nanoseconds % 1000000000LL);
+    return stamp;
+}
+
+}  // namespace
+
+geosun_msgs::msg::PosRes MakePosResMessage(const SE3& rear_axle_pose, double vehicle_speed, double stamp,
+                                           const std::string& frame_id) {
+    geosun_msgs::msg::PosRes message;
+    message.header.stamp = ToRosStamp(stamp);
+    message.header.frame_id = frame_id;
+    message.f8enh = {rear_axle_pose.translation().x(), rear_axle_pose.translation().y(),
+                     rear_axle_pose.translation().z()};
+    message.f8vehiclespeed = vehicle_speed;
+
+    const Mat3d rotation = rear_axle_pose.so3().matrix();
+    const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
+    const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
+    double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
+    if (yaw < 0.0) yaw += 2.0 * M_PI;
+    message.f8pry = {roll * kDegreesPerRadian, pitch * kDegreesPerRadian, yaw * kDegreesPerRadian};
+    return message;
+}
+
+geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position) {
+    geometry_msgs::msg::PoseStamped message;
+    message.header = position.header;
+    message.pose.position.x = position.f8enh[0];
+    message.pose.position.y = position.f8enh[1];
+    message.pose.position.z = position.f8enh[2];
+
+    const double roll = position.f8pry[0] * kRadiansPerDegree;
+    const double pitch = position.f8pry[1] * kRadiansPerDegree;
+    const double yaw = position.f8pry[2] * kRadiansPerDegree;
+    const Quatd quaternion =
+        Eigen::AngleAxisd(yaw, Vec3d::UnitZ()) * Eigen::AngleAxisd(pitch, Vec3d::UnitY()) *
+        Eigen::AngleAxisd(roll, Vec3d::UnitX());
+    message.pose.orientation.x = quaternion.x();
+    message.pose.orientation.y = quaternion.y();
+    message.pose.orientation.z = quaternion.z();
+    message.pose.orientation.w = quaternion.w();
+    return message;
+}
+
+sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
+                                               const SE3& T_output_lidar, const std::string& frame_id) {
+    sensor_msgs::msg::PointCloud2 message;
+    message.header.stamp = ToRosStamp(end_time);
+    message.header.frame_id = frame_id;
+    sensor_msgs::PointCloud2Modifier modifier(message);
+    modifier.setPointCloud2Fields(7, "x", 1, sensor_msgs::msg::PointField::FLOAT32, "y", 1,
+                                  sensor_msgs::msg::PointField::FLOAT32, "z", 1,
+                                  sensor_msgs::msg::PointField::FLOAT32, "intensity", 1,
+                                  sensor_msgs::msg::PointField::FLOAT32, "tag", 1,
+                                  sensor_msgs::msg::PointField::UINT8, "line", 1,
+                                  sensor_msgs::msg::PointField::UINT8, "timestamp", 1,
+                                  sensor_msgs::msg::PointField::FLOAT64);
+    const std::size_t size = cloud ? cloud->size() : 0;
+    modifier.resize(size);
+    message.is_dense = cloud ? cloud->is_dense : true;
+
+    sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"),
+        intensity(message, "intensity");
+    sensor_msgs::PointCloud2Iterator<std::uint8_t> tag(message, "tag"), line(message, "line");
+    sensor_msgs::PointCloud2Iterator<double> timestamp(message, "timestamp");
+    if (cloud) {
+        for (const auto& point : cloud->points) {
+            const Vec3d transformed = T_output_lidar * point.getVector3fMap().cast<double>();
+            *x = static_cast<float>(transformed.x());
+            *y = static_cast<float>(transformed.y());
+            *z = static_cast<float>(transformed.z());
+            *intensity = point.intensity;
+            *tag = 0;
+            *line = point.lidar_id;
+            *timestamp = begin_time + point.time * 1e-3;
+            ++x;
+            ++y;
+            ++z;
+            ++intensity;
+            ++tag;
+            ++line;
+            ++timestamp;
+        }
+    }
+    return message;
+}
+
+}  // namespace lightning::sany_output

@@ -50,6 +50,7 @@ include_directories(
 
 include_directories(
         ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/livox_ros_driver/rosidl_generator_cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/geosun_msgs/rosidl_generator_cpp
 )
 
 include_directories(

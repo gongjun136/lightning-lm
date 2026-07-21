@@ -56,6 +56,7 @@ install(DIRECTORY config
 )
 
 add_subdirectory(thirdparty/livox_ros_driver)
+add_subdirectory(thirdparty/geosun_msgs)
 
 add_subdirectory(src)
 
