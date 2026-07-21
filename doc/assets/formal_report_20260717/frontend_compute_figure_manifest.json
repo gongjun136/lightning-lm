@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "generator": {
+    "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\scripts\\reproduction\\formal_report\\build_frontend_compute_figures.py",
+    "sha256": "fc319463b64a8476bb2ae0f0c1ba6d84be21c25430117d1f10b436bf6b5bab7b"
+  },
+  "inputs": {
+    "sequence_summary": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\sequence_method_summary.csv",
+      "sha256": "e4c59ec91311251fb85bda61d1a5ad418aa6967e306d2f33d1e9c3472246cec9"
+    },
+    "overall_summary": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\overall_method_summary.csv",
+      "sha256": "41349b602fa14531d665a30b4eed53948bff8abdcdedb0570d9136b4d4f8587e"
+    },
+    "lightning_stages": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\lightning_stage_summary.csv",
+      "sha256": "19934ee92626f849a15213f92ac3cf669dc37d2848dfa4f501dded1a3471300b"
+    },
+    "frame_timing": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\frame_timing.csv",
+      "sha256": "37b875a84e7d19d8d654306edfe3466dd6dcd0aefaaf2a16b72e24ebd5ea0cca"
+    },
+    "validation": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\validation.json",
+      "sha256": "e1bcdade6b5d869f537acb9213a815da995d3fcc47228b595fc23d3ad9121661"
+    },
+    "analysis_manifest": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend_compute\\analysis_manifest.json",
+      "sha256": "d34f14a7dcfbcd2095c4d5a78cd479a0dde48e42ac7a5e04cbfb393e5bfc3b9a"
+    }
+  },
+  "figures": {
+    "frontend_compute_summary": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\doc\\assets\\formal_report_20260717\\m3dgr_frontend_compute_summary.png",
+      "sha256": "1964098e0ebe55c958b351e650805f2b3a8250bdadc4faab403d7bd2c2dfc0af"
+    },
+    "lightning_stage_composition": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\doc\\assets\\formal_report_20260717\\lightning_lio_timing_stage_summary.png",
+      "sha256": "800ce44a76bf8c24759b68ed6bb915d42aaf8616eabdc144a05032832ce9c78b"
+    },
+    "lightning_latency_distribution": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\doc\\assets\\formal_report_20260717\\lightning_lio_timing_distribution.png",
+      "sha256": "1db6bf82cde4ddb6bbdc93fc9ba03d29b56067584ec6475b74389d068a0203eb"
+    },
+    "lightning_timing_timeseries": {
+      "path": "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\doc\\assets\\formal_report_20260717\\lightning_lio_timing_timeseries.png",
+      "sha256": "467bdf140c380ecfafbf394f2636086a00d84a00894a1e101c5d91e8a01e4468"
+    }
+  }
+}

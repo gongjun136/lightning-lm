@@ -1,6 +1,7 @@
 #include <pcl/common/transforms.h>
 #include <yaml-cpp/yaml.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 
@@ -321,12 +322,42 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         return RunStatus::kConsumed;
     }
 
+    using BenchClock = std::chrono::steady_clock;
+    const auto elapsed_ms = [](const BenchClock::time_point &start) {
+        return std::chrono::duration<double, std::milli>(BenchClock::now() - start).count();
+    };
+    const std::size_t input_points = measures_.scan_ ? measures_.scan_->size() : 0;
+    double imu_undistort_ms = 0.0;
+    double downsample_ms = 0.0;
+    double match_setup_ms = 0.0;
+    double scan_match_ms = 0.0;
+    double map_update_ms = 0.0;
+    const auto emit_benchmark = [&](const char *phase, std::size_t output_points) {
+        const double core_update_ms =
+            imu_undistort_ms + downsample_ms + match_setup_ms + scan_match_ms + map_update_ms;
+        LOG(INFO) << std::fixed << std::setprecision(6)
+                  << "LIO_BENCH_FRAME method=lightning_lm phase=" << phase
+                  << " timestamp_s=" << measures_.lidar_end_time_
+                  << " preprocess_ms=" << current_preprocess_ms_
+                  << " imu_undistort_ms=" << imu_undistort_ms
+                  << " downsample_ms=" << downsample_ms
+                  << " match_setup_ms=" << match_setup_ms
+                  << " scan_match_ms=" << scan_match_ms
+                  << " map_update_ms=" << map_update_ms
+                  << " core_update_ms=" << core_update_ms
+                  << " total_ms=" << (current_preprocess_ms_ + core_update_ms)
+                  << " input_points=" << input_points
+                  << " output_points=" << output_points;
+    };
+
     // IMU处理包含两种情况：
     // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
     // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
     // Keyframes keep the previous cloud pointer, so allocate a new output instead of clearing it in place.
     scan_undistort_.reset(new PointCloudType());
+    const auto imu_start = BenchClock::now();
     p_imu_->Process(measures_, kf_, scan_undistort_);
+    imu_undistort_ms = elapsed_ms(imu_start);
 
     if (!scan_undistort_ || scan_undistort_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
@@ -336,6 +367,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
 
     // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
     if (flg_first_scan_) {
+        const auto initial_map_start = BenchClock::now();
         LOG(INFO) << "first scan pts: " << scan_undistort_->size();
 
         state_point_ = kf_.GetX();
@@ -350,6 +382,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         state_point_.timestamp_ = lidar_end_time_;
         flg_first_scan_ = false;
         last_tracking_healthy_ = true;
+        map_update_ms = elapsed_ms(initial_map_start);
+        emit_benchmark("initialization", scan_undistort_->size());
         return RunStatus::kOutput;
     }
 
@@ -384,6 +418,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
 
     // 对当前去畸变点云降采样，后续匹配和建图都使用scan_down_lidar_，避免逐点处理原始大点云。
+    const auto downsample_start = BenchClock::now();
     if (multi_lidar_config_.enabled) {
         scan_down_lidar_ = DownsamplePreservingSource(scan_undistort_, filter_size_scan_);
     } else {
@@ -414,6 +449,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         // LOG(INFO) << "Now pts: " << scan_down_lidar_->size() << ", before: " << cur_pts;
         cur_pts = scan_down_lidar_->size();
     }
+    downsample_ms = elapsed_ms(downsample_start);
 
     // 极端情况下仍然点数不足，继续匹配会让最近邻和平面拟合没有意义，直接跳过。
     if (cur_pts < 5) {
@@ -423,6 +459,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         return RunStatus::kConsumed;
     }
 
+    const auto match_setup_start = BenchClock::now();
     scan_down_world_->resize(cur_pts);
     nearest_points_.resize(cur_pts);
 
@@ -434,10 +471,12 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
 
     // 保存预测状态，后面用来统计Lidar观测更新带来的位姿修正量。
     auto pred_state = kf_.GetX();
+    match_setup_ms = elapsed_ms(match_setup_start);
     // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
     // kf_.ChangeX(pred_state);
 
     // Lidar观测更新：ESKF内部会多次调用ObsModel()，构造点面/点点残差的HTH和HTr。
+    const auto scan_match_start = BenchClock::now();
     kf_.Update(ESKF::ObsType::LIDAR, 1.0);
 
     // 更新当前Lidar帧结束时刻的前端状态，供建图、关键帧和外部查询使用。
@@ -502,6 +541,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         }
     }
 
+    scan_match_ms = elapsed_ms(scan_match_start);
+
     LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
               << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "
               << effect_feat_icp_;
@@ -521,6 +562,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     /// keyframes - 智能关键帧创建决策
     // 只有创建关键帧时才会调用MakeKF()，而MakeKF()内部会把当前帧点云增量加入IVox地图。
     // 因此关键帧阈值也间接控制了局部地图更新频率。
+    const auto map_update_start = BenchClock::now();
     if (last_kf_ == nullptr) {
         MakeKF();  // 第一个关键帧：直接创建
     } else {
@@ -539,6 +581,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
             MakeKF();  // 非SLAM模式下，超过2秒强制创建关键帧，防止长时间无关键帧
         }
     }
+    map_update_ms = elapsed_ms(map_update_start);
+    emit_benchmark("tracking", scan_down_lidar_->size());
 
     // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
     // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
@@ -660,7 +704,8 @@ void LaserMapping::MakeKF() {
     // }
 }
 
-bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats) {
+bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats,
+                                double preprocess_ms) {
     if (!cloud || cloud->empty()) {
         return false;
     }
@@ -671,6 +716,7 @@ bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLid
     }
     lidar_buffer_.push_back(std::move(cloud));
     time_buffer_.push_back(timestamp);
+    preprocess_time_buffer_ms_.push_back(preprocess_ms);
     if (stats) {
         lidar_stats_buffer_.push_back(*stats);
     } else {
@@ -702,17 +748,27 @@ bool LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::Share
 bool LaserMapping::ProcessPointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr &msg, int lidar_id) {
     UL lock(mtx_buffer_);
     bool accepted = false;
+    double preprocess_ms = 0.0;
     Timer::Evaluate(
         [&, this]() {
             ++scan_count_;
             const double timestamp = ToSec(msg->header.stamp);
             CloudPtr cloud(new PointCloudType());
+            const auto preprocess_start = std::chrono::steady_clock::now();
             preprocess_->Process(msg, cloud);
+            preprocess_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - preprocess_start)
+                                .count();
+            // PointCloudPreprocess stores per-point relative time, but not every
+            // handler preserves the ROS header in the internal PCL cloud.  The
+            // localization pipeline reads this header as an absolute nanosecond
+            // timestamp, so propagate it explicitly at the input boundary.
+            cloud->header.stamp = static_cast<std::uint64_t>(std::llround(timestamp * 1e9));
             if (multi_lidar_config_.enabled) {
                 accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
                 DrainAssembledFrames();
             } else {
-                accepted = EnqueueCloud(timestamp, cloud);
+                accepted = EnqueueCloud(timestamp, cloud, nullptr, preprocess_ms);
             }
         },
         "Preprocess (Standard)");
@@ -727,17 +783,23 @@ bool LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::S
 bool LaserMapping::ProcessPointCloud2(const livox_ros_driver2::msg::CustomMsg::SharedPtr &msg, int lidar_id) {
     UL lock(mtx_buffer_);
     bool accepted = false;
+    double preprocess_ms = 0.0;
     Timer::Evaluate(
         [&, this]() {
             ++scan_count_;
             const double timestamp = ToSec(msg->header.stamp);
             CloudPtr cloud(new PointCloudType());
+            const auto preprocess_start = std::chrono::steady_clock::now();
             preprocess_->Process(msg, cloud);
+            preprocess_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - preprocess_start)
+                                .count();
+            cloud->header.stamp = static_cast<std::uint64_t>(std::llround(timestamp * 1e9));
             if (multi_lidar_config_.enabled) {
                 accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
                 DrainAssembledFrames();
             } else {
-                accepted = EnqueueCloud(timestamp, cloud);
+                accepted = EnqueueCloud(timestamp, cloud, nullptr, preprocess_ms);
             }
         },
         "Preprocess (Livox)");
@@ -777,6 +839,8 @@ bool LaserMapping::SyncPackages() {
     if (!lidar_pushed_) {
         measures_.scan_ = lidar_buffer_.front();
         measures_.lidar_begin_time_ = time_buffer_.front();
+        current_preprocess_ms_ =
+            preprocess_time_buffer_ms_.empty() ? 0.0 : preprocess_time_buffer_ms_.front();
         current_lidar_stats_ = lidar_stats_buffer_.empty() ? MultiLidarFrameStats() : lidar_stats_buffer_.front();
 
         if (measures_.scan_->points.size() <= 1) {
@@ -833,6 +897,7 @@ bool LaserMapping::SyncPackages() {
 
     lidar_buffer_.pop_front();
     time_buffer_.pop_front();
+    if (!preprocess_time_buffer_ms_.empty()) preprocess_time_buffer_ms_.pop_front();
     if (!lidar_stats_buffer_.empty()) lidar_stats_buffer_.pop_front();
     lidar_pushed_ = false;
 

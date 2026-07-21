@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "chart_contract": {
+    "summary_statistics": "mean of 3 independent runs; sample standard deviation; worst values remain in CSV",
+    "trajectory_selection": "repeat 1 selected before result inspection",
+    "alignment": "fixed-scale SE(3) on each analysis-defined common support",
+    "resource_panels": "mean CPU cores and peak process-group RSS; ATE is comparison context",
+    "bar_baseline": "zero"
+  },
+  "inputs": {
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_backend\\aligned_samples.csv": "4c5eeb5a4ff3051b1264629c8456d6c287e3d11a286a8bedd8e44e2e3226ba8e",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_backend\\summary_metrics.csv": "2d934f9b3607f254dfeb2b0930cc41ef4caacbb68ee0ddd7447ab658359f49a9",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_backend\\validation.json": "8d10057338475fa9bee3a61d572bd84a2aab0f678f7101a08370c26222427164",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend\\aligned_samples.csv": "bb34cea9712389682cd758827e2c255e8a7f8b20c9e305045dd251cf9de6c85e",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend\\summary_metrics.csv": "663d1ff6f4cd1b65a972b745cc24745ea108bdb8c25a750818d37797a2e72fa7",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_frontend\\validation.json": "b3cbafa62fe9907e57a02c4b85fb29621cf7b4ef33c244520adaf431ea633734",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_localization\\aligned_samples.csv": "61d38b15ec8791e5306b5c6033a87a03a30405b1ec1c5fe1f8f1dc04d5911805",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_localization\\summary_metrics.csv": "2fd1fc7a1061bca9c2b05aac92575f1021070cfee5bba41abf182e40e430c9ec",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\m3dgr_localization\\validation.json": "bef102d359107f7c8731d10d6d5e4d7e228862a368a485008dd5e4a643d2eac3",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260701_mapping\\aligned_samples.csv": "f45a242fce37b2ae81e6394031bc3ea851707cde5a840d4f5bd24f6b1e7037c8",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260701_mapping\\summary_metrics.csv": "3598a3726f98b96cb6ec39eac9cf57940e9dd52eb152c98aafe385f8ef228301",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260701_mapping\\validation.json": "e434017fe7da4d122e98bab4816a9610764b71b7be76f909271a466854c42ee1",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260716_relocalization\\aligned_samples.csv": "3e55f98cf84e0cc4042c25f5bd28849dcf7f9abf7cbe4d7c60fc429f87358ded",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260716_relocalization\\summary_metrics.csv": "26ef57013a15a8c3cac4806e9fbb21ff50c1d41cea2e3733467350aa71a27140",
+    "F:\\SLAM_AI_KnowledgeBase\\code\\WSL_Ubuntu_22.04\\lightning-lm\\runs\\formal_report_20260717\\analysis\\sany_20260716_relocalization\\validation.json": "b134e20986b453f55898162e0f40c6057dfe4ab7e280721811ea7117d6476fe7"
+  },
+  "outputs": {
+    "m3dgr_frontend_summary.png": "47ea3aea30616ec0d9d29c42f51a10b14bdb619b5ddf9c0eda51c2f999286c19",
+    "m3dgr_frontend_trajectory_error.png": "f6fb0a9b4f45b4bb876e00ebc5b5d4283853cfb0562453a195bfd4c3a057096b",
+    "m3dgr_backend_summary.png": "490da636b1956ed3ffadb29a2bc71aea662f11712368f2341f77cdc6478e0dd3",
+    "m3dgr_backend_trajectory_error.png": "ef3a093a8defe6f2cb620add3dae6edf2d26d8f80573aab1b068eb34f3d0899a",
+    "m3dgr_localization_summary.png": "7916c6f6cabec2ceeed1da3eaf868ad0977cfbff32a20ef6b957221708798584",
+    "m3dgr_localization_trajectory_error.png": "b67019c8cc30c2e6329e3c06332f43b31691b879784931ce40449f8db0336fcf",
+    "sany_mapping_summary.png": "5a3448d93606fd6b4477c9f0836f4c62306c9719fd201b9f2cd365abfabfd244",
+    "sany_mapping_trajectory_error.png": "cb59ead4ad9f843d280c3e81ac16110fc6f461562fcfd0eb3100f76bd83ff3a2",
+    "sany_relocalization_summary.png": "7a0c8e7968a53e0870419bbb9ddf6fab3d68f2920a0732da3a6ea87ff81479b3",
+    "sany_relocalization_trajectory_error.png": "ab3106754e51f28478a6bba5b5af18214c2cb5437bc79d9c3839acbfd7bb7abe"
+  }
+}

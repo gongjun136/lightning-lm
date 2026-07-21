@@ -140,6 +140,16 @@ BackendPipelineOptions ReadOptions(const YAML::Node& root, bool online_mode) {
         ValueOr(btc, "confirmation_max_history_gap", options.btc.confirmation_max_history_gap);
     options.btc.loop_cooldown_descriptors =
         ValueOr(btc, "loop_cooldown_descriptors", options.btc.loop_cooldown_descriptors);
+    options.btc.enable_odom_revisit_fallback =
+        ValueOr(btc, "enable_odom_revisit_fallback", options.btc.enable_odom_revisit_fallback);
+    options.btc.odom_revisit_search_radius =
+        ValueOr(btc, "odom_revisit_search_radius", options.btc.odom_revisit_search_radius);
+    options.btc.odom_revisit_min_journey =
+        ValueOr(btc, "odom_revisit_min_journey", options.btc.odom_revisit_min_journey);
+    options.btc.odom_revisit_degenerate_min_matches = ValueOr(
+        btc, "odom_revisit_degenerate_min_matches", options.btc.odom_revisit_degenerate_min_matches);
+    options.btc.odom_revisit_max_drift_ratio =
+        ValueOr(btc, "odom_revisit_max_drift_ratio", options.btc.odom_revisit_max_drift_ratio);
     options.btc.max_odom_revisit_distance =
         ValueOr(btc, "max_odom_revisit_distance", options.btc.max_odom_revisit_distance);
     options.btc.min_optimization_translation =
@@ -593,7 +603,7 @@ bool BackendPipeline::SaveDiagnostics(const std::string& directory) const {
     std::ofstream loop_csv(std::filesystem::path(directory) / "btc_loop_candidates.csv");
     if (!loop_csv.is_open()) return false;
     loop_csv << "current_descriptor,history_descriptor,current_keyframe,history_keyframe,current_timestamp,"
-                "history_timestamp,candidate,accepted,optimization_warranted,score,drift_translation,"
+                "history_timestamp,candidate,candidate_source,accepted,optimization_warranted,score,drift_translation,"
                 "drift_rotation_deg,journey_span,drift_ratio,odom_revisit_distance,observability,"
                 "plane_icp_matches,plane_icp_converged,degenerate_fallback,"
                 "confirmation_count,points,descriptors,"
@@ -602,7 +612,8 @@ bool BackendPipeline::SaveDiagnostics(const std::string& directory) const {
         loop_csv << loop.current_descriptor_id << ',' << loop.history_descriptor_id << ','
                  << loop.current_keyframe_id << ',' << loop.history_keyframe_id << ',' << std::setprecision(12)
                  << loop.current_timestamp << ',' << loop.history_timestamp << ',' << loop.candidate_found << ','
-                 << loop.accepted << ',' << loop.optimization_warranted << ',' << loop.score << ','
+                 << loop.candidate_source << ',' << loop.accepted << ',' << loop.optimization_warranted << ','
+                 << loop.score << ','
                  << loop.drift_translation << ',' << loop.drift_rotation_deg << ',' << loop.journey_span << ','
                  << loop.drift_ratio << ',' << loop.odom_revisit_distance << ','
                  << loop.plane_icp_observability << ',' << loop.plane_icp_matches << ','

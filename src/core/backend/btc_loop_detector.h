@@ -31,6 +31,14 @@ struct BtcLoopDetectorOptions {
     int confirmation_max_current_gap = 2;
     int confirmation_max_history_gap = 2;
     int loop_cooldown_descriptors = 10;
+    // Recover revisits that are close in LIO odometry but whose BTC
+    // descriptor is absent or below the global retrieval threshold. This is
+    // candidate recall only; point-to-plane verification remains mandatory.
+    bool enable_odom_revisit_fallback = false;
+    double odom_revisit_search_radius = 5.0;
+    double odom_revisit_min_journey = 50.0;
+    int odom_revisit_degenerate_min_matches = 60;
+    double odom_revisit_max_drift_ratio = 0.05;
     double max_odom_revisit_distance = 0.0;
     double min_optimization_translation = 0.20;
     double min_optimization_rotation_deg = 2.0;
@@ -73,14 +81,16 @@ struct BtcLoopResult {
     std::size_t descriptor_count = 0;
     double generation_time_ms = 0.0;
     double search_time_ms = 0.0;
+    std::string candidate_source = "none";
     std::string rejection_reason;
     SE3 T_history_lidar_current_lidar;
 };
 
 // BTC place recognition adapter. As in Voxel-SLAM, one descriptor is built
 // from a non-overlapping aggregate of locally optimized scans instead of from
-// a single scan. Candidate retrieval is descriptor-only; odometry is used
-// solely as a post-verification safety gate.
+// a single scan. BTC remains the global retrieval path. An optional odometry
+// proximity path can recover a start/end revisit, but it never bypasses point-
+// cloud verification or the existing safety gates.
 class BtcLoopDetector {
    public:
     explicit BtcLoopDetector(BtcLoopDetectorOptions options = {});
@@ -111,6 +121,7 @@ class BtcLoopDetector {
         const pcl::PointCloud<pcl::PointXYZINormal>::ConstPtr& current,
         const pcl::PointCloud<pcl::PointXYZINormal>::ConstPtr& history,
         Eigen::Matrix3d& rotation, Eigen::Vector3d& translation) const;
+    int FindOdomRevisitCandidate(const BtcDescriptorEntry& current) const;
 
     BtcLoopDetectorOptions options_;
     STDescManager manager_;

@@ -5,6 +5,7 @@ set -euo pipefail
 bag="${1:?usage: run_voxel_slam_full_backend.sh BAG SEQUENCE OUTPUT_DIR}"
 sequence="${2:?missing sequence}"
 run_dir="${3:?missing output directory}"
+repeat="${4:-1}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 lightning_repo="$(cd "$script_dir/../../../.." && pwd)"
@@ -19,8 +20,11 @@ cpu_count="${BENCH_CPU_COUNT:-8}"
 play_rate="${BENCH_PLAY_RATE:-1.0}"
 ros_port="${BENCH_ROS_PORT:-11331}"
 finish_timeout="${BENCH_FINISH_TIMEOUT_S:-1800}"
+inventory="${BENCH_INVENTORY_JSON:-/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench/inventory/bag_inventory.json}"
+completion_tolerance="${BENCH_COMPLETION_TOLERANCE_S:-0.25}"
+maximum_allowed_output_gap="${BENCH_MAX_OUTPUT_GAP_S:-0.20}"
 
-for required in "$bag" "$config" "$binary" "$monitor" "$extractor"; do
+for required in "$bag" "$config" "$binary" "$monitor" "$extractor" "$inventory"; do
   [[ -e "$required" ]] || { echo "missing dependency: $required" >&2; exit 2; }
 done
 if [[ -d "$run_dir" ]] && [[ -n "$(find "$run_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
@@ -142,6 +146,44 @@ awk 'NF >= 8 {print $1,$2,$3,$4,$5,$6,$7,$8}' "$trajectory" >"$output_tum"
 python3 "$extractor" --log "$run_dir/logs/algorithm.log" --trajectory "$output_tum" \
   --output "$run_dir/data/new_map/backend_diagnostics/btc_loop_candidates.csv"
 
+readarray -t inventory_values < <(python3 -c 'import json,sys
+rows=json.load(open(sys.argv[1],encoding="utf-8"))
+row=next((item for item in rows if item.get("sequence")==sys.argv[2]),None)
+if row is None: raise SystemExit(f"missing inventory row: {sys.argv[2]}")
+print(row["sensor_duration_s"])
+print(row["lidar_last_end_ns"]*1e-9)
+print(row["lidar_count"])' "$inventory" "$sequence")
+sensor_duration="${inventory_values[0]}"
+expected_last_lidar_end="${inventory_values[1]}"
+expected_lidar_frames="${inventory_values[2]}"
+
+readarray -t trajectory_checks < <(python3 -c 'import math,sys
+last=-math.inf; count=invalid=nonmono=0; gaps=[]
+for line in open(sys.argv[1],encoding="utf-8"):
+    try: values=[float(v) for v in line.split()]
+    except ValueError: invalid+=1; continue
+    if len(values)!=8 or not all(math.isfinite(v) for v in values): invalid+=1; continue
+    if values[0] <= last: nonmono+=1; continue
+    qnorm=math.sqrt(sum(v*v for v in values[4:8]))
+    if abs(qnorm-1.0)>1e-3: invalid+=1; continue
+    if math.isfinite(last): gaps.append(values[0]-last)
+    last=values[0]; count+=1
+limit=float(sys.argv[2])
+print(count); print(last if math.isfinite(last) else 0.0); print(invalid); print(nonmono)
+print(max(gaps) if gaps else 0.0); print(sum(gap>limit for gap in gaps))' "$output_tum" "$maximum_allowed_output_gap")
+trajectory_lines="${trajectory_checks[0]}"
+last_stamp="${trajectory_checks[1]}"
+invalid_count="${trajectory_checks[2]}"
+nonmonotonic_count="${trajectory_checks[3]}"
+maximum_output_gap_s="${trajectory_checks[4]}"
+excessive_output_gap_count="${trajectory_checks[5]}"
+completion="incomplete"
+if awk -v actual="$last_stamp" -v expected="$expected_last_lidar_end" -v tol="$completion_tolerance" \
+  'BEGIN { exit !(actual >= expected-tol) }'; then
+  completion="reached_final_lidar"
+fi
+pcd_count="$(find "$(dirname "$trajectory")" -maxdepth 1 -type f -name '*.pcd' | wc -l)"
+
 touch "$run_dir/monitor.stop"
 wait "$monitor_pid" 2>/dev/null || true
 monitor_pid=""
@@ -157,14 +199,41 @@ wall_s="$(awk -v ns="$((end_ns-start_ns))" 'BEGIN {printf "%.6f", ns/1e9}')"
 cat >"$run_dir/run_metadata.txt" <<EOF
 method=voxel_slam_full_backend
 sequence=$sequence
+repeat=$repeat
 bag=$(realpath "$bag")
+bag_size_bytes=$(stat -c %s "$bag")
+bag_sha256=$(sha256sum "$bag" | awk '{print $1}')
 config=$(realpath "$config")
+config_sha256=$(sha256sum "$config" | awk '{print $1}')
 algorithm_binary=$(realpath "$binary")
+algorithm_binary_sha256=$(sha256sum "$binary" | awk '{print $1}')
+runner_sha256=$(sha256sum "$0" | awk '{print $1}')
+inventory=$(realpath "$inventory")
+inventory_sha256=$(sha256sum "$inventory" | awk '{print $1}')
 cpu_set=$cpu_set
 allocated_cpus=$cpu_count
 play_rate=$play_rate
 wall_time_s=$wall_s
 output_tum=$output_tum
+sensor_duration_s=$sensor_duration
+expected_lidar_frames=$expected_lidar_frames
+expected_last_lidar_end_s=$expected_last_lidar_end
+completion_tolerance_s=$completion_tolerance
+completion=$completion
+trajectory_lines=$trajectory_lines
+last_stamp=$last_stamp
+invalid_count=$invalid_count
+nonmonotonic_count=$nonmonotonic_count
+maximum_allowed_output_gap_s=$maximum_allowed_output_gap
+maximum_output_gap_s=$maximum_output_gap_s
+excessive_output_gap_count=$excessive_output_gap_count
+pcd_count=$pcd_count
 completed_at=$(date --iso-8601=seconds)
 EOF
+if [[ "$completion" != "reached_final_lidar" || "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || \
+      "$nonmonotonic_count" -ne 0 || "$excessive_output_gap_count" -ne 0 || "$pcd_count" -ne "$trajectory_lines" || \
+      ! -s "$run_dir/resource_summary.json" ]]; then
+  echo "Voxel-SLAM full backend failed contract: completion=$completion lines=$trajectory_lines pcds=$pcd_count invalid=$invalid_count nonmono=$nonmonotonic_count gaps=$excessive_output_gap_count" >&2
+  exit 4
+fi
 echo "completed method=voxel_slam_full_backend sequence=$sequence output=$run_dir"

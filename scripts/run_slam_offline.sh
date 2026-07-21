@@ -27,6 +27,8 @@ Options:
   --output-global-map PATH      Override global PCD path
   --output-tum PATH             Override SLAM TUM path
   --output-frame-stats PATH     Override fused-frame CSV path
+  --backend-evaluation-only BOOL
+                                Skip map/relocalization export (default: false)
   -h, --help                    Show this help
 
 Arguments after `--` are forwarded unchanged to run_slam_offline.
@@ -57,6 +59,7 @@ completion_tolerance="0.25"
 max_output_gap="0.30"
 watchdog_margin="300"
 wait_ui="${LIGHTNING_LM_WAIT_UI:-false}"
+backend_evaluation_only="false"
 trajectory_tum="${LIGHTNING_LM_OUTPUT_TUM:-}"
 map_dir=""
 global_map=""
@@ -82,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --output-global-map) global_map="${2:?missing value for --output-global-map}"; shift 2 ;;
     --output-tum) trajectory_tum="${2:?missing value for --output-tum}"; shift 2 ;;
     --output-frame-stats) frame_stats="${2:?missing value for --output-frame-stats}"; shift 2 ;;
+    --backend-evaluation-only) backend_evaluation_only="${2:?missing value for --backend-evaluation-only}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; extra_args=("$@"); break ;;
     *)
@@ -233,6 +237,7 @@ setsid taskset -c "$cpu_set" "$binary" \
   --playback_rate="$playback_rate" \
   --max_lidar_frames="$max_lidar_frames" \
   --wait_ui="$wait_ui" \
+  --backend_evaluation_only="$backend_evaluation_only" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &
 algorithm_pid=$!
@@ -378,6 +383,7 @@ fi
   echo "cpu_set=$cpu_set"
   echo "allocated_cpus=$allocated_cpus"
   echo "play_rate=$playback_rate"
+  echo "backend_evaluation_only=$backend_evaluation_only"
   echo "config=$config_path"
   echo "config_sha256=$(sha256sum "$config_path" | awk '{print $1}')"
   echo "algorithm_binary=$binary"
@@ -417,14 +423,22 @@ fi
 expected_completion="reached_final_lidar"
 if [[ "$max_lidar_frames" -gt 0 ]]; then expected_completion="limited_frame_run"; fi
 missing_output=0
-for output in "$trajectory_tum" "$frame_stats" "$timing_csv" "$timing_summary" \
-              "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json" "$map_dir/index.txt" "$global_map"; do
+required_outputs=("$trajectory_tum" "$frame_stats" "$timing_csv" "$timing_summary"
+                  "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json")
+if [[ "$backend_evaluation_only" != "true" ]]; then
+  required_outputs+=("$map_dir/index.txt" "$global_map")
+fi
+for output in "${required_outputs[@]}"; do
   if [[ ! -s "$output" ]]; then echo "missing or empty output: $output" >&2; missing_output=1; fi
 done
+map_contract_failed=0
+if [[ "$backend_evaluation_only" != "true" && ( "$map_chunk_count" -lt 1 || "$map_global_points" -lt 1000 ) ]]; then
+  map_contract_failed=1
+fi
 if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion" != "$expected_completion" || \
       "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || "$nonmonotonic_count" -ne 0 || \
       "$excessive_output_gap_count" -ne 0 || "$timing_status" != "ok" || "$timing_stage_count" -lt 1 || \
-      "$map_chunk_count" -lt 1 || "$map_global_points" -lt 1000 || "$missing_output" -ne 0 ]]; then
+      "$map_contract_failed" -ne 0 || "$missing_output" -ne 0 ]]; then
   echo "run failed contract: rc=$algorithm_rc watchdog=$watchdog_status completion=$completion lines=$trajectory_lines map_chunks=$map_chunk_count map_points=$map_global_points" >&2
   exit 4
 fi

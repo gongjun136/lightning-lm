@@ -32,6 +32,8 @@ DEFINE_string(output_global_map, "", "output global map PCD; default is output_m
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
 DEFINE_string(output_backend_diagnostics, "",
               "backend diagnostics directory; default is output_map_dir/backend_diagnostics");
+DEFINE_bool(backend_evaluation_only, false,
+            "save trajectories and backend diagnostics but skip map/relocalization exports");
 DEFINE_bool(wait_ui, true, "wait for the 3D UI window to close after offline processing");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
 DEFINE_double(playback_rate, 0.0,
@@ -400,25 +402,27 @@ int main(int argc, char** argv) {
     const std::filesystem::path map_dir(FLAGS_output_map_dir);
     const std::string global_map_path =
         FLAGS_output_global_map.empty() ? (map_dir / "global.pcd").string() : FLAGS_output_global_map;
-    bool map_saved = false;
-    Timer::Evaluate(
-        [&]() {
-            if (std::filesystem::exists(map_dir)) {
-                std::filesystem::remove_all(map_dir);
-            }
-            std::filesystem::create_directories(map_dir);
-            const auto global_map = lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
-            TiledMap::Options tm_options;
-            tm_options.map_path_ = map_dir.string();
-            TiledMap tiled_map(tm_options);
-            tiled_map.ConvertFromFullPCD(global_map, keyframes.front()->GetOptPose(), map_dir.string());
-            map_saved = pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) == 0;
-        },
-        "Offline Tiled Map Export");
-    if (!map_saved) {
-        LOG(ERROR) << "failed to save global map: " << global_map_path;
-        Timer::PrintAll();
-        return 4;
+    if (!FLAGS_backend_evaluation_only) {
+        bool map_saved = false;
+        Timer::Evaluate(
+            [&]() {
+                if (std::filesystem::exists(map_dir)) {
+                    std::filesystem::remove_all(map_dir);
+                }
+                std::filesystem::create_directories(map_dir);
+                const auto global_map = lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
+                TiledMap::Options tm_options;
+                tm_options.map_path_ = map_dir.string();
+                TiledMap tiled_map(tm_options);
+                tiled_map.ConvertFromFullPCD(global_map, keyframes.front()->GetOptPose(), map_dir.string());
+                map_saved = pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) == 0;
+            },
+            "Offline Tiled Map Export");
+        if (!map_saved) {
+            LOG(ERROR) << "failed to save global map: " << global_map_path;
+            Timer::PrintAll();
+            return 4;
+        }
     }
 
     if (!FLAGS_output_tum.empty()) {
@@ -437,7 +441,7 @@ int main(int argc, char** argv) {
         if (!new_backend->SaveDiagnostics(diagnostics)) {
             LOG(WARNING) << "failed to save backend diagnostics to " << diagnostics;
         }
-        if (new_backend->GetOptions().btc.enabled &&
+        if (!FLAGS_backend_evaluation_only && new_backend->GetOptions().btc.enabled &&
             !new_backend->SaveRelocalizationDatabase((map_dir / "btc_relocalization").string())) {
             LOG(ERROR) << "failed to save required BTC relocalization database under " << map_dir;
             Timer::PrintAll();

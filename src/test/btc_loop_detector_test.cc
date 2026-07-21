@@ -115,6 +115,32 @@ int main() {
         return 5;
     }
 
+    lightning::backend::BtcLoopDetectorOptions fallback_options = options;
+    fallback_options.min_loop_score = 2.0;
+    fallback_options.enable_odom_revisit_fallback = true;
+    fallback_options.odom_revisit_search_radius = 0.5;
+    fallback_options.odom_revisit_min_journey = 1.0;
+    lightning::backend::BtcLoopDetector fallback_detector(fallback_options);
+    std::optional<lightning::backend::BtcLoopResult> fallback_result;
+    for (unsigned long index = 0; index < 6; ++index) {
+        const auto current = fallback_detector.AddKeyframe(
+            MakeKeyframe(index, static_cast<double>(index), positions[index], cloud),
+            lightning::SE3());
+        if (current) fallback_result = current;
+    }
+    if (!fallback_result || !fallback_result->accepted ||
+        fallback_result->candidate_source != "odom_revisit" ||
+        fallback_result->history_descriptor_id != 0) {
+        std::cerr << "odometry revisit fallback failed: source="
+                  << (fallback_result ? fallback_result->candidate_source : "missing")
+                  << ", candidate="
+                  << (fallback_result ? fallback_result->history_descriptor_id : -1)
+                  << ", reason="
+                  << (fallback_result ? fallback_result->rejection_reason : "no_result")
+                  << std::endl;
+        return 10;
+    }
+
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path temporary_root =
         std::filesystem::temp_directory_path() / ("lightning_btc_relocalizer_test_" + std::to_string(unique));

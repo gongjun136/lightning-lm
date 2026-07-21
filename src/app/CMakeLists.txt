@@ -52,6 +52,15 @@ target_link_libraries(run_loc_online
         ${third_party_libs}
 )
 
+add_executable(convert_voxel_slam_map
+        convert_voxel_slam_map.cc
+)
+
+target_link_libraries(convert_voxel_slam_map
+        ${PROJECT_NAME}.libs
+        ${third_party_libs}
+)
+
 add_executable(test_ui
         test_ui.cc
 )
@@ -71,4 +80,5 @@ target_link_libraries(test_ui_init_quit
 )
 
 install(TARGETS run_frontend_offline run_frontend_online run_slam_offline run_slam_online run_loc_offline run_loc_online
+        convert_voxel_slam_map
         DESTINATION lib/${PROJECT_NAME})

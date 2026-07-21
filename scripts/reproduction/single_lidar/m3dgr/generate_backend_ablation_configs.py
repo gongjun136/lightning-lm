@@ -87,6 +87,21 @@ VARIANTS = {
             "adaptive_velocity_propagation": False,
         },
     },
+    # Controlled backend baselines: every fasterlio field is inherited from
+    # the same base file. Only backend modules differ.
+    "legacy_controlled": {"mode": "legacy"},
+    "local_ba_only": {
+        "mode": "ba_btc_hba",
+        "local_ba": True,
+        "btc": False,
+        "hba": False,
+    },
+    "loop_pgo": {
+        "mode": "ba_btc_hba",
+        "local_ba": True,
+        "btc": True,
+        "hba": False,
+    },
     "ba_btc_hba": {
         "mode": "ba_btc_hba",
         "local_ba": True,

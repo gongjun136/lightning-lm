@@ -191,6 +191,31 @@ BtcLoopDetector::RefineSummary BtcLoopDetector::RefinePlaneTransform(
     return summary;
 }
 
+int BtcLoopDetector::FindOdomRevisitCandidate(const BtcDescriptorEntry& current) const {
+    if (!options_.enable_odom_revisit_fallback || !current.endpoint || entries_.empty()) return -1;
+
+    const int minimum_descriptor_gap = std::max(1, options_.descriptor.skip_near_num_);
+    double best_distance = options_.odom_revisit_search_radius;
+    int best_index = -1;
+    for (std::size_t index = 0; index < entries_.size(); ++index) {
+        const BtcDescriptorEntry& history = entries_[index];
+        if (!history.endpoint ||
+            current.descriptor_id - history.descriptor_id <= minimum_descriptor_gap ||
+            current.journey - history.journey < options_.odom_revisit_min_journey) {
+            continue;
+        }
+        const double distance =
+            (current.endpoint->GetLIOPose().translation() -
+             history.endpoint->GetLIOPose().translation())
+                .norm();
+        if (distance <= best_distance) {
+            best_distance = distance;
+            best_index = static_cast<int>(index);
+        }
+    }
+    return best_index;
+}
+
 BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& keyframes,
                                              const SE3& T_imu_lidar) {
     BtcLoopResult result;
@@ -241,6 +266,24 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
     current_entry.journey = journey_;
     current_entry.endpoint = current_endpoint;
 
+    // An odometry-neighbour candidate has a stronger locality prior than a
+    // weak/ambiguous descriptor result. It still passes through plane ICP and
+    // every acceptance gate below.
+    const int odom_candidate = FindOdomRevisitCandidate(current_entry);
+    if (odom_candidate >= 0) {
+        search_result = {odom_candidate, 0.0};
+        const SE3 T_world_history_lidar =
+            entries_[odom_candidate].endpoint->GetOptPose() * T_imu_lidar;
+        const SE3 T_world_current_lidar = current_endpoint->GetOptPose() * T_imu_lidar;
+        const SE3 T_history_lidar_current_lidar =
+            T_world_history_lidar.inverse() * T_world_current_lidar;
+        transform.first = T_history_lidar_current_lidar.translation();
+        transform.second = T_history_lidar_current_lidar.rotationMatrix();
+        result.candidate_source = "odom_revisit";
+    } else if (search_result.first >= 0) {
+        result.candidate_source = "btc";
+    }
+
     if (search_result.first >= 0 && search_result.first < static_cast<int>(entries_.size())) {
         result.candidate_found = true;
         result.history_descriptor_id = search_result.first;
@@ -257,7 +300,8 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
 
         Eigen::Vector3d translation = transform.first;
         Eigen::Matrix3d rotation = transform.second;
-        if (result.score < options_.min_loop_score) {
+        const bool odom_revisit_candidate = result.candidate_source == "odom_revisit";
+        if (!odom_revisit_candidate && result.score < options_.min_loop_score) {
             result.rejection_reason = "score_below_threshold";
         } else {
             RefineSummary refine;
@@ -279,14 +323,17 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
                     std::max(1, options_.confirmation_max_current_gap) &&
                 std::abs(result.history_descriptor_id - last_confirmation_history_) <=
                     std::max(0, options_.confirmation_max_history_gap);
+            const int degenerate_min_matches = odom_revisit_candidate
+                                                   ? options_.odom_revisit_degenerate_min_matches
+                                                   : options_.degenerate_min_matches;
             const bool converged_degenerate_fallback =
-                refine.converged && refine.matches >= options_.degenerate_min_matches;
+                refine.converged && refine.matches >= degenerate_min_matches;
             const bool temporally_confirmed_fallback =
-                consistent_with_pending && refine.matches >= options_.degenerate_min_matches &&
+                consistent_with_pending && refine.matches >= degenerate_min_matches &&
                 refine.observability >= options_.plane_icp_min_observability;
             const bool degenerate_fallback =
                 options_.refine_with_plane_icp && options_.allow_degenerate_plane_icp &&
-                result.score >= options_.degenerate_min_loop_score &&
+                (odom_revisit_candidate || result.score >= options_.degenerate_min_loop_score) &&
                 (converged_degenerate_fallback || temporally_confirmed_fallback);
             result.used_degenerate_plane_fallback = !refine.accepted && degenerate_fallback;
             if (!refine.accepted && !degenerate_fallback) {
@@ -311,7 +358,9 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
 
                 if (result.journey_span <= 1e-6) {
                     result.rejection_reason = "invalid_journey_span";
-                } else if (result.drift_ratio >= options_.max_drift_ratio) {
+                } else if (result.drift_ratio >=
+                           (odom_revisit_candidate ? options_.odom_revisit_max_drift_ratio
+                                                  : options_.max_drift_ratio)) {
                     result.rejection_reason = "drift_ratio_exceeded";
                 } else if (result.drift_rotation_deg >= options_.max_rotation_correction_deg) {
                     result.rejection_reason = "rotation_correction_exceeded";

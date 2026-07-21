@@ -195,7 +195,8 @@ class LaserMapping {
         po.lidar_id = pi.lidar_id;
     }
 
-    bool EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats = nullptr);
+    bool EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats = nullptr,
+                      double preprocess_ms = 0.0);
     bool DrainAssembledFrames();
     double PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
                                  const NavState &state) const;
@@ -269,6 +270,8 @@ class LaserMapping {
     std::deque<PointCloudType::Ptr> lidar_buffer_;  // 激光雷达数据缓冲队列（用于与IMU时间同步）
     std::deque<lightning::IMUPtr> imu_buffer_;      // IMU数据缓冲队列（高频数据，用于状态预测）
     std::deque<MultiLidarFrameStats> lidar_stats_buffer_;
+    std::deque<double> preprocess_time_buffer_ms_;
+    double current_preprocess_ms_ = 0.0;
 
     /// options
     bool keep_first_imu_estimation_ = false;  // 在没有建立地图前，是否要使用前几帧的IMU状态

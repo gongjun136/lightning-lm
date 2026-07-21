@@ -1,0 +1,33 @@
+{
+  "pose_count": 1091,
+  "time_start": 1782898250.900428,
+  "time_end": 1782898359.999704,
+  "duration_s": 109.09927582740784,
+  "path_length_2d_m": 151.27293470192296,
+  "path_length_3d_m": 151.3633289054804,
+  "displacement_2d_m": 4.470044056933356,
+  "displacement_3d_m": 4.470232288867265,
+  "x_min_m": -22.2984523,
+  "x_max_m": 4.3108861,
+  "y_min_m": -8.1082506,
+  "y_max_m": 10.2136267,
+  "z_min_m": -0.3389908,
+  "z_max_m": 0.0603439,
+  "mean_speed_2d_mps": 1.3861747239669362,
+  "median_speed_2d_mps": 1.9974012536588472,
+  "p95_speed_2d_mps": 3.054873790482189,
+  "max_speed_2d_mps": 3.235425205988563,
+  "mean_speed_3d_mps": 1.3870040150189775,
+  "median_speed_3d_mps": 1.999198109828127,
+  "p95_speed_3d_mps": 3.054946032987079,
+  "max_speed_3d_mps": 3.235687547574173,
+  "pcd_chunk_count": 1091,
+  "pcd_chunk_bytes": 93671182,
+  "global_map_path": "F:\\datasets\\SANY\\mid360\\data_20260701\\voxel_slam_114_20260701\\global_map_run2.pcd",
+  "global_map_points": 5841766,
+  "global_map_bytes": 93468448,
+  "loop_edge_count": 1,
+  "loop_edges": [
+    "sany_20260701_livox_114_run2 sany_20260701_livox_114_run2 319 859 3.342033 -3.181254 -2.154865 0.1315964 0.004744127 0.1964109 0.9716392"
+  ]
+}

@@ -141,12 +141,24 @@ backend:
     confirmation_max_current_gap: 10
     confirmation_max_history_gap: 10
     loop_cooldown_descriptors: 10
+    # BTC remains the global place-recognition route. When LIO returns close
+    # to an old pose, add that historical submap as a recall candidate and
+    # still require the same plane-ICP verification and safety gates.
+    enable_odom_revisit_fallback: true
+    odom_revisit_search_radius: 5.0
+    odom_revisit_min_journey: 50.0
+    # Near-neighbour candidates already have a 5 m spatial prior. Rough-road
+    # plane sets may be rank deficient, so use a dedicated temporal-consensus
+    # threshold without weakening the global BTC acceptance gate.
+    odom_revisit_degenerate_min_matches: 40
+    odom_revisit_max_drift_ratio: 0.015
     # Descriptor retrieval and acceptance are independent of accumulated LIO
     # drift. A positive value enables an optional post-geometry safety bound.
     max_odom_revisit_distance: 0.0
-    # Avoid changing a map that already closes within the loop uncertainty.
-    min_optimization_translation: 0.20
-    min_optimization_rotation_deg: 2.0
+    # A verified loop must enter the graph in the backend-benefit experiment;
+    # otherwise the experiment measures detection instead of optimization.
+    min_optimization_translation: 0.0
+    min_optimization_rotation_deg: 0.0
     descriptor:
       useful_corner_num: 200
       plane_merge_normal_threshold: 0.10
