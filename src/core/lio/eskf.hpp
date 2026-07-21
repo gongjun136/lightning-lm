@@ -112,7 +112,9 @@ class ESKF {
         double vel_clip_norm_ = 1.0;  // 速度更新量范数上限
         double dv_ratio_ = 0.5;       // 速度更新量缩放比例
 
-        double predict_cov_inflation_ = 1.01;        // 预测后协方差膨胀系数，避免滤波器过度自信
+        // Process noise already grows covariance according to dt. A fixed factor per IMU
+        // sample makes uncertainty grow exponentially and makes results depend on IMU rate.
+        double predict_cov_inflation_ = 1.0;
         double min_cov_diag_ = 1e-9;                 // 协方差对角线下限，防止数值退化到非正定
         double degeneracy_threshold_ratio_ = 1e-3;   // 退化方向判定阈值，相对最大特征值设置
         bool propagate_velocity_ = false;            // 是否在名义状态中传播速度；SANY MID360需打开以匹配Voxel-SLAM。

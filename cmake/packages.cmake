@@ -25,11 +25,11 @@ if (OPENMP_FOUND)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif ()
 
+option(BUILD_WITH_MARCH_NATIVE "Enable host-specific CPU instructions" OFF)
 if (BUILD_WITH_MARCH_NATIVE)
     add_compile_options(-march=native)
-else ()
-    add_definitions(-msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2")
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+    add_compile_options(-msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2)
 endif ()
 
 include_directories(

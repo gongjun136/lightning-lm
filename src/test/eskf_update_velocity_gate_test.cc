@@ -369,6 +369,28 @@ bool InformationFormMatchesDenseKalmanUpdate() {
     return true;
 }
 
+bool ZeroDurationPredictionDoesNotInflateCovariance() {
+    using namespace lightning;
+
+    ESKF eskf;
+    ESKF::Options options;
+    eskf.Init(options);
+
+    const ESKF::CovType initial_covariance = ESKF::CovType::Identity() * 0.25;
+    eskf.ChangeP(initial_covariance);
+    const ESKF::ProcessNoiseType zero_process_noise = ESKF::ProcessNoiseType::Zero();
+    for (int i = 0; i < 1000; ++i) {
+        eskf.Predict(0.0, zero_process_noise, Vec3d::Zero(), Vec3d::Zero());
+    }
+
+    const double covariance_change = (eskf.GetP() - initial_covariance).norm();
+    if (covariance_change > 1e-12) {
+        std::cerr << "Zero-duration prediction inflated covariance. diff norm=" << covariance_change << std::endl;
+        return false;
+    }
+    return true;
+}
+
 bool InvalidLidarUpdateIsNotMarkedAccepted() {
     using namespace lightning;
 
@@ -451,6 +473,10 @@ int main() {
     }
 
     if (!InformationFormMatchesDenseKalmanUpdate()) {
+        return 1;
+    }
+
+    if (!ZeroDurationPredictionDoesNotInflateCovariance()) {
         return 1;
     }
 

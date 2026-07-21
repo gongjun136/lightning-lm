@@ -371,26 +371,62 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         const Mat6d HTH_eff = observable_projector * HTH_sym * observable_projector;
         const Vec6d HTr_eff = observable_projector * HTr;
 
-        // 信息形式更新。P_ / R 等价于把观测噪声缩放合并进先验权重；
-        // 再取逆得到先验信息矩阵 P^{-1} * R。
-        CovType P_temp = (P_ / R).inverse();  // P阵上面已经更新
+        // Solve the information-form update with symmetric LDLT factorizations.
+        // Explicit matrix inverses amplify round-off and produced architecture-dependent
+        // results once the covariance became ill-conditioned on ARM.
+        if (!std::isfinite(R) || R <= 0.0) {
+            LOG(ERROR) << "Reject ESKF update with invalid observation variance: " << R;
+            x_ = start_x;
+            P_ = P_propagated;
+            return;
+        }
 
-        /// 现在问题是这个权重太大，导致整体过于依赖先验 ...
-        // P_temp.setIdentity();
+        // External state restoration and accumulated round-off can leave a slightly
+        // indefinite covariance. Project it before factorization instead of letting an
+        // unconstrained inverse turn that defect into a large state increment.
+        SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
+        const CovType P_sym = P_;
+        Eigen::LDLT<CovType> prior_solver(P_sym);
+        if (prior_solver.info() != Eigen::Success || !prior_solver.isPositive()) {
+            LOG(ERROR) << "Reject ESKF update because prior covariance is not positive definite.";
+            x_ = start_x;
+            P_ = P_propagated;
+            return;
+        }
 
-        // 当前观测只约束前6维位姿，因此只把HTH_eff加到信息矩阵左上角位姿块。
-        P_temp.block<pose_obs_dim_, pose_obs_dim_>(0, 0) += HTH_eff;
-        CovType Q_inv = P_temp.inverse();  // Q inv
+        CovType information = R * prior_solver.solve(CovType::Identity());
+        information.template block<pose_obs_dim_, pose_obs_dim_>(0, 0) += HTH_eff;
+        information = 0.5 * (information + information.transpose()).eval();
+        if (!information.allFinite()) {
+            LOG(ERROR) << "Reject ESKF update because information matrix is non-finite.";
+            x_ = start_x;
+            P_ = P_propagated;
+            return;
+        }
 
-        // Q*H^T * R^-1 * r = K * r
-        // <-- K ----->
-        K_r = Q_inv.template block<state_dim_, pose_obs_dim_>(0, 0) * HTr_eff;
+        Eigen::LDLT<CovType> posterior_solver(information);
+        if (posterior_solver.info() != Eigen::Success || !posterior_solver.isPositive()) {
+            LOG(ERROR) << "Reject ESKF update because posterior information is not positive definite.";
+            x_ = start_x;
+            P_ = P_propagated;
+            return;
+        }
 
-        // K_H = Q^-1 H^T R^-1 H
-        //       <--  K     ->
+        StateVecType information_residual = StateVecType::Zero();
+        information_residual.template head<pose_obs_dim_>() = HTr_eff;
+        K_r = posterior_solver.solve(information_residual);
+
+        Eigen::Matrix<double, state_dim_, pose_obs_dim_> information_jacobian =
+            Eigen::Matrix<double, state_dim_, pose_obs_dim_>::Zero();
+        information_jacobian.template topRows<pose_obs_dim_>() = HTH_eff;
         K_H.setZero();
-        K_H.template block<state_dim_, pose_obs_dim_>(0, 0) =
-            Q_inv.template block<state_dim_, pose_obs_dim_>(0, 0) * HTH_eff;
+        K_H.template leftCols<pose_obs_dim_>() = posterior_solver.solve(information_jacobian);
+        if (!K_r.allFinite() || !K_H.allFinite()) {
+            LOG(ERROR) << "Reject ESKF update because solved increment is non-finite.";
+            x_ = start_x;
+            P_ = P_propagated;
+            return;
+        }
 
         // dx = Kr + (KH-I) dx
         // LOG(INFO) << "K_r: " << K_r.transpose()
