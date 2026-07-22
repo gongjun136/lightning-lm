@@ -465,6 +465,52 @@ bool ImuInitializationRejectsInvalidMeanAccelerationNorm() {
     }
     return true;
 }
+
+bool ImuInitializationAppliesConfiguredHeadingOffset() {
+    using namespace lightning;
+
+    ImuProcess imu;
+    imu.SetAccCov(Vec3d::Ones());
+    imu.SetGyrCov(Vec3d::Ones());
+    ImuProcess::InitializationOptions options;
+    options.min_duration = 0.1;
+    options.min_samples = 20;
+    options.min_mean_acc_norm = 0.5;
+    options.max_mean_acc_norm = 1.5;
+    options.initial_yaw_deg = 180.0;
+    imu.SetInitializationOptions(options);
+
+    constexpr double pitch = 0.6;
+    const Vec3d stationary_acc(std::sin(pitch), 0.0, std::cos(pitch));
+    ESKF eskf;
+    MeasureGroup meas;
+    for (int i = 0; i < 21; ++i) {
+        auto sample = std::make_shared<IMU>();
+        sample->timestamp = 0.01 * static_cast<double>(i);
+        sample->linear_acceleration = stationary_acc;
+        sample->angular_velocity = Vec3d::Zero();
+        meas.imu_.push_back(sample);
+    }
+    CloudPtr scan;
+    imu.Process(meas, eskf, scan);
+    if (!imu.IsIMUInited()) {
+        std::cerr << "IMU initialization did not finish for valid stationary samples." << std::endl;
+        return false;
+    }
+
+    const SO3 gravity_alignment(Quatd::FromTwoVectors(stationary_acc, Vec3d::UnitZ()).normalized());
+    const SO3 expected = SO3::exp(Vec3d(0.0, 0.0, M_PI)) * gravity_alignment;
+    const SO3 actual = eskf.GetX().rot_;
+    if ((expected.inverse() * actual).log().norm() > 1e-12) {
+        std::cerr << "IMU initialization heading offset mismatch." << std::endl;
+        return false;
+    }
+    if ((actual * stationary_acc - Vec3d::UnitZ()).norm() > 1e-12) {
+        std::cerr << "Heading offset changed gravity alignment." << std::endl;
+        return false;
+    }
+    return true;
+}
 }  // namespace
 
 int main() {
@@ -509,6 +555,10 @@ int main() {
     }
 
     if (!ImuInitializationRejectsInvalidMeanAccelerationNorm()) {
+        return 1;
+    }
+
+    if (!ImuInitializationAppliesConfiguredHeadingOffset()) {
         return 1;
     }
 

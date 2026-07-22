@@ -31,9 +31,12 @@ int main() {
     const Quatd quaternion = Eigen::AngleAxisd(yaw, Vec3d::UnitZ()) *
                              Eigen::AngleAxisd(pitch, Vec3d::UnitY()) *
                              Eigen::AngleAxisd(roll, Vec3d::UnitX());
-    const SE3 rear_pose(quaternion, Vec3d(0.3, -18.2, 0.9));
+    const SE3 map_livox_pose(quaternion, Vec3d(0.3, -18.2, 0.9));
 
-    const auto position = MakePosResMessage(rear_pose, -1.25, 123.5, "map");
+    const auto position = MakePosResMessage(map_livox_pose, -1.25, 123.5, "map");
+    Require(position.header.frame_id == "map" && position.header.stamp.sec == 123 &&
+                position.header.stamp.nanosec == 500000000,
+            "PosRes uses the map frame and sensor timestamp");
     Require(Near(position.f8enh[0], 0.3) && Near(position.f8enh[1], -18.2) && Near(position.f8enh[2], 0.9),
             "PosRes ENH");
     Require(Near(position.f8pry[0], -0.4) && Near(position.f8pry[1], -1.8) && Near(position.f8pry[2], 353.0),
@@ -43,6 +46,8 @@ int main() {
             "PosRes only publishes f8vehiclespeed");
 
     const auto pose_message = MakePoseMessage(position);
+    Require(pose_message.header.frame_id == "map" && pose_message.header.stamp == position.header.stamp,
+            "PoseStamped and PosRes share frame and timestamp");
     const Quatd reconstructed(pose_message.pose.orientation.w, pose_message.pose.orientation.x,
                               pose_message.pose.orientation.y, pose_message.pose.orientation.z);
     Require(std::abs(std::abs(reconstructed.dot(quaternion)) - 1.0) < 1e-9, "PosRes PRY to pose quaternion");
@@ -58,25 +63,55 @@ int main() {
     cloud->push_back(point);
     cloud->is_dense = true;
 
-    const SE3 T_rear_lidar(SO3(), Vec3d(2.0, 0.0, 1.0));
-    const auto rear_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_rear_lidar, "rear_axle");
-    Require(rear_cloud.point_step == 26 && rear_cloud.fields.size() == 7, "reference PointCloud2 layout");
-    sensor_msgs::PointCloud2ConstIterator<float> rear_x(rear_cloud, "x"), rear_y(rear_cloud, "y"),
-        rear_z(rear_cloud, "z");
-    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> rear_tag(rear_cloud, "tag"), rear_line(rear_cloud, "line");
-    sensor_msgs::PointCloud2ConstIterator<double> rear_timestamp(rear_cloud, "timestamp");
-    Require(Near(*rear_x, 3.0) && Near(*rear_y, 2.0) && Near(*rear_z, 4.0), "lidar to rear axle cloud");
-    Require(*rear_tag == 0 && *rear_line == 3, "tag and source line fields");
-    Require(Near(*rear_timestamp, 10.05), "absolute point timestamp");
+    const SO3 initial_lidar_rotation = SO3::exp(Vec3d(0.0, 0.0, M_PI_2));
+    const SE3 T_livox_lidar = MakeLivoxLidarTransform(initial_lidar_rotation);
+    const auto livox_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_livox_lidar, "livox_frame");
+    Require(livox_cloud.header.frame_id == "livox_frame" && livox_cloud.header.stamp.sec == 10 &&
+                livox_cloud.header.stamp.nanosec == 100000000,
+            "inverse cloud uses livox_frame and scan end timestamp");
+    Require(livox_cloud.point_step == 26 && livox_cloud.fields.size() == 7, "reference PointCloud2 layout");
+    sensor_msgs::PointCloud2ConstIterator<float> livox_x(livox_cloud, "x"), livox_y(livox_cloud, "y"),
+        livox_z(livox_cloud, "z");
+    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> livox_tag(livox_cloud, "tag"),
+        livox_line(livox_cloud, "line");
+    sensor_msgs::PointCloud2ConstIterator<double> livox_timestamp(livox_cloud, "timestamp");
+    Require(Near(*livox_x, -2.0) && Near(*livox_y, 1.0) && Near(*livox_z, 3.0),
+            "fixed initial rotation maps lidar cloud to livox frame without translation");
+    Require(*livox_tag == 0 && *livox_line == 3, "tag and source line fields");
+    Require(Near(*livox_timestamp, 10.05), "absolute point timestamp");
 
-    const SE3 T_map_rear(SO3::exp(Vec3d(0.0, 0.0, M_PI_2)), Vec3d(5.0, 6.0, 7.0));
-    const auto map_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_map_rear * T_rear_lidar, "map");
+    const SE3 T_map_lidar(SO3::exp(Vec3d(0.1, -0.2, 0.3)), Vec3d(5.0, 6.0, 7.0));
+    const SE3 T_map_livox = MakeMapLivoxPose(T_map_lidar, initial_lidar_rotation);
+    const Vec3d raw_point(1.0, 2.0, 3.0);
+    Require((T_map_livox * (T_livox_lidar * raw_point) - T_map_lidar * raw_point).norm() < 1e-9,
+            "map-livox pose composes to the original map-lidar registration");
+    const auto map_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_map_lidar, "map");
+    Require(map_cloud.header.frame_id == "map" && map_cloud.header.stamp == livox_cloud.header.stamp,
+            "same lidar batch uses the same timestamp in livox and map frames");
     sensor_msgs::PointCloud2ConstIterator<float> map_x(map_cloud, "x"), map_y(map_cloud, "y"), map_z(map_cloud, "z");
-    Require(Near(*map_x, 3.0) && Near(*map_y, 9.0) && Near(*map_z, 11.0), "rear pose maps cloud to local map");
+    const Vec3d expected_map_point = T_map_lidar * raw_point;
+    Require(Near(*map_x, expected_map_point.x(), 1e-5) && Near(*map_y, expected_map_point.y(), 1e-5) &&
+                Near(*map_z, expected_map_point.z(), 1e-5),
+            "map cloud preserves the lidar registration result");
 
     FrameDecimator decimator(10);
     for (int frame = 1; frame < 10; ++frame) Require(!decimator.Tick(), "no early decimated frame");
     Require(decimator.Tick(), "publish every tenth frame");
+
+    LocalizationPublicationGate publication_gate(5);
+    Require(!publication_gate.MapOutputsEnabled(), "map outputs wait for the first valid match");
+    publication_gate.ObserveLidarMatch(false);
+    Require(!publication_gate.MapOutputsEnabled(), "startup failures do not enable map outputs");
+    publication_gate.ObserveLidarMatch(true);
+    Require(publication_gate.MapOutputsEnabled(), "first valid match enables map outputs");
+    for (int lost = 1; lost < 5; ++lost) {
+        publication_gate.ObserveLidarMatch(false);
+        Require(publication_gate.MapOutputsEnabled(), "grace frames keep map outputs enabled");
+    }
+    publication_gate.ObserveLidarMatch(false);
+    Require(!publication_gate.MapOutputsEnabled(), "fifth consecutive failure disables map outputs");
+    publication_gate.ObserveLidarMatch(true);
+    Require(publication_gate.MapOutputsEnabled(), "one valid match immediately resumes map outputs");
 
     std::cout << "sany_localization_output_test passed" << std::endl;
     return 0;

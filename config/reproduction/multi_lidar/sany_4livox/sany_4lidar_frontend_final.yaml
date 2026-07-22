@@ -44,6 +44,8 @@ multi_lidar:
           0, 0, 0, 1]
 
 imu_initialization:
+  # Gravity fixes roll/pitch; the calibrated lidar constellation resolves the remaining heading ambiguity.
+  initial_yaw_deg: 180.0
   min_duration: 2.0
   min_samples: 300
   max_mean_gyro_norm: 0.2

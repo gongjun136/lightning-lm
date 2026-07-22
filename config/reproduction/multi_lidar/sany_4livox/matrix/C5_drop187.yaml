@@ -94,6 +94,7 @@ multi_lidar:
       - 0
       - 1
 imu_initialization:
+  initial_yaw_deg: 180.0
   min_duration: 2.0
   min_samples: 300
   max_mean_gyro_norm: 0.2

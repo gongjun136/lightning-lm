@@ -168,10 +168,14 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             if (init["max_mean_acc_norm"]) {
                 init_options.max_mean_acc_norm = init["max_mean_acc_norm"].as<double>();
             }
+            if (init["initial_yaw_deg"]) {
+                init_options.initial_yaw_deg = init["initial_yaw_deg"].as<double>();
+            }
             if (init_options.min_duration <= 0.0 || init_options.min_samples < 2 ||
                 init_options.min_mean_acc_norm < 0.0 ||
-                init_options.max_mean_acc_norm < init_options.min_mean_acc_norm) {
-                LOG(ERROR) << "invalid imu_initialization duration/sample count";
+                init_options.max_mean_acc_norm < init_options.min_mean_acc_norm ||
+                !std::isfinite(init_options.initial_yaw_deg)) {
+                LOG(ERROR) << "invalid imu_initialization configuration";
                 return false;
             }
             p_imu_->SetInitializationOptions(init_options);

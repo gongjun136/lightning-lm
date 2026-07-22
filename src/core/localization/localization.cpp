@@ -317,6 +317,11 @@ const MultiLidarConfig& Localization::GetMultiLidarConfig() const {
     return lio_->GetMultiLidarConfig();
 }
 
+SO3 Localization::GetInitialLidarRotation() const {
+    CHECK(lio_ != nullptr);
+    return lio_->GetInitialLidarRotation();
+}
+
 void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     lidar_loc_->ProcessCloud(scan_undist);
 
@@ -324,6 +329,9 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     if (lidar_loc_->GetLastMatchStats().relocalization_accepted) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted BTC relocalization";
+    }
+    if (processed_cloud_callback_) {
+        processed_cloud_callback_(scan_undist, res);
     }
     pgo_->ProcessLidarLoc(res);
 
@@ -337,10 +345,6 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
         loc_state->data = static_cast<int>(res.status_);
         LOG(INFO) << "loc_state: " << loc_state->data;
         loc_state_callback_(*loc_state);
-    }
-
-    if (processed_cloud_callback_) {
-        processed_cloud_callback_(scan_undist, res);
     }
 
     // cv::Mat img(100, 100, CV_8UC3, cv::Scalar(255, 255, 255));

@@ -19,7 +19,6 @@
 #include "common/eigen_types.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
-#include "core/lio/rear_axle_pose.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
 
@@ -83,9 +82,8 @@ class LocSystem {
     std::string cloud_topic_;
     std::string livox_topic_;
     std::string map_frame_ = "map";
-    std::string rear_axle_frame_ = "rear_axle";
-    RearAxlePoseTransformer rear_axle_;
-    SE3 T_rear_lidar_;
+    std::string livox_frame_ = "livox_frame";
+    sany_output::LocalizationPublicationGate publication_gate_;
     sany_output::FrameDecimator map_cloud_decimator_{10};
     mutable std::mutex trajectory_mutex_;
     std::vector<NavState> localization_states_;

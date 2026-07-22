@@ -22,34 +22,6 @@ double CloudStampSec(const CloudPtr& cloud) {
     return static_cast<double>(cloud->header.stamp) * 1e-9;
 }
 
-bool IsUsableResult(const loc::LocalizationResult& result) {
-    return result.valid_ || result.lidar_loc_valid_;
-}
-
-Mat3d ReadMatrix3(const YAML::Node& node) {
-    Mat3d matrix = Mat3d::Identity();
-    if (!node.IsDefined() || node.IsNull()) return matrix;
-    const auto values = node.as<std::vector<double>>();
-    if (values.size() != 9) {
-        throw std::runtime_error("fasterlio.extrinsic_R must have 9 values");
-    }
-    for (int row = 0; row < 3; ++row) {
-        for (int col = 0; col < 3; ++col) {
-            matrix(row, col) = values[row * 3 + col];
-        }
-    }
-    return matrix;
-}
-
-Vec3d ReadVector3(const YAML::Node& node, const Vec3d& fallback, const char* label) {
-    if (!node.IsDefined() || node.IsNull()) return fallback;
-    const auto values = node.as<std::vector<double>>();
-    if (values.size() != 3) {
-        throw std::runtime_error(std::string(label) + " must have 3 values");
-    }
-    return Vec3d(values[0], values[1], values[2]);
-}
-
 }  // namespace
 
 LocSystem::LocSystem(LocSystem::Options options) : options_(options) {
@@ -80,19 +52,15 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         map_path = configured_map.as<std::string>();
     }
     map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
-    rear_axle_frame_ = root["output"] && root["output"]["rear_axle_frame"]
-                           ? root["output"]["rear_axle_frame"].as<std::string>()
-                           : "rear_axle";
-    const Vec3d primary_lidar_position =
-        ReadVector3(root["output"] ? root["output"]["primary_lidar_position_in_body"] : YAML::Node(),
-                    Vec3d(2.199, 0.0, 2.740), "output.primary_lidar_position_in_body");
-    const Mat3d R_lidar_to_imu =
-        ReadMatrix3(root["fasterlio"] ? root["fasterlio"]["extrinsic_R"] : YAML::Node());
-    const Vec3d t_lidar_to_imu =
-        ReadVector3(root["fasterlio"] ? root["fasterlio"]["extrinsic_T"] : YAML::Node(), Vec3d::Zero(),
-                    "fasterlio.extrinsic_T");
-    rear_axle_ = RearAxlePoseTransformer(R_lidar_to_imu, t_lidar_to_imu, primary_lidar_position);
-    T_rear_lidar_ = SE3(SO3(), primary_lidar_position);
+    const int lost_frame_threshold =
+        root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
+            ? root["relocalization"]["lost_frame_threshold"].as<int>()
+            : 5;
+    if (lost_frame_threshold <= 0) {
+        LOG(ERROR) << "relocalization.lost_frame_threshold must be positive";
+        return false;
+    }
+    publication_gate_.SetLostFrameThreshold(static_cast<std::size_t>(lost_frame_threshold));
 
     if (!loc_->Init(yaml_path, map_path)) {
         LOG(ERROR) << "failed to initialize online localization";
@@ -158,8 +126,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
     }
 
-    const auto pose_qos = rclcpp::QoS(rclcpp::KeepLast(1000));
-    const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+    const auto pose_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
+    const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
     pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
     pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
     inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
@@ -282,24 +251,31 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             localization_states_.push_back(state);
         }
     }
+    if (!publication_gate_.MapOutputsEnabled()) return;
     if (!pos_res_pub_ || !pose_pub_) return;
+    const SE3 map_livox_pose =
+        sany_output::MakeMapLivoxPose(result.pose_, loc_->GetInitialLidarRotation());
     const auto position =
-        sany_output::MakePosResMessage(rear_axle_.Transform(state), result.vel_b_.x(), result.timestamp_, map_frame_);
+        sany_output::MakePosResMessage(map_livox_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
     pose_pub_->publish(sany_output::MakePoseMessage(position));
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
-    if (!inv_cloud_pub_ || !map_cloud_pub_ || !cloud || cloud->empty() || !IsUsableResult(result)) return;
+    if (!inv_cloud_pub_ || !map_cloud_pub_ || !cloud || cloud->empty()) return;
     const double begin_time = CloudStampSec(cloud);
     const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
     if (begin_time <= 0.0 || end_time <= 0.0) return;
-    const SE3 rear_axle_pose = rear_axle_.Transform(result.ToNavState());
+    const SO3 initial_lidar_rotation = loc_->GetInitialLidarRotation();
     inv_cloud_pub_->publish(
-        sany_output::MakeCloudMessage(cloud, begin_time, end_time, T_rear_lidar_, rear_axle_frame_));
-    if (map_cloud_decimator_.Tick()) {
-        map_cloud_pub_->publish(sany_output::MakeCloudMessage(cloud, begin_time, end_time,
-                                                              rear_axle_pose * T_rear_lidar_, map_frame_));
+        sany_output::MakeCloudMessage(cloud, begin_time, end_time,
+                                      sany_output::MakeLivoxLidarTransform(initial_lidar_rotation), livox_frame_));
+    const bool publish_map_frame = map_cloud_decimator_.Tick();
+    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
+    if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
+        // LidarLoc registers this exact cloud in the map frame and result.pose_ is T_map_lidar.
+        map_cloud_pub_->publish(
+            sany_output::MakeCloudMessage(cloud, begin_time, end_time, result.pose_, map_frame_));
     }
 }
 

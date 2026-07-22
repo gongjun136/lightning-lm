@@ -20,7 +20,6 @@
 #include "common/options.h"
 #include "core/lio/laser_mapping.h"
 #include "core/lio/multi_lidar_fusion.h"
-#include "core/lio/rear_axle_pose.h"
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/pose_graph/pgo.h"
 #include "core/system/sany_localization_output.h"
@@ -60,33 +59,47 @@ class RosContextGuard {
 
 class OfflineLocalizationPublisher {
    public:
-    OfflineLocalizationPublisher(std::string map_frame, std::string rear_axle_frame,
-                                 const lightning::Vec3d& primary_lidar_position_in_body)
+    OfflineLocalizationPublisher(std::string map_frame, std::size_t lost_frame_threshold)
         : node_(std::make_shared<rclcpp::Node>("offline_multi_lidar_localization")),
           map_frame_(std::move(map_frame)),
-          rear_axle_frame_(std::move(rear_axle_frame)),
-          T_rear_lidar_(lightning::SO3(), primary_lidar_position_in_body),
+          publication_gate_(lost_frame_threshold),
           map_cloud_decimator_(10) {
-        const auto pose_qos = rclcpp::QoS(rclcpp::KeepLast(1000));
-        const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+        const auto pose_qos =
+            rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
+        const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
         pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
         pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
         inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
         map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
     }
 
-    void PublishOutput(const lightning::SE3& rear_axle_pose, double vehicle_speed,
-                       const lightning::CloudPtr& cloud, double begin_time, double end_time) {
-        if (!rclcpp::ok()) return;
-        const auto position =
-            lightning::sany_output::MakePosResMessage(rear_axle_pose, vehicle_speed, end_time, map_frame_);
+    void ObserveLidarMatch(bool valid) { publication_gate_.ObserveLidarMatch(valid); }
+
+    void PublishPose(const lightning::loc::LocalizationResult& result,
+                     const lightning::SO3& initial_lidar_rotation) {
+        if (!rclcpp::ok() || !result.valid_ || result.timestamp_ <= 0.0 ||
+            !publication_gate_.MapOutputsEnabled()) {
+            return;
+        }
+        const lightning::SE3 map_livox_pose =
+            lightning::sany_output::MakeMapLivoxPose(result.pose_, initial_lidar_rotation);
+        const auto position = lightning::sany_output::MakePosResMessage(
+            map_livox_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
         pos_res_pub_->publish(position);
         pose_pub_->publish(lightning::sany_output::MakePoseMessage(position));
+    }
+
+    void PublishCloud(const lightning::SE3& map_lidar_pose, const lightning::CloudPtr& cloud,
+                      double begin_time, double end_time,
+                      const lightning::SO3& initial_lidar_rotation) {
+        if (!rclcpp::ok() || !cloud || cloud->empty()) return;
         inv_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
-            cloud, begin_time, end_time, T_rear_lidar_, rear_axle_frame_));
-        if (map_cloud_decimator_.Tick()) {
+            cloud, begin_time, end_time,
+            lightning::sany_output::MakeLivoxLidarTransform(initial_lidar_rotation), livox_frame_));
+        const bool publish_map_frame = map_cloud_decimator_.Tick();
+        if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
             map_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
-                cloud, begin_time, end_time, rear_axle_pose * T_rear_lidar_, map_frame_));
+                cloud, begin_time, end_time, map_lidar_pose, map_frame_));
         }
     }
 
@@ -97,8 +110,8 @@ class OfflineLocalizationPublisher {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
     std::string map_frame_;
-    std::string rear_axle_frame_;
-    lightning::SE3 T_rear_lidar_;
+    std::string livox_frame_ = "livox_frame";
+    lightning::sany_output::LocalizationPublicationGate publication_gate_;
     lightning::sany_output::FrameDecimator map_cloud_decimator_;
 };
 
@@ -310,23 +323,17 @@ int main(int argc, char** argv) {
     const YAML::Node root = YAML::LoadFile(FLAGS_config);
     const std::string map_frame =
         root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
-    const std::string rear_axle_frame =
-        root["output"] && root["output"]["rear_axle_frame"]
-            ? root["output"]["rear_axle_frame"].as<std::string>()
-            : "rear_axle";
-    Vec3d lidar_position(2.199, 0.0, 2.740);
-    if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
-        const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
-        if (values.size() != 3) {
-            LOG(ERROR) << "output.primary_lidar_position_in_body must have 3 values";
-            return 2;
-        }
-        lidar_position = Vec3d(values[0], values[1], values[2]);
+    const int lost_frame_threshold =
+        root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
+            ? root["relocalization"]["lost_frame_threshold"].as<int>()
+            : 5;
+    if (lost_frame_threshold <= 0) {
+        LOG(ERROR) << "relocalization.lost_frame_threshold must be positive";
+        return 2;
     }
-    RearAxlePoseTransformer rear_axle(lio.GetLidarToImuRotation(), lio.GetLidarToImuTranslation(), lidar_position);
     if (ros_context) {
-        topic_publisher =
-            std::make_unique<OfflineLocalizationPublisher>(map_frame, rear_axle_frame, lidar_position);
+        topic_publisher = std::make_unique<OfflineLocalizationPublisher>(
+            map_frame, static_cast<std::size_t>(lost_frame_threshold));
     }
 
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
@@ -406,7 +413,10 @@ int main(int argc, char** argv) {
         latest_final_result_set = true;
     };
     pgo.SetGlobalOutputHandleFunction(capture_final_result);
-    pgo.SetHighFrequencyGlobalOutputHandleFunction(capture_final_result);
+    pgo.SetHighFrequencyGlobalOutputHandleFunction([&](const loc::LocalizationResult& result) {
+        capture_final_result(result);
+        if (topic_publisher) topic_publisher->PublishPose(result, lio.GetInitialLidarRotation());
+    });
 
     std::ofstream fused_tum, lidar_loc_tum, csv, frame_stats_csv;
     try {
@@ -490,6 +500,7 @@ int main(int argc, char** argv) {
 
                 const loc::LocalizationResult loc_result = lidar_loc->GetLocalizationResult();
                 const auto match_stats = lidar_loc->GetLastMatchStats();
+                if (topic_publisher) topic_publisher->ObserveLidarMatch(loc_result.lidar_loc_valid_);
                 if (match_stats.relocalization_accepted) {
                     pgo.Reset();
                     latest_final_result_set = false;
@@ -500,6 +511,11 @@ int main(int argc, char** argv) {
                 loc::LocalizationResult final_result = loc_result;
                 if (latest_final_result_set && latest_final_result.timestamp_ >= loc_result.timestamp_ - 1e-6) {
                     final_result = latest_final_result;
+                }
+                if (topic_publisher) {
+                    topic_publisher->PublishCloud(loc_result.pose_, current_scan ? current_scan : scan,
+                                                  lio.GetLastFrameBeginTime(), lio.GetLastFrameEndTime(),
+                                                  lio.GetInitialLidarRotation());
                 }
 
                 ++loc_frames;
@@ -517,11 +533,6 @@ int main(int argc, char** argv) {
                         ui->UpdateNavState(final_state);
                         ui->UpdateRecentPose(final_result.pose_);
                         ui->UpdateScan(current_scan ? current_scan : scan, final_result.pose_);
-                    }
-                    if (topic_publisher) {
-                        topic_publisher->PublishOutput(rear_axle.Transform(final_state), final_result.vel_b_.x(),
-                                                       current_scan ? current_scan : scan, lio.GetLastFrameBeginTime(),
-                                                       lio.GetLastFrameEndTime());
                     }
                 }
 

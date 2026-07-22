@@ -44,6 +44,7 @@ class ImuProcess {
         double max_acc_std = std::numeric_limits<double>::infinity();
         double min_mean_acc_norm = 0.0;
         double max_mean_acc_norm = std::numeric_limits<double>::infinity();
+        double initial_yaw_deg = 0.0;
     };
 
     /// Eigen固定大小矩阵成员需要对齐分配，避免在容器或new对象时出现内存对齐问题。
@@ -86,6 +87,7 @@ class ImuProcess {
     /// 获取初始化阶段估计出的加速度均值模长，可用于检查静止初始化是否接近重力加速度。
     double GetMeanAccNorm() const { return mean_acc_.norm(); }
     std::size_t GetInitializationSampleCount() const { return init_samples_.size(); }
+    const SO3 &GetInitialRotation() const { return initial_rotation_; }
     Vec3d ScaleAccelerationForPrediction(const Vec3d &acc) const { return acc * acc_scale_factor_; }
 
     // 这些噪声参数会在IMU初始化和ESKF预测中使用，保持public是为了兼容原框架的配置方式。
@@ -127,6 +129,7 @@ class ImuProcess {
     IMUFilter filter_;            // IMU滤波器实例，仅处理当前帧IMU拷贝
     InitializationOptions init_options_;
     std::deque<lightning::IMUPtr> init_samples_;
+    SO3 initial_rotation_;
 };
 
 inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {
@@ -155,6 +158,7 @@ inline void ImuProcess::Reset() {
     imu_queue_.clear();
     init_samples_.clear();
     imu_pose_.clear();
+    initial_rotation_ = SO3();
     last_imu_.reset(new lightning::IMU());
     cur_pcl_un_.reset(new PointCloudType());
 }
@@ -221,8 +225,12 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     const double mean_acc_norm = mean_acc_.norm();
     if (mean_acc_norm > 1e-6) {
         const Vec3d acc_dir = mean_acc_ / mean_acc_norm;
-        init_state.rot_ = SO3(Quatd::FromTwoVectors(acc_dir, Vec3d::UnitZ()).normalized());
+        const SO3 gravity_alignment(Quatd::FromTwoVectors(acc_dir, Vec3d::UnitZ()).normalized());
+        const double initial_yaw_rad = init_options_.initial_yaw_deg * M_PI / 180.0;
+        const SO3 heading_alignment = SO3::exp(Vec3d(0.0, 0.0, initial_yaw_rad));
+        init_state.rot_ = heading_alignment * gravity_alignment;
     }
+    initial_rotation_ = init_state.rot_;
 
     init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;

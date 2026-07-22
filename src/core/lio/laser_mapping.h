@@ -141,6 +141,10 @@ class LaserMapping {
     double GetLastFrameEndTime() const { return measures_.lidar_end_time_; }
     const Mat3d &GetLidarToImuRotation() const { return offset_R_lidar_fixed_; }
     const Vec3d &GetLidarToImuTranslation() const { return offset_t_lidar_fixed_; }
+    SO3 GetInitialLidarRotation() const {
+        return p_imu_->GetInitialRotation() *
+               SO3(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized());
+    }
 
     /// 获取IMU最新时刻状态；IMU未初始化时返回pose_is_ok_=false的无效状态。
     NavState GetIMUState() const {

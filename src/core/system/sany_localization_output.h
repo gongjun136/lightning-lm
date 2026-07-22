@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <mutex>
 #include <string>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -12,13 +13,32 @@
 
 namespace lightning::sany_output {
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& rear_axle_pose, double vehicle_speed, double stamp,
+geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_livox_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id);
 
 geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position);
 
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
                                                const SE3& T_output_lidar, const std::string& frame_id);
+
+SE3 MakeLivoxLidarTransform(const SO3& initial_lidar_rotation);
+SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation);
+
+class LocalizationPublicationGate {
+   public:
+    explicit LocalizationPublicationGate(std::size_t lost_frame_threshold = 5);
+
+    void SetLostFrameThreshold(std::size_t lost_frame_threshold);
+    void ObserveLidarMatch(bool valid);
+    bool MapOutputsEnabled() const;
+    std::size_t ConsecutiveLostFrames() const;
+
+   private:
+    mutable std::mutex mutex_;
+    std::size_t lost_frame_threshold_ = 5;
+    std::size_t consecutive_lost_frames_ = 0;
+    bool has_valid_match_ = false;
+};
 
 class FrameDecimator {
    public:

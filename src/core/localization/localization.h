@@ -92,6 +92,7 @@ class Localization {
 
     bool IsMultiLidarEnabled() const;
     const MultiLidarConfig& GetMultiLidarConfig() const;
+    SO3 GetInitialLidarRotation() const;
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
     // void SetPointcloudWorldCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);

@@ -22,16 +22,16 @@ builtin_interfaces::msg::Time ToRosStamp(double seconds) {
 
 }  // namespace
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& rear_axle_pose, double vehicle_speed, double stamp,
+geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_livox_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id) {
     geosun_msgs::msg::PosRes message;
     message.header.stamp = ToRosStamp(stamp);
     message.header.frame_id = frame_id;
-    message.f8enh = {rear_axle_pose.translation().x(), rear_axle_pose.translation().y(),
-                     rear_axle_pose.translation().z()};
+    message.f8enh = {map_livox_pose.translation().x(), map_livox_pose.translation().y(),
+                     map_livox_pose.translation().z()};
     message.f8vehiclespeed = vehicle_speed;
 
-    const Mat3d rotation = rear_axle_pose.so3().matrix();
+    const Mat3d rotation = map_livox_pose.so3().matrix();
     const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
     const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
     double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
@@ -101,6 +101,44 @@ sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double beg
         }
     }
     return message;
+}
+
+SE3 MakeLivoxLidarTransform(const SO3& initial_lidar_rotation) {
+    return SE3(initial_lidar_rotation, Vec3d::Zero());
+}
+
+SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation) {
+    return map_lidar_pose * MakeLivoxLidarTransform(initial_lidar_rotation).inverse();
+}
+
+LocalizationPublicationGate::LocalizationPublicationGate(std::size_t lost_frame_threshold)
+    : lost_frame_threshold_(std::max<std::size_t>(1, lost_frame_threshold)) {}
+
+void LocalizationPublicationGate::SetLostFrameThreshold(std::size_t lost_frame_threshold) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lost_frame_threshold_ = std::max<std::size_t>(1, lost_frame_threshold);
+    consecutive_lost_frames_ = 0;
+    has_valid_match_ = false;
+}
+
+void LocalizationPublicationGate::ObserveLidarMatch(bool valid) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (valid) {
+        has_valid_match_ = true;
+        consecutive_lost_frames_ = 0;
+    } else if (has_valid_match_) {
+        ++consecutive_lost_frames_;
+    }
+}
+
+bool LocalizationPublicationGate::MapOutputsEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_;
+}
+
+std::size_t LocalizationPublicationGate::ConsecutiveLostFrames() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return consecutive_lost_frames_;
 }
 
 }  // namespace lightning::sany_output
