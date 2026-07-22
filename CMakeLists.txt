@@ -58,6 +58,14 @@ install(DIRECTORY config
 add_subdirectory(thirdparty/livox_ros_driver)
 add_subdirectory(thirdparty/geosun_msgs)
 
+# livox_ros_driver2 is embedded as a subdirectory, so its generated messages
+# are installed into this package's prefix. Register the embedded interface
+# package as well so generic ROS 2 tools (notably ros2 bag play) can discover it.
+install(FILES thirdparty/livox_ros_driver/resource/livox_ros_driver2
+        DESTINATION share/ament_index/resource_index/packages)
+install(FILES thirdparty/livox_ros_driver/package.xml
+        DESTINATION share/livox_ros_driver2)
+
 add_subdirectory(src)
 
 ament_package()

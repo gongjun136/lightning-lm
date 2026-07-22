@@ -49,6 +49,7 @@ class RosbagIO {
 
     using PointCloud2Handle = std::function<bool(sensor_msgs::msg::PointCloud2::SharedPtr)>;
     using LivoxCloud2Handle = std::function<bool(livox_ros_driver2::msg::CustomMsg::SharedPtr)>;
+    using RosImuHandle = std::function<bool(sensor_msgs::msg::Imu::SharedPtr)>;
     using FullPointCloudHandle = std::function<bool(FullCloudPtr)>;
     using ImuHandle = std::function<bool(IMUPtr)>;
     using OdomHandle = std::function<bool(const OdomPtr &)>;
@@ -87,6 +88,15 @@ class RosbagIO {
         });
     }
 
+    RosbagIO &AddRosImuHandle(const std::string &topic_name, RosImuHandle f) {
+        return AddHandle(topic_name, [f, this](const MsgType &m) -> bool {
+            auto msg = std::make_shared<sensor_msgs::msg::Imu>();
+            rclcpp::SerializedMessage data(*m->serialized_data);
+            seri_imu_.deserialize_message(&data, msg.get());
+            return f(msg);
+        });
+    }
+
     RosbagIO &AddImuHandle(const std::string &topic_name, ImuHandle f) {
         return AddHandle(topic_name, [f, this](const MsgType &m) -> bool {
             auto msg = std::make_shared<sensor_msgs::msg::Imu>();
@@ -120,6 +130,9 @@ class RosbagIO {
 
     /// 清除现有的处理函数
     void CleanProcessFunc() { process_func_.clear(); }
+
+    /// Replay using bag storage timestamps while preserving original message headers.
+    void GoRealtime(double playback_rate = 1.0);
 
    private:
     std::map<std::string, MessageProcessFunction> process_func_;

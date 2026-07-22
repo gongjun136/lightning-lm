@@ -89,20 +89,26 @@ AsyncMessageProcess<T>::AsyncMessageProcess(AsyncMessageProcess::ProcFunc proc_f
 
 template <typename T>
 void AsyncMessageProcess<T>::Start() {
-    exit_flag_ = false;
-    update_flag_ = false;
+    {
+        UL lock(mutex_);
+        exit_flag_ = false;
+        update_flag_ = false;
+    }
     proc_ = std::thread([this]() { ProcLoop(); });
 }
 
 template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
-    while (!exit_flag_) {
+    while (true) {
         UL lock(mutex_);
-        cv_msg_.wait(lock, [this]() { return update_flag_; });
+        cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
+        if (exit_flag_ && msg_buffer_.empty()) break;
 
-        // take the message and process it
-        auto buffer = msg_buffer_;
-        msg_buffer_.clear();
+        // Take every message currently available. If Quit() arrives while the
+        // batch is being processed, the next loop drains messages accumulated
+        // in the meantime before the worker exits.
+        std::deque<T> buffer;
+        buffer.swap(msg_buffer_);
         update_flag_ = false;
         lock.unlock();
 
@@ -116,6 +122,7 @@ void AsyncMessageProcess<T>::ProcLoop() {
 template <typename T>
 void AsyncMessageProcess<T>::AddMessage(const T& msg) {
     UL lock(mutex_);
+    if (exit_flag_) return;
     if (enable_skip_) {
         if (skip_cnt_ != 0) {
             skip_cnt_++;
@@ -139,8 +146,11 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
 
 template <typename T>
 void AsyncMessageProcess<T>::Quit() {
-    update_flag_ = true;
-    exit_flag_ = true;
+    {
+        UL lock(mutex_);
+        update_flag_ = true;
+        exit_flag_ = true;
+    }
     cv_msg_.notify_one();
 
     if (proc_.joinable()) {

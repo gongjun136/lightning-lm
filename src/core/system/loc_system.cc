@@ -4,6 +4,8 @@
 
 #include "core/system/loc_system.h"
 
+#include <fstream>
+#include <iomanip>
 #include <utility>
 #include <vector>
 
@@ -26,7 +28,7 @@ bool IsUsableResult(const loc::LocalizationResult& result) {
 
 Mat3d ReadMatrix3(const YAML::Node& node) {
     Mat3d matrix = Mat3d::Identity();
-    if (!node) return matrix;
+    if (!node.IsDefined() || node.IsNull()) return matrix;
     const auto values = node.as<std::vector<double>>();
     if (values.size() != 9) {
         throw std::runtime_error("fasterlio.extrinsic_R must have 9 values");
@@ -40,7 +42,7 @@ Mat3d ReadMatrix3(const YAML::Node& node) {
 }
 
 Vec3d ReadVector3(const YAML::Node& node, const Vec3d& fallback, const char* label) {
-    if (!node) return fallback;
+    if (!node.IsDefined() || node.IsNull()) return fallback;
     const auto values = node.as<std::vector<double>>();
     if (values.size() != 3) {
         throw std::runtime_error(std::string(label) + " must have 3 values");
@@ -55,17 +57,28 @@ LocSystem::LocSystem(LocSystem::Options options) : options_(options) {
     signal(SIGINT, lightning::debug::SigHandle);
 }
 
-LocSystem::~LocSystem() { loc_->Finish(); }
+LocSystem::~LocSystem() {
+    Finish();
+}
 
-bool LocSystem::Init(const std::string &yaml_path) {
+bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_override) {
+    finished_ = false;
     loc::Localization::Options opt;
     opt.online_mode_ = true;
     loc_ = std::make_shared<loc::Localization>(opt);
 
     YAML_IO yaml(yaml_path);
 
-    std::string map_path = yaml.GetValue<std::string>("system", "map_path");
     const YAML::Node root = YAML::LoadFile(yaml_path);
+    std::string map_path = map_path_override;
+    if (map_path.empty()) {
+        const YAML::Node configured_map = root["system"] ? root["system"]["map_path"] : YAML::Node();
+        if (!configured_map || configured_map.IsNull()) {
+            LOG(ERROR) << "online localization requires --map or system.map_path";
+            return false;
+        }
+        map_path = configured_map.as<std::string>();
+    }
     map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
     rear_axle_frame_ = root["output"] && root["output"]["rear_axle_frame"]
                            ? root["output"]["rear_axle_frame"].as<std::string>()
@@ -81,6 +94,11 @@ bool LocSystem::Init(const std::string &yaml_path) {
     rear_axle_ = RearAxlePoseTransformer(R_lidar_to_imu, t_lidar_to_imu, primary_lidar_position);
     T_rear_lidar_ = SE3(SO3(), primary_lidar_position);
 
+    if (!loc_->Init(yaml_path, map_path)) {
+        LOG(ERROR) << "failed to initialize online localization";
+        return false;
+    }
+
     LOG(INFO) << "online mode, creating ros2 node ... ";
 
     /// subscribers
@@ -90,10 +108,10 @@ bool LocSystem::Init(const std::string &yaml_path) {
     cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
     livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
 
-    rclcpp::QoS qos(10);
-
-    imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-        imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+    const auto qos = rclcpp::SensorDataQoS();
+    auto subscribe_imu = [this, &qos](const std::string& topic) {
+        imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
+            topic, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
             IMUPtr imu = std::make_shared<IMU>();
             imu->timestamp = ToSec(msg->header.stamp);
             imu->linear_acceleration =
@@ -102,16 +120,43 @@ bool LocSystem::Init(const std::string &yaml_path) {
 
             ProcessIMU(imu);
         });
+    };
 
-    cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-        cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-            Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-        });
-
-    livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-        livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
-            Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-        });
+    if (loc_->IsMultiLidarEnabled()) {
+        const auto* primary = loc_->GetMultiLidarConfig().PrimaryLidar();
+        if (!primary) {
+            LOG(ERROR) << "multi-lidar primary sensor is missing";
+            return false;
+        }
+        subscribe_imu(primary->imu_topic);
+        for (const auto& sensor : loc_->GetMultiLidarConfig().lidars) {
+            cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+                sensor.lidar_topic, qos,
+                [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar", true);
+                }));
+        }
+        LOG(INFO) << "online localization subscribed to " << cloud_subs_.size()
+                  << " lidar topics and primary IMU " << primary->imu_topic;
+    } else {
+        if (imu_topic_.empty() || (cloud_topic_.empty() && livox_topic_.empty())) {
+            LOG(ERROR) << "single-lidar online topics are incomplete";
+            return false;
+        }
+        subscribe_imu(imu_topic_);
+        if (!cloud_topic_.empty()) {
+            cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+                cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                }));
+        }
+        if (!livox_topic_.empty()) {
+            livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
+                livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                });
+        }
+    }
 
     const auto pose_qos = rclcpp::QoS(rclcpp::KeepLast(1000));
     const auto cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
@@ -128,15 +173,14 @@ bool LocSystem::Init(const std::string &yaml_path) {
     loc_->SetLocalizationResultCallback([this](const loc::LocalizationResult& result) {
         PublishLocalizationResult(result);
     });
+    loc_->SetGlobalLocalizationResultCallback([this](const loc::LocalizationResult& result) {
+        CaptureGlobalLocalizationResult(result);
+    });
     loc_->SetProcessedCloudCallback(
         [this](const CloudPtr& cloud, const loc::LocalizationResult& result) { PublishProcessedCloud(cloud, result); });
 
-    bool ret = loc_->Init(yaml_path, map_path);
-    if (ret) {
-        LOG(INFO) << "online loc node has been created.";
-    }
-
-    return ret;
+    LOG(INFO) << "online loc node has been created.";
+    return true;
 }
 
 void LocSystem::SetInitPose(const SE3 &pose) {
@@ -159,6 +203,12 @@ void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &clo
     }
 }
 
+void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id) {
+    if (loc_started_) {
+        loc_->ProcessLidarMsg(cloud, lidar_id);
+    }
+}
+
 void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud) {
     if (loc_started_) {
         loc_->ProcessLivoxLidarMsg(cloud);
@@ -171,9 +221,68 @@ void LocSystem::Spin() {
     }
 }
 
-void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
-    if (!pos_res_pub_ || !pose_pub_ || !result.valid_ || result.timestamp_ <= 0.0) return;
+void LocSystem::Finish() {
+    if (!loc_ || finished_) return;
+    loc_->Finish();
+    finished_ = true;
+}
+
+bool LocSystem::SaveTrajectoryTum(const std::string& path) const {
+    std::lock_guard<std::mutex> lock(trajectory_mutex_);
+    return WriteTrajectoryTum(path, global_localization_states_, "online global localization");
+}
+
+bool LocSystem::SaveHighFrequencyTrajectoryTum(const std::string& path) const {
+    std::lock_guard<std::mutex> lock(trajectory_mutex_);
+    return WriteTrajectoryTum(path, localization_states_, "online high-frequency localization");
+}
+
+bool LocSystem::WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
+                                   const char* description) const {
+    std::ofstream tum(path);
+    if (!tum.is_open()) {
+        LOG(ERROR) << "failed to open online localization trajectory: " << path;
+        return false;
+    }
+    double last_timestamp = 0.0;
+    int count = 0;
+    for (const auto& state : states) {
+        // Entries are captured only from valid LocalizationResult callbacks.
+        // PGO does not currently promote result.status_ from IDLE to GOOD, so
+        // NavState::pose_is_ok_ is not a valid additional filter here.  Match
+        // the offline localization exporter, which accepts valid fused output.
+        if (state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) continue;
+        const auto pose = state.GetPose();
+        const auto q = pose.unit_quaternion();
+        const auto p = pose.translation();
+        tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << p.x() << " "
+            << p.y() << " " << p.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+        last_timestamp = state.timestamp_;
+        ++count;
+    }
+    LOG(INFO) << "wrote " << count << " " << description << " poses to " << path;
+    return count > 0;
+}
+
+void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& result) {
+    if (!result.valid_ || result.timestamp_ <= 0.0) return;
     const NavState state = result.ToNavState();
+    std::lock_guard<std::mutex> lock(trajectory_mutex_);
+    if (global_localization_states_.empty() || state.timestamp_ > global_localization_states_.back().timestamp_) {
+        global_localization_states_.push_back(state);
+    }
+}
+
+void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
+    if (!result.valid_ || result.timestamp_ <= 0.0) return;
+    const NavState state = result.ToNavState();
+    {
+        std::lock_guard<std::mutex> lock(trajectory_mutex_);
+        if (localization_states_.empty() || state.timestamp_ > localization_states_.back().timestamp_) {
+            localization_states_.push_back(state);
+        }
+    }
+    if (!pos_res_pub_ || !pose_pub_) return;
     const auto position =
         sany_output::MakePosResMessage(rear_axle_.Transform(state), result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);

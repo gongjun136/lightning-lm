@@ -11,6 +11,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <string>
 #include <tf2_ros/transform_broadcaster.h>
+#include <vector>
 
 #include "lightning/srv/save_map.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -114,6 +115,9 @@ class SlamSystem {
     template <typename PointCloudMsgType>
     void ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud);
 
+    template <typename PointCloudMsgType>
+    void ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud, int lidar_id);
+
     /**
      * @brief 获取当前LIO前端状态。
      *
@@ -147,6 +151,8 @@ class SlamSystem {
     void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
     void OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr request,
                          std_srvs::srv::Trigger::Response::SharedPtr response);
+    void DrainLio();
+    bool SaveLioTrajectoryTum(const std::string& path) const;
     void PublishMapToOdom();
 
     Options options_;                  ///< 系统运行选项。
@@ -163,6 +169,7 @@ class SlamSystem {
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        ///< 2.5D/2D栅格地图模块。
 
     Keyframe::Ptr cur_kf_ = nullptr;  ///< 最近一次已分发给后端模块的关键帧。
+    std::vector<NavState> lio_states_;  ///< 在线前端产生的有效全帧状态，用于回归评估。
 
     rclcpp::Node::SharedPtr node_;  ///< 在线模式下使用的ROS2节点。
     std::string imu_topic_;         ///< IMU订阅话题名。
@@ -170,7 +177,7 @@ class SlamSystem {
     std::string livox_topic_;       ///< Livox CustomMsg订阅话题名。
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;  ///< IMU订阅器。
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;  ///< 标准点云订阅器。
+    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;  ///< Livox点云订阅器。
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr optimize_backend_service_ = nullptr;
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;

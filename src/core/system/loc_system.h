@@ -11,6 +11,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <mutex>
+#include <vector>
 
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 
@@ -37,7 +39,7 @@ class LocSystem {
     ~LocSystem();
 
     /// 初始化，地图路径在yaml里配置
-    bool Init(const std::string& yaml_path);
+    bool Init(const std::string& yaml_path, const std::string& map_path_override = "");
 
     /// 设置初始化位姿
     void SetInitPose(const SE3& pose);
@@ -47,13 +49,23 @@ class LocSystem {
 
     /// 处理点云
     void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
+    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id);
     void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
 
     /// 实时模式下的spin
     void Spin();
+    /// Stop workers after draining all accepted sensor and localization data.
+    void Finish();
+    /// PGO global corrections, matching the offline trajectory definition.
+    bool SaveTrajectoryTum(const std::string& path) const;
+    /// Live high-frequency extrapolated output published to ROS.
+    bool SaveHighFrequencyTrajectoryTum(const std::string& path) const;
 
    private:
     void PublishLocalizationResult(const loc::LocalizationResult& result);
+    void CaptureGlobalLocalizationResult(const loc::LocalizationResult& result);
+    bool WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
+                            const char* description) const;
     void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result);
 
     Options options_;
@@ -75,9 +87,13 @@ class LocSystem {
     RearAxlePoseTransformer rear_axle_;
     SE3 T_rear_lidar_;
     sany_output::FrameDecimator map_cloud_decimator_{10};
+    mutable std::mutex trajectory_mutex_;
+    std::vector<NavState> localization_states_;
+    std::vector<NavState> global_localization_states_;
+    bool finished_ = false;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_ = nullptr;
+    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
 
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;

@@ -54,6 +54,7 @@ class Localization {
 
     /// 处理lidar消息
     void ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr laser_msg);
+    void ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr laser_msg, int lidar_id);
     void ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr laser_msg);
 
     /// 处理IMU消息
@@ -72,7 +73,8 @@ class Localization {
     void Finish();
 
     /// 异步处理函数
-    void LidarOdomProcCloud(CloudPtr);
+    void LidarOdomProcCloud(CloudPtr, int lidar_id);
+    void DrainLioOutputs();
     void LidarLocProcCloud(CloudPtr);
 
     using TFCallback = std::function<void(const geometry_msgs::msg::TransformStamped& odom)>;
@@ -84,8 +86,12 @@ class Localization {
 
     void SetTFCallback(TFCallback&& callback);
     void SetLocalizationResultCallback(LocalizationResultCallback&& callback);
+    void SetGlobalLocalizationResultCallback(LocalizationResultCallback&& callback);
     void SetProcessedCloudCallback(ProcessedCloudCallback&& callback);
     void SetLocStateCallback(LocStateCallback&& callback);
+
+    bool IsMultiLidarEnabled() const;
+    const MultiLidarConfig& GetMultiLidarConfig() const;
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
     // void SetPointcloudWorldCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
@@ -114,8 +120,17 @@ class Localization {
     std::shared_ptr<LidarLoc> lidar_loc_;
 
     /// TODO async 处理
-    sys::AsyncMessageProcess<CloudPtr> lidar_odom_proc_cloud_;  // lidar odom 处理点云
+    struct SensorInput {
+        IMUPtr imu;
+        CloudPtr cloud;
+        int lidar_id = 0;
+        bool is_imu = false;
+    };
+    void ProcessSensorInput(const SensorInput& input);
+    void ProcessIMUData(IMUPtr imu);
+    sys::AsyncMessageProcess<SensorInput> sensor_proc_;
     sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
+    int lidar_odom_skip_cnt_ = 0;
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;
@@ -123,6 +138,7 @@ class Localization {
     /// 框架相关
     TFCallback tf_callback_;
     LocalizationResultCallback localization_result_callback_;
+    LocalizationResultCallback global_localization_result_callback_;
     ProcessedCloudCallback processed_cloud_callback_;
     LocStateCallback loc_state_callback_;
     PointcloudBodyCallback pointcloud_body_callback_;

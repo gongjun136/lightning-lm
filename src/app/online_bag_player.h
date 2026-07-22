@@ -1,0 +1,108 @@
+#ifndef LIGHTNING_APP_ONLINE_BAG_PLAYER_H
+#define LIGHTNING_APP_ONLINE_BAG_PLAYER_H
+
+#include <glog/logging.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <yaml-cpp/yaml.h>
+
+#include <chrono>
+#include <map>
+#include <memory>
+#include <string>
+#include <thread>
+
+#include "livox_ros_driver2/msg/custom_msg.hpp"
+#include "wrapper/bag_io.h"
+
+namespace lightning {
+
+/// A deterministic 1x bag publisher for online regression. It shares the
+/// process-wide RMW participant with the system under test, while messages
+/// still traverse normal ROS 2 publisher/subscription callbacks.
+class OnlineBagPlayer {
+   public:
+    bool Init(const std::string& config_path, const std::string& bag_path, double playback_rate) {
+        if (bag_path.empty()) return false;
+        playback_rate_ = playback_rate;
+        bag_ = std::make_unique<RosbagIO>(bag_path);
+        node_ = std::make_shared<rclcpp::Node>("lightning_online_bag_player");
+        const auto qos = rclcpp::SensorDataQoS().keep_last(1000);
+        const YAML::Node root = YAML::LoadFile(config_path);
+
+        const std::string imu_topic = root["common"]["imu_topic"].as<std::string>();
+        imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>(imu_topic, qos);
+        bag_->AddRosImuHandle(imu_topic, [this](const sensor_msgs::msg::Imu::SharedPtr msg) {
+            imu_pub_->publish(*msg);
+            return rclcpp::ok();
+        });
+
+        const bool multi_lidar = root["multi_lidar"] && root["multi_lidar"]["enabled"] &&
+                                 root["multi_lidar"]["enabled"].as<bool>();
+        if (multi_lidar) {
+            const YAML::Node topics = root["multi_lidar"]["topics"];
+            if (!topics || !topics.IsMap()) {
+                LOG(ERROR) << "multi_lidar.topics is required for embedded online playback";
+                return false;
+            }
+            for (const auto& entry : topics) {
+                const std::string key = entry.first.as<std::string>();
+                if (key.rfind("lidar_", 0) != 0) continue;
+                const std::string topic = entry.second.as<std::string>();
+                auto publisher = node_->create_publisher<sensor_msgs::msg::PointCloud2>(topic, qos);
+                cloud_pubs_[topic] = publisher;
+                bag_->AddPointCloud2Handle(topic, [publisher](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+                    publisher->publish(*msg);
+                    return rclcpp::ok();
+                });
+            }
+            if (cloud_pubs_.empty()) {
+                LOG(ERROR) << "no multi-lidar PointCloud2 topics configured";
+                return false;
+            }
+        } else {
+            const std::string cloud_topic = root["common"]["lidar_topic"].as<std::string>();
+            const std::string livox_topic = root["common"]["livox_lidar_topic"].as<std::string>();
+            if (!cloud_topic.empty()) {
+                cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(cloud_topic, qos);
+                bag_->AddPointCloud2Handle(cloud_topic, [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+                    cloud_pub_->publish(*msg);
+                    return rclcpp::ok();
+                });
+            }
+            if (!livox_topic.empty()) {
+                livox_pub_ = node_->create_publisher<livox_ros_driver2::msg::CustomMsg>(livox_topic, qos);
+                bag_->AddLivoxCloudHandle(livox_topic,
+                                          [this](const livox_ros_driver2::msg::CustomMsg::SharedPtr msg) {
+                                              livox_pub_->publish(*msg);
+                                              return rclcpp::ok();
+                                          });
+            }
+            if (!cloud_pub_ && !livox_pub_) {
+                LOG(ERROR) << "no single-lidar topic configured for embedded online playback";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void Run() {
+        // Allow the executor to spin once before the first sensor message.
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        bag_->GoRealtime(playback_rate_);
+    }
+
+   private:
+    double playback_rate_ = 1.0;
+    std::unique_ptr<RosbagIO> bag_;
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+    rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_pub_;
+    std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_pubs_;
+};
+
+}  // namespace lightning
+
+#endif  // LIGHTNING_APP_ONLINE_BAG_PLAYER_H

@@ -142,13 +142,10 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         cloud_topic_ = yaml["common"]["lidar_topic"].as<std::string>();
         livox_topic_ = yaml["common"]["livox_lidar_topic"].as<std::string>();
 
-        // 设置 QoS 策略
-        rclcpp::QoS qos(10);
-        // qos.best_effort();
-
-        // 创建 IMU 数据订阅器
-        imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-            imu_topic_, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+        const auto qos = rclcpp::SensorDataQoS();
+        auto subscribe_imu = [this, &qos](const std::string& topic) {
+            imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
+                topic, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
                 // 将 ROS2 IMU 消息转换为内部格式
                 IMUPtr imu = std::make_shared<IMU>();
                 imu->timestamp = ToSec(msg->header.stamp);
@@ -160,19 +157,43 @@ bool SlamSystem::Init(const std::string& yaml_path) {
                 // 处理 IMU 数据
                 ProcessIMU(imu);
             });
+        };
 
-        // 创建标准点云订阅器（适用于 Velodyne、Ouster 等雷达）
-        cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-            cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                // 使用计时器统计点云处理耗时
-                Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-            });
-
-        // 创建 Livox 自定义点云消息订阅器
-        livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-            livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg ::SharedPtr cloud) {
-                Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
-            });
+        if (lio_->IsMultiLidarEnabled()) {
+            const auto* primary = lio_->GetMultiLidarConfig().PrimaryLidar();
+            if (!primary) {
+                LOG(ERROR) << "multi-lidar primary sensor is missing";
+                return false;
+            }
+            subscribe_imu(primary->imu_topic);
+            for (const auto& sensor : lio_->GetMultiLidarConfig().lidars) {
+                cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+                    sensor.lidar_topic, qos,
+                    [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                        Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar", true);
+                    }));
+            }
+            LOG(INFO) << "online SLAM subscribed to " << cloud_subs_.size()
+                      << " lidar topics and primary IMU " << primary->imu_topic;
+        } else {
+            if (imu_topic_.empty() || (cloud_topic_.empty() && livox_topic_.empty())) {
+                LOG(ERROR) << "single-lidar online topics are incomplete";
+                return false;
+            }
+            subscribe_imu(imu_topic_);
+            if (!cloud_topic_.empty()) {
+                cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+                    cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                        Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                    }));
+            }
+            if (!livox_topic_.empty()) {
+                livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
+                    livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                        Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                    });
+            }
+        }
 
         // 创建地图保存服务
         savemap_service_ = node_->create_service<SaveMapService>(
@@ -261,6 +282,9 @@ void SlamSystem::SaveMap(const std::string& path) {
         backend_->SaveDiagnostics(save_path + "/backend_diagnostics");
         backend_->SaveRelocalizationDatabase(save_path + "/btc_relocalization");
     }
+    SaveKeyframeTrajectoryTum(save_path + "/trajectory_slam_keyframes_lio.tum", true);
+    SaveKeyframeTrajectoryTum(save_path + "/trajectory_slam_keyframes_opt.tum", false);
+    SaveLioTrajectoryTum(save_path + "/trajectory_slam.tum");
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
@@ -328,6 +352,7 @@ void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
         return;
     }
     lio_->ProcessIMU(imu);
+    DrainLio();
 }
 
 NavState SlamSystem::GetLioState() const {
@@ -376,49 +401,87 @@ bool SlamSystem::SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio
     return count > 0;
 }
 
+bool SlamSystem::SaveLioTrajectoryTum(const std::string& path) const {
+    std::ofstream tum(path);
+    if (!tum.is_open()) {
+        LOG(ERROR) << "failed to open LIO trajectory: " << path;
+        return false;
+    }
+
+    double last_timestamp = 0.0;
+    int count = 0;
+    for (const auto& state : lio_states_) {
+        if (!state.pose_is_ok_ || state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) continue;
+        const auto pose = state.GetPose();
+        const auto q = pose.unit_quaternion();
+        const auto p = pose.translation();
+        tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << p.x() << " "
+            << p.y() << " " << p.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
+        last_timestamp = state.timestamp_;
+        ++count;
+    }
+    LOG(INFO) << "wrote " << count << " LIO poses to " << path;
+    return count > 0;
+}
+
 // 模板化的点云处理函数实现
 template <typename PointCloudMsgType>
 void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud) {
+    const int lidar_id = lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
+    ProcessLidar(cloud, lidar_id);
+}
+
+template <typename PointCloudMsgType>
+void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud, int lidar_id) {
     if (running_ == false) {
         return;
     }
 
     // 先把不同类型的原始点云统一预处理并放入LIO缓存，再触发一次前端处理。
     // Run()内部会完成时间同步、IMU去畸变、雷达观测更新，并在满足条件时创建新关键帧。
-    lio_->ProcessPointCloud2(cloud);
-    lio_->Run();
+    lio_->ProcessPointCloud2(cloud, lidar_id);
+    DrainLio();
+}
 
-    // 后端只关心新产生的关键帧；如果当前雷达帧没有触发MakeKF()，这里直接返回。
-    auto kf = lio_->GetKeyframe();
-    if (kf != cur_kf_) {
+void SlamSystem::DrainLio() {
+    while (lio_) {
+        const auto status = lio_->RunDetailed();
+        if (status == LaserMapping::RunStatus::kNoData) return;
+        if (status != LaserMapping::RunStatus::kOutput) continue;
+
+        const auto state = lio_->GetState();
+        if (state.pose_is_ok_ && (lio_states_.empty() || state.timestamp_ > lio_states_.back().timestamp_)) {
+            lio_states_.push_back(state);
+        }
+
+        // 后端只关心新产生的关键帧；没有新关键帧时继续排空其余已同步帧。
+        auto kf = lio_->GetKeyframe();
+        if (kf == cur_kf_) continue;
         cur_kf_ = kf;
-    } else {
-        return;
-    }
+        if (cur_kf_ == nullptr) continue;
 
-    if (cur_kf_ == nullptr) {
-        return;
-    }
+        // 新关键帧按配置分发给回环、栅格建图和UI模块。
+        if (backend_) {
+            backend_->AddKeyframe(cur_kf_);
+        } else if (lc_) {
+            lc_->AddKF(cur_kf_);
+        }
 
-    // 新关键帧按配置分发给回环、栅格建图和UI模块。
-    if (backend_) {
-        backend_->AddKeyframe(cur_kf_);
-    } else if (lc_) {
-        lc_->AddKF(cur_kf_);
-    }
+        if (options_.with_gridmap_) {
+            g2p5_->PushKeyframe(cur_kf_);
+        }
 
-    if (options_.with_gridmap_) {
-        g2p5_->PushKeyframe(cur_kf_);
-    }
-
-    if (ui_) {
-        ui_->UpdateKF(cur_kf_);
+        if (ui_) {
+            ui_->UpdateKF(cur_kf_);
+        }
     }
 }
 
 // 显式实例化
 template void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
 template void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+template void SlamSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id);
+template void SlamSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud, int lidar_id);
 
 void SlamSystem::OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr,
                                  std_srvs::srv::Trigger::Response::SharedPtr response) {
