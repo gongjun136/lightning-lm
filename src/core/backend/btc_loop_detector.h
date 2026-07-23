@@ -8,6 +8,7 @@
 
 #include "common/keyframe.h"
 #include "core/backend/third_party/voxel_slam_btc/BTC.h"
+#include "core/maps/map_frame.h"
 
 namespace lightning::backend {
 
@@ -101,7 +102,8 @@ class BtcLoopDetector {
     BtcLoopResult ProcessSubmap(const std::vector<Keyframe::Ptr>& keyframes,
                                 const SE3& T_imu_lidar);
     bool SaveRelocalizationDatabase(const std::string& directory,
-                                    const SE3& T_imu_lidar) const;
+                                    const SE3& T_imu_lidar,
+                                    const map_frame::Metadata* map_metadata = nullptr) const;
 
     const BtcLoopDetectorOptions& GetOptions() const { return options_; }
     const std::vector<BtcDescriptorEntry>& Entries() const { return entries_; }

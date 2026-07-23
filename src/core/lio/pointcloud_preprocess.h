@@ -40,6 +40,7 @@ class PointCloudPreprocess {
     int &NumScans() { return num_scans_; }
     int &PointFilterNum() { return point_filter_num_; }
     float &TimeScale() { return time_scale_; }
+    double &LivoxPointTimeScale() { return livox_point_time_scale_; }
     LidarType GetLidarType() const { return lidar_type_; }
     void SetLidarType(LidarType lt) { lidar_type_ = lt; }
 
@@ -61,6 +62,7 @@ class PointCloudPreprocess {
     int num_scans_ = 6;
     double blind_ = 0.01;
     float time_scale_ = 1e-3;
+    double livox_point_time_scale_ = 1.0;
     bool given_offset_time_ = false;
 
     float height_max_ = 1.0;

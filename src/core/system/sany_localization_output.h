@@ -13,7 +13,7 @@
 
 namespace lightning::sany_output {
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_livox_pose, double vehicle_speed, double stamp,
+geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id);
 
 geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position);
@@ -23,6 +23,10 @@ sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double beg
 
 SE3 MakeLivoxLidarTransform(const SO3& initial_lidar_rotation);
 SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation);
+SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
+                               const Vec3d& primary_lidar_position_in_body);
+SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation,
+                        const Vec3d& primary_lidar_position_in_body);
 
 class LocalizationPublicationGate {
    public:

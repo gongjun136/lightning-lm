@@ -31,9 +31,9 @@ int main() {
     const Quatd quaternion = Eigen::AngleAxisd(yaw, Vec3d::UnitZ()) *
                              Eigen::AngleAxisd(pitch, Vec3d::UnitY()) *
                              Eigen::AngleAxisd(roll, Vec3d::UnitX());
-    const SE3 map_livox_pose(quaternion, Vec3d(0.3, -18.2, 0.9));
+    const SE3 map_rear_axle_pose(quaternion, Vec3d(0.3, -18.2, 0.9));
 
-    const auto position = MakePosResMessage(map_livox_pose, -1.25, 123.5, "map");
+    const auto position = MakePosResMessage(map_rear_axle_pose, -1.25, 123.5, "map");
     Require(position.header.frame_id == "map" && position.header.stamp.sec == 123 &&
                 position.header.stamp.nanosec == 500000000,
             "PosRes uses the map frame and sensor timestamp");
@@ -65,29 +65,44 @@ int main() {
 
     const SO3 initial_lidar_rotation = SO3::exp(Vec3d(0.0, 0.0, M_PI_2));
     const SE3 T_livox_lidar = MakeLivoxLidarTransform(initial_lidar_rotation);
-    const auto livox_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_livox_lidar, "livox_frame");
-    Require(livox_cloud.header.frame_id == "livox_frame" && livox_cloud.header.stamp.sec == 10 &&
-                livox_cloud.header.stamp.nanosec == 100000000,
-            "inverse cloud uses livox_frame and scan end timestamp");
-    Require(livox_cloud.point_step == 26 && livox_cloud.fields.size() == 7, "reference PointCloud2 layout");
-    sensor_msgs::PointCloud2ConstIterator<float> livox_x(livox_cloud, "x"), livox_y(livox_cloud, "y"),
-        livox_z(livox_cloud, "z");
-    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> livox_tag(livox_cloud, "tag"),
-        livox_line(livox_cloud, "line");
-    sensor_msgs::PointCloud2ConstIterator<double> livox_timestamp(livox_cloud, "timestamp");
-    Require(Near(*livox_x, -2.0) && Near(*livox_y, 1.0) && Near(*livox_z, 3.0),
-            "fixed initial rotation maps lidar cloud to livox frame without translation");
-    Require(*livox_tag == 0 && *livox_line == 3, "tag and source line fields");
-    Require(Near(*livox_timestamp, 10.05), "absolute point timestamp");
+    const Vec3d primary_lidar_position_in_body(2.199, -0.25, 2.740);
+    const SE3 T_rear_lidar =
+        MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body);
+    const auto rear_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_rear_lidar, "rear_axle");
+    Require(rear_cloud.header.frame_id == "rear_axle" && rear_cloud.header.stamp.sec == 10 &&
+                rear_cloud.header.stamp.nanosec == 100000000,
+            "inverse cloud uses rear_axle and scan end timestamp");
+    Require(rear_cloud.point_step == 26 && rear_cloud.fields.size() == 7, "reference PointCloud2 layout");
+    sensor_msgs::PointCloud2ConstIterator<float> rear_x(rear_cloud, "x"), rear_y(rear_cloud, "y"),
+        rear_z(rear_cloud, "z");
+    sensor_msgs::PointCloud2ConstIterator<std::uint8_t> rear_tag(rear_cloud, "tag"),
+        rear_line(rear_cloud, "line");
+    sensor_msgs::PointCloud2ConstIterator<double> rear_timestamp(rear_cloud, "timestamp");
+    const Vec3d raw_point(1.0, 2.0, 3.0);
+    const Vec3d expected_rear_point = T_livox_lidar * raw_point + primary_lidar_position_in_body;
+    Require(Near(*rear_x, expected_rear_point.x()) && Near(*rear_y, expected_rear_point.y()) &&
+                Near(*rear_z, expected_rear_point.z()),
+            "rear cloud rotates first and adds the positive lidar lever arm");
+    Require(*rear_tag == 0 && *rear_line == 3, "tag and source line fields");
+    Require(Near(*rear_timestamp, 10.05), "absolute point timestamp");
 
     const SE3 T_map_lidar(SO3::exp(Vec3d(0.1, -0.2, 0.3)), Vec3d(5.0, 6.0, 7.0));
     const SE3 T_map_livox = MakeMapLivoxPose(T_map_lidar, initial_lidar_rotation);
-    const Vec3d raw_point(1.0, 2.0, 3.0);
     Require((T_map_livox * (T_livox_lidar * raw_point) - T_map_lidar * raw_point).norm() < 1e-9,
             "map-livox pose composes to the original map-lidar registration");
+    const SE3 T_map_rear =
+        MakeMapRearAxlePose(T_map_lidar, initial_lidar_rotation, primary_lidar_position_in_body);
+    Require((T_map_rear * (T_rear_lidar * raw_point) - T_map_lidar * raw_point).norm() < 1e-9,
+            "map-rear pose composes rear cloud to the original map-lidar registration");
+    Require((T_map_rear.translation() -
+             (T_map_livox.translation() - T_map_livox.so3() * primary_lidar_position_in_body))
+                .norm() < 1e-9,
+            "rear pose subtracts the lidar lever arm in the map orientation");
+    Require((T_map_rear.so3().inverse() * T_map_livox.so3()).log().norm() < 1e-9,
+            "parallel livox and rear frames keep the same map orientation");
     const auto map_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_map_lidar, "map");
-    Require(map_cloud.header.frame_id == "map" && map_cloud.header.stamp == livox_cloud.header.stamp,
-            "same lidar batch uses the same timestamp in livox and map frames");
+    Require(map_cloud.header.frame_id == "map" && map_cloud.header.stamp == rear_cloud.header.stamp,
+            "same lidar batch uses the same timestamp in rear and map frames");
     sensor_msgs::PointCloud2ConstIterator<float> map_x(map_cloud, "x"), map_y(map_cloud, "y"), map_z(map_cloud, "z");
     const Vec3d expected_map_point = T_map_lidar * raw_point;
     Require(Near(*map_x, expected_map_point.x(), 1e-5) && Near(*map_y, expected_map_point.y(), 1e-5) &&

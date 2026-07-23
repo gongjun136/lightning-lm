@@ -18,6 +18,7 @@ extractor="$script_dir/extract_voxel_slam_loop_events.py"
 cpu_set="${BENCH_CPUSET:-0-7}"
 cpu_count="${BENCH_CPU_COUNT:-8}"
 play_rate="${BENCH_PLAY_RATE:-1.0}"
+loop_icp_eigval="${VOXEL_LOOP_ICP_EIGVAL:-}"
 ros_port="${BENCH_ROS_PORT:-11331}"
 finish_timeout="${BENCH_FINISH_TIMEOUT_S:-1800}"
 inventory="${BENCH_INVENTORY_JSON:-/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench/inventory/bag_inventory.json}"
@@ -87,6 +88,9 @@ rosparam set /General/enable_backend true
 rosparam set /General/is_save_map 1
 rosparam set /General/save_path "$run_dir/voxel_output/"
 rosparam set /General/bagname "$sequence"
+if [[ -n "$loop_icp_eigval" ]]; then
+  rosparam set /Loop/icp_eigval "$loop_icp_eigval"
+fi
 rosparam set /finish false
 
 setsid taskset -c "$cpu_set" "$binary" >"$run_dir/logs/algorithm.log" 2>&1 &
@@ -213,6 +217,7 @@ inventory_sha256=$(sha256sum "$inventory" | awk '{print $1}')
 cpu_set=$cpu_set
 allocated_cpus=$cpu_count
 play_rate=$play_rate
+loop_icp_eigval=${loop_icp_eigval:-config_default}
 wall_time_s=$wall_s
 output_tum=$output_tum
 sensor_duration_s=$sensor_duration

@@ -67,6 +67,23 @@ output:
   lidar_frame: "lidar_114"
   primary_lidar_position_in_body: [2.199, 0.0, 2.740]
 
+# Normalize only the saved map package. The live SLAM/odom frame is unchanged.
+# The estimator searches the flat start area near the first optimized pose,
+# finds the dominant ground-height layer, and applies one pure Z translation
+# consistently to the map, tiled chunks, trajectories, start pose, and BTC
+# database poses.
+map_export:
+  normalize_start_ground_z: true
+  start_ground_search_radius: 10.0
+  # Effective start-pose-to-ground distance in the SLAM estimator frame.
+  # Four existing SANY maps measured 3.561-3.562 m at the flat start area.
+  expected_sensor_height: 3.560
+  expected_height_tolerance: 0.8
+  histogram_bin_size: 0.05
+  inlier_tolerance: 0.20
+  max_median_absolute_deviation: 0.10
+  min_ground_inliers: 100
+
 fasterlio:
   lidar_type: 1
   scan_line: 4
@@ -308,5 +325,8 @@ maps:
 offline_localization:
   initial_pose:
     enabled: true
+    # This seed is expressed in the pre-export SLAM frame and is transformed
+    # with map_frame.yaml before localization starts.
+    frame: slam
     translation: [0.0, 0.0, 0.0]
     quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

@@ -17,6 +17,7 @@
 #include "core/backend/backend_pipeline.h"
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
+#include "core/maps/map_frame.h"
 #include "core/maps/tiled_map.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
@@ -119,7 +120,8 @@ std::string JoinIds(const std::vector<int>& ids) {
 }
 
 bool SaveKeyframeTrajectoryTum(const std::vector<lightning::Keyframe::Ptr>& keyframes, const std::string& path,
-                               bool use_lio_pose) {
+                               bool use_lio_pose,
+                               const lightning::map_frame::Metadata* map_metadata) {
     if (path.empty()) return true;
     std::ofstream tum(path);
     if (!tum.is_open()) {
@@ -132,7 +134,10 @@ bool SaveKeyframeTrajectoryTum(const std::vector<lightning::Keyframe::Ptr>& keyf
         if (!kf) continue;
         const auto state = kf->GetState();
         if (state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) continue;
-        const auto pose = use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        const auto source_pose = use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        const auto pose = map_metadata
+                              ? lightning::map_frame::TransformPose(*map_metadata, source_pose)
+                              : source_pose;
         WriteTumPose(tum, state.timestamp_, pose, last_timestamp);
         ++count;
     }
@@ -145,9 +150,28 @@ struct TimedPose {
     lightning::SE3 pose;
 };
 
+bool SaveFrameTrajectoryTum(
+    const std::vector<TimedPose>& frames, const std::string& path,
+    const lightning::map_frame::Metadata* map_metadata) {
+    if (path.empty()) return true;
+    std::ofstream output(path);
+    if (!output.is_open()) return false;
+    double last_timestamp = 0.0;
+    for (const auto& frame : frames) {
+        const auto pose = map_metadata
+                              ? lightning::map_frame::TransformPose(
+                                    *map_metadata, frame.pose)
+                              : frame.pose;
+        WriteTumPose(output, frame.timestamp, pose, last_timestamp);
+    }
+    LOG(INFO) << "wrote " << frames.size() << " frame poses to " << path;
+    return !frames.empty();
+}
+
 bool SaveCorrectedFrameTrajectoryTum(const std::vector<TimedPose>& frames,
                                      const std::vector<lightning::Keyframe::Ptr>& keyframes,
-                                     const std::string& path) {
+                                     const std::string& path,
+                                     const lightning::map_frame::Metadata* map_metadata) {
     if (path.empty() || frames.empty() || keyframes.empty()) return false;
     std::vector<double> keyframe_times;
     std::vector<lightning::SE3> corrections;
@@ -183,7 +207,12 @@ bool SaveCorrectedFrameTrajectoryTum(const std::vector<TimedPose>& frames,
                 ratio, corrections[upper].unit_quaternion());
             correction = lightning::SE3(rotation.normalized(), translation);
         }
-        WriteTumPose(output, frame.timestamp, correction * frame.pose, last_timestamp);
+        const auto source_pose = correction * frame.pose;
+        const auto pose = map_metadata
+                              ? lightning::map_frame::TransformPose(
+                                    *map_metadata, source_pose)
+                              : source_pose;
+        WriteTumPose(output, frame.timestamp, pose, last_timestamp);
     }
     LOG(INFO) << "wrote " << frames.size() << " corrected frame poses to " << path;
     return true;
@@ -221,6 +250,14 @@ int main(int argc, char** argv) {
     }
 
     YAML_IO yaml(FLAGS_config);
+    const YAML::Node config_root = YAML::LoadFile(FLAGS_config);
+    map_frame::ExportOptions map_export_options;
+    std::string map_frame_error;
+    if (!map_frame::ReadExportOptions(
+            config_root, map_export_options, map_frame_error)) {
+        LOG(ERROR) << map_frame_error;
+        return 2;
+    }
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
     const bool with_backend = yaml.GetValue<bool>("system", "with_loop_closing");
     const backend::BackendMode backend_mode =
@@ -402,51 +439,92 @@ int main(int argc, char** argv) {
     const std::filesystem::path map_dir(FLAGS_output_map_dir);
     const std::string global_map_path =
         FLAGS_output_global_map.empty() ? (map_dir / "global.pcd").string() : FLAGS_output_global_map;
+    map_frame::Metadata map_metadata;
     if (!FLAGS_backend_evaluation_only) {
         bool map_saved = false;
         Timer::Evaluate(
             [&]() {
+                const auto global_map =
+                    lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
+                if (!map_frame::EstimateStartGroundFrame(
+                        global_map, keyframes.front()->GetOptPose(), map_export_options,
+                        map_metadata, map_frame_error)) {
+                    return;
+                }
+                map_frame::TransformCloudInPlace(map_metadata, global_map);
                 if (std::filesystem::exists(map_dir)) {
                     std::filesystem::remove_all(map_dir);
                 }
                 std::filesystem::create_directories(map_dir);
-                const auto global_map = lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
                 TiledMap::Options tm_options;
                 tm_options.map_path_ = map_dir.string();
                 TiledMap tiled_map(tm_options);
-                tiled_map.ConvertFromFullPCD(global_map, keyframes.front()->GetOptPose(), map_dir.string());
+                const SE3 start_pose = map_frame::TransformPose(
+                    map_metadata, keyframes.front()->GetOptPose());
+                if (!tiled_map.ConvertFromFullPCD(
+                        global_map, start_pose, map_dir.string())) {
+                    return;
+                }
                 map_saved = pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) == 0;
             },
             "Offline Tiled Map Export");
         if (!map_saved) {
-            LOG(ERROR) << "failed to save global map: " << global_map_path;
+            LOG(ERROR) << "failed to export map: "
+                       << (map_frame_error.empty() ? global_map_path : map_frame_error);
             Timer::PrintAll();
             return 4;
         }
     }
+    const map_frame::Metadata* metadata =
+        map_metadata.normalized ? &map_metadata : nullptr;
 
     if (!FLAGS_output_tum.empty()) {
+        if (tum.is_open()) tum.close();
         const std::filesystem::path tum_path(FLAGS_output_tum);
         const auto parent = tum_path.parent_path();
         const auto stem = tum_path.stem().string();
-        SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_lio.tum")).string(), true);
-        SaveKeyframeTrajectoryTum(keyframes, (parent / (stem + "_keyframes_opt.tum")).string(), false);
-        SaveCorrectedFrameTrajectoryTum(frame_poses, keyframes, (parent / (stem + "_opt.tum")).string());
+        if (!SaveFrameTrajectoryTum(frame_poses, FLAGS_output_tum, metadata) ||
+            !SaveKeyframeTrajectoryTum(
+                keyframes, (parent / (stem + "_keyframes_lio.tum")).string(),
+                true, metadata) ||
+            !SaveKeyframeTrajectoryTum(
+                keyframes, (parent / (stem + "_keyframes_opt.tum")).string(),
+                false, metadata) ||
+            !SaveCorrectedFrameTrajectoryTum(
+                frame_poses, keyframes, (parent / (stem + "_opt.tum")).string(),
+                metadata)) {
+            LOG(ERROR) << "failed to save map-consistent trajectories";
+            Timer::PrintAll();
+            return 4;
+        }
     }
 
     if (new_backend) {
         const std::string diagnostics = FLAGS_output_backend_diagnostics.empty()
                                             ? (map_dir / "backend_diagnostics").string()
                                             : FLAGS_output_backend_diagnostics;
-        if (!new_backend->SaveDiagnostics(diagnostics)) {
+        if (!new_backend->SaveDiagnostics(diagnostics, metadata)) {
+            if (metadata) {
+                LOG(ERROR) << "failed to save map-consistent backend diagnostics to "
+                           << diagnostics;
+                Timer::PrintAll();
+                return 4;
+            }
             LOG(WARNING) << "failed to save backend diagnostics to " << diagnostics;
         }
         if (!FLAGS_backend_evaluation_only && new_backend->GetOptions().btc.enabled &&
-            !new_backend->SaveRelocalizationDatabase((map_dir / "btc_relocalization").string())) {
+            !new_backend->SaveRelocalizationDatabase(
+                (map_dir / "btc_relocalization").string(), metadata)) {
             LOG(ERROR) << "failed to save required BTC relocalization database under " << map_dir;
             Timer::PrintAll();
             return 4;
         }
+    }
+    if (!FLAGS_backend_evaluation_only &&
+        !map_frame::SaveMetadata(map_dir.string(), map_metadata, map_frame_error)) {
+        LOG(ERROR) << "failed to finalize map package: " << map_frame_error;
+        Timer::PrintAll();
+        return 4;
     }
 
     Timer::PrintAll();

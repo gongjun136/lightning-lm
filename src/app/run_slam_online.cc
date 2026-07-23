@@ -63,7 +63,10 @@ int main(int argc, char** argv) {
     slam.Spin();
     if (bag_thread.joinable()) bag_thread.join();
 
-    if (!FLAGS_save_map.empty()) slam.SaveMap(FLAGS_save_map);
+    if (!FLAGS_save_map.empty() && !slam.SaveMap(FLAGS_save_map)) {
+        LOG(ERROR) << "failed to save map";
+        return 4;
+    }
 
     Timer::PrintAll();
 

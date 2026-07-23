@@ -71,6 +71,15 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         b_acc_cov = yaml["fasterlio"]["b_acc_cov"].as<float>();
         preprocess_->Blind() = yaml["fasterlio"]["blind"].as<double>();
         preprocess_->TimeScale() = yaml["fasterlio"]["time_scale"].as<double>();
+        if (yaml["fasterlio"]["livox_point_time_scale"]) {
+            preprocess_->LivoxPointTimeScale() =
+                yaml["fasterlio"]["livox_point_time_scale"].as<double>();
+        }
+        if (!std::isfinite(preprocess_->LivoxPointTimeScale()) ||
+            preprocess_->LivoxPointTimeScale() <= 0.0) {
+            LOG(ERROR) << "invalid livox_point_time_scale";
+            return false;
+        }
         lidar_type = yaml["fasterlio"]["lidar_type"].as<int>();
         preprocess_->NumScans() = yaml["fasterlio"]["scan_line"].as<int>();
         preprocess_->PointFilterNum() = yaml["fasterlio"]["point_filter_num"].as<int>();
@@ -189,7 +198,8 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     LOG(INFO) << "lidar_type " << lidar_type;
     if (lidar_type == 1) {
         preprocess_->SetLidarType(LidarType::AVIA);
-        LOG(INFO) << "Using AVIA Lidar";
+        LOG(INFO) << "Using AVIA Lidar, point timestamp scale "
+                  << preprocess_->LivoxPointTimeScale();
     } else if (lidar_type == 2) {
         preprocess_->SetLidarType(LidarType::VELO32);
         LOG(INFO) << "Using Velodyne 32 Lidar";

@@ -586,7 +586,9 @@ BackendRuntimeSummary BackendPipeline::GetRuntimeSummary() const {
     return runtime_;
 }
 
-bool BackendPipeline::SaveDiagnostics(const std::string& directory) const {
+bool BackendPipeline::SaveDiagnostics(
+    const std::string& directory,
+    const map_frame::Metadata* map_metadata) const {
     std::vector<BtcLoopResult> loops;
     std::vector<LoopConstraint> constraints;
     BackendRuntimeSummary runtime;
@@ -639,16 +641,23 @@ bool BackendPipeline::SaveDiagnostics(const std::string& directory) const {
             << "btc_time_ms: " << runtime.btc_time_ms << '\n'
             << "pose_graph_time_ms: " << runtime.pose_graph_time_ms << '\n'
             << "hba_time_ms: " << runtime.hba_time_ms << '\n';
+    if (map_metadata && map_metadata->normalized) {
+        summary << "map_frame_transform_id: " << map_metadata->transform_id << '\n'
+                << "map_frame_z_offset: "
+                << map_metadata->T_export_slam.translation().z() << '\n';
+    }
     return true;
 }
 
-bool BackendPipeline::SaveRelocalizationDatabase(const std::string& directory) const {
+bool BackendPipeline::SaveRelocalizationDatabase(
+    const std::string& directory,
+    const map_frame::Metadata* map_metadata) const {
     std::lock_guard<std::mutex> lock(data_mutex_);
     if (!btc_) {
         LOG(ERROR) << "cannot save BTC relocalization database: BTC is not initialized";
         return false;
     }
-    return btc_->SaveRelocalizationDatabase(directory, T_imu_lidar_);
+    return btc_->SaveRelocalizationDatabase(directory, T_imu_lidar_, map_metadata);
 }
 
 }  // namespace lightning::backend

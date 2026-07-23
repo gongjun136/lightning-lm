@@ -7,6 +7,7 @@
 
 #include "core/backend/btc_loop_detector.h"
 #include "core/localization/btc_relocalizer.h"
+#include "core/maps/map_frame.h"
 
 namespace {
 
@@ -180,6 +181,57 @@ int main() {
                   << ", score=" << (relocalization ? relocalization->score : 0.0)
                   << ", reason=" << (relocalization ? relocalization->reason : "no_result") << std::endl;
         return 9;
+    }
+
+    lightning::map_frame::Metadata map_metadata;
+    map_metadata.normalized = true;
+    map_metadata.transform_id = "start_ground_z:1.250000000000";
+    map_metadata.T_export_slam = lightning::SE3(
+        lightning::Quatd::Identity(), lightning::Vec3d(0.0, 0.0, 1.25));
+    map_metadata.ground_z_slam = -1.25;
+    std::string map_frame_error;
+    if (!lightning::map_frame::SaveMetadata(
+            temporary_root.string(), map_metadata, map_frame_error) ||
+        !detector.SaveRelocalizationDatabase(
+            database_path.string(), lightning::SE3(), &map_metadata)) {
+        std::cerr << "failed to save normalized map package: " << map_frame_error
+                  << std::endl;
+        return 11;
+    }
+    {
+        std::ofstream config(config_path);
+        config << "map_export:\n"
+                  "  normalize_start_ground_z: true\n"
+                  "relocalization:\n"
+                  "  enabled: true\n"
+                  "  query_submap_size: 2\n"
+                  "  min_points_per_submap: 100\n"
+                  "  min_btc_score: 0.10\n";
+    }
+    lightning::loc::BtcRelocalizer normalized_relocalizer;
+    if (!normalized_relocalizer.Init(
+            config_path.string(), temporary_root.string(), lightning::SE3())) {
+        std::cerr << "failed to load a consistent normalized BTC database"
+                  << std::endl;
+        return 12;
+    }
+
+    lightning::map_frame::Metadata mismatched_metadata = map_metadata;
+    mismatched_metadata.transform_id = "start_ground_z:2.000000000000";
+    mismatched_metadata.T_export_slam = lightning::SE3(
+        lightning::Quatd::Identity(), lightning::Vec3d(0.0, 0.0, 2.0));
+    mismatched_metadata.ground_z_slam = -2.0;
+    if (!lightning::map_frame::SaveMetadata(
+            temporary_root.string(), mismatched_metadata, map_frame_error)) {
+        std::cerr << "failed to write mismatch test metadata" << std::endl;
+        return 13;
+    }
+    lightning::loc::BtcRelocalizer mismatched_relocalizer;
+    if (mismatched_relocalizer.Init(
+            config_path.string(), temporary_root.string(), lightning::SE3())) {
+        std::cerr << "mismatched global-map and BTC transforms were accepted"
+                  << std::endl;
+        return 14;
     }
     std::error_code cleanup_error;
     std::filesystem::remove_all(temporary_root, cleanup_error);

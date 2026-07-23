@@ -20,6 +20,7 @@
 #include "common/imu.h"
 #include "common/keyframe.h"
 #include "common/nav_state.h"
+#include "core/maps/map_frame.h"
 
 namespace lightning {
 
@@ -95,7 +96,7 @@ class SlamSystem {
      * @brief 保存当前地图。
      * @param path 地图保存路径；为空时默认保存到./data/地图名/目录下。
      */
-    void SaveMap(const std::string& path = "");
+    bool SaveMap(const std::string& path = "");
 
     /**
      * @brief 处理一条IMU数据。
@@ -128,7 +129,9 @@ class SlamSystem {
     /**
      * @brief 导出关键帧轨迹；use_lio_pose=true导出前端LIO位姿，false导出后端优化位姿。
      */
-    bool SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio_pose) const;
+    bool SaveKeyframeTrajectoryTum(
+        const std::string& path, bool use_lio_pose,
+        const map_frame::Metadata* map_metadata = nullptr) const;
 
     /**
      * @brief 在线模式下启动ROS2事件循环。
@@ -152,12 +155,15 @@ class SlamSystem {
     void OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr request,
                          std_srvs::srv::Trigger::Response::SharedPtr response);
     void DrainLio();
-    bool SaveLioTrajectoryTum(const std::string& path) const;
+    bool SaveLioTrajectoryTum(
+        const std::string& path,
+        const map_frame::Metadata* map_metadata = nullptr) const;
     void PublishMapToOdom();
 
     Options options_;                  ///< 系统运行选项。
     std::atomic_bool running_ = false;  ///< 系统是否处于建图运行状态。
 
+    map_frame::ExportOptions map_export_options_;
     rclcpp::Service<SaveMapService>::SharedPtr savemap_service_ = nullptr;  ///< ROS2保存地图服务。
 
     std::string map_name_;  ///< 当前地图名。

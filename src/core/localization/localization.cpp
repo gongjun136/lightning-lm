@@ -62,7 +62,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         // lio_->SetUI(ui_);
     }
 
-    lidar_loc_->Init(yaml_path);
+    if (!lidar_loc_->Init(yaml_path)) {
+        LOG(ERROR) << "failed to initialize lidar localization";
+        return false;
+    }
 
     /// pose graph
     pgo_ = std::make_shared<PGO>();

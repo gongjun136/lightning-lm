@@ -52,6 +52,15 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         map_path = configured_map.as<std::string>();
     }
     map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
+    primary_lidar_position_in_body_ = Vec3d(2.199, 0.0, 2.740);
+    if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
+        const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
+        if (values.size() != 3) {
+            LOG(ERROR) << "output.primary_lidar_position_in_body must have 3 values";
+            return false;
+        }
+        primary_lidar_position_in_body_ = Vec3d(values[0], values[1], values[2]);
+    }
     const int lost_frame_threshold =
         root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
@@ -253,10 +262,10 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     if (!publication_gate_.MapOutputsEnabled()) return;
     if (!pos_res_pub_ || !pose_pub_) return;
-    const SE3 map_livox_pose =
-        sany_output::MakeMapLivoxPose(result.pose_, loc_->GetInitialLidarRotation());
+    const SE3 map_rear_axle_pose = sany_output::MakeMapRearAxlePose(
+        result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const auto position =
-        sany_output::MakePosResMessage(map_livox_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
+        sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
     pose_pub_->publish(sany_output::MakePoseMessage(position));
 }
@@ -267,9 +276,10 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
     if (begin_time <= 0.0 || end_time <= 0.0) return;
     const SO3 initial_lidar_rotation = loc_->GetInitialLidarRotation();
-    inv_cloud_pub_->publish(
-        sany_output::MakeCloudMessage(cloud, begin_time, end_time,
-                                      sany_output::MakeLivoxLidarTransform(initial_lidar_rotation), livox_frame_));
+    inv_cloud_pub_->publish(sany_output::MakeCloudMessage(
+        cloud, begin_time, end_time,
+        sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body_),
+        rear_axle_frame_));
     const bool publish_map_frame = map_cloud_decimator_.Tick();
     publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
     if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {

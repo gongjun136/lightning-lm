@@ -10,6 +10,8 @@
 #include <pcl/io/pcd_io.h>
 #include <yaml-cpp/yaml.h>
 
+#include "core/maps/map_frame.h"
+
 namespace lightning::loc {
 namespace {
 
@@ -92,6 +94,18 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
     try {
         const YAML::Node root = YAML::LoadFile(config_path);
         const YAML::Node config = root["relocalization"];
+        map_frame::ExportOptions export_options;
+        std::string map_frame_error;
+        if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
+            LOG(ERROR) << map_frame_error;
+            return false;
+        }
+        map_frame::Metadata package_metadata;
+        if (export_options.normalize_start_ground_z &&
+            !map_frame::LoadMetadata(map_path, package_metadata, map_frame_error)) {
+            LOG(ERROR) << map_frame_error;
+            return false;
+        }
         options_.enabled = ReadOr<bool>(config, "enabled", false);
         if (!options_.enabled) {
             LOG(INFO) << "BTC relocalization is disabled";
@@ -110,9 +124,25 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
         }
 
         const YAML::Node manifest = YAML::LoadFile(manifest_path.string());
-        if (ReadOr<int>(manifest, "schema_version", 0) != 1) {
+        const int schema_version = ReadOr<int>(manifest, "schema_version", 0);
+        if (schema_version != 1 && schema_version != 2) {
             LOG(ERROR) << "unsupported BTC relocalization database schema: " << manifest_path;
             return false;
+        }
+        if (export_options.normalize_start_ground_z) {
+            if (schema_version != 2) {
+                LOG(ERROR) << "normalized map requires a map-frame-aware BTC database: "
+                           << manifest_path;
+                return false;
+            }
+            map_frame::Metadata database_metadata;
+            if (!map_frame::ReadTransformReference(
+                    manifest["map_frame"], database_metadata, map_frame_error) ||
+                !map_frame::SameTransform(package_metadata, database_metadata)) {
+                LOG(ERROR) << "BTC database map frame does not match the global map: "
+                           << (map_frame_error.empty() ? "transform mismatch" : map_frame_error);
+                return false;
+            }
         }
         options_.query_submap_size = ReadOr<int>(
             config, "query_submap_size", ReadOr<int>(manifest, "descriptor_submap_size", 10));

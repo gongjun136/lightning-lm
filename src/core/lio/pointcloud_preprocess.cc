@@ -89,7 +89,7 @@ void PointCloudPreprocess::LivoxPointCloud2Handler(const sensor_msgs::msg::Point
         added_pt.z = z;
         added_pt.intensity = *iter_intensity;
 
-        const double timestamp = *iter_timestamp;
+        const double timestamp = *iter_timestamp * livox_point_time_scale_;
         if (timestamp > kAbsoluteTimeThreshold) {
             added_pt.time = (timestamp - head_time) * 1e3;
         } else {

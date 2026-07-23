@@ -24,6 +24,7 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/maps/tiled_map.cc
         core/maps/tiled_map_chunk.cc
+        core/maps/map_frame.cc
 
         core/localization/localization_result.cc
         core/localization/btc_relocalizer.cc
@@ -119,6 +120,9 @@ if(BUILD_TESTING)
     add_executable(async_message_process_test test/async_message_process_test.cc)
     target_link_libraries(async_message_process_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(map_frame_test test/map_frame_test.cc)
+    target_link_libraries(map_frame_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_test(NAME eskf_update_velocity_gate_test COMMAND $<TARGET_FILE:eskf_update_velocity_gate_test>)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
@@ -129,6 +133,7 @@ if(BUILD_TESTING)
     add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)
     add_test(NAME localization_pgo_test COMMAND $<TARGET_FILE:localization_pgo_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
+    add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
 endif()
 
 add_subdirectory(app)

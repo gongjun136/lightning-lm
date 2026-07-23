@@ -21,6 +21,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/lio/multi_lidar_fusion.h"
 #include "core/localization/lidar_loc/lidar_loc.h"
+#include "core/maps/map_frame.h"
 #include "core/localization/pose_graph/pgo.h"
 #include "core/system/sany_localization_output.h"
 #include "io/yaml_io.h"
@@ -59,9 +60,11 @@ class RosContextGuard {
 
 class OfflineLocalizationPublisher {
    public:
-    OfflineLocalizationPublisher(std::string map_frame, std::size_t lost_frame_threshold)
+    OfflineLocalizationPublisher(std::string map_frame, std::size_t lost_frame_threshold,
+                                 const lightning::Vec3d& primary_lidar_position_in_body)
         : node_(std::make_shared<rclcpp::Node>("offline_multi_lidar_localization")),
           map_frame_(std::move(map_frame)),
+          primary_lidar_position_in_body_(primary_lidar_position_in_body),
           publication_gate_(lost_frame_threshold),
           map_cloud_decimator_(10) {
         const auto pose_qos =
@@ -81,10 +84,10 @@ class OfflineLocalizationPublisher {
             !publication_gate_.MapOutputsEnabled()) {
             return;
         }
-        const lightning::SE3 map_livox_pose =
-            lightning::sany_output::MakeMapLivoxPose(result.pose_, initial_lidar_rotation);
+        const lightning::SE3 map_rear_axle_pose = lightning::sany_output::MakeMapRearAxlePose(
+            result.pose_, initial_lidar_rotation, primary_lidar_position_in_body_);
         const auto position = lightning::sany_output::MakePosResMessage(
-            map_livox_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
+            map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
         pos_res_pub_->publish(position);
         pose_pub_->publish(lightning::sany_output::MakePoseMessage(position));
     }
@@ -95,7 +98,9 @@ class OfflineLocalizationPublisher {
         if (!rclcpp::ok() || !cloud || cloud->empty()) return;
         inv_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
             cloud, begin_time, end_time,
-            lightning::sany_output::MakeLivoxLidarTransform(initial_lidar_rotation), livox_frame_));
+            lightning::sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation,
+                                                               primary_lidar_position_in_body_),
+            rear_axle_frame_));
         const bool publish_map_frame = map_cloud_decimator_.Tick();
         if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
             map_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
@@ -110,7 +115,8 @@ class OfflineLocalizationPublisher {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
     std::string map_frame_;
-    std::string livox_frame_ = "livox_frame";
+    std::string rear_axle_frame_ = "rear_axle";
+    lightning::Vec3d primary_lidar_position_in_body_ = lightning::Vec3d::Zero();
     lightning::sany_output::LocalizationPublicationGate publication_gate_;
     lightning::sany_output::FrameDecimator map_cloud_decimator_;
 };
@@ -202,7 +208,8 @@ bool IsUsableLocResult(const lightning::loc::LocalizationResult& result) {
     return result.valid_ || result.lidar_loc_valid_;
 }
 
-bool ReadInitialPose(const std::string& config_path, lightning::SE3& pose) {
+bool ReadInitialPose(const std::string& config_path, const std::string& map_path,
+                     lightning::SE3& pose) {
     const YAML::Node root = YAML::LoadFile(config_path);
     YAML::Node node = root["offline_localization"] ? root["offline_localization"]["initial_pose"] : YAML::Node();
     if (!node) return false;
@@ -259,6 +266,27 @@ bool ReadInitialPose(const std::string& config_path, lightning::SE3& pose) {
     if (q.norm() < 1e-9) throw std::runtime_error("initial pose quaternion has zero norm");
     q.normalize();
     pose = lightning::SE3(q, lightning::Vec3d(translation[0], translation[1], translation[2]));
+    const std::string frame =
+        node.IsMap() && node["frame"] ? node["frame"].as<std::string>() : "map";
+    if (frame == "slam") {
+        lightning::map_frame::ExportOptions export_options;
+        std::string map_frame_error;
+        if (!lightning::map_frame::ReadExportOptions(
+                root, export_options, map_frame_error)) {
+            throw std::runtime_error(map_frame_error);
+        }
+        if (export_options.normalize_start_ground_z) {
+            lightning::map_frame::Metadata metadata;
+            if (!lightning::map_frame::LoadMetadata(
+                    map_path, metadata, map_frame_error)) {
+                throw std::runtime_error(map_frame_error);
+            }
+            pose = lightning::map_frame::TransformPose(metadata, pose);
+        }
+    } else if (frame != "map") {
+        throw std::runtime_error(
+            "offline_localization.initial_pose.frame must be 'map' or 'slam'");
+    }
     return true;
 }
 
@@ -323,6 +351,15 @@ int main(int argc, char** argv) {
     const YAML::Node root = YAML::LoadFile(FLAGS_config);
     const std::string map_frame =
         root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
+    Vec3d primary_lidar_position_in_body(2.199, 0.0, 2.740);
+    if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
+        const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
+        if (values.size() != 3) {
+            LOG(ERROR) << "output.primary_lidar_position_in_body must have 3 values";
+            return 2;
+        }
+        primary_lidar_position_in_body = Vec3d(values[0], values[1], values[2]);
+    }
     const int lost_frame_threshold =
         root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
@@ -333,7 +370,7 @@ int main(int argc, char** argv) {
     }
     if (ros_context) {
         topic_publisher = std::make_unique<OfflineLocalizationPublisher>(
-            map_frame, static_cast<std::size_t>(lost_frame_threshold));
+            map_frame, static_cast<std::size_t>(lost_frame_threshold), primary_lidar_position_in_body);
     }
 
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
@@ -380,7 +417,7 @@ int main(int argc, char** argv) {
     try {
         if (FLAGS_use_config_initial_pose) {
             SE3 initial_pose;
-            if (ReadInitialPose(FLAGS_config, initial_pose)) {
+            if (ReadInitialPose(FLAGS_config, FLAGS_map_path, initial_pose)) {
                 lidar_loc->SetInitialPose(initial_pose);
                 LOG(INFO) << "offline localization initial pose: " << initial_pose.translation().transpose();
             } else {

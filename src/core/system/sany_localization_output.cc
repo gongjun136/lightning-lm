@@ -22,16 +22,16 @@ builtin_interfaces::msg::Time ToRosStamp(double seconds) {
 
 }  // namespace
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_livox_pose, double vehicle_speed, double stamp,
+geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id) {
     geosun_msgs::msg::PosRes message;
     message.header.stamp = ToRosStamp(stamp);
     message.header.frame_id = frame_id;
-    message.f8enh = {map_livox_pose.translation().x(), map_livox_pose.translation().y(),
-                     map_livox_pose.translation().z()};
+    message.f8enh = {map_rear_axle_pose.translation().x(), map_rear_axle_pose.translation().y(),
+                     map_rear_axle_pose.translation().z()};
     message.f8vehiclespeed = vehicle_speed;
 
-    const Mat3d rotation = map_livox_pose.so3().matrix();
+    const Mat3d rotation = map_rear_axle_pose.so3().matrix();
     const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
     const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
     double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
@@ -109,6 +109,18 @@ SE3 MakeLivoxLidarTransform(const SO3& initial_lidar_rotation) {
 
 SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation) {
     return map_lidar_pose * MakeLivoxLidarTransform(initial_lidar_rotation).inverse();
+}
+
+SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
+                               const Vec3d& primary_lidar_position_in_body) {
+    const SE3 T_rear_livox(SO3(), primary_lidar_position_in_body);
+    return T_rear_livox * MakeLivoxLidarTransform(initial_lidar_rotation);
+}
+
+SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation,
+                        const Vec3d& primary_lidar_position_in_body) {
+    return map_lidar_pose *
+           MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body).inverse();
 }
 
 LocalizationPublicationGate::LocalizationPublicationGate(std::size_t lost_frame_threshold)

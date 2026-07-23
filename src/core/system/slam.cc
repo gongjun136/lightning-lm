@@ -61,6 +61,11 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     options_.with_2dvisualization_ = yaml["system"]["with_2dui"].as<bool>();
     options_.with_gridmap_ = yaml["system"]["with_g2p5"].as<bool>();
     options_.step_on_kf_ = yaml["system"]["step_on_kf"].as<bool>();
+    std::string map_frame_error;
+    if (!map_frame::ReadExportOptions(yaml, map_export_options_, map_frame_error)) {
+        LOG(ERROR) << map_frame_error;
+        return false;
+    }
 
     // 根据配置初始化回环检测模块
     if (options_.with_loop_closing_) {
@@ -236,8 +241,7 @@ void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
     map_name_ = request->map_id;
     std::string save_path = "./data/" + map_name_ + "/";
 
-    SaveMap(save_path);
-    response->response = 0;
+    response->response = SaveMap(save_path) ? 0 : 3;
 }
 
 /**
@@ -247,7 +251,7 @@ void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
  * 保存内容包括全局点云global.pcd、分块地图数据，以及可选的ROS导航兼容栅格地图
  * map.pgm和map.yaml。若目标目录已存在，会先清空再重新创建。
  */
-void SlamSystem::SaveMap(const std::string& path) {
+bool SlamSystem::SaveMap(const std::string& path) {
     std::string save_path = path;
     if (save_path.empty()) {
         save_path = "./data/" + map_name_ + "/";
@@ -255,8 +259,29 @@ void SlamSystem::SaveMap(const std::string& path) {
 
     LOG(INFO) << "slam map saving to " << save_path;
     if (backend_) backend_->WaitUntilIdle(true);
+    const auto keyframes = lio_->GetAllKeyframes();
+    if (keyframes.empty()) {
+        LOG(ERROR) << "cannot save a map without keyframes";
+        return false;
+    }
 
-    /// 重建目标目录，避免旧地图文件残留影响本次保存结果。
+    // auto global_map_no_loop = lio_->GetGlobalMap(true);
+    /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
+    auto global_map = lio_->GetGlobalMap(!options_.with_loop_closing_);
+    map_frame::Metadata map_metadata;
+    std::string map_frame_error;
+    if (!map_frame::EstimateStartGroundFrame(
+            global_map, keyframes.front()->GetOptPose(), map_export_options_,
+            map_metadata, map_frame_error)) {
+        LOG(ERROR) << "map export aborted: " << map_frame_error;
+        return false;
+    }
+    map_frame::TransformCloudInPlace(map_metadata, global_map);
+    const map_frame::Metadata* metadata =
+        map_metadata.normalized ? &map_metadata : nullptr;
+    // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
+
+    /// 地面估计成功后再重建目录，避免失败的导出破坏已有地图。
     if (!std::filesystem::exists(save_path)) {
         std::filesystem::create_directories(save_path);
     } else {
@@ -264,27 +289,40 @@ void SlamSystem::SaveMap(const std::string& path) {
         std::filesystem::create_directories(save_path);
     }
 
-    // auto global_map_no_loop = lio_->GetGlobalMap(true);
-    /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
-    auto global_map = lio_->GetGlobalMap(!options_.with_loop_closing_);
-    // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
-
     /// 将完整点云转换为项目内部的分块地图格式，起始关键帧位姿用于建立局部地图基准。
     TiledMap::Options tm_options;
     tm_options.map_path_ = save_path;
 
     TiledMap tm(tm_options);
-    SE3 start_pose = lio_->GetAllKeyframes().front()->GetOptPose();
-    tm.ConvertFromFullPCD(global_map, start_pose, save_path);
-
-    pcl::io::savePCDFileBinaryCompressed(save_path + "/global.pcd", *global_map);
-    if (backend_) {
-        backend_->SaveDiagnostics(save_path + "/backend_diagnostics");
-        backend_->SaveRelocalizationDatabase(save_path + "/btc_relocalization");
+    const SE3 start_pose =
+        map_frame::TransformPose(map_metadata, keyframes.front()->GetOptPose());
+    if (!tm.ConvertFromFullPCD(global_map, start_pose, save_path)) {
+        LOG(ERROR) << "failed to export tiled map";
+        return false;
     }
-    SaveKeyframeTrajectoryTum(save_path + "/trajectory_slam_keyframes_lio.tum", true);
-    SaveKeyframeTrajectoryTum(save_path + "/trajectory_slam_keyframes_opt.tum", false);
-    SaveLioTrajectoryTum(save_path + "/trajectory_slam.tum");
+
+    if (pcl::io::savePCDFileBinaryCompressed(
+            save_path + "/global.pcd", *global_map) != 0) {
+        LOG(ERROR) << "failed to save global map";
+        return false;
+    }
+    if (backend_) {
+        if (!backend_->SaveDiagnostics(
+                save_path + "/backend_diagnostics", metadata) ||
+            !backend_->SaveRelocalizationDatabase(
+                save_path + "/btc_relocalization", metadata)) {
+            LOG(ERROR) << "failed to save map-consistent backend artifacts";
+            return false;
+        }
+    }
+    if (!SaveKeyframeTrajectoryTum(
+            save_path + "/trajectory_slam_keyframes_lio.tum", true, metadata) ||
+        !SaveKeyframeTrajectoryTum(
+            save_path + "/trajectory_slam_keyframes_opt.tum", false, metadata) ||
+        !SaveLioTrajectoryTum(save_path + "/trajectory_slam.tum", metadata)) {
+        LOG(ERROR) << "failed to save map-consistent trajectories";
+        return false;
+    }
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
@@ -317,7 +355,7 @@ void SlamSystem::SaveMap(const std::string& path) {
         std::ofstream yamlFile(save_path + "/map.yaml");
         if (!yamlFile.is_open()) {
             LOG(ERROR) << "failed to write map.yaml";
-            return;  // 文件打开失败
+            return false;  // 文件打开失败
         }
 
         try {
@@ -340,11 +378,16 @@ void SlamSystem::SaveMap(const std::string& path) {
             yamlFile.close();
         } catch (...) {
             yamlFile.close();
-            return;
+            return false;
         }
     }
 
+    if (!map_frame::SaveMetadata(save_path, map_metadata, map_frame_error)) {
+        LOG(ERROR) << "map export aborted: " << map_frame_error;
+        return false;
+    }
     LOG(INFO) << "map saved";
+    return true;
 }
 
 void SlamSystem::ProcessIMU(const lightning::IMUPtr& imu) {
@@ -364,7 +407,9 @@ NavState SlamSystem::GetLioState() const {
     return lio_->GetState();
 }
 
-bool SlamSystem::SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio_pose) const {
+bool SlamSystem::SaveKeyframeTrajectoryTum(
+    const std::string& path, bool use_lio_pose,
+    const map_frame::Metadata* map_metadata) const {
     if (!lio_) {
         LOG(ERROR) << "lio is not initialized, skip trajectory export";
         return false;
@@ -388,7 +433,11 @@ bool SlamSystem::SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio
             continue;
         }
 
-        const auto pose = use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        const auto source_pose =
+            use_lio_pose ? kf->GetLIOPose() : kf->GetOptPose();
+        const auto pose = map_metadata
+                              ? map_frame::TransformPose(*map_metadata, source_pose)
+                              : source_pose;
         const auto q = pose.unit_quaternion();
         const auto p = pose.translation();
         tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << p.x() << " "
@@ -401,7 +450,9 @@ bool SlamSystem::SaveKeyframeTrajectoryTum(const std::string& path, bool use_lio
     return count > 0;
 }
 
-bool SlamSystem::SaveLioTrajectoryTum(const std::string& path) const {
+bool SlamSystem::SaveLioTrajectoryTum(
+    const std::string& path,
+    const map_frame::Metadata* map_metadata) const {
     std::ofstream tum(path);
     if (!tum.is_open()) {
         LOG(ERROR) << "failed to open LIO trajectory: " << path;
@@ -412,7 +463,10 @@ bool SlamSystem::SaveLioTrajectoryTum(const std::string& path) const {
     int count = 0;
     for (const auto& state : lio_states_) {
         if (!state.pose_is_ok_ || state.timestamp_ <= 0.0 || state.timestamp_ <= last_timestamp) continue;
-        const auto pose = state.GetPose();
+        const auto source_pose = state.GetPose();
+        const auto pose = map_metadata
+                              ? map_frame::TransformPose(*map_metadata, source_pose)
+                              : source_pose;
         const auto q = pose.unit_quaternion();
         const auto p = pose.translation();
         tum << std::fixed << std::setprecision(9) << state.timestamp_ << " " << std::setprecision(12) << p.x() << " "

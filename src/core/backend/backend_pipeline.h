@@ -70,8 +70,11 @@ class BackendPipeline {
     SE3 GetMapToOdom() const;
     std::vector<BtcLoopResult> GetLoopResults() const;
     BackendRuntimeSummary GetRuntimeSummary() const;
-    bool SaveDiagnostics(const std::string& directory) const;
-    bool SaveRelocalizationDatabase(const std::string& directory) const;
+    bool SaveDiagnostics(const std::string& directory,
+                         const map_frame::Metadata* map_metadata = nullptr) const;
+    bool SaveRelocalizationDatabase(
+        const std::string& directory,
+        const map_frame::Metadata* map_metadata = nullptr) const;
     const BackendPipelineOptions& GetOptions() const { return options_; }
 
    private:

@@ -23,6 +23,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "glog/logging.h"
+#include "core/maps/map_frame.h"
 #include "io/file_io.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
@@ -89,6 +90,20 @@ LidarLoc::~LidarLoc() {
 bool LidarLoc::Init(const std::string& config_path) {
     YAML_IO yaml(config_path);
     const YAML::Node root = YAML::LoadFile(config_path);
+    map_frame::ExportOptions export_options;
+    std::string map_frame_error;
+    if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
+        LOG(ERROR) << map_frame_error;
+        return false;
+    }
+    if (export_options.normalize_start_ground_z) {
+        map_frame::Metadata metadata;
+        if (!map_frame::LoadMetadata(
+                options_.map_option_.map_path_, metadata, map_frame_error)) {
+            LOG(ERROR) << map_frame_error;
+            return false;
+        }
+    }
     options_.map_option_.enable_dynamic_polygon_ = yaml.GetValue<bool>("maps", "with_dyn_area");
     options_.map_option_.max_pts_in_dyn_chunk_ = yaml.GetValue<int>("maps", "max_pts_dyn_chunk");
     options_.map_option_.load_map_size_ = yaml.GetValue<int>("maps", "load_map_size");
@@ -180,7 +195,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     options_.map_option_.save_dyn_when_unload_ = yaml.GetValue<bool>("maps", "save_dyn_when_unload");
 
     map_ = std::make_shared<TiledMap>(options_.map_option_);
-    map_->LoadMapIndex();
+    if (!map_->LoadMapIndex()) return false;
 
     auto fps = map_->GetAllFP();
     if (!fps.empty()) {
@@ -191,6 +206,10 @@ bool LidarLoc::Init(const std::string& config_path) {
 
     btc_relocalizer_ = std::make_unique<BtcRelocalizer>();
     if (!btc_relocalizer_->Init(config_path, options_.map_option_.map_path_, ReadLidarToImu(root))) {
+        if (export_options.normalize_start_ground_z) {
+            LOG(ERROR) << "normalized map requires a consistent BTC relocalization database";
+            return false;
+        }
         LOG(WARNING) << "BTC relocalization is unavailable; NDT localization remains enabled";
     }
 

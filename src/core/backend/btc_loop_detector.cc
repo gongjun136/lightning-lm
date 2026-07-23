@@ -402,7 +402,8 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
 }
 
 bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
-                                                  const SE3& T_imu_lidar) const {
+                                                  const SE3& T_imu_lidar,
+                                                  const map_frame::Metadata* map_metadata) const {
     if (entries_.empty() || entries_.size() != descriptor_keyframes_.size()) {
         LOG(ERROR) << "BTC relocalization database is incomplete: entries=" << entries_.size()
                    << ", submaps=" << descriptor_keyframes_.size();
@@ -419,7 +420,10 @@ bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
     }
 
     YAML::Node root;
-    root["schema_version"] = 1;
+    root["schema_version"] = map_metadata && map_metadata->normalized ? 2 : 1;
+    if (map_metadata && map_metadata->normalized) {
+        root["map_frame"] = map_frame::MakeTransformReference(*map_metadata);
+    }
     root["descriptor_submap_size"] = options_.descriptor_submap_size;
     root["max_points_per_submap"] = options_.max_points_per_submap;
     root["downsample_leaf_size"] = options_.downsample_leaf_size;
@@ -476,7 +480,9 @@ bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
         }
 
         const BtcDescriptorEntry& entry = entries_[index];
-        const SE3 T_world_lidar = entry.endpoint->GetOptPose() * T_imu_lidar;
+        const SE3 T_world_lidar =
+            (map_metadata && map_metadata->normalized ? map_metadata->T_export_slam : SE3()) *
+            entry.endpoint->GetOptPose() * T_imu_lidar;
         const Vec3d translation = T_world_lidar.translation();
         const Quatd quaternion = T_world_lidar.unit_quaternion();
         YAML::Node yaml_entry;

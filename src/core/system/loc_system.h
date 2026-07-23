@@ -82,7 +82,8 @@ class LocSystem {
     std::string cloud_topic_;
     std::string livox_topic_;
     std::string map_frame_ = "map";
-    std::string livox_frame_ = "livox_frame";
+    std::string rear_axle_frame_ = "rear_axle";
+    Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
     sany_output::LocalizationPublicationGate publication_gate_;
     sany_output::FrameDecimator map_cloud_decimator_{10};
     mutable std::mutex trajectory_mutex_;
