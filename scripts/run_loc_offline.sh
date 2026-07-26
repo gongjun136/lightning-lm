@@ -29,6 +29,7 @@ Options:
   --watchdog-margin SEC         Extra watchdog wall time (default: 300)
   --wait-ui BOOL                Wait for UI close (default: false)
   --publish-topics BOOL         Initialize ROS 2 publishers (default: false)
+  --output-bag PATH             Directly write the four SANY output topics to this ROS 2 bag
   --use-config-initial-pose BOOL  Use YAML initial pose (default: true)
   -h, --help                    Show this help
 
@@ -66,6 +67,7 @@ max_trajectory_axis_range="40.0"
 watchdog_margin="300"
 wait_ui="false"
 publish_topics="false"
+output_bag=""
 use_config_initial_pose="true"
 extra_args=()
 
@@ -90,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     --watchdog-margin) watchdog_margin="${2:?missing value for --watchdog-margin}"; shift 2 ;;
     --wait-ui) wait_ui="${2:?missing value for --wait-ui}"; shift 2 ;;
     --publish-topics) publish_topics="${2:?missing value for --publish-topics}"; shift 2 ;;
+    --output-bag) output_bag="${2:?missing value for --output-bag}"; shift 2 ;;
     --use-config-initial-pose) use_config_initial_pose="${2:?missing value for --use-config-initial-pose}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; extra_args=("$@"); break ;;
@@ -135,6 +138,7 @@ bag_dir="$(realpath "$bag_dir")"
 config_path="$(realpath "$config_path")"
 map_path="$(realpath "$map_path")"
 run_dir="$(realpath -m "$run_dir")"
+if [[ -n "$output_bag" ]]; then output_bag="$(realpath -m "$output_bag")"; fi
 if [[ -n "$reference_tum" ]]; then reference_tum="$(realpath "$reference_tum")"; fi
 if [[ -z "$sequence" ]]; then sequence="$(basename "$bag_dir")"; fi
 
@@ -244,6 +248,7 @@ setsid taskset -c "$cpu_set" "$binary" \
   --max_lidar_frames="$max_lidar_frames" \
   --wait_ui="$wait_ui" \
   --publish_topics="$publish_topics" \
+  --output_bag="$output_bag" \
   --use_config_initial_pose="$use_config_initial_pose" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &

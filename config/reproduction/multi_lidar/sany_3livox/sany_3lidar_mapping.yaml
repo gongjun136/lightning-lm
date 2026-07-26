@@ -1,0 +1,183 @@
+common:
+  dataset: "sany"
+  lidar_topic: "/livox/lidar_192_168_3_184"
+  livox_lidar_topic: ""
+  imu_topic: "/livox/imu_192_168_3_184"
+
+multi_lidar:
+  enabled: true
+  primary_lidar_id: 0
+  frame_period: 0.1
+  match_tolerance: 0.002
+  reorder_window: 0.5
+  min_lidars: 1
+  online_extrinsic_estimation: false
+  topics:
+    lidar_0: "/livox/lidar_192_168_3_184"
+    lidar_1: "/livox/lidar_192_168_1_108"
+    lidar_2: "/livox/lidar_192_168_2_133"
+    imu_0: "/livox/imu_192_168_3_184"
+    imu_1: "/livox/imu_192_168_1_108"
+    imu_2: "/livox/imu_192_168_2_133"
+  extrinsics:
+    # Each matrix transforms that LiDAR's points into the primary/front LiDAR frame.
+    lidar0:
+      T: [1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          0, 0, 0, 1]
+    lidar1:
+      T: [0.445709, -0.878935, -0.169755, -0.767264,
+          0.349279, -0.00385126, 0.937011, 0.877848,
+          -0.824225, -0.476926, 0.305277, -0.446214,
+          0, 0, 0, 1]
+    lidar2:
+      T: [0.450926, 0.876888, -0.166532, -0.749626,
+          -0.379228, 0.0193238, -0.925102, -0.851013,
+          -0.807993, 0.480306, 0.341254, -0.424448,
+          0, 0, 0, 1]
+
+imu_initialization:
+  initial_yaw_deg: 180.0
+  min_duration: 2.0
+  min_samples: 300
+  max_mean_gyro_norm: 0.2
+  max_gyro_std: 0.1
+  max_acc_std: 0.5
+  min_mean_acc_norm: 0.5
+  max_mean_acc_norm: 1.5
+
+lidar_noise_model:
+  enabled: true
+  range_sigma: 0.02
+  angular_sigma_deg: 0.05
+  reference_sigma: 0.05
+  min_information_scale: 0.25
+  max_information_scale: 4.0
+
+map_export:
+  normalize_start_ground_z: true
+  start_ground_search_radius: 10.0
+  expected_sensor_height: 3.560
+  expected_height_tolerance: 0.8
+  histogram_bin_size: 0.05
+  inlier_tolerance: 0.20
+  max_median_absolute_deviation: 0.10
+  min_ground_inliers: 100
+
+fasterlio:
+  lidar_type: 1
+  scan_line: 4
+  blind: 5.0
+  time_scale: 1e-3
+  skip_lidar_num: 0
+  point_filter_num: 3
+  max_iteration: 4
+  filter_size_scan: 0.5
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  esti_plane_threshold: 0.1
+  use_aa: false
+  propagate_velocity: true
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_velocity_step: 0.5
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  acc_cov: 1.0
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T: [-0.011, -0.02329, 0.04412]
+  extrinsic_R: [1, 0, 0,
+                0, 1, 0,
+                0, 0, 1]
+  keep_first_imu_estimation: false
+  kf_dis_th: -1.0
+  kf_angle_th: 0.0
+  enable_icp_part: false
+  plane_icp_weight: 300.0
+  min_pts: 300
+  imu_filter: false
+  proj_kfs: false
+
+roi:
+  height_max: 100.0
+  height_min: -100.0
+
+system:
+  with_ui: false
+  with_loop_closing: true
+
+# Build the BTC descriptor database used by global relocalization. Local BA
+# and HBA stay disabled so this rerun changes only loop closure/BTC behavior;
+# the existing Faster-LIO map geometry and ground-Z export path are preserved.
+backend:
+  mode: ba_btc_hba
+  verbose: true
+  local_ba:
+    enabled: false
+  btc:
+    enabled: true
+    descriptor_submap_size: 10
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.20
+    min_loop_score: 0.60
+    max_drift_ratio: 0.005
+    max_rotation_correction_deg: 45.0
+    refine_with_plane_icp: true
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    allow_degenerate_plane_icp: true
+    degenerate_min_loop_score: 0.60
+    degenerate_min_matches: 60
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    loop_cooldown_descriptors: 10
+    max_odom_revisit_distance: 0.0
+    min_optimization_translation: 0.20
+    min_optimization_rotation_deg: 2.0
+    descriptor:
+      useful_corner_num: 200
+      plane_merge_normal_threshold: 0.10
+      plane_merge_distance_threshold: 0.30
+      plane_detection_threshold: 0.01
+      voxel_size: 1.0
+      voxel_init_points: 10
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      projection_height_increment: 0.1
+      projection_min_distance: 0.0
+      projection_max_distance: 5.0
+      summary_min_threshold: 10.0
+      line_filter: 1
+      touch_filter: 0
+      descriptor_near_count: 15
+      descriptor_min_length: 2.0
+      descriptor_max_length: 50.0
+      non_max_suppression_radius: 2.0
+      triangle_side_resolution: 0.2
+      skip_near_descriptors: 30
+      candidate_count: 50
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.50
+      internal_icp_threshold: 0.15
+      normal_threshold: 0.20
+      plane_distance_threshold: 0.50
+  pose_graph:
+    iterations: 20
+    outlier_iterations: 10
+    motion_translation_noise: 0.10
+    motion_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.20
+    loop_rotation_noise_deg: 3.0
+    robust_kernel_delta: 1.0
+    loop_outlier_chi2: 25.0
+  hba:
+    enabled: false

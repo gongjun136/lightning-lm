@@ -2,6 +2,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <glog/logging.h>
 #include <rclcpp/rclcpp.hpp>
+#include <rosbag2_cpp/writer.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -40,6 +41,7 @@ DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar st
 DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline processing");
 DEFINE_bool(publish_topics, true,
             "publish SANY localization outputs on /PosRes, /slamPoseRaw_topic, /LidarDataInv, and /LidarDataInL");
+DEFINE_string(output_bag, "", "write the four SANY localization output topics directly to a ROS 2 bag");
 DEFINE_bool(use_config_initial_pose, true,
             "use offline_localization.initial_pose from YAML; disable to require global initialization");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
@@ -61,26 +63,38 @@ class RosContextGuard {
 class OfflineLocalizationPublisher {
    public:
     OfflineLocalizationPublisher(std::string map_frame, std::size_t lost_frame_threshold,
-                                 const lightning::Vec3d& primary_lidar_position_in_body)
-        : node_(std::make_shared<rclcpp::Node>("offline_multi_lidar_localization")),
-          map_frame_(std::move(map_frame)),
+                                 const lightning::Vec3d& primary_lidar_position_in_body,
+                                 bool publish_topics, const std::string& output_bag)
+        : map_frame_(std::move(map_frame)),
           primary_lidar_position_in_body_(primary_lidar_position_in_body),
           publication_gate_(lost_frame_threshold),
           map_cloud_decimator_(10) {
-        const auto pose_qos =
-            rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
-        const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
-        pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
-        pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
-        inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
-        map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
+        if (publish_topics) {
+            node_ = std::make_shared<rclcpp::Node>("offline_multi_lidar_localization");
+            const auto pose_qos =
+                rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
+            const auto cloud_qos =
+                rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+            pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
+            pose_pub_ =
+                node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
+            inv_cloud_pub_ =
+                node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
+            map_cloud_pub_ =
+                node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
+        }
+        if (!output_bag.empty()) {
+            bag_writer_ = std::make_unique<rosbag2_cpp::Writer>();
+            bag_writer_->open(output_bag);
+            LOG(INFO) << "writing localization output topics directly to " << output_bag;
+        }
     }
 
     void ObserveLidarMatch(bool valid) { publication_gate_.ObserveLidarMatch(valid); }
 
     void PublishPose(const lightning::loc::LocalizationResult& result,
                      const lightning::SO3& initial_lidar_rotation) {
-        if (!rclcpp::ok() || !result.valid_ || result.timestamp_ <= 0.0 ||
+        if (!result.valid_ || result.timestamp_ <= 0.0 ||
             !publication_gate_.MapOutputsEnabled()) {
             return;
         }
@@ -88,23 +102,37 @@ class OfflineLocalizationPublisher {
             result.pose_, initial_lidar_rotation, primary_lidar_position_in_body_);
         const auto position = lightning::sany_output::MakePosResMessage(
             map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
-        pos_res_pub_->publish(position);
-        pose_pub_->publish(lightning::sany_output::MakePoseMessage(position));
+        if (pos_res_pub_) pos_res_pub_->publish(position);
+        const auto pose = lightning::sany_output::MakePoseMessage(position);
+        if (pose_pub_) pose_pub_->publish(pose);
+        if (bag_writer_) {
+            const rclcpp::Time stamp(position.header.stamp);
+            bag_writer_->write(position, "/PosRes", stamp);
+            bag_writer_->write(pose, "/slamPoseRaw_topic", stamp);
+        }
     }
 
     void PublishCloud(const lightning::SE3& map_lidar_pose, const lightning::CloudPtr& cloud,
                       double begin_time, double end_time,
                       const lightning::SO3& initial_lidar_rotation) {
-        if (!rclcpp::ok() || !cloud || cloud->empty()) return;
-        inv_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
+        if (!cloud || cloud->empty()) return;
+        const auto inv_cloud = lightning::sany_output::MakeCloudMessage(
             cloud, begin_time, end_time,
             lightning::sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation,
                                                                primary_lidar_position_in_body_),
-            rear_axle_frame_));
+            rear_axle_frame_);
+        if (inv_cloud_pub_) inv_cloud_pub_->publish(inv_cloud);
+        if (bag_writer_) {
+            bag_writer_->write(inv_cloud, "/LidarDataInv", rclcpp::Time(inv_cloud.header.stamp));
+        }
         const bool publish_map_frame = map_cloud_decimator_.Tick();
         if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
-            map_cloud_pub_->publish(lightning::sany_output::MakeCloudMessage(
-                cloud, begin_time, end_time, map_lidar_pose, map_frame_));
+            const auto map_cloud = lightning::sany_output::MakeCloudMessage(
+                cloud, begin_time, end_time, map_lidar_pose, map_frame_);
+            if (map_cloud_pub_) map_cloud_pub_->publish(map_cloud);
+            if (bag_writer_) {
+                bag_writer_->write(map_cloud, "/LidarDataInL", rclcpp::Time(map_cloud.header.stamp));
+            }
         }
     }
 
@@ -119,6 +147,7 @@ class OfflineLocalizationPublisher {
     lightning::Vec3d primary_lidar_position_in_body_ = lightning::Vec3d::Zero();
     lightning::sany_output::LocalizationPublicationGate publication_gate_;
     lightning::sany_output::FrameDecimator map_cloud_decimator_;
+    std::unique_ptr<rosbag2_cpp::Writer> bag_writer_;
 };
 
 class InputPacer {
@@ -333,7 +362,7 @@ int main(int argc, char** argv) {
 
     std::unique_ptr<RosContextGuard> ros_context;
     std::unique_ptr<OfflineLocalizationPublisher> topic_publisher;
-    if (FLAGS_publish_topics) {
+    if (FLAGS_publish_topics || !FLAGS_output_bag.empty()) {
         ros_context = std::make_unique<RosContextGuard>(argc, argv);
     }
 
@@ -370,7 +399,8 @@ int main(int argc, char** argv) {
     }
     if (ros_context) {
         topic_publisher = std::make_unique<OfflineLocalizationPublisher>(
-            map_frame, static_cast<std::size_t>(lost_frame_threshold), primary_lidar_position_in_body);
+            map_frame, static_cast<std::size_t>(lost_frame_threshold),
+            primary_lidar_position_in_body, FLAGS_publish_topics, FLAGS_output_bag);
     }
 
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");
