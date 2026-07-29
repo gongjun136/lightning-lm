@@ -49,6 +49,10 @@ void PGO::PubResult() {
         }
 
         auto result = impl_->result_;
+        if (!impl_->dr_pose_queue_.empty()) {
+            const NavState& latest_dr = impl_->dr_pose_queue_.back();
+            result.vel_b_ = latest_dr.GetRot().inverse() * latest_dr.GetVel();
+        }
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(result);
         double dt = result.timestamp_ - impl_->result_.timestamp_;
 

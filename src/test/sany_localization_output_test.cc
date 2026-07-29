@@ -100,6 +100,24 @@ int main() {
             "rear pose subtracts the lidar lever arm in the map orientation");
     Require((T_map_rear.so3().inverse() * T_map_livox.so3()).log().norm() < 1e-9,
             "parallel livox and rear frames keep the same map orientation");
+
+    const SO3 initial_heading = SO3::exp(Vec3d(0.0, 0.0, M_PI));
+    const SE3 T_rear_lidar_at_start =
+        MakeRearAxleLidarTransform(initial_heading, primary_lidar_position_in_body);
+    const SE3 published_start_pose =
+        MakeMapRearAxlePose(T_rear_lidar_at_start, initial_heading, primary_lidar_position_in_body);
+    Require(published_start_pose.translation().norm() < 1e-9 &&
+                published_start_pose.so3().log().norm() < 1e-9,
+            "configured 180 degree lidar heading publishes vehicle yaw zero at the map origin");
+
+    const SE3 expected_vehicle_pose(
+        SO3::exp(Vec3d(0.0, 0.0, 40.0 * M_PI / 180.0)), Vec3d(8.0, -3.0, 0.6));
+    const SE3 raw_map_lidar_pose = expected_vehicle_pose * T_rear_lidar_at_start;
+    const SE3 published_vehicle_pose =
+        MakeMapRearAxlePose(raw_map_lidar_pose, initial_heading, primary_lidar_position_in_body);
+    Require((published_vehicle_pose.inverse() * expected_vehicle_pose).log().norm() < 1e-9,
+            "vehicle yaw is not shifted by 180 degrees in the published map pose");
+
     const auto map_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_map_lidar, "map");
     Require(map_cloud.header.frame_id == "map" && map_cloud.header.stamp == rear_cloud.header.stamp,
             "same lidar batch uses the same timestamp in rear and map frames");

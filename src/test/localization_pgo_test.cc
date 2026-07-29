@@ -78,6 +78,49 @@ int main() {
                 "disabled DR extrapolation preserves scan-time map translation");
     }
 
+    PGO velocity_pgo;
+    velocity_pgo.SetDebug(false);
+    velocity_pgo.SetDrSmoothingEnabled(false);
+    velocity_pgo.SetDrExtrapolationEnabled(true);
+    LocalizationResult velocity_output;
+    velocity_pgo.SetHighFrequencyGlobalOutputHandleFunction(
+        [&](const LocalizationResult& result) { velocity_output = result; });
+
+    const SO3 body_rotation = SO3::exp(Vec3d(0.0, 0.0, 0.4));
+    NavState velocity_seed_before;
+    velocity_seed_before.timestamp_ = 1999.99;
+    velocity_seed_before.pose_is_ok_ = true;
+    velocity_seed_before.lidar_odom_reliable_ = true;
+    velocity_seed_before.rot_ = body_rotation;
+    velocity_seed_before.SetVel(body_rotation * Vec3d(0.5, 0.0, 0.0));
+    NavState velocity_seed_after = velocity_seed_before;
+    velocity_seed_after.timestamp_ = 2000.01;
+    Require(velocity_pgo.ProcessLidarOdom(velocity_seed_before), "accept first velocity-test lidar odometry");
+    Require(velocity_pgo.ProcessLidarOdom(velocity_seed_after), "accept second velocity-test lidar odometry");
+    Require(velocity_pgo.ProcessDR(velocity_seed_before), "accept first velocity-test DR");
+    Require(velocity_pgo.ProcessDR(velocity_seed_after), "accept second velocity-test DR");
+
+    LocalizationResult velocity_loc;
+    velocity_loc.timestamp_ = 2000.0;
+    velocity_loc.pose_ = velocity_seed_before.GetPose();
+    velocity_loc.valid_ = true;
+    velocity_loc.lidar_loc_valid_ = true;
+    velocity_loc.lidar_loc_odom_error_normal_ = true;
+    velocity_loc.lidar_loc_smooth_flag_ = true;
+    velocity_loc.confidence_ = 1.0;
+    velocity_loc.status_ = LocalizationStatus::GOOD;
+    Require(velocity_pgo.ProcessLidarLoc(velocity_loc), "initialize velocity-test PGO result");
+
+    NavState latest_dr = velocity_seed_after;
+    latest_dr.timestamp_ = 2000.02;
+    const Vec3d latest_body_velocity(2.25, -0.4, 0.1);
+    latest_dr.SetVel(body_rotation * latest_body_velocity);
+    Require(velocity_pgo.ProcessDR(latest_dr), "accept high-frequency DR velocity update");
+    Require(std::abs(velocity_output.timestamp_ - latest_dr.timestamp_) < 1e-9,
+            "high-frequency output advances to the latest DR timestamp");
+    Require((velocity_output.vel_b_ - latest_body_velocity).norm() < 1e-9,
+            "high-frequency output refreshes body velocity from the latest DR state");
+
     std::cout << "localization_pgo_test passed" << std::endl;
     return 0;
 }
