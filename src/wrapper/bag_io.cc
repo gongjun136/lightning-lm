@@ -15,12 +15,25 @@
 #include <rosbag2_cpp/readers/sequential_reader.hpp>
 
 namespace lightning {
+namespace {
+
+std::string StorageIdForBag(const std::string& bag_path) {
+    const std::filesystem::path path(bag_path);
+    if (path.extension() == ".mcap") return "mcap";
+    if (std::filesystem::is_directory(path)) {
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            if (entry.path().extension() == ".mcap") return "mcap";
+        }
+    }
+    return "sqlite3";
+}
+
+}  // namespace
 
 void RosbagIO::Go(int sleep_usec) {
-    std::filesystem::path p(bag_file_);
     rosbag2_cpp::Reader reader(std::make_unique<rosbag2_cpp::readers::SequentialReader>());
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
-    reader.open({bag_file_, "sqlite3"}, cv_options);
+    reader.open({bag_file_, StorageIdForBag(bag_file_)}, cv_options);
 
     while (reader.has_next()) {
         auto msg = reader.read_next();
@@ -49,7 +62,7 @@ void RosbagIO::GoRealtime(double playback_rate) {
 
     rosbag2_cpp::Reader reader(std::make_unique<rosbag2_cpp::readers::SequentialReader>());
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
-    reader.open({bag_file_, "sqlite3"}, cv_options);
+    reader.open({bag_file_, StorageIdForBag(bag_file_)}, cv_options);
 
     std::optional<rcutils_time_point_value_t> first_bag_time;
     std::chrono::steady_clock::time_point first_wall_time;

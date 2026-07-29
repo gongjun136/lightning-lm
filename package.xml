@@ -11,6 +11,7 @@
     
     <build_depend>rosidl_default_generators</build_depend>
     <exec_depend>rosidl_default_runtime</exec_depend>
+    <exec_depend>rosbag2_storage_mcap</exec_depend>
     
     <depend>scrubber_common</depend>
     <depend>agibot_robot</depend>
