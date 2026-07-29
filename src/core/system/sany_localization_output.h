@@ -23,6 +23,7 @@ sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double beg
 
 SE3 MakeLivoxLidarTransform(const SO3& initial_lidar_rotation);
 SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation);
+SO3 ApplyRearAxleYawCompensation(const SO3& initial_lidar_rotation, double compensation_deg);
 SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
                                const Vec3d& primary_lidar_position_in_body);
 SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation,

@@ -102,6 +102,9 @@ int main() {
             "parallel livox and rear frames keep the same map orientation");
 
     const SO3 initial_heading = SO3::exp(Vec3d(0.0, 0.0, M_PI));
+    const SO3 compensated_heading = ApplyRearAxleYawCompensation(initial_heading, -180.0);
+    Require(compensated_heading.log().norm() < 1e-9,
+            "minus 180 degree output compensation cancels an erroneous plus 180 degree initialization yaw");
     const SE3 T_rear_lidar_at_start =
         MakeRearAxleLidarTransform(initial_heading, primary_lidar_position_in_body);
     const SE3 published_start_pose =
@@ -117,6 +120,16 @@ int main() {
         MakeMapRearAxlePose(raw_map_lidar_pose, initial_heading, primary_lidar_position_in_body);
     Require((published_vehicle_pose.inverse() * expected_vehicle_pose).log().norm() < 1e-9,
             "vehicle yaw is not shifted by 180 degrees in the published map pose");
+
+    const SE3 corrected_rear_lidar =
+        MakeRearAxleLidarTransform(compensated_heading, primary_lidar_position_in_body);
+    const SE3 corrected_map_rear =
+        MakeMapRearAxlePose(raw_map_lidar_pose, compensated_heading, primary_lidar_position_in_body);
+    Require((corrected_map_rear * (corrected_rear_lidar * raw_point) -
+             raw_map_lidar_pose * raw_point)
+                    .norm() <
+                1e-9,
+            "output yaw compensation preserves exact registration with the unchanged map cloud");
 
     const auto map_cloud = MakeCloudMessage(cloud, 10.0, 10.1, T_map_lidar, "map");
     Require(map_cloud.header.frame_id == "map" && map_cloud.header.stamp == rear_cloud.header.stamp,

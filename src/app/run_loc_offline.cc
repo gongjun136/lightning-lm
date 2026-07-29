@@ -64,9 +64,11 @@ class OfflineLocalizationPublisher {
    public:
     OfflineLocalizationPublisher(std::string map_frame, std::size_t lost_frame_threshold,
                                  const lightning::Vec3d& primary_lidar_position_in_body,
+                                 double rear_axle_yaw_compensation_deg,
                                  bool publish_topics, const std::string& output_bag)
         : map_frame_(std::move(map_frame)),
           primary_lidar_position_in_body_(primary_lidar_position_in_body),
+          rear_axle_yaw_compensation_deg_(rear_axle_yaw_compensation_deg),
           publication_gate_(lost_frame_threshold),
           map_cloud_decimator_(10) {
         if (publish_topics) {
@@ -98,8 +100,11 @@ class OfflineLocalizationPublisher {
             !publication_gate_.MapOutputsEnabled()) {
             return;
         }
+        const lightning::SO3 rear_axle_lidar_rotation =
+            lightning::sany_output::ApplyRearAxleYawCompensation(
+                initial_lidar_rotation, rear_axle_yaw_compensation_deg_);
         const lightning::SE3 map_rear_axle_pose = lightning::sany_output::MakeMapRearAxlePose(
-            result.pose_, initial_lidar_rotation, primary_lidar_position_in_body_);
+            result.pose_, rear_axle_lidar_rotation, primary_lidar_position_in_body_);
         const auto position = lightning::sany_output::MakePosResMessage(
             map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
         if (pos_res_pub_) pos_res_pub_->publish(position);
@@ -116,9 +121,12 @@ class OfflineLocalizationPublisher {
                       double begin_time, double end_time,
                       const lightning::SO3& initial_lidar_rotation) {
         if (!cloud || cloud->empty()) return;
+        const lightning::SO3 rear_axle_lidar_rotation =
+            lightning::sany_output::ApplyRearAxleYawCompensation(
+                initial_lidar_rotation, rear_axle_yaw_compensation_deg_);
         const auto inv_cloud = lightning::sany_output::MakeCloudMessage(
             cloud, begin_time, end_time,
-            lightning::sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation,
+            lightning::sany_output::MakeRearAxleLidarTransform(rear_axle_lidar_rotation,
                                                                primary_lidar_position_in_body_),
             rear_axle_frame_);
         if (inv_cloud_pub_) inv_cloud_pub_->publish(inv_cloud);
@@ -145,6 +153,7 @@ class OfflineLocalizationPublisher {
     std::string map_frame_;
     std::string rear_axle_frame_ = "rear_axle";
     lightning::Vec3d primary_lidar_position_in_body_ = lightning::Vec3d::Zero();
+    double rear_axle_yaw_compensation_deg_ = 0.0;
     lightning::sany_output::LocalizationPublicationGate publication_gate_;
     lightning::sany_output::FrameDecimator map_cloud_decimator_;
     std::unique_ptr<rosbag2_cpp::Writer> bag_writer_;
@@ -389,6 +398,14 @@ int main(int argc, char** argv) {
         }
         primary_lidar_position_in_body = Vec3d(values[0], values[1], values[2]);
     }
+    const double rear_axle_yaw_compensation_deg =
+        root["output"] && root["output"]["rear_axle_yaw_compensation_deg"]
+            ? root["output"]["rear_axle_yaw_compensation_deg"].as<double>()
+            : 0.0;
+    if (!std::isfinite(rear_axle_yaw_compensation_deg)) {
+        LOG(ERROR) << "output.rear_axle_yaw_compensation_deg must be finite";
+        return 2;
+    }
     const int lost_frame_threshold =
         root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
@@ -400,7 +417,8 @@ int main(int argc, char** argv) {
     if (ros_context) {
         topic_publisher = std::make_unique<OfflineLocalizationPublisher>(
             map_frame, static_cast<std::size_t>(lost_frame_threshold),
-            primary_lidar_position_in_body, FLAGS_publish_topics, FLAGS_output_bag);
+            primary_lidar_position_in_body, rear_axle_yaw_compensation_deg,
+            FLAGS_publish_topics, FLAGS_output_bag);
     }
 
     const bool with_ui = yaml.GetValue<bool>("system", "with_ui");

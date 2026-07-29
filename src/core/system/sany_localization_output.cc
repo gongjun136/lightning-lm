@@ -111,6 +111,11 @@ SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotatio
     return map_lidar_pose * MakeLivoxLidarTransform(initial_lidar_rotation).inverse();
 }
 
+SO3 ApplyRearAxleYawCompensation(const SO3& initial_lidar_rotation, double compensation_deg) {
+    return SO3::exp(Vec3d(0.0, 0.0, compensation_deg * kRadiansPerDegree)) *
+           initial_lidar_rotation;
+}
+
 SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
                                const Vec3d& primary_lidar_position_in_body) {
     const SE3 T_rear_livox(SO3(), primary_lidar_position_in_body);

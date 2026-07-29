@@ -58,6 +58,9 @@ output:
   map_frame: "map"
   lidar_frame: "lidar_184"
   primary_lidar_position_in_body: [2.199, 0.0, 2.740]
+  # Temporary compatibility for the existing map built with the erroneous +180 deg initialization yaw.
+  # Keep LIO/map matching at +180 deg, but cancel it only when publishing rear_axle clouds and poses.
+  rear_axle_yaw_compensation_deg: -180.0
 
 map_export:
   normalize_start_ground_z: true

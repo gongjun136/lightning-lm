@@ -4,6 +4,7 @@
 
 #include "core/system/loc_system.h"
 
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <utility>
@@ -60,6 +61,14 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             return false;
         }
         primary_lidar_position_in_body_ = Vec3d(values[0], values[1], values[2]);
+    }
+    rear_axle_yaw_compensation_deg_ =
+        root["output"] && root["output"]["rear_axle_yaw_compensation_deg"]
+            ? root["output"]["rear_axle_yaw_compensation_deg"].as<double>()
+            : 0.0;
+    if (!std::isfinite(rear_axle_yaw_compensation_deg_)) {
+        LOG(ERROR) << "output.rear_axle_yaw_compensation_deg must be finite";
+        return false;
     }
     const int lost_frame_threshold =
         root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
@@ -262,8 +271,10 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     if (!publication_gate_.MapOutputsEnabled()) return;
     if (!pos_res_pub_ || !pose_pub_) return;
+    const SO3 rear_axle_lidar_rotation = sany_output::ApplyRearAxleYawCompensation(
+        loc_->GetInitialLidarRotation(), rear_axle_yaw_compensation_deg_);
     const SE3 map_rear_axle_pose = sany_output::MakeMapRearAxlePose(
-        result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
+        result.pose_, rear_axle_lidar_rotation, primary_lidar_position_in_body_);
     const auto position =
         sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
@@ -275,10 +286,12 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     const double begin_time = CloudStampSec(cloud);
     const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
     if (begin_time <= 0.0 || end_time <= 0.0) return;
-    const SO3 initial_lidar_rotation = loc_->GetInitialLidarRotation();
+    const SO3 rear_axle_lidar_rotation = sany_output::ApplyRearAxleYawCompensation(
+        loc_->GetInitialLidarRotation(), rear_axle_yaw_compensation_deg_);
     inv_cloud_pub_->publish(sany_output::MakeCloudMessage(
         cloud, begin_time, end_time,
-        sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body_),
+        sany_output::MakeRearAxleLidarTransform(rear_axle_lidar_rotation,
+                                               primary_lidar_position_in_body_),
         rear_axle_frame_));
     const bool publish_map_frame = map_cloud_decimator_.Tick();
     publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
