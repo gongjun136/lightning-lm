@@ -37,7 +37,8 @@ multi_lidar:
           0, 0, 0, 1]
 
 imu_initialization:
-  initial_yaw_deg: 180.0
+  # Must match the corrected map: primary LiDAR 184 needs no heading flip after gravity alignment.
+  initial_yaw_deg: 0.0
   min_duration: 2.0
   min_samples: 300
   max_mean_gyro_norm: 0.2
@@ -177,6 +178,8 @@ maps:
 offline_localization:
   initial_pose:
     enabled: true
-    frame: map
-    translation: [-7.945974848715, 14.277333181393, 3.301821510399]
-    quaternion_xyzw: [-0.084671688335, -0.224789364523, 0.303565406886, -0.922034972511]
+    # The localization input is the same bag used to build the map, so seed it at the SLAM origin.
+    # map_frame.yaml applies the exported map's ground-height normalization.
+    frame: slam
+    translation: [0.0, 0.0, 0.0]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

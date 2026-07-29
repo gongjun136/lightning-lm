@@ -38,7 +38,8 @@ multi_lidar:
           0, 0, 0, 1]
 
 imu_initialization:
-  initial_yaw_deg: 180.0
+  # After gravity alignment, primary LiDAR 184 already points along vehicle +X.
+  initial_yaw_deg: 0.0
   min_duration: 2.0
   min_samples: 300
   max_mean_gyro_norm: 0.2
@@ -54,6 +55,11 @@ lidar_noise_model:
   reference_sigma: 0.05
   min_information_scale: 0.25
   max_information_scale: 4.0
+
+output:
+  map_frame: "map"
+  lidar_frame: "lidar_184"
+  primary_lidar_position_in_body: [2.199, 0.0, 2.740]
 
 map_export:
   normalize_start_ground_z: true
