@@ -23,6 +23,8 @@
 #include <opencv2/imgproc.hpp>
 
 #include "glog/logging.h"
+#include "core/localization/btc_relocalizer.h"
+#include "core/localization/solid_relocalizer.h"
 #include "core/maps/map_frame.h"
 #include "io/file_io.h"
 #include "io/yaml_io.h"
@@ -149,6 +151,26 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_map_consistency_max_points_ =
             relocalization["map_consistency_max_points"].as<int>();
     }
+    if (relocalization && relocalization["validation_workers"]) {
+        options_.relocalization_validation_workers_ =
+            relocalization["validation_workers"].as<int>();
+    }
+    if (relocalization && relocalization["confirmation_count"]) {
+        options_.relocalization_confirmation_count_ =
+            relocalization["confirmation_count"].as<int>();
+    }
+    if (relocalization && relocalization["confirmation_max_translation"]) {
+        options_.relocalization_confirmation_max_translation_ =
+            relocalization["confirmation_max_translation"].as<double>();
+    }
+    if (relocalization && relocalization["confirmation_max_rotation_deg"]) {
+        options_.relocalization_confirmation_max_rotation_deg_ =
+            relocalization["confirmation_max_rotation_deg"].as<double>();
+    }
+    if (relocalization && relocalization["confirmation_max_interval"]) {
+        options_.relocalization_confirmation_max_interval_ =
+            relocalization["confirmation_max_interval"].as<double>();
+    }
     if (options_.relocalization_bounds_margin_ < 0.0 ||
         options_.relocalization_nearest_neighbor_distance_ <= 0.0 ||
         options_.relocalization_min_inside_xy_ratio_ < 0.0 ||
@@ -157,7 +179,12 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_min_overlap_ratio_ > 1.0 ||
         options_.relocalization_min_gravity_alignment_cos_ < -1.0 ||
         options_.relocalization_min_gravity_alignment_cos_ > 1.0 ||
-        options_.relocalization_map_consistency_max_points_ <= 0) {
+        options_.relocalization_map_consistency_max_points_ <= 0 ||
+        options_.relocalization_validation_workers_ <= 0 ||
+        options_.relocalization_confirmation_count_ <= 0 ||
+        options_.relocalization_confirmation_max_translation_ < 0.0 ||
+        options_.relocalization_confirmation_max_rotation_deg_ < 0.0 ||
+        options_.relocalization_confirmation_max_interval_ <= 0.0) {
         LOG(ERROR) << "invalid relocalization map-consistency configuration";
         return false;
     }
@@ -196,6 +223,9 @@ bool LidarLoc::Init(const std::string& config_path) {
 
     map_ = std::make_shared<TiledMap>(options_.map_option_);
     if (!map_->LoadMapIndex()) return false;
+    if (options_.enable_relocalization_map_consistency_ && !BuildRelocalizationMapCache()) {
+        return false;
+    }
 
     auto fps = map_->GetAllFP();
     if (!fps.empty()) {
@@ -204,13 +234,27 @@ bool LidarLoc::Init(const std::string& config_path) {
         UpdateGlobalMap();
     }
 
-    btc_relocalizer_ = std::make_unique<BtcRelocalizer>();
-    if (!btc_relocalizer_->Init(config_path, options_.map_option_.map_path_, ReadLidarToImu(root))) {
+    relocalization_backend_name_ = relocalization && relocalization["backend"]
+                                        ? relocalization["backend"].as<std::string>()
+                                        : "btc";
+    if (relocalization_backend_name_ == "btc") {
+        global_relocalizer_ = std::make_unique<BtcRelocalizer>();
+    } else if (relocalization_backend_name_ == "solid") {
+        global_relocalizer_ = std::make_unique<SolidRelocalizer>();
+    } else {
+        LOG(ERROR) << "unsupported global relocalization backend: "
+                   << relocalization_backend_name_;
+        return false;
+    }
+    if (!global_relocalizer_->Init(
+            config_path, options_.map_option_.map_path_, ReadLidarToImu(root))) {
         if (export_options.normalize_start_ground_z) {
-            LOG(ERROR) << "normalized map requires a consistent BTC relocalization database";
+            LOG(ERROR) << "normalized map requires a consistent "
+                       << relocalization_backend_name_ << " relocalization database";
             return false;
         }
-        LOG(WARNING) << "BTC relocalization is unavailable; NDT localization remains enabled";
+        LOG(WARNING) << relocalization_backend_name_
+                     << " relocalization is unavailable; NDT localization remains enabled";
     }
 
     /// load recover pose if exist
@@ -448,89 +492,286 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     return loc_inited_;
 }
 
-bool LidarLoc::TryBtcRelocalization(const CloudPtr& input) {
-    if (!btc_relocalizer_ || !btc_relocalizer_->IsReady() || !current_lo_pose_set_) return false;
-
-    const auto result = btc_relocalizer_->AddFrame(input, current_lo_pose_, current_timestamp_);
-    if (!result) return false;
-
-    last_match_stats_.relocalization_attempted = result->attempted;
-    last_match_stats_.relocalization_candidate_found = result->candidate_found;
-    last_match_stats_.relocalization_candidate_id = result->candidate_id;
-    last_match_stats_.relocalization_score = result->score;
-    if (!result->accepted) {
-        LOG(WARNING) << "BTC_RELOCALIZATION rejected: reason=" << result->reason
-                     << ", candidate=" << result->candidate_id << ", score=" << result->score
-                     << ", points=" << result->point_count
-                     << ", descriptors=" << result->descriptor_count;
+bool LidarLoc::BuildRelocalizationMapCache() {
+    const auto begin = std::chrono::steady_clock::now();
+    const std::filesystem::path global_map_path =
+        std::filesystem::path(options_.map_option_.map_path_) / "global.pcd";
+    CloudPtr static_map(new PointCloudType);
+    if (pcl::io::loadPCDFile(global_map_path.string(), *static_map) != 0 ||
+        static_map->empty()) {
+        LOG(ERROR) << "failed to load relocalization validation map: " << global_map_path;
         return false;
     }
 
-    map_->LoadOnPose(result->T_world_imu);
-    UpdateGlobalMap();
-    const bool ndt_accepted = InitWithFP(input, result->T_world_imu);
-    last_match_stats_.relocalization_attempted = true;
-    last_match_stats_.relocalization_candidate_found = true;
-    last_match_stats_.relocalization_accepted = ndt_accepted;
-    last_match_stats_.relocalization_candidate_id = result->candidate_id;
-    last_match_stats_.relocalization_score = result->score;
-    if (!ndt_accepted) {
-        LOG(WARNING) << "BTC_RELOCALIZATION NDT verification failed: candidate="
-                     << result->candidate_id << ", BTC score=" << result->score
-                     << ", NDT confidence=" << last_match_stats_.confidence;
+    Vec3d minimum = Vec3d::Constant(std::numeric_limits<double>::infinity());
+    Vec3d maximum = Vec3d::Constant(-std::numeric_limits<double>::infinity());
+    for (const auto& point : static_map->points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
+        const Vec3d position(point.x, point.y, point.z);
+        minimum = minimum.cwiseMin(position);
+        maximum = maximum.cwiseMax(position);
+    }
+    if (!minimum.allFinite() || !maximum.allFinite()) {
+        LOG(ERROR) << "relocalization validation map has no finite points: " << global_map_path;
         return false;
     }
 
-    match_fail_count_ = 0;
-    initial_pose_set_ = false;
-    btc_relocalizer_->ResetQuery();
-    LOG(INFO) << "BTC_RELOCALIZATION accepted: candidate=" << result->candidate_id
-              << ", BTC score=" << result->score
-              << ", NDT confidence=" << last_match_stats_.confidence
-              << ", pose=" << current_abs_pose_.translation().transpose();
+    std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> kdtrees;
+    kdtrees.reserve(static_cast<std::size_t>(options_.relocalization_validation_workers_));
+    for (int worker = 0; worker < options_.relocalization_validation_workers_; ++worker) {
+        auto kdtree = std::make_unique<pcl::KdTreeFLANN<PointType>>();
+        kdtree->setInputCloud(static_map);
+        kdtrees.push_back(std::move(kdtree));
+    }
+
+    relocalization_static_map_ = std::move(static_map);
+    relocalization_map_min_ = minimum;
+    relocalization_map_max_ = maximum;
+    relocalization_kdtrees_ = std::move(kdtrees);
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - begin)
+                                  .count();
+    LOG(INFO) << "cached relocalization validation map: points="
+              << relocalization_static_map_->size()
+              << ", workers=" << relocalization_kdtrees_.size()
+              << ", build_ms=" << elapsed_ms
+              << ", path=" << global_map_path;
     return true;
 }
 
-bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose) {
-    if (!options_.enable_relocalization_map_consistency_) return true;
+bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
+    if (!global_relocalizer_ || !global_relocalizer_->IsReady() ||
+        !current_lo_pose_set_) return false;
 
-    last_match_stats_.map_consistency_evaluated = true;
-    last_match_stats_.map_consistency_passed = false;
-    if (!input || input->empty() || !map_ || !current_lo_pose_set_) return false;
+    const bool reuse_pending = pending_relocalization_.valid &&
+        current_timestamp_ - pending_relocalization_.timestamp <=
+            options_.relocalization_confirmation_max_interval_;
+    std::optional<RelocalizationResult> result;
+    if (reuse_pending) {
+        RelocalizationResult pending_result;
+        pending_result.attempted = true;
+        pending_result.candidate_found = true;
+        pending_result.accepted = true;
+        pending_result.timestamp = current_timestamp_;
+        pending_result.candidate_id = pending_relocalization_.candidate_id;
+        pending_result.score = pending_relocalization_.score;
+        pending_result.reason = "pending_confirmation";
+        RelocalizationCandidate candidate;
+        candidate.candidate_id = pending_relocalization_.candidate_id;
+        candidate.score = pending_relocalization_.score;
+        candidate.query_submap_size =
+            pending_relocalization_.query_submap_size;
+        candidate.T_world_imu =
+            pending_relocalization_.T_map_odom * current_lo_pose_;
+        pending_result.T_world_imu = candidate.T_world_imu;
+        pending_result.candidates.push_back(std::move(candidate));
+        result = std::move(pending_result);
+    } else {
+        result = global_relocalizer_->AddFrame(
+            input, current_lo_pose_, current_timestamp_);
+    }
+    if (!result) return false;
 
-    Vec3d map_min;
-    Vec3d map_max;
-    std::size_t global_map_points = 0;
-    if (!map_->GetGlobalStaticBounds(map_min, map_max, global_map_points)) {
-        LOG(ERROR) << "MAP_CONSISTENCY cannot determine global static-map bounds";
+    MatchStats summary;
+    summary.relocalization_attempted = result->attempted;
+    summary.relocalization_candidate_found = result->candidate_found;
+    summary.relocalization_candidate_id = result->candidate_id;
+    summary.relocalization_score = result->score;
+    summary.relocalization_candidate_count = static_cast<int>(result->candidates.size());
+    summary.relocalization_search_time_ms = result->search_time_ms;
+    summary.relocalization_reason = result->reason;
+    if (!result->accepted || result->candidates.empty()) {
+        last_match_stats_ = summary;
+        LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                     << "] rejected: reason=" << result->reason
+                     << ", candidate=" << result->candidate_id << ", score=" << result->score
+                     << ", points=" << result->point_count
+                     << ", descriptors=" << result->descriptor_count
+                     << ", search_ms=" << result->search_time_ms;
         return false;
     }
 
-    CloudPtr static_map(new PointCloudType);
-    const auto chunks = map_->GetStaticCloud();
-    for (const auto& [id, cloud] : chunks) {
-        (void)id;
-        if (cloud) *static_map += *cloud;
+    std::vector<MapConsistencyResult> prechecks(result->candidates.size());
+    if (!options_.enable_relocalization_map_consistency_) {
+        for (auto& precheck : prechecks) precheck.passed = true;
+    } else {
+        const std::size_t worker_count = std::min(
+            result->candidates.size(), relocalization_kdtrees_.size());
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            workers.emplace_back(std::async(std::launch::async, [&, worker]() {
+                for (std::size_t index = worker; index < result->candidates.size();
+                     index += worker_count) {
+                    prechecks[index] = EvaluateRelocalizationMapConsistency(
+                        input, result->candidates[index].T_world_imu, worker);
+                }
+            }));
+        }
+        for (auto& worker : workers) worker.get();
     }
-    if (static_map->empty()) {
-        LOG(WARNING) << "MAP_CONSISTENCY candidate has no active static-map points";
-        return false;
+    summary.relocalization_candidates_prechecked = static_cast<int>(prechecks.size());
+
+    for (std::size_t index = 0; index < result->candidates.size(); ++index) {
+        const auto& candidate = result->candidates[index];
+        if (!prechecks[index].passed) {
+            LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                         << "] candidate rejected by map precheck: candidate="
+                         << candidate.candidate_id << ", query_frames="
+                         << candidate.query_submap_size << ", retrieval score=" << candidate.score
+                         << ", pose=" << candidate.T_world_imu.translation().transpose()
+                         << ", inside_xy=" << prechecks[index].inside_xy_ratio
+                         << ", overlap=" << prechecks[index].overlap_ratio
+                         << ", gravity_alignment_cos="
+                         << prechecks[index].gravity_alignment_cos;
+            continue;
+        }
+
+        map_->LoadOnPose(candidate.T_world_imu);
+        UpdateGlobalMap();
+        SE3 refined_pose = candidate.T_world_imu;
+        double ndt_confidence = 0.0;
+        CloudPtr output(new PointCloudType);
+        const bool ndt_accepted = Localize(
+            refined_pose, ndt_confidence, input, output);
+        if (!ndt_accepted ||
+            !ValidateRelocalizationMapConsistency(input, refined_pose)) {
+            LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                         << "] candidate rejected by NDT/map: candidate="
+                         << candidate.candidate_id << ", retrieval score=" << candidate.score
+                         << ", NDT confidence=" << ndt_confidence
+                         << ", refined_pose=" << refined_pose.translation().transpose()
+                         << ", overlap=" << last_match_stats_.map_overlap_ratio;
+            continue;
+        }
+
+        const MatchStats candidate_stats = last_match_stats_;
+        summary.confidence = candidate_stats.confidence;
+        summary.iterations = candidate_stats.iterations;
+        summary.active_map_chunks = candidate_stats.active_map_chunks;
+        summary.map_consistency_evaluated = candidate_stats.map_consistency_evaluated;
+        summary.map_consistency_passed = candidate_stats.map_consistency_passed;
+        summary.map_consistency_points = candidate_stats.map_consistency_points;
+        summary.map_inside_xy_ratio = candidate_stats.map_inside_xy_ratio;
+        summary.map_inside_xyz_ratio = candidate_stats.map_inside_xyz_ratio;
+        summary.map_overlap_ratio = candidate_stats.map_overlap_ratio;
+        summary.map_gravity_alignment_cos = candidate_stats.map_gravity_alignment_cos;
+        summary.relocalization_candidate_found = true;
+        summary.relocalization_candidate_id = candidate.candidate_id;
+        summary.relocalization_score = candidate.score;
+        summary.relocalization_query_submap_size = candidate.query_submap_size;
+
+        const SE3 T_map_odom = refined_pose * current_lo_pose_.inverse();
+        const bool close_in_time = pending_relocalization_.valid &&
+            current_timestamp_ - pending_relocalization_.timestamp <=
+                options_.relocalization_confirmation_max_interval_;
+        const SE3 delta = pending_relocalization_.valid
+                              ? pending_relocalization_.T_map_odom.inverse() * T_map_odom
+                              : SE3();
+        const double rotation_delta_deg =
+            delta.so3().log().norm() * 180.0 / M_PI;
+        const bool consistent = close_in_time &&
+            delta.translation().norm() <=
+                options_.relocalization_confirmation_max_translation_ &&
+            rotation_delta_deg <=
+                options_.relocalization_confirmation_max_rotation_deg_;
+        const int confirmation_count = consistent
+                                           ? pending_relocalization_.confirmation_count + 1
+                                           : 1;
+        pending_relocalization_.valid = true;
+        pending_relocalization_.T_map_odom = T_map_odom;
+        pending_relocalization_.pose = refined_pose;
+        pending_relocalization_.candidate_id = candidate.candidate_id;
+        pending_relocalization_.query_submap_size = candidate.query_submap_size;
+        pending_relocalization_.score = candidate.score;
+        pending_relocalization_.ndt_confidence = ndt_confidence;
+        pending_relocalization_.timestamp = current_timestamp_;
+        pending_relocalization_.confirmation_count = confirmation_count;
+        summary.relocalization_confirmation_count = confirmation_count;
+
+        if (confirmation_count < options_.relocalization_confirmation_count_) {
+            summary.relocalization_reason = "awaiting_consistent_window";
+            last_match_stats_ = summary;
+            LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                      << "] awaiting confirmation: candidate="
+                      << candidate.candidate_id << ", count=" << confirmation_count
+                      << "/" << options_.relocalization_confirmation_count_
+                      << ", retrieval score=" << candidate.score
+                      << ", NDT confidence=" << ndt_confidence
+                      << ", overlap=" << summary.map_overlap_ratio
+                      << ", pose=" << refined_pose.translation().transpose();
+            return false;
+        }
+
+        loc_inited_ = true;
+        current_abs_pose_ = refined_pose;
+        last_abs_pose_ = refined_pose;
+        last_abs_pose_set_ = true;
+        current_score_ = ndt_confidence;
+        map_height_ = refined_pose.translation().z();
+        localization_result_.timestamp_ = current_timestamp_;
+        localization_result_.confidence_ = ndt_confidence;
+        localization_result_.pose_ = refined_pose;
+        localization_result_.lidar_loc_valid_ = true;
+        localization_result_.status_ = LocalizationStatus::GOOD;
+        if (current_lo_pose_set_) {
+            last_lo_pose_ = current_lo_pose_;
+            last_lo_pose_set_ = true;
+        }
+        if (current_dr_pose_set_) {
+            last_dr_pose_ = current_dr_pose_;
+            last_dr_pose_set_ = true;
+        }
+        fp_init_fail_pose_vec_.clear();
+        fp_last_tried_time_ = 0.0;
+        match_fail_count_ = 0;
+        initial_pose_set_ = false;
+        summary.success = true;
+        summary.relocalization_accepted = true;
+        summary.relocalization_reason = "accepted";
+        last_match_stats_ = summary;
+        const int accepted_confirmation_count = confirmation_count;
+        pending_relocalization_ = PendingRelocalization{};
+        global_relocalizer_->ResetQuery();
+        LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                  << "] accepted: candidate=" << candidate.candidate_id
+                  << ", query_frames=" << candidate.query_submap_size
+                  << ", confirmations=" << accepted_confirmation_count
+                  << ", retrieval score=" << candidate.score
+                  << ", NDT confidence=" << ndt_confidence
+                  << ", overlap=" << summary.map_overlap_ratio
+                  << ", pose=" << current_abs_pose_.translation().transpose();
+        return true;
     }
 
-    pcl::KdTreeFLANN<PointType> kdtree;
-    kdtree.setInputCloud(static_map);
-    CloudPtr scan_world(new PointCloudType);
+    summary.relocalization_reason = "all_candidates_rejected";
+    last_match_stats_ = summary;
+    if (reuse_pending) pending_relocalization_ = PendingRelocalization{};
+    LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                 << "] all Top-K candidates rejected: count="
+                 << result->candidates.size() << ", search_ms=" << result->search_time_ms;
+    return false;
+}
+
+LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
+    const CloudPtr& input, const SE3& pose, std::size_t worker_index) const {
+    MapConsistencyResult result;
+    result.evaluated = true;
+    if (!input || input->empty() || !current_lo_pose_set_ ||
+        !relocalization_static_map_ || relocalization_static_map_->empty() ||
+        worker_index >= relocalization_kdtrees_.size() ||
+        !relocalization_kdtrees_[worker_index]) {
+        return result;
+    }
+
     const std::size_t maximum =
         static_cast<std::size_t>(options_.relocalization_map_consistency_max_points_);
     const std::size_t stride = std::max<std::size_t>(1, (input->size() + maximum - 1) / maximum);
-    scan_world->reserve(std::min(input->size(), maximum));
-
     std::size_t finite_index = 0;
+    std::size_t evaluated_points = 0;
     std::size_t inside_xy = 0;
     std::size_t inside_xyz = 0;
     std::size_t overlap = 0;
-    Vec3d scan_min = Vec3d::Constant(std::numeric_limits<double>::infinity());
-    Vec3d scan_max = Vec3d::Constant(-std::numeric_limits<double>::infinity());
     const double margin = options_.relocalization_bounds_margin_;
     const double maximum_distance_sq = options_.relocalization_nearest_neighbor_distance_ *
                                        options_.relocalization_nearest_neighbor_distance_;
@@ -542,50 +783,97 @@ bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const
 
         const Vec3d position = pose * Vec3d(source.x, source.y, source.z);
         if (!position.allFinite()) continue;
+        ++evaluated_points;
         PointType transformed = source;
         transformed.x = static_cast<float>(position.x());
         transformed.y = static_cast<float>(position.y());
         transformed.z = static_cast<float>(position.z());
-        scan_world->push_back(transformed);
-        scan_min = scan_min.cwiseMin(position);
-        scan_max = scan_max.cwiseMax(position);
 
-        const bool xy_ok = position.x() >= map_min.x() - margin && position.x() <= map_max.x() + margin &&
-                           position.y() >= map_min.y() - margin && position.y() <= map_max.y() + margin;
-        const bool xyz_ok = xy_ok && position.z() >= map_min.z() - margin && position.z() <= map_max.z() + margin;
+        const bool xy_ok = position.x() >= relocalization_map_min_.x() - margin &&
+                           position.x() <= relocalization_map_max_.x() + margin &&
+                           position.y() >= relocalization_map_min_.y() - margin &&
+                           position.y() <= relocalization_map_max_.y() + margin;
+        const bool xyz_ok = xy_ok &&
+                            position.z() >= relocalization_map_min_.z() - margin &&
+                            position.z() <= relocalization_map_max_.z() + margin;
         if (xy_ok) ++inside_xy;
         if (xyz_ok) ++inside_xyz;
-        if (kdtree.nearestKSearch(transformed, 1, nearest_index, nearest_distance_sq) > 0 &&
+        if (relocalization_kdtrees_[worker_index]->nearestKSearch(
+                transformed, 1, nearest_index, nearest_distance_sq) > 0 &&
             nearest_distance_sq[0] <= maximum_distance_sq) {
             ++overlap;
         }
     }
 
-    last_match_stats_.map_consistency_points = scan_world->size();
-    if (scan_world->empty()) return false;
-    const double denominator = static_cast<double>(scan_world->size());
-    last_match_stats_.map_inside_xy_ratio = static_cast<double>(inside_xy) / denominator;
-    last_match_stats_.map_inside_xyz_ratio = static_cast<double>(inside_xyz) / denominator;
-    last_match_stats_.map_overlap_ratio = static_cast<double>(overlap) / denominator;
+    result.points = evaluated_points;
+    if (evaluated_points == 0) return result;
+    const double denominator = static_cast<double>(evaluated_points);
+    result.inside_xy_ratio = static_cast<double>(inside_xy) / denominator;
+    result.inside_xyz_ratio = static_cast<double>(inside_xyz) / denominator;
+    result.overlap_ratio = static_cast<double>(overlap) / denominator;
     const SE3 T_map_odom = pose * current_lo_pose_.inverse();
-    last_match_stats_.map_gravity_alignment_cos = T_map_odom.rotationMatrix()(2, 2);
-    last_match_stats_.map_consistency_passed =
-        last_match_stats_.map_inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
-        last_match_stats_.map_overlap_ratio >= options_.relocalization_min_overlap_ratio_ &&
-        last_match_stats_.map_gravity_alignment_cos >=
-            options_.relocalization_min_gravity_alignment_cos_;
+    result.gravity_alignment_cos = T_map_odom.rotationMatrix()(2, 2);
+    result.passed =
+        result.inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
+        result.overlap_ratio >= options_.relocalization_min_overlap_ratio_ &&
+        result.gravity_alignment_cos >= options_.relocalization_min_gravity_alignment_cos_;
+    return result;
+}
 
-    SaveRelocalizationBirdseye(static_map, scan_world, map_min, map_max, last_match_stats_);
-    LOG(INFO) << "MAP_CONSISTENCY points=" << scan_world->size()
-              << ", global_map_points=" << global_map_points
-              << ", inside_xy=" << last_match_stats_.map_inside_xy_ratio
-              << ", inside_xyz=" << last_match_stats_.map_inside_xyz_ratio
-              << ", overlap=" << last_match_stats_.map_overlap_ratio
-              << ", gravity_alignment_cos=" << last_match_stats_.map_gravity_alignment_cos
-              << ", map_z=[" << map_min.z() << ", " << map_max.z() << "]"
-              << ", scan_z=[" << scan_min.z() << ", " << scan_max.z() << "]"
-              << ", passed=" << last_match_stats_.map_consistency_passed;
-    return last_match_stats_.map_consistency_passed;
+void LidarLoc::ApplyMapConsistencyResult(const MapConsistencyResult& result) {
+    last_match_stats_.map_consistency_evaluated = result.evaluated;
+    last_match_stats_.map_consistency_passed = result.passed;
+    last_match_stats_.map_consistency_points = result.points;
+    last_match_stats_.map_inside_xy_ratio = result.inside_xy_ratio;
+    last_match_stats_.map_inside_xyz_ratio = result.inside_xyz_ratio;
+    last_match_stats_.map_overlap_ratio = result.overlap_ratio;
+    last_match_stats_.map_gravity_alignment_cos = result.gravity_alignment_cos;
+}
+
+bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose) {
+    if (!options_.enable_relocalization_map_consistency_) return true;
+    const MapConsistencyResult result =
+        EvaluateRelocalizationMapConsistency(input, pose, 0);
+    ApplyMapConsistencyResult(result);
+
+    if (!options_.relocalization_debug_dir_.empty() && input && !input->empty()) {
+        CloudPtr scan_world(new PointCloudType);
+        const std::size_t maximum =
+            static_cast<std::size_t>(options_.relocalization_map_consistency_max_points_);
+        const std::size_t stride =
+            std::max<std::size_t>(1, (input->size() + maximum - 1) / maximum);
+        std::size_t finite_index = 0;
+        scan_world->reserve(std::min(input->size(), maximum));
+        for (const auto& source : input->points) {
+            if (!std::isfinite(source.x) || !std::isfinite(source.y) ||
+                !std::isfinite(source.z)) {
+                continue;
+            }
+            if (finite_index++ % stride != 0) continue;
+            const Vec3d position = pose * Vec3d(source.x, source.y, source.z);
+            if (!position.allFinite()) continue;
+            PointType transformed = source;
+            transformed.x = static_cast<float>(position.x());
+            transformed.y = static_cast<float>(position.y());
+            transformed.z = static_cast<float>(position.z());
+            scan_world->push_back(transformed);
+        }
+        SaveRelocalizationBirdseye(
+            relocalization_static_map_, scan_world,
+            relocalization_map_min_, relocalization_map_max_, last_match_stats_);
+    }
+
+    LOG(INFO) << "MAP_CONSISTENCY points=" << result.points
+              << ", global_map_points="
+              << (relocalization_static_map_ ? relocalization_static_map_->size() : 0)
+              << ", inside_xy=" << result.inside_xy_ratio
+              << ", inside_xyz=" << result.inside_xyz_ratio
+              << ", overlap=" << result.overlap_ratio
+              << ", gravity_alignment_cos=" << result.gravity_alignment_cos
+              << ", map_z=[" << relocalization_map_min_.z() << ", "
+              << relocalization_map_max_.z() << "]"
+              << ", passed=" << result.passed;
+    return result.passed;
 }
 
 void LidarLoc::SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
@@ -774,8 +1062,10 @@ void LidarLoc::RequestGlobalRelocalization() {
     initial_pose_set_ = false;
     match_fail_count_ = 0;
     last_match_stats_ = MatchStats{};
-    if (btc_relocalizer_) btc_relocalizer_->ResetQuery();
-    LOG(WARNING) << "BTC_RELOCALIZATION global relocalization requested";
+    pending_relocalization_ = PendingRelocalization{};
+    if (global_relocalizer_) global_relocalizer_->ResetQuery();
+    LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                 << "] requested";
 }
 
 void LidarLoc::Align(const CloudPtr& input) {
@@ -875,7 +1165,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             }
         }
 
-        if (TryBtcRelocalization(input)) return;
+        if (TryGlobalRelocalization(input)) return;
 
         /// 初始化未成功时，不往下走流程
         return;
@@ -1033,11 +1323,13 @@ void LidarLoc::Align(const CloudPtr& input) {
         // Do not propagate a rejected NDT transform. Lidar odometry remains
         // the short-term motion source while global relocalization starts.
         current_pose_esti = guess_from_lo;
-        if (btc_relocalizer_ && btc_relocalizer_->IsReady() &&
+        if (global_relocalizer_ && global_relocalizer_->IsReady() &&
             match_fail_count_ >= options_.relocalization_lost_frame_threshold_) {
             loc_inited_ = false;
-            btc_relocalizer_->ResetQuery();
-            LOG(WARNING) << "BTC_RELOCALIZATION tracking lost after " << match_fail_count_
+            global_relocalizer_->ResetQuery();
+            pending_relocalization_ = PendingRelocalization{};
+            LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                         << "] tracking lost after " << match_fail_count_
                          << " consecutive rejected NDT matches";
         }
     }

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #define HASH_P 116101
 #define MAX_N 10000000000
@@ -46,6 +47,8 @@ typedef struct ConfigSetting {
   /* for place recognition*/
   int skip_near_num_ = 30;
   int candidate_num_ = 20;
+  int candidate_min_votes_ = 5;
+  int verification_threads_ = 4;
   float rough_dis_threshold_ = 0.01;
   float similarity_threshold_ = 0.7;
   float icp_threshold_ = 0.15;
@@ -101,6 +104,14 @@ typedef struct STDMatchList {
   int match_frame_;
   double mean_dis_;
 } STDMatchList;
+
+struct STDCandidateResult {
+  int candidate_id = -1;
+  double score = 0.0;
+  std::size_t rough_match_count = 0;
+  double spatial_coverage = 0.0;
+  std::pair<Eigen::Vector3d, Eigen::Matrix3d> transform;
+};
 
 class BTCVOXEL_LOC {
 public:
@@ -251,6 +262,13 @@ public:
                   std::pair<Eigen::Vector3d, Eigen::Matrix3d> &loop_transform,
                   std::vector<std::pair<STD, STD>> &loop_std_pair, pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur);
 
+  // Return independently geometry-verified candidates in descending score
+  // order. SearchLoop remains as the backward-compatible Top-1 wrapper.
+  std::vector<STDCandidateResult> SearchLoopTopK(
+      std::vector<STD> &stds_vec,
+      pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur,
+      std::size_t top_k);
+
   // add descriptors to database
   void AddSTDescs(const std::vector<STD> &stds_vec);
 
@@ -302,17 +320,17 @@ private:
 
   // Get the best candidate frame by geometry check
   void
-  candidate_verify(STDMatchList &candidate_matcher, double &verify_score,
+  candidate_verify(const STDMatchList &candidate_matcher, double &verify_score,
                    std::pair<Eigen::Vector3d, Eigen::Matrix3d> &relative_pose,
-                   std::vector<std::pair<STD, STD>> &sucess_match_vec, pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur);
+                   pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur) const;
 
   // Get the transform between a matched std pair
-  void triangle_solver(std::pair<STD, STD> &std_pair, Eigen::Vector3d &t,
-                       Eigen::Matrix3d &rot);
+  void triangle_solver(const std::pair<STD, STD> &std_pair, Eigen::Vector3d &t,
+                       Eigen::Matrix3d &rot) const;
 
   // Geometrical verification by plane-to-plane icp threshold
   double plane_geometric_verify(
       const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &source_cloud,
       const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &target_cloud,
-      const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform);
+      const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform) const;
 };

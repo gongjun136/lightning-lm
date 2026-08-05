@@ -142,6 +142,22 @@ int main() {
         return 10;
     }
 
+    lightning::backend::BtcLoopDetectorOptions rolling_options = options;
+    rolling_options.descriptor_submap_stride = 1;
+    lightning::backend::BtcLoopDetector rolling_detector(rolling_options);
+    for (unsigned long index = 0; index < 4; ++index) {
+        rolling_detector.AddKeyframe(
+            MakeKeyframe(index, static_cast<double>(index), 0.1 * index, cloud),
+            lightning::SE3());
+    }
+    if (rolling_detector.Entries().size() != 3 ||
+        rolling_detector.PendingKeyframes() != 1) {
+        std::cerr << "overlapping BTC windows failed: entries="
+                  << rolling_detector.Entries().size()
+                  << ", pending=" << rolling_detector.PendingKeyframes() << std::endl;
+        return 15;
+    }
+
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path temporary_root =
         std::filesystem::temp_directory_path() / ("lightning_btc_relocalizer_test_" + std::to_string(unique));
@@ -156,6 +172,8 @@ int main() {
         config << "relocalization:\n"
                   "  enabled: true\n"
                   "  query_submap_size: 2\n"
+                  "  query_stride: 1\n"
+                  "  top_k: 3\n"
                   "  min_points_per_submap: 100\n"
                   "  min_btc_score: 0.10\n";
     }
@@ -175,7 +193,7 @@ int main() {
     const auto relocalization = relocalizer.AddFrame(
         cloud, lightning::SE3(lightning::Quatd::Identity(), lightning::Vec3d(0.0, 0.0, 0.0)), 11.0);
     if (!relocalization || !relocalization->candidate_found || !relocalization->accepted ||
-        relocalization->candidate_id != 0) {
+        relocalization->candidate_id != 0 || relocalization->candidates.empty()) {
         std::cerr << "BTC database reload query failed: candidate="
                   << (relocalization ? relocalization->candidate_id : -1)
                   << ", score=" << (relocalization ? relocalization->score : 0.0)
@@ -205,6 +223,8 @@ int main() {
                   "relocalization:\n"
                   "  enabled: true\n"
                   "  query_submap_size: 2\n"
+                  "  query_stride: 1\n"
+                  "  top_k: 3\n"
                   "  min_points_per_submap: 100\n"
                   "  min_btc_score: 0.10\n";
     }

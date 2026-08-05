@@ -2,6 +2,7 @@
 #define LIGHTNING_BACKEND_BTC_LOOP_DETECTOR_H
 
 #include <cstddef>
+#include <deque>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@ namespace lightning::backend {
 struct BtcLoopDetectorOptions {
     bool enabled = true;
     int descriptor_submap_size = 10;
+    // Values <= 0 retain the legacy non-overlapping behavior.
+    int descriptor_submap_stride = 0;
     int max_points_per_submap = 100000;
     int min_points_per_submap = 100;
     double downsample_leaf_size = 0.20;
@@ -127,7 +130,7 @@ class BtcLoopDetector {
 
     BtcLoopDetectorOptions options_;
     STDescManager manager_;
-    std::vector<Keyframe::Ptr> pending_keyframes_;
+    std::deque<Keyframe::Ptr> pending_keyframes_;
     std::vector<BtcDescriptorEntry> entries_;
     std::vector<std::vector<Keyframe::Ptr>> descriptor_keyframes_;
     Keyframe::Ptr last_keyframe_;

@@ -3,13 +3,15 @@
 #include <pcl/registration/icp.h>
 #include <chrono>
 #include <deque>
+#include <future>
 #include <iostream>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <thread>
 
 #include "common/nav_state.h"
 #include "common/timed_pose.h"
-#include "core/localization/btc_relocalizer.h"
+#include "core/localization/global_relocalizer.h"
 #include "core/localization/localization_result.h"
 #include "core/maps/tiled_map.h"
 
@@ -73,6 +75,11 @@ class LidarLoc {
         double relocalization_min_overlap_ratio_ = 0.20;
         double relocalization_min_gravity_alignment_cos_ = 0.95;
         int relocalization_map_consistency_max_points_ = 50000;
+        int relocalization_validation_workers_ = 2;
+        int relocalization_confirmation_count_ = 2;
+        double relocalization_confirmation_max_translation_ = 1.0;
+        double relocalization_confirmation_max_rotation_deg_ = 5.0;
+        double relocalization_confirmation_max_interval_ = 1.0;
         std::string relocalization_debug_dir_;
     };
 
@@ -86,6 +93,12 @@ class LidarLoc {
         bool relocalization_accepted = false;
         int relocalization_candidate_id = -1;
         double relocalization_score = 0.0;
+        int relocalization_candidate_count = 0;
+        int relocalization_candidates_prechecked = 0;
+        int relocalization_confirmation_count = 0;
+        int relocalization_query_submap_size = 0;
+        double relocalization_search_time_ms = 0.0;
+        std::string relocalization_reason;
         bool map_consistency_evaluated = false;
         bool map_consistency_passed = false;
         std::size_t map_consistency_points = 0;
@@ -217,7 +230,20 @@ class LidarLoc {
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
-    bool TryBtcRelocalization(const CloudPtr& input);
+    bool TryGlobalRelocalization(const CloudPtr& input);
+    struct MapConsistencyResult {
+        bool evaluated = false;
+        bool passed = false;
+        std::size_t points = 0;
+        double inside_xy_ratio = 0.0;
+        double inside_xyz_ratio = 0.0;
+        double overlap_ratio = 0.0;
+        double gravity_alignment_cos = 0.0;
+    };
+    bool BuildRelocalizationMapCache();
+    MapConsistencyResult EvaluateRelocalizationMapConsistency(
+        const CloudPtr& input, const SE3& pose, std::size_t worker_index) const;
+    void ApplyMapConsistencyResult(const MapConsistencyResult& result);
     bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
                                     const Vec3d& map_min, const Vec3d& map_max,
@@ -301,7 +327,23 @@ class LidarLoc {
     bool update_map_quit_ = false;
     std::thread update_map_thread_;            // 地图更新
     std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
-    std::unique_ptr<BtcRelocalizer> btc_relocalizer_;
+    std::unique_ptr<GlobalRelocalizer> global_relocalizer_;
+    std::string relocalization_backend_name_ = "btc";
+    CloudPtr relocalization_static_map_;
+    Vec3d relocalization_map_min_ = Vec3d::Zero();
+    Vec3d relocalization_map_max_ = Vec3d::Zero();
+    std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;
+    struct PendingRelocalization {
+        bool valid = false;
+        SE3 T_map_odom;
+        SE3 pose;
+        int candidate_id = -1;
+        int query_submap_size = 0;
+        double score = 0.0;
+        double ndt_confidence = 0.0;
+        double timestamp = 0.0;
+        int confirmation_count = 0;
+    } pending_relocalization_;
     double map_height_ = 0;
     int relocalization_debug_index_ = 0;
 

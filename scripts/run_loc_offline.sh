@@ -19,6 +19,7 @@ Options:
   --reference-tum PATH          Optional reference trajectory for timestamp-aligned error analysis
   --playback-rate RATE          Sensor-time pacing; 0 disables pacing (default: 0)
   --max-lidar-frames COUNT      Stop after COUNT fused frames (default: 0, all)
+  --start-sensor-time SEC       Discard IMU/lidar messages before this absolute sensor timestamp
   --cpu-set LIST                Linux CPU list (default: 0-7)
   --cpu-count COUNT             Allocated logical CPUs (default: 8)
   --completion-tolerance SEC    Allowed trajectory tail difference (default: 0.25)
@@ -57,6 +58,7 @@ repeat="1"
 reference_tum="${LIGHTNING_LM_REFERENCE_TUM:-}"
 playback_rate="0"
 max_lidar_frames="0"
+start_sensor_time="0"
 cpu_set="0-7"
 allocated_cpus="8"
 completion_tolerance="0.25"
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --reference-tum) reference_tum="${2:?missing value for --reference-tum}"; shift 2 ;;
     --playback-rate) playback_rate="${2:?missing value for --playback-rate}"; shift 2 ;;
     --max-lidar-frames) max_lidar_frames="${2:?missing value for --max-lidar-frames}"; shift 2 ;;
+    --start-sensor-time) start_sensor_time="${2:?missing value for --start-sensor-time}"; shift 2 ;;
     --cpu-set) cpu_set="${2:?missing value for --cpu-set}"; shift 2 ;;
     --cpu-count) allocated_cpus="${2:?missing value for --cpu-count}"; shift 2 ;;
     --completion-tolerance) completion_tolerance="${2:?missing value for --completion-tolerance}"; shift 2 ;;
@@ -246,6 +249,7 @@ setsid taskset -c "$cpu_set" "$binary" \
   --output_frame_stats_csv="$frame_stats" \
   --playback_rate="$playback_rate" \
   --max_lidar_frames="$max_lidar_frames" \
+  --start_sensor_time="$start_sensor_time" \
   --wait_ui="$wait_ui" \
   --publish_topics="$publish_topics" \
   --output_bag="$output_bag" \
@@ -383,6 +387,7 @@ processing_speed_x="${timing_checks[5]}"
   echo "play_rate=$playback_rate"
   echo "publish_topics=$publish_topics"
   echo "use_config_initial_pose=$use_config_initial_pose"
+  echo "start_sensor_time=$start_sensor_time"
   echo "config=$config_path"
   echo "config_sha256=$(sha256sum "$config_path" | awk '{print $1}')"
   echo "algorithm_binary=$binary"

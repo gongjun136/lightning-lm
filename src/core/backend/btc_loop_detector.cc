@@ -58,11 +58,17 @@ std::optional<BtcLoopResult> BtcLoopDetector::AddKeyframe(const Keyframe::Ptr& k
     }
     last_keyframe_ = keyframe;
     pending_keyframes_.push_back(keyframe);
-    if (pending_keyframes_.size() < static_cast<std::size_t>(std::max(1, options_.descriptor_submap_size))) {
+    const std::size_t window =
+        static_cast<std::size_t>(std::max(1, options_.descriptor_submap_size));
+    if (pending_keyframes_.size() < window) {
         return std::nullopt;
     }
-    std::vector<Keyframe::Ptr> keyframes;
-    keyframes.swap(pending_keyframes_);
+    std::vector<Keyframe::Ptr> keyframes(pending_keyframes_.begin(), pending_keyframes_.end());
+    const std::size_t configured_stride = options_.descriptor_submap_stride > 0
+                                              ? static_cast<std::size_t>(options_.descriptor_submap_stride)
+                                              : window;
+    const std::size_t stride = std::min(window, configured_stride);
+    for (std::size_t index = 0; index < stride; ++index) pending_keyframes_.pop_front();
     return ProcessSubmap(keyframes, T_imu_lidar);
 }
 
@@ -420,11 +426,14 @@ bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
     }
 
     YAML::Node root;
-    root["schema_version"] = map_metadata && map_metadata->normalized ? 2 : 1;
+    root["schema_version"] = 3;
     if (map_metadata && map_metadata->normalized) {
         root["map_frame"] = map_frame::MakeTransformReference(*map_metadata);
     }
     root["descriptor_submap_size"] = options_.descriptor_submap_size;
+    root["descriptor_submap_stride"] =
+        options_.descriptor_submap_stride > 0 ? options_.descriptor_submap_stride
+                                              : options_.descriptor_submap_size;
     root["max_points_per_submap"] = options_.max_points_per_submap;
     root["downsample_leaf_size"] = options_.downsample_leaf_size;
 
@@ -451,6 +460,8 @@ bool BtcLoopDetector::SaveRelocalizationDatabase(const std::string& directory,
     descriptor["triangle_side_resolution"] = config.std_side_resolution_;
     descriptor["skip_near_descriptors"] = config.skip_near_num_;
     descriptor["candidate_count"] = config.candidate_num_;
+    descriptor["candidate_min_votes"] = config.candidate_min_votes_;
+    descriptor["verification_threads"] = config.verification_threads_;
     descriptor["rough_distance_threshold"] = config.rough_dis_threshold_;
     descriptor["similarity_threshold"] = config.similarity_threshold_;
     descriptor["internal_icp_threshold"] = config.icp_threshold_;

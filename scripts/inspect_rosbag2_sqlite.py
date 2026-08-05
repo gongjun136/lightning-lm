@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect a SQLite3 ROS2 bag and derive the offline frontend completion contract."""
+"""Inspect a SQLite3 or MCAP ROS2 bag and derive the offline completion contract."""
 
 from __future__ import annotations
 
@@ -71,14 +71,16 @@ def main() -> int:
     metadata_path = args.bag / "metadata.yaml"
     metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8-sig"))
     info = metadata.get("rosbag2_bagfile_information") or {}
-    if info.get("storage_identifier") != "sqlite3":
-        raise SystemExit(f"only SQLite3 ROS2 bags are supported: {info.get('storage_identifier')!r}")
+    storage_identifier = str(info.get("storage_identifier") or "")
+    if storage_identifier not in {"sqlite3", "mcap"}:
+        raise SystemExit(f"unsupported ROS2 bag storage: {storage_identifier!r}")
     relative_paths = list(info.get("relative_file_paths") or [])
     if not relative_paths:
         relative_paths = [item.get("path") for item in (info.get("files") or []) if item.get("path")]
-    payloads = [args.bag / path for path in relative_paths] or sorted(args.bag.glob("*.db3"))
-    if not payloads or any(not path.is_file() or path.suffix != ".db3" for path in payloads):
-        raise SystemExit("metadata does not identify valid .db3 payloads")
+    suffix = ".db3" if storage_identifier == "sqlite3" else ".mcap"
+    payloads = [args.bag / path for path in relative_paths] or sorted(args.bag.glob(f"*{suffix}"))
+    if not payloads or any(not path.is_file() or path.suffix != suffix for path in payloads):
+        raise SystemExit(f"metadata does not identify valid {suffix} payloads")
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8-sig")) or {}
     configured_topic = primary_lidar_topic(config)
@@ -93,39 +95,62 @@ def main() -> int:
     imu_count = 0
     resolved_topic = configured_topic
     resolved_imu_topic = configured_imu_topic
-    for payload in payloads:
-        connection = sqlite3.connect(f"file:{payload.as_posix()}?mode=ro", uri=True)
-        try:
-            row = connection.execute("SELECT MIN(timestamp), MAX(timestamp) FROM messages").fetchone()
-            if row and row[0] is not None:
-                global_min = row[0] if global_min is None else min(global_min, row[0])
-                global_max = row[1] if global_max is None else max(global_max, row[1])
-            for candidate in candidates:
-                row = connection.execute(
-                    "SELECT MIN(messages.timestamp), MAX(messages.timestamp), COUNT(*) "
-                    "FROM messages JOIN topics ON messages.topic_id=topics.id WHERE topics.name=?",
-                    (candidate,),
-                ).fetchone()
-                if row and row[2]:
-                    resolved_topic = candidate
-                    topic_count += int(row[2])
-                    topic_min = row[0] if topic_min is None else min(topic_min, row[0])
-                    topic_max = row[1] if topic_max is None else max(topic_max, row[1])
-                    break
-            for candidate in imu_candidates:
-                row = connection.execute(
-                    "SELECT MIN(messages.timestamp), MAX(messages.timestamp), COUNT(*) "
-                    "FROM messages JOIN topics ON messages.topic_id=topics.id WHERE topics.name=?",
-                    (candidate,),
-                ).fetchone()
-                if row and row[2]:
-                    resolved_imu_topic = candidate
-                    imu_count += int(row[2])
-                    imu_min = row[0] if imu_min is None else min(imu_min, row[0])
-                    imu_max = row[1] if imu_max is None else max(imu_max, row[1])
-                    break
-        finally:
-            connection.close()
+    if storage_identifier == "sqlite3":
+        for payload in payloads:
+            connection = sqlite3.connect(f"file:{payload.as_posix()}?mode=ro", uri=True)
+            try:
+                row = connection.execute("SELECT MIN(timestamp), MAX(timestamp) FROM messages").fetchone()
+                if row and row[0] is not None:
+                    global_min = row[0] if global_min is None else min(global_min, row[0])
+                    global_max = row[1] if global_max is None else max(global_max, row[1])
+                for candidate in candidates:
+                    row = connection.execute(
+                        "SELECT MIN(messages.timestamp), MAX(messages.timestamp), COUNT(*) "
+                        "FROM messages JOIN topics ON messages.topic_id=topics.id WHERE topics.name=?",
+                        (candidate,),
+                    ).fetchone()
+                    if row and row[2]:
+                        resolved_topic = candidate
+                        topic_count += int(row[2])
+                        topic_min = row[0] if topic_min is None else min(topic_min, row[0])
+                        topic_max = row[1] if topic_max is None else max(topic_max, row[1])
+                        break
+                for candidate in imu_candidates:
+                    row = connection.execute(
+                        "SELECT MIN(messages.timestamp), MAX(messages.timestamp), COUNT(*) "
+                        "FROM messages JOIN topics ON messages.topic_id=topics.id WHERE topics.name=?",
+                        (candidate,),
+                    ).fetchone()
+                    if row and row[2]:
+                        resolved_imu_topic = candidate
+                        imu_count += int(row[2])
+                        imu_min = row[0] if imu_min is None else min(imu_min, row[0])
+                        imu_max = row[1] if imu_max is None else max(imu_max, row[1])
+                        break
+            finally:
+                connection.close()
+    else:
+        global_min = int((info.get("starting_time") or {}).get("nanoseconds_since_epoch") or 0)
+        duration_ns = int((info.get("duration") or {}).get("nanoseconds") or 0)
+        if global_min <= 0 or duration_ns <= 0:
+            raise SystemExit("MCAP metadata is missing a valid start time or duration")
+        global_max = global_min + duration_ns
+        topics = {
+            str((item.get("topic_metadata") or {}).get("name") or ""): int(item.get("message_count") or 0)
+            for item in (info.get("topics_with_message_count") or [])
+        }
+        for candidate in candidates:
+            if topics.get(candidate, 0) > 0:
+                resolved_topic = candidate
+                topic_count = topics[candidate]
+                topic_min, topic_max = global_min, global_max
+                break
+        for candidate in imu_candidates:
+            if topics.get(candidate, 0) > 0:
+                resolved_imu_topic = candidate
+                imu_count = topics[candidate]
+                imu_min, imu_max = global_min, global_max
+                break
     if global_min is None or global_max is None:
         raise SystemExit("bag contains no messages")
 
@@ -139,10 +164,14 @@ def main() -> int:
         # fail their contract when one recorder stops a little later than the
         # other, even though every processable frame was consumed.
         expected_end_ns = min(topic_max, imu_max)
-        source = "primary_lidar_and_imu_sqlite"
+        source = (
+            "primary_lidar_and_imu_sqlite"
+            if storage_identifier == "sqlite3"
+            else "bag_metadata_mcap"
+        )
     else:
         expected_end_ns = topic_max
-        source = "primary_lidar_sqlite"
+        source = "primary_lidar_sqlite" if storage_identifier == "sqlite3" else "bag_metadata_mcap"
     sensor_duration_s = duration_ns / 1e9
     if args.inventory:
         expected_s, sensor_duration_s = inventory_contract(args.inventory, args.sequence)
@@ -159,7 +188,7 @@ def main() -> int:
         "schema_version": 1,
         "bag": str(args.bag.resolve()),
         "metadata_sha256": sha256(metadata_path),
-        "storage_identifier": "sqlite3",
+        "storage_identifier": storage_identifier,
         "primary_lidar_topic_configured": configured_topic,
         "primary_lidar_topic": resolved_topic,
         "primary_lidar_message_count": topic_count,

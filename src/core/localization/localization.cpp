@@ -331,7 +331,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     auto res = lidar_loc_->GetLocalizationResult();
     if (lidar_loc_->GetLastMatchStats().relocalization_accepted) {
         pgo_->Reset();
-        LOG(WARNING) << "reset localization PGO after accepted BTC relocalization";
+        LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
     if (processed_cloud_callback_) {
         processed_cloud_callback_(scan_undist, res);

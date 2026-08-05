@@ -83,6 +83,10 @@ ConfigSetting ReadBtcDescriptorOptions(const YAML::Node& node, ConfigSetting opt
     options.std_side_resolution_ = ValueOr(node, "triangle_side_resolution", options.std_side_resolution_);
     options.skip_near_num_ = ValueOr(node, "skip_near_descriptors", options.skip_near_num_);
     options.candidate_num_ = ValueOr(node, "candidate_count", options.candidate_num_);
+    options.candidate_min_votes_ =
+        ValueOr(node, "candidate_min_votes", options.candidate_min_votes_);
+    options.verification_threads_ =
+        ValueOr(node, "verification_threads", options.verification_threads_);
     options.rough_dis_threshold_ = ValueOr(node, "rough_distance_threshold", options.rough_dis_threshold_);
     options.similarity_threshold_ = ValueOr(node, "similarity_threshold", options.similarity_threshold_);
     options.icp_threshold_ = ValueOr(node, "internal_icp_threshold", options.icp_threshold_);
@@ -114,6 +118,8 @@ BackendPipelineOptions ReadOptions(const YAML::Node& root, bool online_mode) {
     options.btc.enabled = ValueOr(btc, "enabled", options.btc.enabled);
     options.btc.descriptor_submap_size =
         ValueOr(btc, "descriptor_submap_size", options.btc.descriptor_submap_size);
+    options.btc.descriptor_submap_stride =
+        ValueOr(btc, "descriptor_submap_stride", options.btc.descriptor_submap_stride);
     options.btc.max_points_per_submap = ValueOr(btc, "max_points_per_submap", options.btc.max_points_per_submap);
     options.btc.min_points_per_submap = ValueOr(btc, "min_points_per_submap", options.btc.min_points_per_submap);
     options.btc.downsample_leaf_size = ValueOr(btc, "downsample_leaf_size", options.btc.downsample_leaf_size);

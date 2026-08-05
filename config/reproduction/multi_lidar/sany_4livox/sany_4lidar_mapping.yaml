@@ -29,19 +29,19 @@ multi_lidar:
           0, 0, 1, 0,
           0, 0, 0, 1]
     lidar1:
-      T: [0.445736, -0.87828, -0.173043, -0.75759,
-          0.347955, -0.00811572, 0.937476, 0.843298,
-          -0.824771, -0.478078, 0.301984, -0.428687,
+      T: [0.446473502, -0.877885367, -0.173143569, -0.761582134,
+          0.347582000, -0.008151075, 0.937614160, 0.852950694,
+          -0.824529057, -0.478801465, 0.301497912, -0.431472352,
           0, 0, 0, 1]
     lidar2:
-      T: [0.451223, 0.877385, -0.163074, -0.756986,
-          -0.376052, 0.0212211, -0.926355, -0.85577,
-          -0.80931, 0.479317, 0.339518, -0.427357,
+      T: [0.452308401, 0.876805341, -0.163185493, -0.747640026,
+          -0.376264880, 0.021710567, -0.926257735, -0.853061064,
+          -0.808604879, 0.480355124, 0.339730928, -0.437692514,
           0, 0, 0, 1]
     lidar3:
-      T: [-0.53053, 0.0241751, -0.847322, -1.53254,
-          -0.0226496, -0.999641, -0.0143395, -0.0179304,
-          -0.847364, 0.011584, 0.530887, -0.852392,
+      T: [-0.528954348, 0.026449903, -0.848237997, -1.543063249,
+          -0.023820435, -0.999583118, -0.016314942, 0.003922032,
+          -0.848315911, 0.011575538, 0.529363885, -0.853307882,
           0, 0, 0, 1]
 
 imu_initialization:
@@ -127,9 +127,17 @@ backend:
   btc:
     enabled: true
     descriptor_submap_size: 10
+    descriptor_submap_stride: 2
     max_points_per_submap: 50000
     min_points_per_submap: 100
     downsample_leaf_size: 0.20
+    refine_with_icp: true
+    icp_max_iterations: 30
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_translation_correction: 10.0
+    icp_batch_size: 8
+    icp_workers: 8
     min_loop_score: 0.60
     max_drift_ratio: 0.005
     max_rotation_correction_deg: 45.0
@@ -169,6 +177,7 @@ backend:
       triangle_side_resolution: 0.2
       skip_near_descriptors: 30
       candidate_count: 50
+      verification_threads: 4
       rough_distance_threshold: 0.03
       similarity_threshold: 0.50
       internal_icp_threshold: 0.15
@@ -185,3 +194,119 @@ backend:
     loop_outlier_chi2: 25.0
   hba:
     enabled: false
+
+loop_closing:
+  with_height: false
+
+localization_pgo:
+  enable_dr_extrapolation: true
+  enable_dr_smoothing: true
+
+lidar_loc:
+  enable_dynamic_polygon: false
+  enable_parking_static: false
+  enable_icp_adjust: false
+  filter_intensity_max: 100.0
+  filter_intensity_min: 0.0
+  filter_z_max: 100.0
+  filter_z_min: -100.0
+  force_2d: false
+  grid_search_angle_range: 20.0
+  grid_search_angle_step: 20
+  lidar_loc_odom_th: 1.0
+  init_with_fp: false
+  min_init_confidence: 0.5
+  min_tracking_confidence: 0.4
+  update_dynamic_cloud: false
+  update_err_h: 0.2
+  update_err_v: 0.2
+  update_kf_dis: 2.0
+  update_lidar_loc_score: 2.5
+  loc_on_kf: false
+  try_self_extrap: false
+
+relocalization:
+  enabled: true
+  backend: btc
+  database_subdirectory: btc_relocalization
+  lost_frame_threshold: 5
+  query_submap_sizes: [5, 10, 20]
+  query_stride: 1
+  top_k: 10
+  candidate_dedup_radius: 2.0
+  candidate_dedup_yaw_deg: 15.0
+  max_points_per_submap: 50000
+  min_points_per_submap: 100
+  downsample_leaf_size: 0.20
+  min_btc_score: 0.16
+  enable_map_consistency: true
+  validation_workers: 2
+  map_bounds_margin: 0.5
+  map_nearest_neighbor_distance: 0.5
+  map_min_inside_xy_ratio: 0.90
+  map_min_overlap_ratio: 0.95
+  map_min_gravity_alignment_cos: 0.95
+  map_consistency_max_points: 50000
+  confirmation_count: 2
+  confirmation_max_translation: 1.0
+  confirmation_max_rotation_deg: 5.0
+  confirmation_max_interval: 1.0
+  solid:
+    database_subdirectory: solid_relocalization
+    source_database_subdirectory: btc_relocalization
+    compute_backend: cpu
+    query_submap_sizes: [1, 3, 5, 10]
+    query_stride: 1
+    top_k: 20
+    # Retrieve broadly, then spatial/yaw NMS limits expensive map/NDT checks
+    # to top_k. This is important in the repetitive SANY loading yard.
+    retrieval_pool_size: 200
+    min_similarity: 0.55
+    candidate_dedup_radius: 2.0
+    candidate_dedup_yaw_deg: 15.0
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.20
+    # SOLiD retrieves place/yaw only. Local ICP against the optimized source
+    # submap recovers translation within that place before strict map checks.
+    refine_with_icp: true
+    icp_max_iterations: 30
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_translation_correction: 10.0
+    icp_batch_size: 8
+    icp_workers: 8
+    # Mid-360 fusion is nearly omnidirectional; symmetric yard structures can
+    # make SOLiD heading multimodal. ICP evaluates these deterministic seeds
+    # and retains one best result per place before strict map validation.
+    icp_yaw_hypothesis_offsets_deg: [0.0, 90.0, -90.0, 180.0]
+    debug_candidate_ids: []
+    descriptor:
+      range_bins: 40
+      angle_bins: 60
+      elevation_bins: 32
+      min_distance: 3.0
+      max_distance: 80.0
+      # Four calibrated Mid-360 clouds are expressed in the primary/front
+      # frame. Their combined elevation support is broader than one sensor's
+      # native -7..52 degree FOV, so use the physically complete fused range.
+      elevation_min_deg: -90.0
+      elevation_max_deg: 90.0
+
+maps:
+  delete_when_unload: false
+  dyn_cloud_policy: persistent
+  load_dyn_cloud: false
+  load_map_size: 2
+  max_pts_dyn_chunk: 100000
+  save_dyn_when_quit: false
+  save_dyn_when_unload: false
+  unload_map_size: 4
+  with_dyn_area: false
+
+offline_localization:
+  initial_pose:
+    enabled: false
+    frame: map
+    translation: [0.0, 0.0, 0.0]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

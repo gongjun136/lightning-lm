@@ -1,4 +1,9 @@
 #include "BTC.h"
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <future>
+#include <limits>
 
 #include <unordered_set>
 
@@ -152,52 +157,75 @@ void STDescManager::SearchLoop(
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> &loop_transform,
     std::vector<std::pair<STD, STD>> &loop_std_pair, pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur)
 {
-  if (stds_vec.size() == 0) {
-    // ROS_ERROR_STREAM("No STDescs!");
-    loop_result = std::pair<int, double>(-1, 0);
-    return;
-  }
-  // step1, select candidates, default number 50
+  loop_result = std::pair<int, double>(-1, 0.0);
+  loop_std_pair.clear();
+  const auto candidates = SearchLoopTopK(stds_vec, pl_cur, 1);
+  if (candidates.empty()) return;
+  loop_result = {candidates.front().candidate_id, candidates.front().score};
+  loop_transform = candidates.front().transform;
+}
+
+std::vector<STDCandidateResult> STDescManager::SearchLoopTopK(
+    std::vector<STD> &stds_vec,
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur,
+    std::size_t top_k)
+{
+  if (stds_vec.empty() || !pl_cur || top_k == 0) return {};
+
   std::vector<STDMatchList> candidate_matcher_vec;
   candidate_selector(stds_vec, candidate_matcher_vec);
+  if (candidate_matcher_vec.empty()) return {};
 
-  // step2, select best candidates from rough candidates
-  double best_score = 0;
-  int best_candidate_id = -1;
-  int triggle_candidate = -1;
-  std::pair<Eigen::Vector3d, Eigen::Matrix3d> best_transform;
-  std::vector<std::pair<STD, STD>> best_sucess_match_vec;
-  for (size_t i = 0; i < candidate_matcher_vec.size(); i++)
-  {
-    double verify_score = -1;
-    std::pair<Eigen::Vector3d, Eigen::Matrix3d> relative_pose;
-    std::vector<std::pair<STD, STD>> sucess_match_vec;
-    candidate_verify(candidate_matcher_vec[i], verify_score, relative_pose,
-                     sucess_match_vec, pl_cur);
-    // std::cout << "[Retreival] try frame:"
-    //           << candidate_matcher_vec[i].match_id_.second
-    //           << ", rough size:" << candidate_matcher_vec[i].match_list_.size()
-    //           << ", score:" << verify_score << std::endl;
-    if (verify_score > best_score) {
-      best_score = verify_score;
-      best_candidate_id = candidate_matcher_vec[i].match_id_.second;
-      best_transform = relative_pose;
-      best_sucess_match_vec = sucess_match_vec;
-      triggle_candidate = i;
-      // std::cout << "[Retreival] best candidate:" << best_candidate_id
-      //           << ", score:" << best_score << std::endl;
+  std::vector<STDCandidateResult> verified(candidate_matcher_vec.size());
+  std::atomic<std::size_t> next_index{0};
+  const std::size_t worker_count = std::min<std::size_t>(
+      candidate_matcher_vec.size(),
+      static_cast<std::size_t>(std::max(1, config_setting_.verification_threads_)));
+  std::vector<std::future<void>> workers;
+  workers.reserve(worker_count);
+  for (std::size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back(std::async(std::launch::async, [&]() {
+      while (true) {
+        const std::size_t index = next_index.fetch_add(1);
+        if (index >= candidate_matcher_vec.size()) return;
+        const STDMatchList &matcher = candidate_matcher_vec[index];
+        STDCandidateResult result;
+        result.candidate_id = matcher.match_id_.second;
+        result.rough_match_count = matcher.match_list_.size();
+        candidate_verify(matcher, result.score, result.transform, pl_cur);
+
+        Eigen::Vector3d minimum = Eigen::Vector3d::Constant(
+            std::numeric_limits<double>::infinity());
+        Eigen::Vector3d maximum = Eigen::Vector3d::Constant(
+            -std::numeric_limits<double>::infinity());
+        for (const auto &match : matcher.match_list_) {
+          minimum = minimum.cwiseMin(match.first.center_);
+          maximum = maximum.cwiseMax(match.first.center_);
+        }
+        if (!matcher.match_list_.empty() && minimum.allFinite() && maximum.allFinite()) {
+          result.spatial_coverage = (maximum - minimum).norm();
+        }
+        verified[index] = result;
+      }
+    }));
+  }
+  for (auto &worker : workers) worker.get();
+
+  verified.erase(
+      std::remove_if(verified.begin(), verified.end(), [&](const auto &candidate) {
+        return candidate.candidate_id < 0 || !std::isfinite(candidate.score) ||
+               candidate.score <= config_setting_.icp_threshold_;
+      }),
+      verified.end());
+  std::stable_sort(verified.begin(), verified.end(), [](const auto &left, const auto &right) {
+    if (left.score != right.score) return left.score > right.score;
+    if (left.rough_match_count != right.rough_match_count) {
+      return left.rough_match_count > right.rough_match_count;
     }
-  }
-
-  if (best_score > config_setting_.icp_threshold_) {
-    loop_result = std::pair<int, double>(best_candidate_id, best_score);
-    loop_transform = best_transform;
-    loop_std_pair = best_sucess_match_vec;
-    return;
-  } else {
-    loop_result = std::pair<int, double>(-1, 0);
-    return;
-  }
+    return left.candidate_id < right.candidate_id;
+  });
+  if (verified.size() > top_k) verified.resize(top_k);
+  return verified;
 }
 
 void STDescManager::AddSTDescs(const std::vector<STD> &stds_vec) {
@@ -1194,7 +1222,7 @@ void STDescManager::candidate_selector(
     int max_vote = match_array[max_vote_index];
 
     STDMatchList match_triangle_list;
-    if (max_vote_index >= 0 && max_vote >= 5)
+    if (max_vote_index >= 0 && max_vote >= config_setting_.candidate_min_votes_)
     {
       match_array[max_vote_index] = 0;
       match_triangle_list.match_frame_ = max_vote_index;
@@ -1224,11 +1252,10 @@ void STDescManager::candidate_selector(
 }
 
 void STDescManager::candidate_verify(
-    STDMatchList &candidate_matcher, double &verify_score,
+    const STDMatchList &candidate_matcher, double &verify_score,
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> &relative_pose,
-    std::vector<std::pair<STD, STD>> &sucess_match_list, pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur)
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr pl_cur) const
 {
-  sucess_match_list.clear();
   double dis_threshold = 3;
   // std::time_t solve_time = 0;
   // std::time_t verify_time = 0;
@@ -1251,14 +1278,14 @@ void STDescManager::candidate_verify(
   // for(const size_t &i: index)
   for (size_t i = 0; i < use_size; i++)
   {
-    auto &single_pair = candidate_matcher.match_list_[i * skip_len];
+    const auto &single_pair = candidate_matcher.match_list_[i * skip_len];
     int vote = 0;
     Eigen::Matrix3d test_rot;
     Eigen::Vector3d test_t;
     triangle_solver(single_pair, test_t, test_rot);
     for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++)
     {
-      auto &verify_pair = candidate_matcher.match_list_[j];
+      const auto &verify_pair = candidate_matcher.match_list_[j];
       // Eigen::Vector3d A = verify_pair.first.binary_A_.location_;
       Eigen::Vector3d A_transform = test_rot * verify_pair.first.binary_A_.location_ + test_t;
       if((A_transform - verify_pair.second.binary_A_.location_).norm() >= dis_threshold)
@@ -1340,8 +1367,8 @@ void STDescManager::candidate_verify(
   return;
 }
 
-void STDescManager::triangle_solver(std::pair<STD, STD> &std_pair,
-                                    Eigen::Vector3d &t, Eigen::Matrix3d &rot) {
+void STDescManager::triangle_solver(const std::pair<STD, STD> &std_pair,
+                                    Eigen::Vector3d &t, Eigen::Matrix3d &rot) const {
   Eigen::Matrix3d src = Eigen::Matrix3d::Zero();
   Eigen::Matrix3d ref = Eigen::Matrix3d::Zero();
   src.col(0) = std_pair.first.binary_A_.location_ - std_pair.first.center_;
@@ -1367,7 +1394,7 @@ void STDescManager::triangle_solver(std::pair<STD, STD> &std_pair,
 double STDescManager::plane_geometric_verify(
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &source_cloud,
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &target_cloud,
-    const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform) {
+    const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform) const {
   Eigen::Vector3d t = transform.first;
   Eigen::Matrix3d rot = transform.second;
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kd_tree(

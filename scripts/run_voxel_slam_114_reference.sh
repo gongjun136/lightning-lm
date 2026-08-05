@@ -13,6 +13,10 @@ Required:
 
 Options:
   --voxel-ws PATH        Read-only ws_voxel_slam workspace
+  --lidar-topic TOPIC    ROS1 PointCloud2 topic (default: legacy 114 topic)
+  --imu-topic TOPIC      ROS1 IMU topic (default: legacy 114 topic)
+  --launch-file PATH     Voxel-SLAM launch file relative to its package
+  --config-file PATH     Voxel-SLAM config file used for provenance
   --ros-port PORT        Private ROS master port (default: 11331)
   --shutdown-wait SEC    Maximum wait for final optimization (default: 900)
   --cpu-set LIST         Linux CPU list reserved for the run (default: 0-7)
@@ -27,6 +31,10 @@ bag=""
 output_dir=""
 sequence=""
 voxel_ws="/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_20.04/ros1_ws/ws_voxel_slam"
+lidar_topic="/livox/lidar_192_168_1_114"
+imu_topic="/livox/imu_192_168_1_114"
+launch_rel="launch/vxlm_sany_20260701_livox_pc2_114.launch"
+config_rel="config/sany_20260701_livox_pc2_114.yaml"
 ros_port=11331
 shutdown_wait=900
 cpu_set="0-7"
@@ -40,6 +48,10 @@ while (($#)); do
     --output-dir) output_dir="${2:?missing value for --output-dir}"; shift 2 ;;
     --sequence) sequence="${2:?missing value for --sequence}"; shift 2 ;;
     --voxel-ws) voxel_ws="${2:?missing value for --voxel-ws}"; shift 2 ;;
+    --lidar-topic) lidar_topic="${2:?missing value for --lidar-topic}"; shift 2 ;;
+    --imu-topic) imu_topic="${2:?missing value for --imu-topic}"; shift 2 ;;
+    --launch-file) launch_rel="${2:?missing value for --launch-file}"; shift 2 ;;
+    --config-file) config_rel="${2:?missing value for --config-file}"; shift 2 ;;
     --ros-port) ros_port="${2:?missing value for --ros-port}"; shift 2 ;;
     --shutdown-wait) shutdown_wait="${2:?missing value for --shutdown-wait}"; shift 2 ;;
     --cpu-set) cpu_set="${2:?missing value for --cpu-set}"; shift 2 ;;
@@ -84,8 +96,8 @@ awk -v value="$play_rate" 'BEGIN { exit !(value > 0) }' || {
 setup="$voxel_ws/devel/setup.bash"
 recorder="$voxel_ws/src/Voxel-SLAM/reproduction/m3dgr/scripts/trajectory_recorder.py"
 binary="$voxel_ws/devel/lib/voxel_slam/voxelslam"
-launch_file="$voxel_ws/src/Voxel-SLAM/VoxelSLAM/launch/vxlm_sany_20260701_livox_pc2_114.launch"
-config_file="$voxel_ws/src/Voxel-SLAM/VoxelSLAM/config/sany_20260701_livox_pc2_114.yaml"
+launch_file="$voxel_ws/src/Voxel-SLAM/VoxelSLAM/$launch_rel"
+config_file="$voxel_ws/src/Voxel-SLAM/VoxelSLAM/$config_rel"
 monitor="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/monitor_process_tree.py"
 [[ -f "$setup" ]] || { echo "Voxel-SLAM setup does not exist: $setup" >&2; exit 2; }
 [[ -f "$recorder" ]] || { echo "trajectory recorder does not exist: $recorder" >&2; exit 2; }
@@ -106,18 +118,18 @@ source /opt/ros/noetic/setup.bash
 rosbag info --yaml "$bag" >"$output_dir/logs/input_bag_info.yaml"
 readarray -t bag_contract < <(python3 -c 'import sys,rosbag,yaml
 info=yaml.safe_load(open(sys.argv[1],encoding="utf-8"))
-topic=next((row for row in info.get("topics",[]) if row.get("topic")=="/livox/lidar_192_168_1_114"),None)
-if topic is None: raise SystemExit("missing Livox 114 lidar topic")
+lidar_topic=sys.argv[3]
+topic=next((row for row in info.get("topics",[]) if row.get("topic")==lidar_topic),None)
+if topic is None: raise SystemExit(f"missing lidar topic: {lidar_topic}")
 with rosbag.Bag(sys.argv[2],"r") as bag:
-    connections=list(bag._get_connections(topics=["/livox/lidar_192_168_1_114"]))
-    times=[entry.time.to_sec() for connection in connections for entry in bag._connection_indexes.get(connection.id,[])]
+    times=[msg.header.stamp.to_sec() for _,msg,_ in bag.read_messages(topics=[lidar_topic])]
 if not times: raise SystemExit("empty Livox 114 lidar index")
 print(topic["messages"])
 print(info["duration"])
 print(info["start"])
 print(info["end"])
 print(min(times))
-print(max(times))' "$output_dir/logs/input_bag_info.yaml" "$bag")
+print(max(times))' "$output_dir/logs/input_bag_info.yaml" "$bag" "$lidar_topic")
 expected_lidar_frames="${bag_contract[0]}"
 sensor_duration_s="${bag_contract[1]}"
 bag_start_s="${bag_contract[2]}"
@@ -169,7 +181,7 @@ done
 rosparam list >/dev/null 2>&1 || { echo "ROS master did not start" >&2; exit 1; }
 rosparam set /use_sim_time true
 
-setsid taskset -c "$cpu_set" roslaunch voxel_slam vxlm_sany_20260701_livox_pc2_114.launch \
+setsid taskset -c "$cpu_set" roslaunch "$launch_file" \
   rviz:=false save_path:="$output_dir/data/" bagname:="$sequence" \
   >"$output_dir/logs/voxel_slam.log" 2>&1 &
 launch_pid=$!
@@ -205,7 +217,7 @@ monitor_pid=$!
 start_ns="$(date +%s%N)"
 setsid taskset -c "$cpu_set" rosbag play "$bag" --clock --quiet --wait-for-subscribers \
   --rate "$play_rate" \
-  --topics /livox/lidar_192_168_1_114 /livox/imu_192_168_1_114 \
+  --topics "$lidar_topic" "$imu_topic" \
   >"$output_dir/logs/rosbag_play.log" 2>&1 &
 play_pid=$!
 wait "$play_pid"
@@ -316,6 +328,7 @@ sensor_duration_s=$sensor_duration_s
 expected_lidar_frames=$expected_lidar_frames
 lidar_first_s=$lidar_first_s
 lidar_last_s=$lidar_last_s
+lidar_timestamp_source=message_header_stamp
 output_ratio=$output_ratio
 final_lidar_gap_s=$final_lidar_gap_s
 completion=$completion
@@ -338,6 +351,8 @@ runner_sha256=$(sha256sum "$0" | awk '{print $1}')
 cpu_set=$cpu_set
 allocated_cpus=$cpu_count
 play_rate=$play_rate
+lidar_topic=$lidar_topic
+imu_topic=$imu_topic
 wall_time_s=$wall_time_s
 completed_at=$(date --iso-8601=seconds)
 EOF

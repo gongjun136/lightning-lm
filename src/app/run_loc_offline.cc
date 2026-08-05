@@ -47,6 +47,8 @@ DEFINE_bool(use_config_initial_pose, true,
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
 DEFINE_int32(force_relocalization_frame, 0,
              "offline test hook: request global relocalization immediately before this localization frame");
+DEFINE_double(start_sensor_time, 0.0,
+              "offline test hook: discard IMU and lidar messages before this sensor timestamp");
 DEFINE_double(playback_rate, 0.0,
               "pace bag callbacks by sensor time at this multiple of real time; disabled when <= 0");
 
@@ -324,6 +326,9 @@ void WriteLocalizationCsvHeader(std::ofstream& csv) {
     csv << "frame_index,timestamp,status,valid,lidar_loc_valid,confidence,match_iterations,match_success,"
            "relocalization_attempted,relocalization_candidate_found,relocalization_accepted,"
            "relocalization_candidate_id,relocalization_score,"
+           "relocalization_candidate_count,relocalization_candidates_prechecked,"
+           "relocalization_confirmation_count,relocalization_query_submap_size,"
+           "relocalization_search_time_ms,relocalization_reason,"
            "map_consistency_evaluated,map_consistency_passed,map_consistency_points,"
            "map_inside_xy_ratio,map_inside_xyz_ratio,map_overlap_ratio,map_gravity_alignment_cos,"
            "active_map_chunks,processing_ms,loc_odom_delta,loc_odom_error_normal,smooth_flag,"
@@ -571,7 +576,7 @@ int main(int argc, char** argv) {
                 if (match_stats.relocalization_accepted) {
                     pgo.Reset();
                     latest_final_result_set = false;
-                    LOG(WARNING) << "reset localization PGO after accepted BTC relocalization";
+                    LOG(WARNING) << "reset localization PGO after accepted global relocalization";
                 }
                 pgo.ProcessLidarLoc(loc_result);
 
@@ -615,6 +620,12 @@ int main(int argc, char** argv) {
                         << (match_stats.relocalization_accepted ? 1 : 0) << ','
                         << match_stats.relocalization_candidate_id << ','
                         << match_stats.relocalization_score << ','
+                        << match_stats.relocalization_candidate_count << ','
+                        << match_stats.relocalization_candidates_prechecked << ','
+                        << match_stats.relocalization_confirmation_count << ','
+                        << match_stats.relocalization_query_submap_size << ','
+                        << match_stats.relocalization_search_time_ms << ','
+                        << match_stats.relocalization_reason << ','
                         << (match_stats.map_consistency_evaluated ? 1 : 0) << ','
                         << (match_stats.map_consistency_passed ? 1 : 0) << ','
                         << match_stats.map_consistency_points << ','
@@ -654,6 +665,7 @@ int main(int argc, char** argv) {
     InputPacer input_pacer(FLAGS_playback_rate);
     RosbagIO rosbag(FLAGS_input_bag);
     rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
+        if (FLAGS_start_sensor_time > 0.0 && imu->timestamp < FLAGS_start_sensor_time) return true;
         input_pacer.Wait(imu->timestamp);
         lio.ProcessIMU(imu);
         const NavState dr_state = lio.GetIMUState();
@@ -670,12 +682,20 @@ int main(int argc, char** argv) {
         for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
             if (IsLivoxCustomMsg(topic_types, sensor.lidar_topic)) {
                 rosbag.AddLivoxCloudHandle(sensor.lidar_topic, [&, id = sensor.id](auto cloud) {
+                    if (FLAGS_start_sensor_time > 0.0 &&
+                        lightning::ToSec(cloud->header.stamp) < FLAGS_start_sensor_time) {
+                        return true;
+                    }
                     lio.ProcessPointCloud2(cloud, id);
                     drain();
                     return true;
                 });
             } else {
                 rosbag.AddPointCloud2Handle(sensor.lidar_topic, [&, id = sensor.id](auto cloud) {
+                    if (FLAGS_start_sensor_time > 0.0 &&
+                        lightning::ToSec(cloud->header.stamp) < FLAGS_start_sensor_time) {
+                        return true;
+                    }
                     lio.ProcessPointCloud2(cloud, id);
                     drain();
                     return true;
@@ -685,6 +705,10 @@ int main(int argc, char** argv) {
     } else {
         if (!lidar_topic.empty() && lidar_topic != livox_lidar_topic) {
             rosbag.AddPointCloud2Handle(lidar_topic, [&](auto cloud) {
+                if (FLAGS_start_sensor_time > 0.0 &&
+                    lightning::ToSec(cloud->header.stamp) < FLAGS_start_sensor_time) {
+                    return true;
+                }
                 lio.ProcessPointCloud2(cloud);
                 drain();
                 return true;
@@ -692,6 +716,10 @@ int main(int argc, char** argv) {
         }
         if (!livox_lidar_topic.empty()) {
             rosbag.AddLivoxCloudHandle(livox_lidar_topic, [&](auto cloud) {
+                if (FLAGS_start_sensor_time > 0.0 &&
+                    lightning::ToSec(cloud->header.stamp) < FLAGS_start_sensor_time) {
+                    return true;
+                }
                 lio.ProcessPointCloud2(cloud);
                 drain();
                 return true;
