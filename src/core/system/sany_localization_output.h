@@ -1,15 +1,22 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "common/eigen_types.h"
 #include "common/point_def.h"
+#include "core/localization/localization_result.h"
 #include "geosun_msgs/msg/pos_res.hpp"
+#include "lightning/msg/fault_status.hpp"
+#include "lightning/msg/localization_status.hpp"
 
 namespace lightning::sany_output {
 
@@ -53,6 +60,47 @@ class FrameDecimator {
    private:
     std::size_t interval_;
     std::size_t frame_count_ = 0;
+};
+
+enum class LocalizationFaultType : std::int32_t {
+    NONE = 0,
+    LOCALIZATION_DEGRADED = 1,
+    LOCALIZATION_LOST = 2,
+};
+
+class LocalizationTelemetryState {
+   public:
+    explicit LocalizationTelemetryState(std::size_t lost_frame_threshold = 5,
+                                        std::size_t path_capacity = 500,
+                                        double path_sample_period = 0.1);
+
+    void Start();
+    void ObserveLocalization(loc::LocalizationStatus status,
+                             std::size_t consecutive_lost_frames);
+    void ObservePose(const geometry_msgs::msg::PoseStamped& pose);
+
+    lightning::msg::LocalizationStatus MakeLocalizationStatus(
+        const builtin_interfaces::msg::Time& stamp) const;
+    lightning::msg::FaultStatus MakeFaultStatus(
+        const builtin_interfaces::msg::Time& stamp) const;
+    nav_msgs::msg::Path MakePath(const builtin_interfaces::msg::Time& stamp) const;
+
+    bool OfflineHealthPublishDue(double sensor_time);
+    bool OfflinePathPublishDue(double sensor_time, double interval = 2.0);
+    std::size_t PathSize() const;
+
+   private:
+    mutable std::mutex mutex_;
+    std::size_t lost_frame_threshold_ = 5;
+    std::size_t path_capacity_ = 500;
+    double path_sample_period_ = 0.1;
+    std::uint8_t current_status_ = lightning::msg::LocalizationStatus::STATUS_IDLE;
+    bool has_good_localization_ = false;
+    bool localization_lost_latched_ = false;
+    std::deque<geometry_msgs::msg::PoseStamped> path_poses_;
+    double last_path_sample_time_ = 0.0;
+    double last_offline_health_publish_time_ = 0.0;
+    double last_offline_path_publish_time_ = 0.0;
 };
 
 }  // namespace lightning::sany_output

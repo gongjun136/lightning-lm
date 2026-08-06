@@ -8,9 +8,11 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geosun_msgs/msg/pos_res.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -66,6 +68,8 @@ class LocSystem {
     bool WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
                             const char* description) const;
     void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result);
+    void PublishHealthStatus();
+    void PublishPath();
 
     Options options_;
 
@@ -86,6 +90,7 @@ class LocSystem {
     Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
     sany_output::LocalizationPublicationGate publication_gate_;
     sany_output::FrameDecimator map_cloud_decimator_{10};
+    std::unique_ptr<sany_output::LocalizationTelemetryState> telemetry_;
     mutable std::mutex trajectory_mutex_;
     std::vector<NavState> localization_states_;
     std::vector<NavState> global_localization_states_;
@@ -99,6 +104,11 @@ class LocSystem {
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_ = nullptr;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;
+    rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;
+    rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr loc_status_pub_ = nullptr;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_ = nullptr;
+    rclcpp::TimerBase::SharedPtr health_timer_ = nullptr;
+    rclcpp::TimerBase::SharedPtr path_timer_ = nullptr;
 };
 
 };  // namespace lightning

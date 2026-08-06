@@ -40,6 +40,14 @@ foreach (SRC_FILE ${SRC_FILES})
     list(APPEND MY_SRV_FILES ${PROJECT_SOURCE_DIR}:srv/${REL_PATH})
 endforeach ()
 
+set(MY_MSG_FILES "")
+set(MSG_DIR ${PROJECT_SOURCE_DIR}/msg)
+file(GLOB_RECURSE MSG_FILES ${MSG_DIR}/*.msg)
+foreach (MSG_FILE ${MSG_FILES})
+    file(RELATIVE_PATH REL_PATH ${MSG_DIR} ${MSG_FILE})
+    list(APPEND MY_MSG_FILES ${PROJECT_SOURCE_DIR}:msg/${REL_PATH})
+endforeach ()
+
 rosidl_generate_interfaces(${PROJECT_NAME}
         ${MY_SRV_FILES}
         ${MY_MSG_FILES}

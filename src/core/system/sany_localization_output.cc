@@ -20,6 +20,10 @@ builtin_interfaces::msg::Time ToRosStamp(double seconds) {
     return stamp;
 }
 
+double ToSec(const builtin_interfaces::msg::Time& stamp) {
+    return static_cast<double>(stamp.sec) + static_cast<double>(stamp.nanosec) * 1e-9;
+}
+
 }  // namespace
 
 geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
@@ -151,6 +155,123 @@ bool LocalizationPublicationGate::MapOutputsEnabled() const {
 std::size_t LocalizationPublicationGate::ConsecutiveLostFrames() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return consecutive_lost_frames_;
+}
+
+LocalizationTelemetryState::LocalizationTelemetryState(std::size_t lost_frame_threshold,
+                                                       std::size_t path_capacity,
+                                                       double path_sample_period)
+    : lost_frame_threshold_(std::max<std::size_t>(1, lost_frame_threshold)),
+      path_capacity_(std::max<std::size_t>(1, path_capacity)),
+      path_sample_period_(std::max(0.0, path_sample_period)) {}
+
+void LocalizationTelemetryState::Start() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    current_status_ = lightning::msg::LocalizationStatus::STATUS_INITIALIZING;
+}
+
+void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus status,
+                                                      std::size_t consecutive_lost_frames) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    current_status_ = static_cast<std::uint8_t>(status);
+    if (status == loc::LocalizationStatus::GOOD) {
+        has_good_localization_ = true;
+        localization_lost_latched_ = false;
+        return;
+    }
+    if (status == loc::LocalizationStatus::FAIL ||
+        (has_good_localization_ && consecutive_lost_frames >= lost_frame_threshold_)) {
+        localization_lost_latched_ = true;
+    }
+}
+
+void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamped& pose) {
+    const double timestamp = ToSec(pose.header.stamp);
+    if (timestamp <= 0.0) return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (current_status_ != lightning::msg::LocalizationStatus::STATUS_GOOD ||
+        localization_lost_latched_) {
+        return;
+    }
+    constexpr double kTimestampTolerance = 1e-6;
+    if (last_path_sample_time_ > 0.0 &&
+        timestamp - last_path_sample_time_ < path_sample_period_ - kTimestampTolerance) {
+        return;
+    }
+    path_poses_.push_back(pose);
+    last_path_sample_time_ = timestamp;
+    while (path_poses_.size() > path_capacity_) path_poses_.pop_front();
+}
+
+lightning::msg::LocalizationStatus LocalizationTelemetryState::MakeLocalizationStatus(
+    const builtin_interfaces::msg::Time& stamp) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lightning::msg::LocalizationStatus message;
+    message.header.stamp = stamp;
+    message.status = current_status_;
+    return message;
+}
+
+lightning::msg::FaultStatus LocalizationTelemetryState::MakeFaultStatus(
+    const builtin_interfaces::msg::Time& stamp) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lightning::msg::FaultStatus message;
+    message.header.stamp = stamp;
+    if (localization_lost_latched_) {
+        message.level = lightning::msg::FaultStatus::LEVEL_P0;
+        message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_LOST);
+        message.description = "Localization lost; global relocalization in progress";
+    } else if (current_status_ == lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR) {
+        message.level = lightning::msg::FaultStatus::LEVEL_P1;
+        message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_DEGRADED);
+        message.description = "Localization degraded; following dead reckoning";
+    } else {
+        message.level = lightning::msg::FaultStatus::LEVEL_NO_FAULT;
+        message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::NONE);
+    }
+    return message;
+}
+
+nav_msgs::msg::Path LocalizationTelemetryState::MakePath(
+    const builtin_interfaces::msg::Time& stamp) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    nav_msgs::msg::Path message;
+    message.header.stamp = stamp;
+    if (!path_poses_.empty()) message.header.frame_id = path_poses_.back().header.frame_id;
+    message.poses.assign(path_poses_.begin(), path_poses_.end());
+    return message;
+}
+
+bool LocalizationTelemetryState::OfflineHealthPublishDue(double sensor_time) {
+    if (sensor_time <= 0.0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    constexpr double kPeriod = 0.1;
+    constexpr double kTolerance = 1e-6;
+    if (last_offline_health_publish_time_ > 0.0 &&
+        sensor_time - last_offline_health_publish_time_ < kPeriod - kTolerance) {
+        return false;
+    }
+    last_offline_health_publish_time_ = sensor_time;
+    return true;
+}
+
+bool LocalizationTelemetryState::OfflinePathPublishDue(double sensor_time, double interval) {
+    if (sensor_time <= 0.0 || interval <= 0.0) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (path_poses_.empty()) return false;
+    if (last_offline_path_publish_time_ <= 0.0) {
+        last_offline_path_publish_time_ = sensor_time;
+        return false;
+    }
+    constexpr double kTolerance = 1e-6;
+    if (sensor_time - last_offline_path_publish_time_ < interval - kTolerance) return false;
+    last_offline_path_publish_time_ = sensor_time;
+    return true;
+}
+
+std::size_t LocalizationTelemetryState::PathSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return path_poses_.size();
 }
 
 }  // namespace lightning::sany_output

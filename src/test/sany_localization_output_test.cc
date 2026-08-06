@@ -6,6 +6,8 @@
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
+#include "core/lightning_math.hpp"
+
 namespace {
 
 void Require(bool condition, const char* message) {
@@ -145,6 +147,70 @@ int main() {
     Require(!publication_gate.MapOutputsEnabled(), "fifth consecutive failure disables map outputs");
     publication_gate.ObserveLidarMatch(true);
     Require(publication_gate.MapOutputsEnabled(), "one valid match immediately resumes map outputs");
+
+    LocalizationTelemetryState telemetry(5, 500, 0.1);
+    telemetry.Start();
+    const auto telemetry_stamp = math::FromSec(20.0);
+    Require(telemetry.MakeLocalizationStatus(telemetry_stamp).status ==
+                lightning::msg::LocalizationStatus::STATUS_INITIALIZING,
+            "telemetry starts in INITIALIZING");
+    Require(telemetry.MakeFaultStatus(telemetry_stamp).level ==
+                lightning::msg::FaultStatus::LEVEL_NO_FAULT,
+            "initialization is not a fault");
+    LocalizationTelemetryState startup_telemetry(5);
+    startup_telemetry.Start();
+    startup_telemetry.ObserveLocalization(loc::LocalizationStatus::FOLLOWING_DR, 5);
+    Require(startup_telemetry.MakeFaultStatus(telemetry_stamp).level ==
+                lightning::msg::FaultStatus::LEVEL_P1,
+            "startup failures do not report localization lost before the first GOOD state");
+
+    telemetry.ObserveLocalization(loc::LocalizationStatus::GOOD, 0);
+    telemetry.ObserveLocalization(loc::LocalizationStatus::FOLLOWING_DR, 1);
+    auto fault = telemetry.MakeFaultStatus(telemetry_stamp);
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P1 &&
+                fault.fault_type == static_cast<std::int32_t>(
+                    LocalizationFaultType::LOCALIZATION_DEGRADED),
+            "FOLLOWING_DR immediately reports localization degradation");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::FOLLOWING_DR, 5);
+    fault = telemetry.MakeFaultStatus(telemetry_stamp);
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0 &&
+                fault.fault_type == static_cast<std::int32_t>(
+                    LocalizationFaultType::LOCALIZATION_LOST),
+            "five consecutive failures latch localization lost");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::INITIALIZING, 0);
+    Require(telemetry.MakeFaultStatus(telemetry_stamp).level ==
+                lightning::msg::FaultStatus::LEVEL_P0,
+            "localization lost remains latched during relocalization");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::GOOD, 0);
+    fault = telemetry.MakeFaultStatus(telemetry_stamp);
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_NO_FAULT &&
+                fault.fault_type == 0 && fault.description.empty(),
+            "GOOD clears localization faults");
+
+    geometry_msgs::msg::PoseStamped path_pose;
+    path_pose.header.frame_id = "map";
+    telemetry.ObserveLocalization(loc::LocalizationStatus::FOLLOWING_DR, 1);
+    path_pose.header.stamp = math::FromSec(29.9);
+    telemetry.ObservePose(path_pose);
+    Require(telemetry.PathSize() == 0, "FOLLOWING_DR poses are excluded from the path");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::GOOD, 0);
+    for (int index = 0; index < 501; ++index) {
+        path_pose.header.stamp = math::FromSec(30.0 + 0.1 * index);
+        path_pose.pose.position.x = static_cast<double>(index);
+        telemetry.ObservePose(path_pose);
+    }
+    Require(telemetry.PathSize() == 500, "path keeps a 500-pose sliding window");
+    const auto path = telemetry.MakePath(math::FromSec(80.0));
+    Require(path.header.frame_id == "map" && path.poses.size() == 500 &&
+                Near(path.poses.front().pose.position.x, 1.0) &&
+                Near(path.poses.back().pose.position.x, 500.0),
+            "path drops the oldest sampled pose");
+    Require(telemetry.OfflineHealthPublishDue(100.0), "offline health publishes immediately");
+    Require(!telemetry.OfflineHealthPublishDue(100.05), "offline health is capped at 10 Hz");
+    Require(telemetry.OfflineHealthPublishDue(100.1), "offline health publishes after 0.1 seconds");
+    Require(!telemetry.OfflinePathPublishDue(100.0), "offline path waits for its first interval");
+    Require(!telemetry.OfflinePathPublishDue(101.9), "offline path waits two seconds");
+    Require(telemetry.OfflinePathPublishDue(102.0), "offline path publishes every two seconds");
 
     std::cout << "sany_localization_output_test passed" << std::endl;
     return 0;

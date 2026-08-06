@@ -4,6 +4,7 @@
 
 #include "core/system/loc_system.h"
 
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <utility>
@@ -70,6 +71,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         return false;
     }
     publication_gate_.SetLostFrameThreshold(static_cast<std::size_t>(lost_frame_threshold));
+    telemetry_ = std::make_unique<sany_output::LocalizationTelemetryState>(
+        static_cast<std::size_t>(lost_frame_threshold));
 
     if (!loc_->Init(yaml_path, map_path)) {
         LOG(ERROR) << "failed to initialize online localization";
@@ -142,6 +145,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
     inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
     map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
+    const auto health_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+    const auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+    fault_status_pub_ =
+        node_->create_publisher<lightning::msg::FaultStatus>("/localization/fault_status", health_qos);
+    loc_status_pub_ =
+        node_->create_publisher<lightning::msg::LocalizationStatus>("/localization/loc_status", health_qos);
+    path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("/localization/path", path_qos);
+    health_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100),
+                                             [this]() { PublishHealthStatus(); });
+    path_timer_ = node_->create_wall_timer(std::chrono::seconds(2), [this]() { PublishPath(); });
 
     if (options_.pub_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
@@ -167,6 +180,7 @@ void LocSystem::SetInitPose(const SE3 &pose) {
 
     loc_->SetExternalPose(pose.unit_quaternion(), pose.translation());
     loc_started_ = true;
+    if (telemetry_) telemetry_->Start();
 }
 
 void LocSystem::ProcessIMU(const IMUPtr &imu) {
@@ -267,10 +281,16 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto position =
         sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
-    pose_pub_->publish(sany_output::MakePoseMessage(position));
+    const auto pose = sany_output::MakePoseMessage(position);
+    pose_pub_->publish(pose);
+    if (telemetry_) telemetry_->ObservePose(pose);
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
+    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
+    if (telemetry_) {
+        telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
+    }
     if (!inv_cloud_pub_ || !map_cloud_pub_ || !cloud || cloud->empty()) return;
     const double begin_time = CloudStampSec(cloud);
     const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
@@ -281,12 +301,24 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
         sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body_),
         rear_axle_frame_));
     const bool publish_map_frame = map_cloud_decimator_.Tick();
-    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
     if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
         // LidarLoc registers this exact cloud in the map frame and result.pose_ is T_map_lidar.
         map_cloud_pub_->publish(
             sany_output::MakeCloudMessage(cloud, begin_time, end_time, result.pose_, map_frame_));
     }
+}
+
+void LocSystem::PublishHealthStatus() {
+    if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_) return;
+    const builtin_interfaces::msg::Time stamp = node_->now();
+    fault_status_pub_->publish(telemetry_->MakeFaultStatus(stamp));
+    loc_status_pub_->publish(telemetry_->MakeLocalizationStatus(stamp));
+}
+
+void LocSystem::PublishPath() {
+    if (!node_ || !telemetry_ || !path_pub_ || telemetry_->PathSize() == 0) return;
+    const builtin_interfaces::msg::Time stamp = node_->now();
+    path_pub_->publish(telemetry_->MakePath(stamp));
 }
 
 }  // namespace lightning
