@@ -1,5 +1,7 @@
 #pragma once
 
+#include <shared_mutex>
+
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_msgs/msg/int32.hpp"
 
@@ -100,8 +102,18 @@ class Localization {
     // void SetHealthDiagNormalCallback(interface::health_diag_normal_callback&& callback);
 
    private:
+    friend class LocalizationLockingTestPeer;
+
     /// 模块  ========================================================================================================
-    std::mutex global_mutex_;  // 防止处理过程中被重复init
+    // Reinitialization needs exclusive ownership, while live callbacks and
+    // workers only need the module pointers to remain valid. Shared ownership
+    // keeps ROS input responsive while backend processing is in progress.
+    mutable std::shared_mutex lifecycle_mutex_;
+    // Preserve callback ordering and protect the shared preprocessor/skip
+    // counter without coupling ROS input to backend processing latency.
+    std::mutex input_mutex_;
+    // Serialize ordered LIO/PGO state updates without blocking ROS callbacks.
+    std::mutex processing_mutex_;
     Options options_;
 
     /// 预处理

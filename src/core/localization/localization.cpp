@@ -17,11 +17,11 @@ Localization::Localization(Options options) { options_ = options; }
 
 // ！初始化函数
 bool Localization::Init(const std::string& yaml_path, const std::string& global_map_path) {
-    UL lock(global_mutex_);
+    std::unique_lock<std::shared_mutex> lock(lifecycle_mutex_);
     if (lidar_loc_ != nullptr) {
         // 若已经启动，则变为初始化
         // Finish() joins the sensor worker, which may itself be waiting for
-        // global_mutex_. Do not hold that mutex while waiting for the worker.
+        // lifecycle access. Do not hold that lock while waiting for the worker.
         lock.unlock();
         Finish();
         lock.lock();
@@ -184,13 +184,16 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 }
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     const int lidar_id = lio_ && lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
+    lifecycle_lock.unlock();
     ProcessLidarMsg(cloud, lidar_id);
 }
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud, int lidar_id) {
-    UL lock(global_mutex_);
-    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    UL input_lock(input_mutex_);
+    if (preprocess_ == nullptr || lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
     }
 
@@ -210,13 +213,15 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
         return;
     }
-    lock.unlock();
+    input_lock.unlock();
+    lifecycle_lock.unlock();
     LidarOdomProcCloud(laser_cloud, lidar_id);
 }
 
 void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-    UL lock(global_mutex_);
-    if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    UL input_lock(input_mutex_);
+    if (preprocess_ == nullptr || lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
     }
 
@@ -237,7 +242,8 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
         return;
     }
-    lock.unlock();
+    input_lock.unlock();
+    lifecycle_lock.unlock();
     LidarOdomProcCloud(laser_cloud, lidar_id);
 }
 
@@ -253,7 +259,8 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
     // LIO must observe IMU and lidar in callback order. Running this update in
     // a second worker lets later IMU callbacks overtake the cloud and changes
     // the filter result relative to offline processing.
-    UL processing_lock(global_mutex_);
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    UL processing_lock(processing_mutex_);
 
     if (lio_ == nullptr) {
         return;
@@ -326,6 +333,9 @@ SO3 Localization::GetInitialLidarRotation() const {
 }
 
 void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
+
     lidar_loc_->ProcessCloud(scan_undist);
 
     auto res = lidar_loc_->GetLocalizationResult();
@@ -356,15 +366,18 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
 }
 
 void Localization::ProcessIMUMsg(IMUPtr imu) {
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (options_.online_mode_) {
         sensor_proc_.AddMessage({imu, nullptr, 0, true});
         return;
     }
+    lifecycle_lock.unlock();
     ProcessIMUData(std::move(imu));
 }
 
 void Localization::ProcessIMUData(IMUPtr imu) {
-    UL lock(global_mutex_);
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    UL lock(processing_mutex_);
 
     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
@@ -411,7 +424,8 @@ void Localization::ProcessIMUData(IMUPtr imu) {
 }
 
 // void Localization::ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) {
-//     UL lock(global_mutex_);
+//     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+//     UL lock(processing_mutex_);
 //
 //     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
 //         return;
@@ -445,6 +459,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
 void Localization::Finish() {
     sensor_proc_.Quit();
     lidar_loc_proc_cloud_.Quit();
+    std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_) lidar_loc_->Finish();
     if (ui_) {
         ui_->Quit();
@@ -452,7 +467,8 @@ void Localization::Finish() {
 }
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
-    UL lock(global_mutex_);
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    UL lock(processing_mutex_);
     /// 设置外部重定位的pose
     if (lidar_loc_) {
         lidar_loc_->SetInitialPose(SE3(q, t));

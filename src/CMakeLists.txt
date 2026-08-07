@@ -128,6 +128,9 @@ if(BUILD_TESTING)
     add_executable(map_frame_test test/map_frame_test.cc)
     target_link_libraries(map_frame_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(localization_input_locking_test test/localization_input_locking_test.cc)
+    target_link_libraries(localization_input_locking_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_test(NAME eskf_update_velocity_gate_test COMMAND $<TARGET_FILE:eskf_update_velocity_gate_test>)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
@@ -140,6 +143,7 @@ if(BUILD_TESTING)
     add_test(NAME solid_descriptor_test COMMAND $<TARGET_FILE:solid_descriptor_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
+    add_test(NAME localization_input_locking_test COMMAND $<TARGET_FILE:localization_input_locking_test>)
 endif()
 
 add_subdirectory(app)
