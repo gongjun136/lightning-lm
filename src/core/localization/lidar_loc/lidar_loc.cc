@@ -702,6 +702,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                       << candidate.candidate_id << ", count=" << confirmation_count
                       << "/" << options_.relocalization_confirmation_count_
                       << ", retrieval score=" << candidate.score
+                      << ", search_ms=" << result->search_time_ms
                       << ", NDT confidence=" << ndt_confidence
                       << ", overlap=" << summary.map_overlap_ratio
                       << ", interval=" << confirmation_interval

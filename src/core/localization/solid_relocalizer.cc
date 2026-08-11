@@ -372,6 +372,10 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                   << ", validation_top_k=" << options_.top_k
                   << ", min_similarity=" << options_.min_similarity
                   << ", refine_with_icp=" << options_.refine_with_icp
+                  << ", icp_batch_size=" << options_.icp_batch_size
+                  << ", icp_workers=" << options_.icp_workers
+                  << ", icp_yaw_hypotheses="
+                  << options_.icp_yaw_hypothesis_offsets_deg.size()
                   << ", compute_backend=cpu, path=" << manifest_path;
         return ready_;
     } catch (const std::exception& error) {
@@ -614,9 +618,6 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             hypotheses.push_back(std::move(candidate));
         }
     }
-    result.search_time_ms = std::chrono::duration<double, std::milli>(
-                                std::chrono::steady_clock::now() - begin)
-                                .count();
     const double maximum_yaw_distance =
         options_.candidate_dedup_yaw_deg * 3.14159265358979323846 / 180.0;
     std::stable_sort(hypotheses.begin(), hypotheses.end(), [](const auto& left, const auto& right) {
@@ -762,6 +763,12 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
         }
         result.candidates = std::move(refined_candidates);
     }
+    // Report the complete SOLiD search cost, including candidate
+    // de-duplication, PCD loading and ICP refinement. Previously this timer
+    // stopped before ICP and hid the dominant relocalization latency.
+    result.search_time_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - begin)
+                                .count();
     result.candidate_found = score_candidate_found;
     if (result.candidates.empty()) {
         result.reason = descriptor_generated ? "score_below_threshold"

@@ -303,7 +303,10 @@ relocalization:
     icp_max_correspondence_distance: 5.0
     icp_max_fitness_score: 2.0
     icp_max_translation_correction: 10.0
-    icp_batch_size: 8
+    # Bound each scan to one place candidate (four yaw hypotheses below).
+    # If map validation rejects it, subsequent scans rotate through the
+    # remaining retrieval candidates instead of launching 32 ICP jobs at once.
+    icp_batch_size: 1
     icp_workers: 8
     # Mid-360 fusion is nearly omnidirectional; symmetric yard structures can
     # make SOLiD heading multimodal. ICP evaluates these deterministic seeds
