@@ -7,12 +7,16 @@
 
 int main() {
     auto cloud = std::make_shared<lightning::PointCloudType>();
+    constexpr double slope_x = 0.05;
+    constexpr double slope_y = -0.035;
     for (int x = -50; x <= 50; ++x) {
         for (int y = -50; y <= 50; ++y) {
             lightning::PointType point;
             point.x = 0.1F * x;
             point.y = 0.1F * y;
-            point.z = 1.25F + 0.005F * static_cast<float>((x + y) % 5);
+            point.z = static_cast<float>(
+                1.25 + slope_x * point.x + slope_y * point.y +
+                0.002 * ((x + y) % 5));
             cloud->push_back(point);
         }
     }
@@ -37,9 +41,20 @@ int main() {
         return 1;
     }
     if (std::abs(metadata.ground_z_slam - 1.25) > 0.03 ||
-        std::abs(metadata.T_export_slam.translation().z() + 1.25) > 0.03) {
+        metadata.ground_tilt_deg < 2.0 || metadata.ground_tilt_deg > 5.0) {
         std::cerr << "unexpected ground estimate: " << metadata.ground_z_slam
+                  << ", tilt=" << metadata.ground_tilt_deg
                   << std::endl;
+        return 2;
+    }
+    const lightning::Vec3d expected_normal =
+        lightning::Vec3d(-slope_x, -slope_y, 1.0).normalized();
+    if ((metadata.ground_normal_slam - expected_normal).norm() > 0.02 ||
+        (metadata.T_export_slam.unit_quaternion() *
+             metadata.ground_normal_slam -
+         lightning::Vec3d::UnitZ())
+                .norm() > 1e-6) {
+        std::cerr << "ground normal was not aligned to +Z" << std::endl;
         return 2;
     }
 

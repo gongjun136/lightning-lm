@@ -251,6 +251,33 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
                   << ", reorder_window=" << multi_lidar_config_.reorder_window;
     }
 
+    std::string self_filter_error;
+    if (!LoadSelfPointFilterConfig(yaml, self_point_filter_config_, &self_filter_error)) {
+        LOG(ERROR) << "invalid self-point filter configuration: " << self_filter_error;
+        return false;
+    }
+    if (self_point_filter_config_.enabled) {
+        LOG(INFO) << "body-aligned self-point box enabled, min="
+                  << self_point_filter_config_.min_body.transpose() << ", max="
+                  << self_point_filter_config_.max_body.transpose();
+    }
+
+    const YAML::Node map_export = yaml["map_export"];
+    std::string map_export_filter_error;
+    if (map_export && !LoadSelfPointFilterConfig(
+                          map_export, map_export_self_point_filter_config_,
+                          &map_export_filter_error)) {
+        LOG(ERROR) << "invalid map-export self-point filter configuration: "
+                   << map_export_filter_error;
+        return false;
+    }
+    if (map_export_self_point_filter_config_.enabled) {
+        LOG(INFO) << "map-export self-point box enabled, min="
+                  << map_export_self_point_filter_config_.min_body.transpose()
+                  << ", max="
+                  << map_export_self_point_filter_config_.max_body.transpose();
+    }
+
     const YAML::Node noise = yaml["lidar_noise_model"];
     if (noise) {
         point_noise_enabled_ = noise["enabled"] ? noise["enabled"].as<bool>() : false;
@@ -341,6 +368,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         return std::chrono::duration<double, std::milli>(BenchClock::now() - start).count();
     };
     const std::size_t input_points = measures_.scan_ ? measures_.scan_->size() : 0;
+    std::size_t self_filter_removed = 0;
     double imu_undistort_ms = 0.0;
     double downsample_ms = 0.0;
     double match_setup_ms = 0.0;
@@ -361,6 +389,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                   << " core_update_ms=" << core_update_ms
                   << " total_ms=" << (current_preprocess_ms_ + core_update_ms)
                   << " input_points=" << input_points
+                  << " self_filter_removed=" << self_filter_removed
                   << " output_points=" << output_points;
     };
 
@@ -372,6 +401,11 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     const auto imu_start = BenchClock::now();
     p_imu_->Process(measures_, kf_, scan_undistort_);
     imu_undistort_ms = elapsed_ms(imu_start);
+
+    if (scan_undistort_ && !scan_undistort_->empty() && self_point_filter_config_.enabled) {
+        self_filter_removed = FilterSelfPoints(
+            *scan_undistort_, self_point_filter_config_, GetInitialLidarRotation().matrix());
+    }
 
     if (!scan_undistort_ || scan_undistort_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
@@ -1267,8 +1301,18 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
  * @param res 体素滤波叶子尺寸，单位m。
  * @return 拼接并设置好PCD元信息的全局点云。
  */
-CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res) {
+CloudPtr LaserMapping::PrepareMapExportCloud(const CloudPtr& cloud) const {
+    if (!cloud || !map_export_self_point_filter_config_.enabled) return cloud;
+    CloudPtr filtered(new PointCloudType(*cloud));
+    FilterSelfPoints(*filtered, map_export_self_point_filter_config_,
+                     GetInitialLidarRotation().matrix());
+    return filtered;
+}
+
+CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res,
+                                    bool apply_map_export_filter) {
     CloudPtr global_map(new PointCloudType);
+    std::size_t map_export_removed = 0;
 
     /// 体素滤波器在关键帧级和全局地图级复用，分辨率由调用方指定。
     pcl::VoxelGrid<PointType> voxel;
@@ -1278,8 +1322,14 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
     SE3 T_imu_lidar(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized(), offset_t_lidar_fixed_);
 
     for (auto &kf : all_keyframes_) {
-        CloudPtr cloud = kf->GetCloud();
+        const CloudPtr source_cloud = kf->GetCloud();
+        CloudPtr cloud = apply_map_export_filter
+                             ? PrepareMapExportCloud(source_cloud)
+                             : source_cloud;
         if (!cloud || cloud->empty()) continue;
+        if (apply_map_export_filter && source_cloud) {
+            map_export_removed += source_cloud->size() - cloud->size();
+        }
 
         CloudPtr cloud_filter(new PointCloudType);
 
@@ -1331,6 +1381,10 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
     global_map_filtered->width = global_map_filtered->size();
 
     LOG(INFO) << "global map: " << global_map_filtered->size();
+    if (apply_map_export_filter && map_export_self_point_filter_config_.enabled) {
+        LOG(INFO) << "map-export self-point filter removed "
+                  << map_export_removed << " keyframe points";
+    }
 
     return global_map_filtered;
 }

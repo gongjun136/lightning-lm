@@ -18,6 +18,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/map_frame.h"
+#include "core/maps/navigation_map_export.h"
 #include "core/maps/tiled_map.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
@@ -444,8 +445,10 @@ int main(int argc, char** argv) {
         bool map_saved = false;
         Timer::Evaluate(
             [&]() {
+                const bool use_lio_pose =
+                    backend_mode == backend::BackendMode::kDisabled;
                 const auto global_map =
-                    lio.GetGlobalMap(backend_mode == backend::BackendMode::kDisabled);
+                    lio.GetGlobalMap(use_lio_pose, true, 0.1F, true);
                 if (!map_frame::EstimateStartGroundFrame(
                         global_map, keyframes.front()->GetOptPose(), map_export_options,
                         map_metadata, map_frame_error)) {
@@ -465,7 +468,49 @@ int main(int argc, char** argv) {
                         global_map, start_pose, map_dir.string())) {
                     return;
                 }
-                map_saved = pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) == 0;
+                if (pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) != 0) {
+                    return;
+                }
+                if (map_export_options.export_pgm) {
+                    const SE3 T_imu_primary(
+                        Quatd(lio.GetLidarToImuRotation()).normalized(),
+                        lio.GetLidarToImuTranslation());
+                    std::vector<navigation_map::RaycastFrame> raycast_frames;
+                    raycast_frames.reserve(keyframes.size());
+                    for (const auto& keyframe : keyframes) {
+                        if (!keyframe || !keyframe->GetCloud()) continue;
+                        const SE3 pose = use_lio_pose ? keyframe->GetLIOPose()
+                                                     : keyframe->GetOptPose();
+                        raycast_frames.push_back({
+                            lio.PrepareMapExportCloud(keyframe->GetCloud()),
+                            map_frame::TransformPose(map_metadata, pose) *
+                                T_imu_primary});
+                    }
+                    navigation_map::SensorOrigins sensor_origins{
+                        {0, Vec3d::Zero()}};
+                    if (lio.IsMultiLidarEnabled()) {
+                        for (const auto& sensor :
+                             lio.GetMultiLidarConfig().lidars) {
+                            sensor_origins[static_cast<std::uint8_t>(sensor.id)] =
+                                sensor.t_lidar_to_primary;
+                        }
+                    }
+                    navigation_map::ExportResult pgm_result;
+                    if (!navigation_map::ExportPgmAndYaml(
+                            global_map, raycast_frames, sensor_origins,
+                            map_dir.string(), map_export_options, pgm_result,
+                            map_frame_error)) {
+                        return;
+                    }
+                    LOG(INFO) << "exported navigation map " << pgm_result.width << "x"
+                              << pgm_result.height << ", origin=["
+                              << pgm_result.origin_x << ", " << pgm_result.origin_y
+                              << "] occupied_cells=" << pgm_result.occupied_cells
+                              << " free_cells=" << pgm_result.free_cells
+                              << " unknown_cells=" << pgm_result.unknown_cells
+                              << " rays=" << pgm_result.ray_count;
+                }
+                map_saved = true;
             },
             "Offline Tiled Map Export");
         if (!map_saved) {

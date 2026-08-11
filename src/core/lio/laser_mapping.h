@@ -168,6 +168,9 @@ class LaserMapping {
     /// 获取全部关键帧，用于后端、保存地图或调试显示。
     std::vector<Keyframe::Ptr> GetAllKeyframes() { return all_keyframes_; }
 
+    /// Copy a keyframe cloud and remove map-export-only articulated vehicle points.
+    CloudPtr PrepareMapExportCloud(const CloudPtr& cloud) const;
+
     /**
      * @brief 根据关键帧点云拼接全局地图。
      *
@@ -176,7 +179,9 @@ class LaserMapping {
      * @param res 体素滤波分辨率，单位m。
      * @return 拼接后的全局点云。
      */
-    CloudPtr GetGlobalMap(bool use_lio_pose, bool use_voxel = true, float res = 0.1);
+    CloudPtr GetGlobalMap(bool use_lio_pose, bool use_voxel = true,
+                          float res = 0.1,
+                          bool apply_map_export_filter = false);
 
    private:
     /// 从Lidar/IMU缓存队列中取出一帧时间覆盖完整的同步数据，写入measures_。
@@ -238,6 +243,8 @@ class LaserMapping {
     double filter_size_scan_ = 0.0;
     MultiLidarConfig multi_lidar_config_;
     MultiLidarFrameAssembler multi_lidar_assembler_;
+    SelfPointFilterConfig self_point_filter_config_;
+    SelfPointFilterConfig map_export_self_point_filter_config_;
 
     bool point_noise_enabled_ = false;
     double range_noise_sigma_ = 0.02;

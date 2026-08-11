@@ -45,7 +45,8 @@ multi_lidar:
           0, 0, 0, 1]
 
 imu_initialization:
-  initial_yaw_deg: 180.0
+  # Primary LiDAR 184 already points along vehicle +X after gravity alignment.
+  initial_yaw_deg: 0.0
   min_duration: 2.0
   min_samples: 300
   max_mean_gyro_norm: 0.2
@@ -62,6 +63,19 @@ lidar_noise_model:
   min_information_scale: 0.25
   max_information_scale: 4.0
 
+# Vehicle-aligned ego box measured from the primary/front LiDAR (metres).
+# The filter uses the initialized primary-LiDAR-to-body rotation, so these axes
+# are vehicle forward/back/left/right/up/down rather than raw Livox axes.
+self_point_filter:
+  enabled: true
+  front: 4.2218
+  back: 4.4582
+  left: 1.543
+  right: 1.543
+  bottom: 3.577
+  top: 0.05
+  padding: 0.10
+
 map_export:
   normalize_start_ground_z: true
   start_ground_search_radius: 10.0
@@ -71,11 +85,26 @@ map_export:
   inlier_tolerance: 0.20
   max_median_absolute_deviation: 0.10
   min_ground_inliers: 100
+  max_ground_tilt_deg: 10.0
+  # Export-only swept envelope for the raised bucket/boom. It is applied to
+  # keyframe copies before global PCD/PGM generation and does not affect LIO.
+  self_point_filter:
+    enabled: true
+    min_body: [1.0, -4.8, -0.75]
+    max_body: [5.4, 4.8, 1.0]
+    padding: 0.10
+  export_pgm: true
+  pgm_resolution: 0.05
+  pgm_min_height: 3.5
+  pgm_max_height: 4.0
+  # Leave safety inflation to the planning stack; increase this only to inspect raster gaps.
+  pgm_obstacle_dilation_radius: 0.0
+  pgm_min_observation_frames: 3
 
 fasterlio:
   lidar_type: 1
   scan_line: 4
-  blind: 5.0
+  blind: 0.5  # Sensor near-range guard; vehicle returns are removed by self_point_filter.
   time_scale: 1e-3
   skip_lidar_num: 0
   point_filter_num: 3

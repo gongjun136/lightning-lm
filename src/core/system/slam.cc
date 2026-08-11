@@ -7,6 +7,7 @@
 #include "core/g2p5/g2p5.h"
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
+#include "core/maps/navigation_map_export.h"
 #include "core/maps/tiled_map.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
@@ -267,7 +268,8 @@ bool SlamSystem::SaveMap(const std::string& path) {
 
     // auto global_map_no_loop = lio_->GetGlobalMap(true);
     /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
-    auto global_map = lio_->GetGlobalMap(!options_.with_loop_closing_);
+    const bool use_lio_pose = !options_.with_loop_closing_;
+    auto global_map = lio_->GetGlobalMap(use_lio_pose, true, 0.1F, true);
     map_frame::Metadata map_metadata;
     std::string map_frame_error;
     if (!map_frame::EstimateStartGroundFrame(
@@ -326,7 +328,42 @@ bool SlamSystem::SaveMap(const std::string& path) {
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
-    if (options_.with_gridmap_) {
+    if (map_export_options_.export_pgm) {
+        const SE3 T_imu_primary(
+            Quatd(lio_->GetLidarToImuRotation()).normalized(),
+            lio_->GetLidarToImuTranslation());
+        std::vector<navigation_map::RaycastFrame> raycast_frames;
+        raycast_frames.reserve(keyframes.size());
+        for (const auto& keyframe : keyframes) {
+            if (!keyframe || !keyframe->GetCloud()) continue;
+            const SE3 pose = use_lio_pose ? keyframe->GetLIOPose()
+                                         : keyframe->GetOptPose();
+            raycast_frames.push_back({
+                lio_->PrepareMapExportCloud(keyframe->GetCloud()),
+                map_frame::TransformPose(map_metadata, pose) * T_imu_primary});
+        }
+        navigation_map::SensorOrigins sensor_origins{{0, Vec3d::Zero()}};
+        if (lio_->IsMultiLidarEnabled()) {
+            for (const auto& sensor : lio_->GetMultiLidarConfig().lidars) {
+                sensor_origins[static_cast<std::uint8_t>(sensor.id)] =
+                    sensor.t_lidar_to_primary;
+            }
+        }
+        navigation_map::ExportResult pgm_result;
+        if (!navigation_map::ExportPgmAndYaml(
+                global_map, raycast_frames, sensor_origins, save_path,
+                map_export_options_, pgm_result, map_frame_error)) {
+            LOG(ERROR) << "failed to export navigation map: " << map_frame_error;
+            return false;
+        }
+        LOG(INFO) << "exported navigation map " << pgm_result.width << "x"
+                  << pgm_result.height << ", origin=[" << pgm_result.origin_x
+                  << ", " << pgm_result.origin_y << "] occupied_cells="
+                  << pgm_result.occupied_cells << " free_cells="
+                  << pgm_result.free_cells << " unknown_cells="
+                  << pgm_result.unknown_cells << " rays="
+                  << pgm_result.ray_count;
+    } else if (options_.with_gridmap_) {
         /// 存为ROS导航兼容的栅格地图格式。
         auto map = g2p5_->GetNewestMap()->ToROS();
         const int width = map.info.width;

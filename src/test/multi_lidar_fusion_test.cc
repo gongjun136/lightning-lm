@@ -15,6 +15,7 @@ using lightning::MultiLidarFrameAssembler;
 using lightning::MultiLidarSensorConfig;
 using lightning::PointCloudType;
 using lightning::PointType;
+using lightning::SelfPointFilterConfig;
 using lightning::Vec3d;
 
 void Require(bool condition, const char* message) {
@@ -141,6 +142,65 @@ void TestDownsampleKeepsRealIds() {
     Require(filtered->front().lidar_id == 0 || filtered->front().lidar_id == 3, "source id is not averaged");
 }
 
+void TestBodyAlignedSelfPointFilter() {
+    const YAML::Node root = YAML::Load(R"(
+self_point_filter:
+  enabled: true
+  front: 4.2218
+  back: 4.4582
+  left: 1.543
+  right: 1.543
+  bottom: 3.577
+  top: 0.05
+  padding: 0.10
+)");
+    SelfPointFilterConfig config;
+    std::string error;
+    Require(lightning::LoadSelfPointFilterConfig(root, config, &error), "load self-point filter");
+    Require((config.min_body - Vec3d(-4.5582, -1.643, -3.677)).norm() < 1e-9,
+            "padding expands negative box faces");
+    Require((config.max_body - Vec3d(4.3218, 1.643, 0.15)).norm() < 1e-9,
+            "padding expands positive box faces");
+
+    PointCloudType cloud;
+    PointType inside;
+    inside.x = 1.0F;
+    inside.y = 0.0F;
+    inside.z = 0.0F;
+    inside.lidar_id = 2;
+    inside.time = 12.0;
+    cloud.push_back(inside);
+    PointType outside = inside;
+    outside.x = 5.0F;
+    outside.lidar_id = 3;
+    cloud.push_back(outside);
+
+    const double half_pi = 0.5 * std::acos(-1.0);
+    const Mat3d R_primary_to_body =
+        Eigen::AngleAxisd(half_pi, Vec3d::UnitZ()).toRotationMatrix();
+    const std::size_t removed = lightning::FilterSelfPoints(cloud, config, R_primary_to_body);
+    Require(removed == 1, "point inside rotated body box is removed");
+    Require(cloud.size() == 1 && cloud.front().lidar_id == 3,
+            "point outside body box and source id are preserved");
+
+    const YAML::Node export_root = YAML::Load(R"(
+map_export:
+  self_point_filter:
+    enabled: true
+    min_body: [1.5, -4.8, -0.75]
+    max_body: [5.4, 4.8, 1.0]
+    padding: 0.10
+)");
+    SelfPointFilterConfig export_config;
+    Require(lightning::LoadSelfPointFilterConfig(
+                export_root["map_export"], export_config, &error),
+            "load explicit map-export self-point filter");
+    Require((export_config.min_body - Vec3d(1.4, -4.9, -0.85)).norm() < 1e-9,
+            "explicit export minimum is padded");
+    Require((export_config.max_body - Vec3d(5.5, 4.9, 1.1)).norm() < 1e-9,
+            "explicit export maximum is padded");
+}
+
 }  // namespace
 
 int main() {
@@ -150,6 +210,7 @@ int main() {
     TestFlushAndDuplicate();
     TestPairwiseToleranceAndCommonPhaseDrift();
     TestDownsampleKeepsRealIds();
+    TestBodyAlignedSelfPointFilter();
     std::cout << "multi_lidar_fusion_test passed" << std::endl;
     return 0;
 }

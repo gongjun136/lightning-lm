@@ -178,6 +178,88 @@ bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std:
     return ValidateConfig(config, error);
 }
 
+bool LoadSelfPointFilterConfig(const YAML::Node& root, SelfPointFilterConfig& config,
+                               std::string* error) {
+    config = SelfPointFilterConfig();
+    const YAML::Node filter = root["self_point_filter"];
+    if (!filter) return true;
+
+    try {
+        config.enabled = filter["enabled"] ? filter["enabled"].as<bool>() : true;
+        if (!config.enabled) return true;
+
+        const double padding = filter["padding"] ? filter["padding"].as<double>() : 0.0;
+        if (!std::isfinite(padding) || padding < 0.0) {
+            SetError(error, "self_point_filter.padding must be finite and non-negative");
+            return false;
+        }
+        if (filter["min_body"] || filter["max_body"]) {
+            if (!filter["min_body"] || !filter["max_body"]) {
+                SetError(error, "self_point_filter.min_body and max_body must be specified together");
+                return false;
+            }
+            const auto minimum = filter["min_body"].as<std::vector<double>>();
+            const auto maximum = filter["max_body"].as<std::vector<double>>();
+            if (minimum.size() != 3 || maximum.size() != 3) {
+                SetError(error, "self_point_filter.min_body and max_body must contain three values");
+                return false;
+            }
+            config.min_body = Vec3d(minimum[0], minimum[1], minimum[2]);
+            config.max_body = Vec3d(maximum[0], maximum[1], maximum[2]);
+            if (!config.min_body.allFinite() || !config.max_body.allFinite() ||
+                (config.min_body.array() >= config.max_body.array()).any()) {
+                SetError(error, "self_point_filter explicit body bounds are invalid");
+                return false;
+            }
+            config.min_body.array() -= padding;
+            config.max_body.array() += padding;
+            return true;
+        }
+
+        const char* required[] = {"front", "back", "left", "right", "bottom", "top"};
+        for (const char* key : required) {
+            if (!filter[key]) {
+                SetError(error, std::string("self_point_filter.") + key + " is required");
+                return false;
+            }
+        }
+        const double front = filter["front"].as<double>();
+        const double back = filter["back"].as<double>();
+        const double left = filter["left"].as<double>();
+        const double right = filter["right"].as<double>();
+        const double bottom = filter["bottom"].as<double>();
+        const double top = filter["top"].as<double>();
+        const double values[] = {front, back, left, right, bottom, top, padding};
+        if (!std::all_of(std::begin(values), std::end(values),
+                         [](double value) { return std::isfinite(value) && value >= 0.0; })) {
+            SetError(error, "self_point_filter extents and padding must be finite and non-negative");
+            return false;
+        }
+        config.min_body = Vec3d(-back - padding, -right - padding, -bottom - padding);
+        config.max_body = Vec3d(front + padding, left + padding, top + padding);
+    } catch (const YAML::Exception& e) {
+        SetError(error, e.what());
+        return false;
+    }
+    return true;
+}
+
+std::size_t FilterSelfPoints(PointCloudType& cloud, const SelfPointFilterConfig& config,
+                             const Mat3d& R_primary_to_body) {
+    if (!config.enabled || cloud.empty()) return 0;
+    const auto old_size = cloud.size();
+    cloud.erase(std::remove_if(cloud.begin(), cloud.end(), [&](const PointType& point) {
+                    const Vec3d p_body = R_primary_to_body * point.getVector3fMap().cast<double>();
+                    return (p_body.array() >= config.min_body.array()).all() &&
+                           (p_body.array() <= config.max_body.array()).all();
+                }),
+                cloud.end());
+    cloud.width = cloud.size();
+    cloud.height = 1;
+    cloud.is_dense = false;
+    return old_size - cloud.size();
+}
+
 CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size) {
     CloudPtr filtered(new PointCloudType);
     if (!cloud || cloud->empty() || leaf_size <= 0.0) {

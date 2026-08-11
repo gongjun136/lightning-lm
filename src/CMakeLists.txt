@@ -25,6 +25,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/maps/tiled_map.cc
         core/maps/tiled_map_chunk.cc
         core/maps/map_frame.cc
+        core/maps/navigation_map_export.cc
 
         core/localization/localization_result.cc
         core/localization/btc_relocalizer.cc
@@ -128,6 +129,9 @@ if(BUILD_TESTING)
     add_executable(map_frame_test test/map_frame_test.cc)
     target_link_libraries(map_frame_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(navigation_map_export_test test/navigation_map_export_test.cc)
+    target_link_libraries(navigation_map_export_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(localization_input_locking_test test/localization_input_locking_test.cc)
     target_link_libraries(localization_input_locking_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -143,6 +147,7 @@ if(BUILD_TESTING)
     add_test(NAME solid_descriptor_test COMMAND $<TARGET_FILE:solid_descriptor_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
+    add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)
     add_test(NAME localization_input_locking_test COMMAND $<TARGET_FILE:localization_input_locking_test>)
 endif()
 

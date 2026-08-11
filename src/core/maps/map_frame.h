@@ -21,6 +21,14 @@ struct ExportOptions {
     double inlier_tolerance = 0.20;
     double max_median_absolute_deviation = 0.10;
     std::size_t min_ground_inliers = 100;
+    double max_ground_tilt_deg = 10.0;
+
+    bool export_pgm = false;
+    double pgm_resolution = 0.05;
+    double pgm_min_height = 2.5;
+    double pgm_max_height = 3.0;
+    double pgm_obstacle_dilation_radius = 0.0;
+    int pgm_min_observation_frames = 3;
 };
 
 struct Metadata {
@@ -35,6 +43,9 @@ struct Metadata {
     double histogram_bin_size = 0.0;
     double inlier_tolerance = 0.0;
     double median_absolute_deviation = 0.0;
+    Vec3d ground_normal_slam = Vec3d::UnitZ();
+    double ground_plane_offset_slam = 0.0;
+    double ground_tilt_deg = 0.0;
     std::size_t candidate_count = 0;
     std::size_t inlier_count = 0;
 };

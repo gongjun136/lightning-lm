@@ -37,6 +37,12 @@ struct MultiLidarConfig {
     const MultiLidarSensorConfig* PrimaryLidar() const { return FindLidar(primary_lidar_id); }
 };
 
+struct SelfPointFilterConfig {
+    bool enabled = false;
+    Vec3d min_body = Vec3d::Zero();
+    Vec3d max_body = Vec3d::Zero();
+};
+
 struct MultiLidarFrameStats {
     double begin_time = 0.0;
     double end_time = 0.0;
@@ -53,6 +59,14 @@ struct FusedLidarFrame {
 };
 
 bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std::string* error = nullptr);
+
+/// Load a body-aligned ego box whose origin is the primary LiDAR.
+bool LoadSelfPointFilterConfig(const YAML::Node& root, SelfPointFilterConfig& config,
+                               std::string* error = nullptr);
+
+/// Remove points inside the ego box after expressing them in vehicle forward-left-up axes.
+std::size_t FilterSelfPoints(PointCloudType& cloud, const SelfPointFilterConfig& config,
+                             const Mat3d& R_primary_to_body);
 
 /// Voxel downsampling that keeps a real input point, so lidar_id is never averaged.
 CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size);
