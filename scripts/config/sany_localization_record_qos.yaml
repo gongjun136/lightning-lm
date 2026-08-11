@@ -1,0 +1,59 @@
+/livox/lidar_192_168_3_184/zstd:
+  history: keep_last
+  depth: 64
+  reliability: reliable
+  durability: volatile
+
+/livox/lidar_192_168_1_108/zstd:
+  history: keep_last
+  depth: 64
+  reliability: reliable
+  durability: volatile
+
+/livox/lidar_192_168_2_133/zstd:
+  history: keep_last
+  depth: 64
+  reliability: reliable
+  durability: volatile
+
+/livox/lidar_192_168_4_143/zstd:
+  history: keep_last
+  depth: 64
+  reliability: reliable
+  durability: volatile
+
+/livox/imu_192_168_3_184:
+  history: keep_last
+  depth: 2048
+  reliability: best_effort
+  durability: volatile
+
+/PosRes:
+  history: keep_last
+  depth: 1000
+  reliability: reliable
+  durability: volatile
+
+/slamPoseRaw_topic:
+  history: keep_last
+  depth: 1000
+  reliability: reliable
+  durability: volatile
+
+/localization/fault_status:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
+
+/localization/loc_status:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile
+
+/localization/pipeline_diagnostics:
+  history: keep_last
+  depth: 100
+  reliability: reliable
+  durability: volatile

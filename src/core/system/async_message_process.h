@@ -5,6 +5,7 @@
 #ifndef ASYNC_MESSAGE_PROCESS_H
 #define ASYNC_MESSAGE_PROCESS_H
 
+#include <atomic>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -49,6 +50,15 @@ class AsyncMessageProcess {
     /// 清空跳帧计数器，下一个数据会立即执行
     void CleanSkipCnt();
 
+    /// Number of accepted messages waiting or currently being processed.
+    size_t PendingCount() const;
+
+    /// Number of accepted messages evicted because the bounded queue was full.
+    size_t DroppedCount() const { return dropped_count_.load(); }
+
+    /// Number of messages whose callback completed.
+    size_t ProcessedCount() const { return processed_count_.load(); }
+
     void SetName(std::string name) { name_ = std::move(name); }
     void SetSkipParam(bool enable_skip, int skip_num) { enable_skip_ = enable_skip, skip_num_ = skip_num; }
 
@@ -59,7 +69,7 @@ class AsyncMessageProcess {
     void ProcLoop();
 
     std::thread proc_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_msg_;
     std::deque<T> msg_buffer_;
     bool update_flag_ = false;
@@ -73,7 +83,16 @@ class AsyncMessageProcess {
     int skip_cnt_ = 0;
 
     ProcFunc custom_func_;
+    std::atomic<size_t> in_flight_count_{0};
+    std::atomic<size_t> dropped_count_{0};
+    std::atomic<size_t> processed_count_{0};
 };
+
+template <typename T>
+size_t AsyncMessageProcess<T>::PendingCount() const {
+    UL lock(mutex_);
+    return msg_buffer_.size() + in_flight_count_.load();
+}
 
 template <typename T>
 void AsyncMessageProcess<T>::CleanSkipCnt() {
@@ -93,6 +112,9 @@ void AsyncMessageProcess<T>::Start() {
         UL lock(mutex_);
         exit_flag_ = false;
         update_flag_ = false;
+        in_flight_count_ = 0;
+        dropped_count_ = 0;
+        processed_count_ = 0;
     }
     proc_ = std::thread([this]() { ProcLoop(); });
 }
@@ -109,12 +131,15 @@ void AsyncMessageProcess<T>::ProcLoop() {
         // in the meantime before the worker exits.
         std::deque<T> buffer;
         buffer.swap(msg_buffer_);
+        in_flight_count_ = buffer.size();
         update_flag_ = false;
         lock.unlock();
 
         // 处理之
         for (const auto& msg : buffer) {
             custom_func_(msg);
+            --in_flight_count_;
+            ++processed_count_;
         }
     }
 }
@@ -138,6 +163,7 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
     while (msg_buffer_.size() > max_size_) {
         LOG(INFO) << name_ << " exceeds largest size: " << max_size_;
         msg_buffer_.pop_front();
+        ++dropped_count_;
     }
 
     update_flag_ = true;

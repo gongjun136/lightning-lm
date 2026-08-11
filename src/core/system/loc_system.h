@@ -5,6 +5,10 @@
 #ifndef LIGHTNING_LOC_SYSTEM_H
 #define LIGHTNING_LOC_SYSTEM_H
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <map>
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geosun_msgs/msg/pos_res.hpp>
@@ -23,6 +27,7 @@
 #include "common/keyframe.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
+#include "lightning/msg/pipeline_diagnostics.hpp"
 
 namespace lightning {
 
@@ -70,6 +75,17 @@ class LocSystem {
     void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result);
     void PublishHealthStatus();
     void PublishPath();
+    void RegisterLidarInput(int lidar_id, const std::string& topic);
+    void ObserveLidarInput(int lidar_id, double sensor_stamp);
+    void ObserveImuInput(double sensor_stamp);
+
+    struct InputTopicStats {
+        std::string topic;
+        std::uint64_t message_count = 0;
+        double last_sensor_stamp = 0.0;
+        std::chrono::steady_clock::time_point last_arrival;
+        bool has_arrival = false;
+    };
 
     Options options_;
 
@@ -95,6 +111,11 @@ class LocSystem {
     std::vector<NavState> localization_states_;
     std::vector<NavState> global_localization_states_;
     bool finished_ = false;
+    mutable std::mutex input_stats_mutex_;
+    std::map<int, InputTopicStats> lidar_input_stats_;
+    InputTopicStats imu_input_stats_;
+    std::atomic<double> last_localization_stamp_{0.0};
+    std::atomic<double> last_posres_stamp_{0.0};
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
@@ -106,6 +127,7 @@ class LocSystem {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;
     rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;
     rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr loc_status_pub_ = nullptr;
+    rclcpp::Publisher<lightning::msg::PipelineDiagnostics>::SharedPtr pipeline_diagnostics_pub_ = nullptr;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_ = nullptr;
     rclcpp::TimerBase::SharedPtr health_timer_ = nullptr;
     rclcpp::TimerBase::SharedPtr path_timer_ = nullptr;

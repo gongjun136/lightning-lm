@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <mutex>
 #include <shared_mutex>
+#include <string>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_msgs/msg/int32.hpp"
@@ -26,6 +29,29 @@ class PGO;
  */
 class Localization {
    public:
+    struct RuntimeStats {
+        std::uint64_t sensor_queue_pending = 0;
+        std::uint64_t sensor_queue_dropped = 0;
+        std::uint64_t sensor_queue_processed = 0;
+        std::uint64_t localization_queue_pending = 0;
+        std::uint64_t localization_queue_dropped = 0;
+        std::uint64_t localization_queue_processed = 0;
+        double latest_enqueued_sensor_stamp = 0.0;
+        double latest_processed_sensor_stamp = 0.0;
+        double current_sensor_lag_sec = 0.0;
+        double max_sensor_lag_sec = 0.0;
+        std::uint64_t severe_timestamp_rollback_count = 0;
+        double worst_timestamp_rollback_sec = 0.0;
+        std::uint64_t relocalization_attempt_count = 0;
+        std::uint64_t relocalization_accept_count = 0;
+        bool last_relocalization_candidate_found = false;
+        bool last_relocalization_accepted = false;
+        int last_relocalization_candidate_id = -1;
+        double last_relocalization_score = 0.0;
+        double last_relocalization_search_time_ms = 0.0;
+        std::string last_relocalization_reason;
+    };
+
     struct Options {
         Options() {}
 
@@ -95,6 +121,7 @@ class Localization {
     bool IsMultiLidarEnabled() const;
     const MultiLidarConfig& GetMultiLidarConfig() const;
     SO3 GetInitialLidarRotation() const;
+    RuntimeStats GetRuntimeStats() const;
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
     // void SetPointcloudWorldCallback(std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>&& callback);
@@ -141,6 +168,8 @@ class Localization {
     };
     void ProcessSensorInput(const SensorInput& input);
     void ProcessIMUData(IMUPtr imu);
+    void ObserveSensorEnqueued(double timestamp);
+    void ObserveSensorProcessed(double timestamp);
     sys::AsyncMessageProcess<SensorInput> sensor_proc_;
     sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
     int lidar_odom_skip_cnt_ = 0;
@@ -161,6 +190,9 @@ class Localization {
     double last_imu_time_ = 0;
     double last_odom_time_ = 0;
     double last_cloud_time_ = 0;
+
+    mutable std::mutex runtime_stats_mutex_;
+    RuntimeStats runtime_stats_;
 };
 }  // namespace loc
 

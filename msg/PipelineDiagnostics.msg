@@ -1,0 +1,38 @@
+std_msgs/Header header
+
+int32[] lidar_ids
+string[] lidar_topics
+uint64[] lidar_message_counts
+float64[] lidar_last_sensor_stamps
+float64[] lidar_silence_sec
+string imu_topic
+uint64 imu_message_count
+float64 imu_last_sensor_stamp
+float64 imu_silence_sec
+
+uint64 sensor_queue_pending
+uint64 sensor_queue_dropped
+uint64 sensor_queue_processed
+uint64 localization_queue_pending
+uint64 localization_queue_dropped
+uint64 localization_queue_processed
+float64 latest_enqueued_sensor_stamp
+float64 latest_processed_sensor_stamp
+float64 current_sensor_lag_sec
+float64 max_sensor_lag_sec
+uint64 severe_timestamp_rollback_count
+float64 worst_timestamp_rollback_sec
+
+uint64 relocalization_attempt_count
+uint64 relocalization_accept_count
+bool last_relocalization_candidate_found
+bool last_relocalization_accepted
+int32 last_relocalization_candidate_id
+float64 last_relocalization_score
+float64 last_relocalization_search_time_ms
+string last_relocalization_reason
+
+uint32 consecutive_lost_frames
+bool map_outputs_enabled
+float64 last_localization_stamp
+float64 last_posres_stamp

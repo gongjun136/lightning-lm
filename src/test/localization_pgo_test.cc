@@ -121,6 +121,45 @@ int main() {
     Require((velocity_output.vel_b_ - latest_body_velocity).norm() < 1e-9,
             "high-frequency output refreshes body velocity from the latest DR state");
 
+    PGO recovery_pgo;
+    recovery_pgo.SetDebug(false);
+    recovery_pgo.SetDrSmoothingEnabled(false);
+    recovery_pgo.SetDrExtrapolationEnabled(false);
+    NavState recovery_relative_pose;
+    recovery_relative_pose.timestamp_ = 3000.0;
+    recovery_relative_pose.pose_is_ok_ = true;
+    recovery_relative_pose.lidar_odom_reliable_ = true;
+    Require(recovery_pgo.ProcessLidarOdom(recovery_relative_pose), "accept recovery-test lidar odometry");
+    NavState rolled_back_pose = recovery_relative_pose;
+    rolled_back_pose.timestamp_ = 2999.0;
+    Require(!recovery_pgo.ProcessLidarOdom(rolled_back_pose), "reject lidar odometry timestamp rollback");
+
+    LocalizationResult recovery_loc;
+    recovery_loc.timestamp_ = 3000.0;
+    recovery_loc.pose_ = SE3();
+    recovery_loc.valid_ = true;
+    recovery_loc.lidar_loc_valid_ = true;
+    recovery_loc.lidar_loc_odom_error_normal_ = true;
+    recovery_loc.lidar_loc_smooth_flag_ = true;
+    recovery_loc.confidence_ = 1.0;
+    recovery_loc.status_ = LocalizationStatus::GOOD;
+    recovery_relative_pose.timestamp_ = 3000.5;
+    Require(recovery_pgo.ProcessLidarOdom(recovery_relative_pose), "advance lidar odometry before reset");
+    Require(recovery_pgo.ProcessDR(recovery_relative_pose), "advance DR before reset");
+    Require(recovery_pgo.Reset(), "reset PGO for global relocalization");
+    recovery_loc.timestamp_ = 3000.4;
+    Require(!recovery_pgo.ProcessLidarLoc(recovery_loc), "drop queued localization from before reset watermark");
+    recovery_relative_pose.timestamp_ = 3000.6;
+    Require(recovery_pgo.ProcessLidarOdom(recovery_relative_pose), "accept first fresh lidar odometry after reset");
+    Require(recovery_pgo.ProcessDR(recovery_relative_pose), "accept first fresh DR after reset");
+    recovery_loc.timestamp_ = 3000.65;
+    Require(!recovery_pgo.ProcessLidarLoc(recovery_loc), "wait for enough fresh relative poses to interpolate");
+    recovery_relative_pose.timestamp_ = 3000.8;
+    Require(recovery_pgo.ProcessLidarOdom(recovery_relative_pose), "accept second fresh lidar odometry after reset");
+    Require(recovery_pgo.ProcessDR(recovery_relative_pose), "accept second fresh DR after reset");
+    recovery_loc.timestamp_ = 3000.7;
+    Require(recovery_pgo.ProcessLidarLoc(recovery_loc), "resume PGO with only fresh relative poses");
+
     std::cout << "localization_pgo_test passed" << std::endl;
     return 0;
 }

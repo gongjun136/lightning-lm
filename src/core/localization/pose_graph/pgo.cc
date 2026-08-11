@@ -188,6 +188,7 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
         const double last_stamp = impl_->lidar_odom_pose_queue_.back().timestamp_;
         if (lio_result.timestamp_ < last_stamp) {
             LOG(WARNING) << "当前LidarOdom定位时间戳回退，实际相减得" << lio_result.timestamp_ - last_stamp;
+            return false;
         }
     }
 
@@ -246,6 +247,13 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         return false;
     }
 
+    if (loc_result.timestamp_ <= impl_->relative_pose_reset_watermark_) {
+        LOG(WARNING) << "drop queued LidarLoc from the pre-reset epoch: t=" << std::setprecision(18)
+                     << loc_result.timestamp_ << ", reset relative-pose watermark="
+                     << impl_->relative_pose_reset_watermark_;
+        return false;
+    }
+
     // 不允许时间回退
     double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_input_time_;
     if (last_lidar_loc_input_time_ > 0) {
@@ -301,7 +309,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
 }
 
 bool PGO::ProcessPGOFrame(std::shared_ptr<PGOFrame> frame) {
-    impl_->AddPGOFrame(frame);
+    if (!impl_->AddPGOFrame(frame)) return false;
 
     impl_->lidar_loc_pose_queue_.emplace_back(impl_->result_.timestamp_, impl_->result_.pose_);
     while (impl_->lidar_loc_pose_queue_.size() > 50) {

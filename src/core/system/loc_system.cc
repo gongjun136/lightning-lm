@@ -90,6 +90,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
 
     const auto qos = rclcpp::SensorDataQoS();
     auto subscribe_imu = [this, &qos](const std::string& topic) {
+        {
+            std::lock_guard<std::mutex> lock(input_stats_mutex_);
+            imu_input_stats_.topic = topic;
+        }
         imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
             topic, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
             IMUPtr imu = std::make_shared<IMU>();
@@ -110,6 +114,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
         subscribe_imu(primary->imu_topic);
         for (const auto& sensor : loc_->GetMultiLidarConfig().lidars) {
+            RegisterLidarInput(sensor.id, sensor.lidar_topic);
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 sensor.lidar_topic, qos,
                 [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
@@ -125,12 +130,14 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
         subscribe_imu(imu_topic_);
         if (!cloud_topic_.empty()) {
+            RegisterLidarInput(0, cloud_topic_);
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
                 }));
         }
         if (!livox_topic_.empty()) {
+            RegisterLidarInput(0, livox_topic_);
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
                 livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
@@ -151,6 +158,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         node_->create_publisher<lightning::msg::FaultStatus>("/localization/fault_status", health_qos);
     loc_status_pub_ =
         node_->create_publisher<lightning::msg::LocalizationStatus>("/localization/loc_status", health_qos);
+    pipeline_diagnostics_pub_ = node_->create_publisher<lightning::msg::PipelineDiagnostics>(
+        "/localization/pipeline_diagnostics", health_qos);
     path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("/localization/path", path_qos);
     health_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100),
                                              [this]() { PublishHealthStatus(); });
@@ -184,24 +193,31 @@ void LocSystem::SetInitPose(const SE3 &pose) {
 }
 
 void LocSystem::ProcessIMU(const IMUPtr &imu) {
+    ObserveImuInput(imu ? imu->timestamp : 0.0);
     if (loc_started_) {
         loc_->ProcessIMUMsg(imu);
     }
 }
 
 void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &cloud) {
+    const int lidar_id = loc_ && loc_->IsMultiLidarEnabled()
+                             ? loc_->GetMultiLidarConfig().primary_lidar_id
+                             : 0;
+    ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0);
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud);
     }
 }
 
 void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id) {
+    ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0);
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud, lidar_id);
     }
 }
 
 void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud) {
+    ObserveLidarInput(0, cloud ? ToSec(cloud->header.stamp) : 0.0);
     if (loc_started_) {
         loc_->ProcessLivoxLidarMsg(cloud);
     }
@@ -267,6 +283,7 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
+    last_localization_stamp_ = result.timestamp_;
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -281,6 +298,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto position =
         sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
+    last_posres_stamp_ = result.timestamp_;
     const auto pose = sany_output::MakePoseMessage(position);
     pose_pub_->publish(pose);
     if (telemetry_) telemetry_->ObservePose(pose);
@@ -309,10 +327,81 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 }
 
 void LocSystem::PublishHealthStatus() {
-    if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_) return;
+    if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
     const builtin_interfaces::msg::Time stamp = node_->now();
     fault_status_pub_->publish(telemetry_->MakeFaultStatus(stamp));
     loc_status_pub_->publish(telemetry_->MakeLocalizationStatus(stamp));
+
+    lightning::msg::PipelineDiagnostics diagnostics;
+    diagnostics.header.stamp = stamp;
+    diagnostics.header.frame_id = map_frame_;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        for (const auto& [lidar_id, stats] : lidar_input_stats_) {
+            diagnostics.lidar_ids.push_back(lidar_id);
+            diagnostics.lidar_topics.push_back(stats.topic);
+            diagnostics.lidar_message_counts.push_back(stats.message_count);
+            diagnostics.lidar_last_sensor_stamps.push_back(stats.last_sensor_stamp);
+            diagnostics.lidar_silence_sec.push_back(
+                stats.has_arrival ? std::chrono::duration<double>(now - stats.last_arrival).count() : -1.0);
+        }
+        diagnostics.imu_topic = imu_input_stats_.topic;
+        diagnostics.imu_message_count = imu_input_stats_.message_count;
+        diagnostics.imu_last_sensor_stamp = imu_input_stats_.last_sensor_stamp;
+        diagnostics.imu_silence_sec =
+            imu_input_stats_.has_arrival
+                ? std::chrono::duration<double>(now - imu_input_stats_.last_arrival).count()
+                : -1.0;
+    }
+    const auto runtime = loc_->GetRuntimeStats();
+    diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
+    diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;
+    diagnostics.sensor_queue_processed = runtime.sensor_queue_processed;
+    diagnostics.localization_queue_pending = runtime.localization_queue_pending;
+    diagnostics.localization_queue_dropped = runtime.localization_queue_dropped;
+    diagnostics.localization_queue_processed = runtime.localization_queue_processed;
+    diagnostics.latest_enqueued_sensor_stamp = runtime.latest_enqueued_sensor_stamp;
+    diagnostics.latest_processed_sensor_stamp = runtime.latest_processed_sensor_stamp;
+    diagnostics.current_sensor_lag_sec = runtime.current_sensor_lag_sec;
+    diagnostics.max_sensor_lag_sec = runtime.max_sensor_lag_sec;
+    diagnostics.severe_timestamp_rollback_count = runtime.severe_timestamp_rollback_count;
+    diagnostics.worst_timestamp_rollback_sec = runtime.worst_timestamp_rollback_sec;
+    diagnostics.relocalization_attempt_count = runtime.relocalization_attempt_count;
+    diagnostics.relocalization_accept_count = runtime.relocalization_accept_count;
+    diagnostics.last_relocalization_candidate_found = runtime.last_relocalization_candidate_found;
+    diagnostics.last_relocalization_accepted = runtime.last_relocalization_accepted;
+    diagnostics.last_relocalization_candidate_id = runtime.last_relocalization_candidate_id;
+    diagnostics.last_relocalization_score = runtime.last_relocalization_score;
+    diagnostics.last_relocalization_search_time_ms = runtime.last_relocalization_search_time_ms;
+    diagnostics.last_relocalization_reason = runtime.last_relocalization_reason;
+    diagnostics.consecutive_lost_frames = publication_gate_.ConsecutiveLostFrames();
+    diagnostics.map_outputs_enabled = publication_gate_.MapOutputsEnabled();
+    diagnostics.last_localization_stamp = last_localization_stamp_.load();
+    diagnostics.last_posres_stamp = last_posres_stamp_.load();
+    pipeline_diagnostics_pub_->publish(diagnostics);
+}
+
+void LocSystem::RegisterLidarInput(int lidar_id, const std::string& topic) {
+    std::lock_guard<std::mutex> lock(input_stats_mutex_);
+    lidar_input_stats_[lidar_id].topic = topic;
+}
+
+void LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
+    std::lock_guard<std::mutex> lock(input_stats_mutex_);
+    auto& stats = lidar_input_stats_[lidar_id];
+    ++stats.message_count;
+    stats.last_sensor_stamp = sensor_stamp;
+    stats.last_arrival = std::chrono::steady_clock::now();
+    stats.has_arrival = true;
+}
+
+void LocSystem::ObserveImuInput(double sensor_stamp) {
+    std::lock_guard<std::mutex> lock(input_stats_mutex_);
+    ++imu_input_stats_.message_count;
+    imu_input_stats_.last_sensor_stamp = sensor_stamp;
+    imu_input_stats_.last_arrival = std::chrono::steady_clock::now();
+    imu_input_stats_.has_arrival = true;
 }
 
 void LocSystem::PublishPath() {

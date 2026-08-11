@@ -1,6 +1,8 @@
 #include <pcl/common/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <algorithm>
+
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
 
@@ -210,6 +212,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     }
     if (!process_lidar_odom) return;
     if (options_.online_mode_) {
+        ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
         return;
     }
@@ -239,6 +242,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
     }
     if (!process_lidar_odom) return;
     if (options_.online_mode_) {
+        ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
         return;
     }
@@ -248,6 +252,10 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
+    const double timestamp = input.is_imu && input.imu
+                                 ? input.imu->timestamp
+                                 : (input.cloud ? static_cast<double>(input.cloud->header.stamp) * 1e-9 : 0.0);
+    ObserveSensorProcessed(timestamp);
     if (input.is_imu) {
         ProcessIMUData(input.imu);
     } else {
@@ -332,6 +340,46 @@ SO3 Localization::GetInitialLidarRotation() const {
     return lio_->GetInitialLidarRotation();
 }
 
+Localization::RuntimeStats Localization::GetRuntimeStats() const {
+    std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+    RuntimeStats stats = runtime_stats_;
+    stats.sensor_queue_pending = sensor_proc_.PendingCount();
+    stats.sensor_queue_dropped = sensor_proc_.DroppedCount();
+    stats.sensor_queue_processed = sensor_proc_.ProcessedCount();
+    stats.localization_queue_pending = lidar_loc_proc_cloud_.PendingCount();
+    stats.localization_queue_dropped = lidar_loc_proc_cloud_.DroppedCount();
+    stats.localization_queue_processed = lidar_loc_proc_cloud_.ProcessedCount();
+    return stats;
+}
+
+void Localization::ObserveSensorEnqueued(double timestamp) {
+    if (timestamp <= 0.0) return;
+    std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+    runtime_stats_.latest_enqueued_sensor_stamp = timestamp;
+    runtime_stats_.current_sensor_lag_sec = runtime_stats_.latest_processed_sensor_stamp > 0.0
+                                                ? std::max(0.0, timestamp - runtime_stats_.latest_processed_sensor_stamp)
+                                                : 0.0;
+    runtime_stats_.max_sensor_lag_sec =
+        std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
+}
+
+void Localization::ObserveSensorProcessed(double timestamp) {
+    if (timestamp <= 0.0) return;
+    std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+    constexpr double kSevereRollbackSec = 1.0;
+    const double rollback = runtime_stats_.latest_processed_sensor_stamp - timestamp;
+    if (runtime_stats_.latest_processed_sensor_stamp > 0.0 && rollback > kSevereRollbackSec) {
+        ++runtime_stats_.severe_timestamp_rollback_count;
+        runtime_stats_.worst_timestamp_rollback_sec =
+            std::max(runtime_stats_.worst_timestamp_rollback_sec, rollback);
+    }
+    runtime_stats_.latest_processed_sensor_stamp = timestamp;
+    runtime_stats_.current_sensor_lag_sec =
+        std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp - timestamp);
+    runtime_stats_.max_sensor_lag_sec =
+        std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
+}
+
 void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
@@ -339,7 +387,21 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     lidar_loc_->ProcessCloud(scan_undist);
 
     auto res = lidar_loc_->GetLocalizationResult();
-    if (lidar_loc_->GetLastMatchStats().relocalization_accepted) {
+    const auto match_stats = lidar_loc_->GetLastMatchStats();
+    {
+        std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+        if (match_stats.relocalization_attempted) ++runtime_stats_.relocalization_attempt_count;
+        if (match_stats.relocalization_accepted) ++runtime_stats_.relocalization_accept_count;
+        if (match_stats.relocalization_attempted) {
+            runtime_stats_.last_relocalization_candidate_found = match_stats.relocalization_candidate_found;
+            runtime_stats_.last_relocalization_accepted = match_stats.relocalization_accepted;
+            runtime_stats_.last_relocalization_candidate_id = match_stats.relocalization_candidate_id;
+            runtime_stats_.last_relocalization_score = match_stats.relocalization_score;
+            runtime_stats_.last_relocalization_search_time_ms = match_stats.relocalization_search_time_ms;
+            runtime_stats_.last_relocalization_reason = match_stats.relocalization_reason;
+        }
+    }
+    if (match_stats.relocalization_accepted) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
@@ -368,6 +430,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
 void Localization::ProcessIMUMsg(IMUPtr imu) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (options_.online_mode_) {
+        ObserveSensorEnqueued(imu ? imu->timestamp : 0.0);
         sensor_proc_.AddMessage({imu, nullptr, 0, true});
         return;
     }

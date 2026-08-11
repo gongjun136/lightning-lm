@@ -4,6 +4,7 @@
 #include "core/lightning_math.hpp"
 
 #include <boost/format.hpp>
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iomanip>
@@ -68,26 +69,44 @@ PGOImpl::PGOImpl(Options options) {
 
 bool PGOImpl::Reset() {
     LOG(WARNING) << "PGO is reset";
+    relative_pose_reset_watermark_ = -1.0;
+    if (!dr_pose_queue_.empty()) {
+        relative_pose_reset_watermark_ =
+            std::max(relative_pose_reset_watermark_, dr_pose_queue_.back().timestamp_);
+    }
+    if (!lidar_odom_pose_queue_.empty()) {
+        relative_pose_reset_watermark_ =
+            std::max(relative_pose_reset_watermark_, lidar_odom_pose_queue_.back().timestamp_);
+    }
     CleanProblem();
     frames_.clear();
     frames_by_id_.clear();
     current_frame_ = nullptr;
     last_frame_ = nullptr;
+    // A global relocalization starts a new temporal epoch. Keeping relative
+    // pose samples from the failed epoch can create non-monotonic constraints
+    // and a singular graph immediately after recovery.
+    dr_pose_queue_.clear();
+    lidar_odom_pose_queue_.clear();
     lidar_loc_pose_queue_.clear();
     output_pose_queue_.clear();
     accumulated_frame_id_ = 0;
     result_ = LocalizationResult{};
     is_in_map_ = false;
+    lidar_odom_valid_ = true;
+    lidar_odom_valid_cnt_ = 0;
+    lidar_odom_conflict_with_dr_ = false;
+    lidar_odom_conflict_with_dr_cnt_ = 0;
     return true;
 }
 
-void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
+bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     assert(pgo_frame != nullptr);
     if (last_frame_ != nullptr) {
         const double adjacent_dalta_t = pgo_frame->timestamp_ - last_frame_->timestamp_;
         if (adjacent_dalta_t < 0.) {
             LOG(WARNING) << "PGO received pgoframe, however timestamp rollback for " << adjacent_dalta_t << "senonds!";
-            return;
+            return false;
         }
         pgo_frame->lidar_loc_delta_t_ = adjacent_dalta_t;
     }
@@ -102,7 +121,7 @@ void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     bool interp_dr_success = AssignDRPoseIfNeeded(pgo_frame);
     if (!interp_lio_success && !interp_dr_success) {
         LOG(ERROR) << "PGO received pgo frame, but assign relative pose failed!";
-        return;
+        return false;
     }
 
     is_in_map_ = pgo_frame->lidar_loc_set_ && pgo_frame->lidar_loc_valid_;
@@ -110,7 +129,7 @@ void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
         //
         LOG(ERROR) << "PGO received PGOFrame with lidar_loc_set_(" << pgo_frame->lidar_loc_set_
                    << "), lidar_loc_valid_(" << pgo_frame->lidar_loc_valid_ << "); Reject It!";
-        return;
+        return false;
     }
 
     pgo_frame->frame_id_ = accumulated_frame_id_++;
@@ -141,6 +160,7 @@ void PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     for (const auto& frame : frames_) frames_by_id_[frame->frame_id_] = frame;
 
     last_frame_ = current_frame_;
+    return true;
 }
 
 bool PGOImpl::AssignLidarOdomPoseIfNeeded(std::shared_ptr<PGOFrame> frame) {
@@ -174,8 +194,10 @@ bool PGOImpl::AssignLidarOdomPoseIfNeeded(std::shared_ptr<PGOFrame> frame) {
         } else {
             // lidarodom 不见得一定比 lidarloc 快。
             LOG(WARNING) << "PGOFrame (frame_id " << frame->frame_id_ << ") Interpolate on lidarOdom Failed!";
-            LOG(WARNING) << "PGOFrame time: " << std::fixed << std::setprecision(18) << frame->timestamp_
-                         << ", latest lidarOdom time: " << lidar_odom_pose_queue_.back().timestamp_;
+            LOG(WARNING) << "PGOFrame time: " << std::fixed << std::setprecision(18) << frame->timestamp_;
+            if (!lidar_odom_pose_queue_.empty()) {
+                LOG(WARNING) << "latest lidarOdom time: " << lidar_odom_pose_queue_.back().timestamp_;
+            }
             return false;
         }
     } else {

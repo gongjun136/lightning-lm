@@ -122,7 +122,7 @@ struct PGOImpl {
     ~PGOImpl() {}
 
     /// 总逻辑
-    void AddPGOFrame(std::shared_ptr<PGOFrame> frame);
+    bool AddPGOFrame(std::shared_ptr<PGOFrame> frame);
 
     /// 为frame分配相对定位pose，如果已经有了就什么也不做。
     /// 注意有 lidarOdom pose 和 DR pose 两个；要求至少有一个，否则返回 false。
@@ -207,6 +207,9 @@ struct PGOImpl {
 
     // internal variables
     double last_gps_time_ = 0;          // 上一个gps时间戳,用于判断重复/回流数据
+    // Localization results at or before this watermark were already queued
+    // when the graph was reset and must not enter the new temporal epoch.
+    double relative_pose_reset_watermark_ = -1.0;
     FrameId accumulated_frame_id_ = 0;  // 每次自加1，作为新进PGOFrame的Id
 
     /// the miao optimizer
