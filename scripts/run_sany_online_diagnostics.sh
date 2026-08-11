@@ -8,6 +8,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd -- "${script_dir}/.." && pwd)}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 install_setup="${LIGHTNING_LM_INSTALL_SETUP:-${repo_dir}/install/setup.bash}"
+livox_setup="${LIGHTNING_LM_LIVOX_SETUP:-${repo_dir}/../sdk/livox_sdk/install/setup.bash}"
 config_path="${LIGHTNING_LM_CONFIG:-${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_blind5.yaml}"
 map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
@@ -30,6 +31,7 @@ Required before launch:
 
 Useful environment variables:
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
+  LIGHTNING_LM_LIVOX_SETUP    Full Livox SDK setup.bash containing CompressedPointCloud2
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
   SANY_TOPIC_WAIT_SECONDS     Compressed-input discovery timeout (default: 60)
   SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
@@ -56,6 +58,7 @@ fi
 [[ "${run_name}" != */* ]] || fail "run_name must not contain '/'."
 [[ -r "${ros_setup}" ]] || fail "ROS setup not found: ${ros_setup}"
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
+[[ -r "${livox_setup}" ]] || fail "Livox SDK setup not found: ${livox_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
 [[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
 [[ "${out_root}" == /* ]] || fail "LIGHTNING_LM_OUT_ROOT must be absolute."
@@ -73,12 +76,26 @@ fi
 set +u
 source "${ros_setup}"
 source "${install_setup}"
+# lightning-lm embeds an older package with the same livox_ros_driver2 name.
+# Source the full SDK last so rosbag resolves CompressedPointCloud2 from it.
+source "${livox_setup}"
 set -u
 
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
 command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
 grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
+livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
+  fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
+livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
+case "${livox_prefix}" in
+  "${livox_install_root}"|"${livox_install_root}"/*) ;;
+  *) fail "livox_ros_driver2 resolved to ${livox_prefix}, expected the full SDK under ${livox_install_root}." ;;
+esac
+ros2 interface show livox_ros_driver2/msg/CompressedPointCloud2 >/dev/null 2>&1 ||
+  fail "CompressedPointCloud2 is missing from ${livox_prefix}; rebuild the full Livox SDK."
+[[ -r "${livox_prefix}/lib/liblivox_ros_driver2__rosidl_typesupport_cpp.so" ]] ||
+  fail "CompressedPointCloud2 C++ typesupport library is missing under ${livox_prefix}/lib."
 
 sensor_topics="$({ python3 - "${config_path}" <<'PY'
 import re
@@ -275,6 +292,7 @@ actual_type="$(ros2 topic type "${imu_topic}")"
 {
   echo "started_at=$(date --iso-8601=ns)"
   echo "repo_dir=${repo_dir}"
+  echo "livox_prefix=${livox_prefix}"
   echo "config_path=${config_path}"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
@@ -299,6 +317,15 @@ ros2 bag record \
   2>"${run_dir}/logs/rosbag.stderr.log" &
 recorder_pid=$!
 child_pids+=("${recorder_pid}")
+sleep 1
+if ! kill -0 "${recorder_pid}" 2>/dev/null; then
+  set +e
+  wait "${recorder_pid}"
+  recorder_status=$?
+  set -e
+  tail -n 40 "${run_dir}/logs/rosbag.stderr.log" >&2 || true
+  fail "rosbag recorder exited during startup with status ${recorder_status}."
+fi
 
 watch_posres &
 watchdog_pid=$!
