@@ -543,9 +543,13 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     if (!global_relocalizer_ || !global_relocalizer_->IsReady() ||
         !current_lo_pose_set_) return false;
 
+    // Confirm on the next processed scan. Online processing deliberately
+    // drops stale scans, so an expensive first search can make the sensor-time
+    // gap exceed the configured nominal interval even though this is still
+    // the next independent observation. Spatial map-to-odom consistency below
+    // remains the acceptance gate.
     const bool reuse_pending = pending_relocalization_.valid &&
-        current_timestamp_ - pending_relocalization_.timestamp <=
-            options_.relocalization_confirmation_max_interval_;
+                               current_timestamp_ > pending_relocalization_.timestamp;
     std::optional<RelocalizationResult> result;
     if (reuse_pending) {
         RelocalizationResult pending_result;
@@ -662,15 +666,16 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         summary.relocalization_query_submap_size = candidate.query_submap_size;
 
         const SE3 T_map_odom = refined_pose * current_lo_pose_.inverse();
-        const bool close_in_time = pending_relocalization_.valid &&
-            current_timestamp_ - pending_relocalization_.timestamp <=
-                options_.relocalization_confirmation_max_interval_;
+        const double confirmation_interval = pending_relocalization_.valid
+                                                 ? current_timestamp_ - pending_relocalization_.timestamp
+                                                 : 0.0;
         const SE3 delta = pending_relocalization_.valid
                               ? pending_relocalization_.T_map_odom.inverse() * T_map_odom
                               : SE3();
         const double rotation_delta_deg =
             delta.so3().log().norm() * 180.0 / M_PI;
-        const bool consistent = close_in_time &&
+        const bool consistent = pending_relocalization_.valid &&
+            confirmation_interval > 0.0 &&
             delta.translation().norm() <=
                 options_.relocalization_confirmation_max_translation_ &&
             rotation_delta_deg <=
@@ -699,6 +704,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                       << ", retrieval score=" << candidate.score
                       << ", NDT confidence=" << ndt_confidence
                       << ", overlap=" << summary.map_overlap_ratio
+                      << ", interval=" << confirmation_interval
                       << ", pose=" << refined_pose.translation().transpose();
             return false;
         }
@@ -740,6 +746,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                   << ", retrieval score=" << candidate.score
                   << ", NDT confidence=" << ndt_confidence
                   << ", overlap=" << summary.map_overlap_ratio
+                  << ", interval=" << confirmation_interval
                   << ", pose=" << current_abs_pose_.translation().transpose();
         return true;
     }

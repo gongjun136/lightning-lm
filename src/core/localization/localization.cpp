@@ -95,10 +95,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     options_.loc_on_kf_ = yaml.GetValue<bool>("lidar_loc", "loc_on_kf");
 
     sensor_proc_.SetMaxSize(10000);
-    // Multi-lidar relocalization can spend several seconds building the first
-    // BTC query. Keep that bounded startup backlog instead of dropping the
-    // scans that offline mode naturally retains while processing is paused.
-    const size_t default_loc_queue_size = lio_->IsMultiLidarEnabled() ? 100 : 10;
+    // Online localization must operate on the freshest projected scan. A
+    // backlog is harmful here: global relocalization can be expensive, and
+    // replaying stale scans afterwards prevents timely confirmation.
+    const size_t default_loc_queue_size = 1;
     const size_t loc_queue_size =
         system && system["online_lidar_loc_queue_size"]
             ? system["online_lidar_loc_queue_size"].as<size_t>()

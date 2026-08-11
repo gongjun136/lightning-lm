@@ -4,6 +4,7 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "core/system/async_message_process.h"
 
@@ -77,5 +78,34 @@ int main() {
     }
     release_first = true;
     bounded_processor.Quit();
+
+    lightning::sys::AsyncMessageProcess<int> latest_processor;
+    std::atomic<bool> release_latest{false};
+    std::atomic<bool> latest_started{false};
+    std::vector<int> latest_values;
+    latest_processor.SetMaxSize(1);
+    latest_processor.SetProcFunc([&](int value) {
+        latest_values.push_back(value);
+        if (value == 0) {
+            latest_started = true;
+            while (!release_latest.load()) std::this_thread::yield();
+        }
+    });
+    latest_processor.Start();
+    latest_processor.AddMessage(0);
+    while (!latest_started.load()) std::this_thread::yield();
+    for (int value = 1; value <= 10; ++value) latest_processor.AddMessage(value);
+    if (latest_processor.PendingCount() != 2 || latest_processor.DroppedCount() != 9) {
+        std::cerr << "latest-only queue did not retain exactly one buffered message" << std::endl;
+        release_latest = true;
+        latest_processor.Quit();
+        return 1;
+    }
+    release_latest = true;
+    latest_processor.Quit();
+    if (latest_values.size() != 2 || latest_values.front() != 0 || latest_values.back() != 10) {
+        std::cerr << "latest-only queue replayed a stale buffered message" << std::endl;
+        return 1;
+    }
     return 0;
 }
