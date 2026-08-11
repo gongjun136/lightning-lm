@@ -51,6 +51,32 @@ fail() {
   exit 1
 }
 
+# colcon setup files prepend path entries only when they are not already
+# present. The Lightning install may load the Livox SDK as a recorded underlay
+# before adding Lightning's embedded livox_ros_driver2, leaving that older
+# package first even when the SDK setup is sourced again. Remove SDK entries
+# immediately before re-sourcing it so the full SDK reliably wins.
+remove_path_entries_under() {
+  local variable_name="$1"
+  local root="${2%/}"
+  local value="${!variable_name-}"
+  local cleaned=""
+  local entry
+  local entries=()
+
+  IFS=: read -r -a entries <<<"${value}"
+  for entry in "${entries[@]}"; do
+    [[ -n "${entry}" ]] || continue
+    case "${entry}" in
+      "${root}"|"${root}"/*) continue ;;
+    esac
+    cleaned="${cleaned:+${cleaned}:}${entry}"
+  done
+
+  printf -v "${variable_name}" '%s' "${cleaned}"
+  export "${variable_name}"
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
@@ -77,7 +103,14 @@ set +u
 source "${ros_setup}"
 source "${install_setup}"
 # lightning-lm embeds an older package with the same livox_ros_driver2 name.
-# Source the full SDK last so rosbag resolves CompressedPointCloud2 from it.
+# Force the full SDK to the front so rosbag resolves CompressedPointCloud2
+# from it even when the workspace setup already loaded the SDK as an underlay.
+livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
+for path_variable in \
+  AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
+  LD_LIBRARY_PATH PYTHONPATH PATH PKG_CONFIG_PATH; do
+  remove_path_entries_under "${path_variable}" "${livox_install_root}"
+done
 source "${livox_setup}"
 set -u
 
@@ -87,7 +120,6 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
 grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
 livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
   fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
-livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
 case "${livox_prefix}" in
   "${livox_install_root}"|"${livox_install_root}"/*) ;;
   *) fail "livox_ros_driver2 resolved to ${livox_prefix}, expected the full SDK under ${livox_install_root}." ;;
