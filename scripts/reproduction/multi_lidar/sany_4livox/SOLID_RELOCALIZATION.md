@@ -48,13 +48,13 @@ bash scripts/reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_mat
   /mnt/f/datasets/SANY/4lidar_lm/relocalization \
   config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
   runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
-  runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12
+  runs/sany_4lidar_relocalization_latency_matrix_20260812/worker12
 
 python3 scripts/reproduction/multi_lidar/sany_4livox/analyze_phase_a_relocalization_matrix.py \
-  --runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12 \
-  --reference-runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/batch8_worker8 \
-  --output-json runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12/acceptance.json \
-  --output-csv runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12/acceptance_trials.csv
+  --runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/worker12 \
+  --reference-runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/batch8 \
+  --output-json runs/sany_4lidar_relocalization_latency_matrix_20260812/analysis/worker12.json \
+  --output-csv runs/sany_4lidar_relocalization_latency_matrix_20260812/analysis/worker12.csv
 ```
 
 ## 2026-08-12 耗时优化结论
