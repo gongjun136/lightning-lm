@@ -15,7 +15,12 @@
 4. 对重复场景并行评估 0°、90°、-90°、180° 四个确定性航向种子，每个地点只保留 ICP fitness 最优解。
 5. 候选继续通过现有地图边界、重叠率、重力方向、NDT 和连续两帧一致性检查。描述子/ICP 结果不能绕过这些安全门限。
 
-生产配置默认仍为 `relocalization.backend: btc`，便于回退。使用 SOLiD 时应通过脚本冻结独立配置：
+建图与定位使用独立的正式 YAML，两者都保存在 `config/` 下：
+
+- 建图：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`；
+- SOLiD 定位：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml`。
+
+`runs/` 只保存地图、轨迹、日志、分析结果和临时变体，不是域控正式配置的来源。需要从建图配置重新冻结定位配置时，执行：
 
 ```bash
 python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_config.py \
@@ -23,7 +28,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
   --compute-backend cpu \
   --top-k 20 \
   --retrieval-pool-size 200 \
-  --output runs/sany_4lidar_20260803_validation/configs/sany_4lidar_solid_cpu_multiyaw.yaml
+  --output config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml
 ```
 
 生成数据库：
@@ -32,8 +37,8 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ./install/lightning/lib/lightning/build_solid_database \
-  --config=runs/sany_4lidar_20260803_validation/configs/sany_4lidar_solid_cpu_multiyaw.yaml \
-  --map_path=runs/sany_4lidar_20260803_validation/mapping_data1_phase_a/data/new_map
+  --config=config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
+  --map_path=runs/sany_4lidar_mapping_data1_20260811_full/data/new_map
 ```
 
 运行 5×10 冷启动矩阵并分析：
@@ -41,16 +46,43 @@ source install/setup.bash
 ```bash
 bash scripts/reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_matrix.sh \
   /mnt/f/datasets/SANY/4lidar_lm/relocalization \
-  runs/sany_4lidar_20260803_validation/configs/sany_4lidar_solid_cpu_multiyaw.yaml \
-  runs/sany_4lidar_20260803_validation/mapping_data1_phase_a/data/new_map \
-  runs/sany_4lidar_20260803_validation/solid_relocalization_matrix_cpu_multiyaw_final
+  config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
+  runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
+  runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12
 
 python3 scripts/reproduction/multi_lidar/sany_4livox/analyze_phase_a_relocalization_matrix.py \
-  --runs-root runs/sany_4lidar_20260803_validation/solid_relocalization_matrix_cpu_multiyaw_final \
-  --reference-runs-root runs/sany_4lidar_20260803_validation/relocalization_matrix_strict \
-  --output-json runs/sany_4lidar_20260803_validation/solid_relocalization_matrix_cpu_multiyaw_final/acceptance.json \
-  --output-csv runs/sany_4lidar_20260803_validation/solid_relocalization_matrix_cpu_multiyaw_final/acceptance_trials.csv
+  --runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12 \
+  --reference-runs-root runs/sany_4lidar_relocalization_latency_matrix_20260812/batch8_worker8 \
+  --output-json runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12/acceptance.json \
+  --output-csv runs/sany_4lidar_relocalization_latency_matrix_20260812/final_worker12/acceptance_trials.csv
 ```
+
+## 2026-08-12 耗时优化结论
+
+新口径将 SOLiD 检索、多航向 ICP 和接受前处理纳入累计耗时。早期 `P95≈0.2002 s` 只是从播放起点到接受帧的传感器时间延迟，且旧检索计时在 ICP 前结束；它不是端到端 CPU 计算耗时，不能支持“完整重定位亚秒”的结论。
+
+本轮对 `data1` 至 `data5` 各选取 `0、3、5、7、10、15、20、25、30、35 s` 十个启动偏移，每个配置执行 50 次冷启动。最终配置保留四航向种子和 8 个候选，将 ICP 工作线程从 8 提高到 12：
+
+```yaml
+relocalization:
+  solid:
+    icp_batch_size: 8
+    icp_workers: 12
+    icp_yaw_hypothesis_offsets_deg: [0.0, 90.0, -90.0, 180.0]
+```
+
+| 配置 | 成功率 | 累计处理 P95 | 累计检索/ICP P95 | 结论 |
+| --- | ---: | ---: | ---: | --- |
+| batch=1 | 48/50 | — | — | data2 的 7 s、10 s 启动失败，召回不可接受 |
+| batch=2 | 50/50 | 12.614 s | 10.845 s | 尾延过大 |
+| batch=4 | 50/50 | — | — | data4 局部出现约 10.6 s 尾延 |
+| batch=8, workers=8 | 50/50 | 5.544 s | 4.732 s | 成功率基线 |
+| batch=8, workers=12 | 50/50 | 4.683 s | 3.870 s | 最终 Orin CPU 默认 |
+| batch=8, workers=16 | 50/50 | 3.766 s | 2.988 s | 更快，但 P95 峰值 CPU 约 17.65 核，不作默认 |
+
+workers=12 相比 workers=8 将处理 P95 降低约 `15.5%`，检索/ICP P95 降低约 `18.2%`；位姿结果与 workers=8 基线一致，最低地图重叠率为 `0.9868`。资源采样的 P95 峰值约为 `13.26` 个 CPU 核、`752.2 MiB` RSS。
+
+已否决的方向包括：渐进式 batch 4→8 使困难样本恶化到约 13.3 s；单航向在 data2/7 需 16 次尝试、22.3 s；将点云下采样从 0.20 m 改为 0.30 m 在两个困难点反而慢约 7.8%–8.9%。因此本轮的主要优化是“保留召回候选与四航向安全覆盖，只提高有界并行度”，而不是通过减少候选或关闭几何门限换取耗时。
 
 ## Orin 构建边界
 

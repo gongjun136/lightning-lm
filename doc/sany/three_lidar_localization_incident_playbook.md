@@ -73,12 +73,14 @@ bash scripts/run_sany_online_diagnostics.sh
 脚本会从 `LIGHTNING_LM_CONFIG` 的 `multi_lidar.topics` 自动读取雷达数量、主 IMU，并把每个原始雷达 topic 映射到对应的 `/zstd` 录制 topic。因此切换为当前域控四雷达配置时无需修改脚本：
 
 ```bash
-export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml
+export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml
 export SANY_MAP_PATH=/absolute/path/to/four_lidar_map
 bash scripts/run_sany_online_diagnostics.sh sany_4lidar_diag
 ```
 
-该配置对应当前域控的 184/108/133/143 四台 MID-360，主雷达和主 IMU 为 184。运行前必须确认第四路 143 的外参仍对应当前车辆，并且地图目录包含与该配置匹配的 `index.txt` 和 `btc_relocalization` 数据库。若使用其他雷达编号，可通过 `SANY_COMPRESSED_LIDAR_TOPICS` 和 `SANY_IMU_TOPIC` 显式覆盖录制话题，但算法订阅话题与外参仍以 YAML 为准。
+四雷达建图配置为 `config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`，不应用它代替在线定位 YAML。两个正式配置均纳入 `config/`；每次运行拷贝到 `runs/<run>/config.yaml` 的文件只是快照，不是下一次部署的配置源。
+
+该定位配置对应当前域控的 184/108/133/143 四台 MID-360，主雷达和主 IMU 为 184。运行前必须确认第四路 143 的外参仍对应当前车辆，并且地图目录包含与该配置匹配的 `index.txt`、分块点云、`map_frame.yaml` 和 `solid_relocalization/database.yaml`。若使用其他雷达编号，可通过 `SANY_COMPRESSED_LIDAR_TOPICS` 和 `SANY_IMU_TOPIC` 显式覆盖录制话题，但算法订阅话题与外参仍以 YAML 为准。
 
 当 `/PosRes` 在首次正常发布后静默 2 s，脚本在 `snapshots/` 保存一次诊断、topic/publisher、进程、内存、磁盘、网卡和时钟快照；恢复后写入 `logs/posres_watchdog.csv`，后续再次丢失会生成新的快照。它不会自动重启定位。
 

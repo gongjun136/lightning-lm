@@ -25,6 +25,8 @@ reproduction/
 └── multi_lidar/
     └── sany_4livox/
         ├── sany_4lidar_frontend_final.yaml
+        ├── sany_4lidar_mapping.yaml
+        ├── sany_4lidar_localization_solid.yaml
         └── matrix/
             ├── C0_single114_noise.yaml
             ├── C1_four_noise.yaml
@@ -39,6 +41,8 @@ reproduction/
 
 - M3DGR 的 `benchmark` 配置是已完成单雷达精度实验的正式配置；其余三个 `variant` 文件是 Lightning-LM 消融/调参配置。
 - SANY 单雷达配置保留原文件名，便于追溯早期 114 和 127 数据处理。
-- `sany_4lidar_frontend_final.yaml` 用于四雷达正常在线合同和故障注入。
+- `sany_4lidar_frontend_final.yaml` 保留用于 114/127/187/195 旧四雷达数据的历史回归。
+- `sany_4lidar_mapping.yaml` 是 184/108/133/143 四雷达建图与地图数据库导出的正式配置。
+- `sany_4lidar_localization_solid.yaml` 是与上述地图配对的 SOLiD 定位配置。正式 YAML 保存在 `config/` 下；`runs/` 只保存实验输出、快照和临时变体。
 - `matrix/` 中的 C0—C6 用于单 114 基线、四雷达、噪声模型消融和单路 LiDAR 缺失实验。
 - `scripts/run_frontend_offline_batch.sh` 默认读取 `matrix/`，不需要再传 `--config-dir`。
