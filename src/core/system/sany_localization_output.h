@@ -8,8 +8,10 @@
 
 #include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "common/eigen_types.h"
 #include "common/point_def.h"
@@ -19,6 +21,25 @@
 #include "lightning/msg/localization_status.hpp"
 
 namespace lightning::sany_output {
+
+struct FixedMapTransform {
+    bool enabled = false;
+    std::string source_frame = "localization_map";
+    std::string target_frame = "map";
+    SE3 T_target_localization;
+};
+
+/// Read output.fixed_map_transform.  The stored transform convention is
+/// T_target_localization and is left-multiplied only at the online ROS output boundary.
+bool LoadFixedMapTransform(const YAML::Node& root, FixedMapTransform& transform,
+                           std::string& error);
+
+SE3 TransformPoseForOutput(const SE3& localization_pose,
+                           const FixedMapTransform& transform);
+
+geometry_msgs::msg::TransformStamped TransformTfForOutput(
+    const geometry_msgs::msg::TransformStamped& localization_tf,
+    const FixedMapTransform& transform);
 
 geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id);

@@ -104,6 +104,7 @@ class LocSystem {
     std::string map_frame_ = "map";
     std::string rear_axle_frame_ = "rear_axle";
     Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
+    sany_output::FixedMapTransform fixed_map_transform_;
     sany_output::LocalizationPublicationGate publication_gate_;
     sany_output::FrameDecimator map_cloud_decimator_{10};
     std::unique_ptr<sany_output::LocalizationTelemetryState> telemetry_;

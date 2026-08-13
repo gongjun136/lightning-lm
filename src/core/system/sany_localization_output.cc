@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <yaml-cpp/yaml.h>
 
 namespace lightning::sany_output {
 namespace {
@@ -25,6 +26,94 @@ double ToSec(const builtin_interfaces::msg::Time& stamp) {
 }
 
 }  // namespace
+
+bool LoadFixedMapTransform(const YAML::Node& root, FixedMapTransform& transform,
+                           std::string& error) {
+    transform = FixedMapTransform{};
+    error.clear();
+    try {
+        const YAML::Node node = root["output"] ? root["output"]["fixed_map_transform"]
+                                                 : YAML::Node();
+        if (!node) return true;
+        transform.enabled = node["enabled"] ? node["enabled"].as<bool>() : false;
+        if (!transform.enabled) return true;
+
+        const std::string convention =
+            node["convention"] ? node["convention"].as<std::string>() : "";
+        if (convention != "target_from_localization") {
+            error = "output.fixed_map_transform.convention must be target_from_localization";
+            return false;
+        }
+        transform.source_frame = node["source_frame"]
+                                     ? node["source_frame"].as<std::string>()
+                                     : "localization_map";
+        transform.target_frame = node["target_frame"]
+                                     ? node["target_frame"].as<std::string>()
+                                     : "map";
+        const auto translation = node["translation_xyz"].as<std::vector<double>>();
+        const auto quaternion = node["quaternion_xyzw"].as<std::vector<double>>();
+        if (translation.size() != 3 || quaternion.size() != 4) {
+            error = "output.fixed_map_transform requires 3D translation_xyz and XYZW quaternion_xyzw";
+            return false;
+        }
+        for (const double value : translation) {
+            if (!std::isfinite(value)) {
+                error = "output.fixed_map_transform translation contains a non-finite value";
+                return false;
+            }
+        }
+        for (const double value : quaternion) {
+            if (!std::isfinite(value)) {
+                error = "output.fixed_map_transform quaternion contains a non-finite value";
+                return false;
+            }
+        }
+        Quatd q(quaternion[3], quaternion[0], quaternion[1], quaternion[2]);
+        if (q.norm() < 1e-9) {
+            error = "output.fixed_map_transform quaternion has zero norm";
+            return false;
+        }
+        q.normalize();
+        transform.T_target_localization =
+            SE3(q, Vec3d(translation[0], translation[1], translation[2]));
+        return true;
+    } catch (const std::exception& exception) {
+        error = std::string("invalid output.fixed_map_transform: ") + exception.what();
+        return false;
+    }
+}
+
+SE3 TransformPoseForOutput(const SE3& localization_pose,
+                           const FixedMapTransform& transform) {
+    return transform.enabled ? transform.T_target_localization * localization_pose
+                             : localization_pose;
+}
+
+geometry_msgs::msg::TransformStamped TransformTfForOutput(
+    const geometry_msgs::msg::TransformStamped& localization_tf,
+    const FixedMapTransform& transform) {
+    if (!transform.enabled) return localization_tf;
+    Quatd q(localization_tf.transform.rotation.w, localization_tf.transform.rotation.x,
+            localization_tf.transform.rotation.y, localization_tf.transform.rotation.z);
+    if (q.norm() < 1e-9) q = Quatd::Identity();
+    q.normalize();
+    const SE3 localization_pose(
+        q, Vec3d(localization_tf.transform.translation.x,
+                 localization_tf.transform.translation.y,
+                 localization_tf.transform.translation.z));
+    const SE3 output_pose = TransformPoseForOutput(localization_pose, transform);
+    geometry_msgs::msg::TransformStamped output = localization_tf;
+    output.header.frame_id = transform.target_frame;
+    output.transform.translation.x = output_pose.translation().x();
+    output.transform.translation.y = output_pose.translation().y();
+    output.transform.translation.z = output_pose.translation().z();
+    const Quatd output_q = output_pose.unit_quaternion();
+    output.transform.rotation.x = output_q.x();
+    output.transform.rotation.y = output_q.y();
+    output.transform.rotation.z = output_q.z();
+    output.transform.rotation.w = output_q.w();
+    return output;
+}
 
 geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id) {

@@ -27,6 +27,43 @@ int main() {
     using namespace lightning;
     using namespace lightning::sany_output;
 
+    YAML::Node transform_root;
+    auto fixed = transform_root["output"]["fixed_map_transform"];
+    fixed["enabled"] = true;
+    fixed["convention"] = "target_from_localization";
+    fixed["source_frame"] = "localization_map";
+    fixed["target_frame"] = "map";
+    fixed["translation_xyz"] = std::vector<double>{10.0, -2.0, 1.0};
+    const lightning::Quatd fixed_q(
+        Eigen::AngleAxisd(M_PI / 2.0, lightning::Vec3d::UnitZ()));
+    fixed["quaternion_xyzw"] =
+        std::vector<double>{fixed_q.x(), fixed_q.y(), fixed_q.z(), fixed_q.w()};
+    FixedMapTransform fixed_transform;
+    std::string fixed_error;
+    Require(LoadFixedMapTransform(transform_root, fixed_transform, fixed_error),
+            "load fixed output map transform");
+    const lightning::SE3 localization_pose(lightning::Quatd::Identity(),
+                                            lightning::Vec3d(2.0, 3.0, 4.0));
+    const auto output_pose = TransformPoseForOutput(localization_pose, fixed_transform);
+    Require(Near(output_pose.translation().x(), 7.0) &&
+                Near(output_pose.translation().y(), 0.0) &&
+                Near(output_pose.translation().z(), 5.0),
+            "fixed map transform is left-multiplied at output");
+
+    geometry_msgs::msg::TransformStamped localization_tf;
+    localization_tf.header.frame_id = "map";
+    localization_tf.child_frame_id = "base_link";
+    localization_tf.transform.translation.x = 2.0;
+    localization_tf.transform.translation.y = 3.0;
+    localization_tf.transform.translation.z = 4.0;
+    localization_tf.transform.rotation.w = 1.0;
+    const auto output_tf = TransformTfForOutput(localization_tf, fixed_transform);
+    Require(output_tf.header.frame_id == "map" && output_tf.child_frame_id == "base_link" &&
+                Near(output_tf.transform.translation.x, 7.0) &&
+                Near(output_tf.transform.translation.y, 0.0) &&
+                Near(output_tf.transform.translation.z, 5.0),
+            "TF uses the same fixed output transform and preserves frame names");
+
     const double roll = -0.4 * M_PI / 180.0;
     const double pitch = -1.8 * M_PI / 180.0;
     const double yaw = -7.0 * M_PI / 180.0;

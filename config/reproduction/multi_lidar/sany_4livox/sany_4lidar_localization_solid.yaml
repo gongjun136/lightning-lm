@@ -396,3 +396,17 @@ offline_localization:
     - 0.0
     - 0.0
     - 1.0
+
+output:
+  map_frame: map
+  fixed_map_transform:
+    enabled: true
+    convention: target_from_localization
+    source_frame: localization_map
+    target_frame: map
+    translation_xyz: [-2.41949081420898, 18.3118782043457, -0.130619361996651]
+    quaternion_xyzw: [0.00079188585717829, -0.0124272375022884, -0.305301087578141, 0.952174449672147]
+    provenance:
+      generated_by: align_maps_offline
+      report: '/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/sany_map_alignment_3lidar_old_4lidar_new_20260813/alignment_report.yaml'
+      quality: 0.989856910679774

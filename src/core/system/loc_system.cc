@@ -53,6 +53,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         map_path = configured_map.as<std::string>();
     }
     map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
+    std::string fixed_transform_error;
+    if (!sany_output::LoadFixedMapTransform(root, fixed_map_transform_, fixed_transform_error)) {
+        LOG(ERROR) << fixed_transform_error;
+        return false;
+    }
+    if (fixed_map_transform_.enabled && fixed_map_transform_.target_frame != map_frame_) {
+        LOG(ERROR) << "output.fixed_map_transform.target_frame must match output.map_frame ("
+                   << map_frame_ << ")";
+        return false;
+    }
     primary_lidar_position_in_body_ = Vec3d(2.199, 0.0, 2.740);
     if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
         const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
@@ -167,8 +177,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
 
     if (options_.pub_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
-        loc_->SetTFCallback(
-            [this](const geometry_msgs::msg::TransformStamped &pose) { tf_broadcaster_->sendTransform(pose); });
+        loc_->SetTFCallback([this](const geometry_msgs::msg::TransformStamped &pose) {
+            tf_broadcaster_->sendTransform(
+                sany_output::TransformTfForOutput(pose, fixed_map_transform_));
+        });
     }
     loc_->SetLocalizationResultCallback([this](const loc::LocalizationResult& result) {
         PublishLocalizationResult(result);
@@ -293,8 +305,10 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     if (!publication_gate_.MapOutputsEnabled()) return;
     if (!pos_res_pub_ || !pose_pub_) return;
-    const SE3 map_rear_axle_pose = sany_output::MakeMapRearAxlePose(
+    const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
+    const SE3 map_rear_axle_pose =
+        sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
     const auto position =
         sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
@@ -321,8 +335,10 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     const bool publish_map_frame = map_cloud_decimator_.Tick();
     if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
         // LidarLoc registers this exact cloud in the map frame and result.pose_ is T_map_lidar.
+        const SE3 output_lidar_pose =
+            sany_output::TransformPoseForOutput(result.pose_, fixed_map_transform_);
         map_cloud_pub_->publish(
-            sany_output::MakeCloudMessage(cloud, begin_time, end_time, result.pose_, map_frame_));
+            sany_output::MakeCloudMessage(cloud, begin_time, end_time, output_lidar_pose, map_frame_));
     }
 }
 
