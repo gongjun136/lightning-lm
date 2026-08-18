@@ -1,4 +1,4 @@
-# SANY 三雷达域控定位丢失排查与取证方案
+# SANY 三/四雷达域控定位丢失排查与取证方案
 
 ## 结论
 
@@ -7,6 +7,29 @@
 第三次故障还暴露了恢复路径中的独立缺陷：全局重定位在 21:51:38 成功后，PGO 重置保留了旧的 DR/LidarOdom 相对位姿队列，旧纪元数据被带入新图，随后连续出现 `Cholesky failure, solve failed`。本分支已清除这些队列，并拒绝倒退的 LidarOdom 输入。
 
 现有三次运行没有录制传感器包，因此能确认软件内的故障链，不能仅凭日志唯一确定最初的外部诱因是 DDS/网络、驱动、系统时钟还是算力抢占。新增的压缩 MCAP 和 10 Hz 管线诊断正是用于补齐这段证据。
+
+## 2026-08-18 四雷达故障结论
+
+五个 `sany_4lidar_solid_*` 目录补齐了压缩点云和管线诊断，可以把问题分成两个同时存在、但边界不同的故障：
+
+1. **算法消费速率低于输入速率。** 五组原始运行的 LIO 单帧平均耗时为 48.6–82.0 ms、P95 为 96.0–193.3 ms。10 Hz 雷达仅 LIO 就占用 49%–82% 的单核墙钟预算，再叠加 200 Hz IMU、全局定位、DDS 解压和调度开销后，长期平均利用率可超过 100%。因此“某一帧小于 100 ms”不等于系统实时；队列会先缓慢积累，几分钟后才满并丢帧。五组旧运行的最大 pending 为 12,454–16,534，最大传感器滞后为 107–235 s。队列满是过载的后果，不是最初原因。
+2. **内核更新后算法端 Best-Effort 点云订阅更容易丢失大而分片的 DDS 消息。** 压缩器/录包使用 Reliable，算法原来使用 `SensorDataQoS`（Best Effort）。以 bag 中实际录到的帧为基准，旧算法回调覆盖率在主雷达约为 72%–93%，后雷达 143 最差仅约 28%。同时，部分 bag 在录制前就已经缺少后雷达帧并出现 14–23 s 间隙，这一部分属于第二块 Orin、Livox 驱动、网卡或两 Orin 之间链路，算法无法补回。
+
+逐帧 Zstd 解压比较了新数据 99,313 帧和旧数据 24,477 帧。四台雷达的有效点数 P5/P50/P95 均约为 `19968/19968/20064`，无空帧、无解压失败，布局一致。因此本次问题不是内核更新后点云点数突然增大。
+
+正式四雷达配置采用三层处理：LiDAR QoS 改为 Reliable/KeepLast(16)；LIO 从 10 Hz 降为 5 Hz而 IMU 传播和 `/PosRes` 保持原频率；传感器时延超过 0.5 s 时临时拒绝新雷达帧，恢复到 0.1 s 后继续，并始终保留 IMU。传感器队列上限为 1,000，激光定位队列只保留最新待处理帧。
+
+本地 1.0× 完整回放五个最新 bag 后，`/PosRes` 为 195.7–198.0 Hz，传感器队列峰值 17–28、每组结束均为 0，地图输出开启后没有再次关闭。最差乱序样本 `200009` 在单调时间前沿修复后，最大实时 backlog 为 0.15 s、过载保护丢帧为 0。重定位 `data1..data5 × 10` 冷启动矩阵为 50/50，通过全部安全门限；累计处理 P95 为 4.60 s，最低地图重叠率为 0.9879，与历史同起点结果的最大位置/航向差为 0.082 m/0.53°。
+
+### 最终丢定位应看哪里
+
+不要只找一条 `ERROR`。完整因果链分布在三个位置：
+
+1. `F:\tmp\runs\sany_4lidar_solid_*\logs\posres_watchdog.csv` 是最终外部症状时间线。`LOST` 表示 `/PosRes` 静默，`RECOVERED` 表示恢复；例如 `200009` 最后一次不可恢复的 `LOST` 为 `2026-08-18 20:05:12 +08:00`。
+2. `F:\tmp\runs\sany_4lidar_solid_*\bag\localization_incident\localization_incident_0.mcap` 中的 `/localization/pipeline_diagnostics` 是根因主日志。先看 `current_sensor_lag_sec`、`sensor_queue_pending/dropped`；再看四路 `lidar_callback_counts`/静默时间；最后看 `consecutive_lost_frames` 达到 5 且 `map_outputs_enabled=false`。这条诊断能证明“积压/断流 → 陈旧或不完整点云 → 连续定位失败 → 输出门控关闭”。
+3. `F:\tmp\runs\sany_4lidar_solid_*\logs\run_loc_online.stderr.log` 是算法细节。搜索 `传感器顺序队列 exceeds largest size` 可定位队列开始实际丢帧的时刻，搜索 `GLOBAL_RELOCALIZATION` 可查看丢定位后的候选接受/拒绝原因。以 `193432` 为例，顺序队列从 `19:37:50` 起反复满 10,000；它晚于积压开始，只是故障已经恶化的证据。
+
+因此，**最终触发地图定位输出关闭**的是诊断中的 `consecutive_lost_frames >= 5`；**最早且最有因果价值的信号**是 MCAP 诊断中的 lag/pending 持续增长，而不是几分钟后的 queue-full 日志。
 
 ## 三次日志的共同证据
 
@@ -93,7 +116,7 @@ bash scripts/run_sany_online_diagnostics.sh sany_4lidar_diag
 
 ## 故障包回放
 
-压缩包必须先解压回原始三路 PointCloud2，再喂给定位：
+压缩包必须先解压回配置中的原始 PointCloud2，再喂给定位：
 
 ```bash
 # 终端 1：解压节点
@@ -115,10 +138,11 @@ ros2 bag play /path/to/localization_incident \
   /livox/lidar_192_168_3_184/zstd \
   /livox/lidar_192_168_1_108/zstd \
   /livox/lidar_192_168_2_133/zstd \
+  /livox/lidar_192_168_4_143/zstd \
   /livox/imu_192_168_3_184
 ```
 
-验证至少包括：三路解压消息计数和时间戳一致；`severe_timestamp_rollback_count=0`；两级队列无持续增长、无 dropped；失配时重定位尝试增加；接受重定位后 `map_outputs_enabled` 和 `/PosRes` 自动恢复；日志中不出现连续 Cholesky failure。
+验证至少包括：全部配置雷达的解压消息计数与 bag 一致；时间戳乱序应被统计但不能使已处理前沿倒退；两级队列无持续增长，传感器队列最终 pending/lag 为 0；失配时重定位尝试增加；接受重定位后 `map_outputs_enabled` 和 `/PosRes` 自动恢复；日志中不出现连续 Cholesky failure。
 
 ## 本地验收结果（2026-08-11）
 

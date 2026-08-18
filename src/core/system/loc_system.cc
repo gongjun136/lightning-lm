@@ -98,14 +98,40 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
     livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
 
-    const auto qos = rclcpp::SensorDataQoS();
-    auto subscribe_imu = [this, &qos](const std::string& topic) {
+    const auto imu_qos = rclcpp::SensorDataQoS();
+    const YAML::Node lidar_qos_config = root["system"] ? root["system"]["lidar_qos"] : YAML::Node();
+    const size_t lidar_qos_depth =
+        lidar_qos_config && lidar_qos_config["depth"]
+            ? lidar_qos_config["depth"].as<size_t>()
+            : 5;
+    if (lidar_qos_depth == 0) {
+        LOG(ERROR) << "system.lidar_qos.depth must be positive";
+        return false;
+    }
+    const std::string lidar_qos_reliability =
+        lidar_qos_config && lidar_qos_config["reliability"]
+            ? lidar_qos_config["reliability"].as<std::string>()
+            : "best_effort";
+    rclcpp::QoS lidar_qos{rclcpp::KeepLast(lidar_qos_depth)};
+    lidar_qos.durability_volatile();
+    if (lidar_qos_reliability == "reliable") {
+        lidar_qos.reliable();
+    } else if (lidar_qos_reliability == "best_effort") {
+        lidar_qos.best_effort();
+    } else {
+        LOG(ERROR) << "system.lidar_qos.reliability must be reliable or best_effort";
+        return false;
+    }
+    LOG(INFO) << "lidar input QoS: reliability=" << lidar_qos_reliability
+              << ", depth=" << lidar_qos_depth;
+
+    auto subscribe_imu = [this, &imu_qos](const std::string& topic) {
         {
             std::lock_guard<std::mutex> lock(input_stats_mutex_);
             imu_input_stats_.topic = topic;
         }
         imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-            topic, qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+            topic, imu_qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
             IMUPtr imu = std::make_shared<IMU>();
             imu->timestamp = ToSec(msg->header.stamp);
             imu->linear_acceleration =
@@ -126,7 +152,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         for (const auto& sensor : loc_->GetMultiLidarConfig().lidars) {
             RegisterLidarInput(sensor.id, sensor.lidar_topic);
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-                sensor.lidar_topic, qos,
+                sensor.lidar_topic, lidar_qos,
                 [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                     Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar", true);
                 }));
@@ -142,14 +168,14 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         if (!cloud_topic_.empty()) {
             RegisterLidarInput(0, cloud_topic_);
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-                cloud_topic_, qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                cloud_topic_, lidar_qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
                 }));
         }
         if (!livox_topic_.empty()) {
             RegisterLidarInput(0, livox_topic_);
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-                livox_topic_, qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                livox_topic_, lidar_qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
                 });
         }

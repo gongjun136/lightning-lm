@@ -139,5 +139,13 @@ int main() {
     }
     release_in_flight = true;
     in_flight_processor.Quit();
+
+    lightning::sys::AsyncMessageProcess<int> admission_processor;
+    admission_processor.RecordDroppedMessage();
+    admission_processor.RecordDroppedMessage();
+    if (admission_processor.DroppedCount() != 2) {
+        std::cerr << "external admission drops were not counted" << std::endl;
+        return 1;
+    }
     return 0;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <shared_mutex>
@@ -168,11 +169,15 @@ class Localization {
     };
     void ProcessSensorInput(const SensorInput& input);
     void ProcessIMUData(IMUPtr imu);
+    bool ShouldThrottleLidarInput(double timestamp);
     void ObserveSensorEnqueued(double timestamp);
     void ObserveSensorProcessed(double timestamp);
     sys::AsyncMessageProcess<SensorInput> sensor_proc_;
     sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
     int lidar_odom_skip_cnt_ = 0;
+    double online_sensor_max_lag_sec_ = 0.0;
+    double online_sensor_resume_lag_sec_ = 0.0;
+    std::atomic_bool lidar_overload_throttled_{false};
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;

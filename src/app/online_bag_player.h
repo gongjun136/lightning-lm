@@ -8,6 +8,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <chrono>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <string>
@@ -28,11 +29,34 @@ class OnlineBagPlayer {
         playback_rate_ = playback_rate;
         bag_ = std::make_unique<RosbagIO>(bag_path);
         node_ = std::make_shared<rclcpp::Node>("lightning_online_bag_player");
-        const auto qos = rclcpp::SensorDataQoS().keep_last(1000);
         const YAML::Node root = YAML::LoadFile(config_path);
+        const auto imu_qos = rclcpp::SensorDataQoS().keep_last(1000);
+        const YAML::Node lidar_qos_config = root["system"] ? root["system"]["lidar_qos"] : YAML::Node();
+        const size_t lidar_qos_depth =
+            lidar_qos_config && lidar_qos_config["depth"]
+                ? lidar_qos_config["depth"].as<size_t>()
+                : 1000;
+        if (lidar_qos_depth == 0) {
+            LOG(ERROR) << "system.lidar_qos.depth must be positive";
+            return false;
+        }
+        const std::string lidar_qos_reliability =
+            lidar_qos_config && lidar_qos_config["reliability"]
+                ? lidar_qos_config["reliability"].as<std::string>()
+                : "best_effort";
+        rclcpp::QoS lidar_qos{rclcpp::KeepLast(lidar_qos_depth)};
+        lidar_qos.durability_volatile();
+        if (lidar_qos_reliability == "reliable") {
+            lidar_qos.reliable();
+        } else if (lidar_qos_reliability == "best_effort") {
+            lidar_qos.best_effort();
+        } else {
+            LOG(ERROR) << "system.lidar_qos.reliability must be reliable or best_effort";
+            return false;
+        }
 
         const std::string imu_topic = root["common"]["imu_topic"].as<std::string>();
-        imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>(imu_topic, qos);
+        imu_pub_ = node_->create_publisher<sensor_msgs::msg::Imu>(imu_topic, imu_qos);
         bag_->AddRosImuHandle(imu_topic, [this](const sensor_msgs::msg::Imu::SharedPtr msg) {
             imu_pub_->publish(*msg);
             return rclcpp::ok();
@@ -50,7 +74,7 @@ class OnlineBagPlayer {
                 const std::string key = entry.first.as<std::string>();
                 if (key.rfind("lidar_", 0) != 0) continue;
                 const std::string topic = entry.second.as<std::string>();
-                auto publisher = node_->create_publisher<sensor_msgs::msg::PointCloud2>(topic, qos);
+                auto publisher = node_->create_publisher<sensor_msgs::msg::PointCloud2>(topic, lidar_qos);
                 cloud_pubs_[topic] = publisher;
                 bag_->AddPointCloud2Handle(topic, [publisher](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
                     publisher->publish(*msg);
@@ -65,14 +89,14 @@ class OnlineBagPlayer {
             const std::string cloud_topic = root["common"]["lidar_topic"].as<std::string>();
             const std::string livox_topic = root["common"]["livox_lidar_topic"].as<std::string>();
             if (!cloud_topic.empty()) {
-                cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(cloud_topic, qos);
+                cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(cloud_topic, lidar_qos);
                 bag_->AddPointCloud2Handle(cloud_topic, [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
                     cloud_pub_->publish(*msg);
                     return rclcpp::ok();
                 });
             }
             if (!livox_topic.empty()) {
-                livox_pub_ = node_->create_publisher<livox_ros_driver2::msg::CustomMsg>(livox_topic, qos);
+                livox_pub_ = node_->create_publisher<livox_ros_driver2::msg::CustomMsg>(livox_topic, lidar_qos);
                 bag_->AddLivoxCloudHandle(livox_topic,
                                           [this](const livox_ros_driver2::msg::CustomMsg::SharedPtr msg) {
                                               livox_pub_->publish(*msg);

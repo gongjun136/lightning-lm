@@ -2,6 +2,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
+#include <iomanip>
 
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
@@ -94,7 +95,33 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         system && system["lidar_odom_skip_num"] ? system["lidar_odom_skip_num"].as<int>() : 1;
     options_.loc_on_kf_ = yaml.GetValue<bool>("lidar_loc", "loc_on_kf");
 
-    sensor_proc_.SetMaxSize(10000);
+    const size_t sensor_queue_size =
+        system && system["online_sensor_queue_size"]
+            ? system["online_sensor_queue_size"].as<size_t>()
+            : 10000;
+    if (sensor_queue_size == 0) {
+        LOG(ERROR) << "system.online_sensor_queue_size must be positive";
+        return false;
+    }
+    sensor_proc_.SetMaxSize(sensor_queue_size);
+    online_sensor_max_lag_sec_ =
+        system && system["online_sensor_max_lag_sec"]
+            ? system["online_sensor_max_lag_sec"].as<double>()
+            : 0.0;
+    online_sensor_resume_lag_sec_ =
+        system && system["online_sensor_resume_lag_sec"]
+            ? system["online_sensor_resume_lag_sec"].as<double>()
+            : online_sensor_max_lag_sec_ * 0.5;
+    if (online_sensor_max_lag_sec_ < 0.0 || online_sensor_resume_lag_sec_ < 0.0 ||
+        (online_sensor_max_lag_sec_ > 0.0 &&
+         online_sensor_resume_lag_sec_ >= online_sensor_max_lag_sec_)) {
+        LOG(ERROR) << "online sensor lag thresholds must satisfy 0 <= resume < max";
+        return false;
+    }
+    lidar_overload_throttled_ = false;
+    LOG(INFO) << "online sensor queue size=" << sensor_queue_size
+              << ", lidar overload max_lag_sec=" << online_sensor_max_lag_sec_
+              << ", resume_lag_sec=" << online_sensor_resume_lag_sec_;
     // Online localization must operate on the freshest projected scan. A
     // backlog is harmful here: global relocalization can be expensive, and
     // replaying stale scans afterwards prevents timely confirmation.
@@ -194,6 +221,11 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud, int lidar_id) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    const double timestamp = cloud
+                                 ? static_cast<double>(cloud->header.stamp.sec) +
+                                       static_cast<double>(cloud->header.stamp.nanosec) * 1e-9
+                                 : 0.0;
+    if (ShouldThrottleLidarInput(timestamp)) return;
     UL input_lock(input_mutex_);
     if (preprocess_ == nullptr || lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
@@ -223,6 +255,11 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 
 void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    const double timestamp = cloud
+                                 ? static_cast<double>(cloud->header.stamp.sec) +
+                                       static_cast<double>(cloud->header.stamp.nanosec) * 1e-9
+                                 : 0.0;
+    if (ShouldThrottleLidarInput(timestamp)) return;
     UL input_lock(input_mutex_);
     if (preprocess_ == nullptr || lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;
@@ -355,12 +392,50 @@ Localization::RuntimeStats Localization::GetRuntimeStats() const {
 void Localization::ObserveSensorEnqueued(double timestamp) {
     if (timestamp <= 0.0) return;
     std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
-    runtime_stats_.latest_enqueued_sensor_stamp = timestamp;
-    runtime_stats_.current_sensor_lag_sec = runtime_stats_.latest_processed_sensor_stamp > 0.0
-                                                ? std::max(0.0, timestamp - runtime_stats_.latest_processed_sensor_stamp)
-                                                : 0.0;
+    runtime_stats_.latest_enqueued_sensor_stamp =
+        std::max(runtime_stats_.latest_enqueued_sensor_stamp, timestamp);
+    runtime_stats_.current_sensor_lag_sec =
+        runtime_stats_.latest_processed_sensor_stamp > 0.0
+            ? std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp -
+                                runtime_stats_.latest_processed_sensor_stamp)
+            : 0.0;
     runtime_stats_.max_sensor_lag_sec =
         std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
+}
+
+bool Localization::ShouldThrottleLidarInput(double timestamp) {
+    if (!options_.online_mode_ || online_sensor_max_lag_sec_ <= 0.0) return false;
+
+    double lag_sec = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+        if (runtime_stats_.latest_enqueued_sensor_stamp > 0.0 &&
+            runtime_stats_.latest_processed_sensor_stamp > 0.0) {
+            lag_sec = std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp -
+                                        runtime_stats_.latest_processed_sensor_stamp);
+        }
+    }
+
+    bool throttled = lidar_overload_throttled_.load();
+    if (!throttled && lag_sec >= online_sensor_max_lag_sec_) {
+        lidar_overload_throttled_ = true;
+        throttled = true;
+        LOG(WARNING) << "sensor queue lag reached " << lag_sec
+                     << " sec; throttling lidar input until lag falls below "
+                     << online_sensor_resume_lag_sec_ << " sec";
+    } else if (throttled && lag_sec <= online_sensor_resume_lag_sec_) {
+        lidar_overload_throttled_ = false;
+        throttled = false;
+        LOG(INFO) << "sensor queue lag recovered to " << lag_sec
+                  << " sec; resuming lidar input";
+    }
+
+    if (!throttled) return false;
+    sensor_proc_.RecordDroppedMessage();
+    LOG_EVERY_N(WARNING, 100) << "drop lidar at " << std::setprecision(14) << timestamp
+                              << " for realtime overload protection; lag_sec=" << lag_sec
+                              << ", queue_pending=" << sensor_proc_.PendingCount();
+    return true;
 }
 
 void Localization::ObserveSensorProcessed(double timestamp) {
@@ -373,9 +448,15 @@ void Localization::ObserveSensorProcessed(double timestamp) {
         runtime_stats_.worst_timestamp_rollback_sec =
             std::max(runtime_stats_.worst_timestamp_rollback_sec, rollback);
     }
-    runtime_stats_.latest_processed_sensor_stamp = timestamp;
+    // ROS callbacks from multiple lidar topics may arrive out of timestamp
+    // order. Keep the processed frontier monotonic so a late stale message is
+    // still diagnosed as a rollback without manufacturing queue lag or
+    // retriggering overload admission control.
+    runtime_stats_.latest_processed_sensor_stamp =
+        std::max(runtime_stats_.latest_processed_sensor_stamp, timestamp);
     runtime_stats_.current_sensor_lag_sec =
-        std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp - timestamp);
+        std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp -
+                          runtime_stats_.latest_processed_sensor_stamp);
     runtime_stats_.max_sensor_lag_sec =
         std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
 }

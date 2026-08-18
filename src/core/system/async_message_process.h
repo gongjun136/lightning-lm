@@ -53,8 +53,11 @@ class AsyncMessageProcess {
     /// Number of accepted messages waiting or currently being processed.
     size_t PendingCount() const;
 
-    /// Number of accepted messages evicted because the bounded queue was full.
+    /// Number of messages rejected or evicted before their callback completed.
     size_t DroppedCount() const { return dropped_count_.load(); }
+
+    /// Account for admission control performed by the queue owner.
+    void RecordDroppedMessage() { ++dropped_count_; }
 
     /// Number of messages whose callback completed.
     size_t ProcessedCount() const { return processed_count_.load(); }

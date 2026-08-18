@@ -154,7 +154,10 @@ fasterlio:
   scan_line: 4
   blind: 0.5
   time_scale: 1e-3
-  skip_lidar_num: 0
+  # The Orin trace shows 10 Hz scan matching consumes 49-82% CPU on average
+  # with 96-193 ms P95 latency. Match at 5 Hz and keep IMU propagation at its
+  # native rate so online sensor time remains current.
+  skip_lidar_num: 2
   point_filter_num: 3
   max_iteration: 4
   filter_size_scan: 0.5
@@ -203,6 +206,17 @@ roi:
 system:
   with_ui: false
   with_loop_closing: true
+  # Bound sensor-time latency. LiDAR is temporarily shed under overload while
+  # every IMU remains ordered; hysteresis prevents rapid on/off oscillation.
+  online_sensor_queue_size: 1000
+  online_sensor_max_lag_sec: 0.5
+  online_sensor_resume_lag_sec: 0.1
+  online_lidar_loc_queue_size: 1
+  # Livox PointCloud2 publishers are reliable. Best-effort subscriptions lost
+  # 27-72% of frames in the post-kernel-update incident traces.
+  lidar_qos:
+    reliability: reliable
+    depth: 16
 backend:
   mode: ba_btc_hba
   verbose: true
