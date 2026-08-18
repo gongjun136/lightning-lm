@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run SANY multi-LiDAR localization together with a lossless compressed MCAP
+# Run SANY multi-LiDAR localization with an optional lossless compressed MCAP
 # recorder, a /PosRes watchdog, and incident snapshots. Localization is never
 # restarted by this script; the in-process global relocalizer owns recovery.
 set -euo pipefail
@@ -28,14 +28,15 @@ Usage:
 
 Required before launch:
   1. Start every Livox driver configured by LIGHTNING_LM_CONFIG and the primary IMU.
-  2. Start: ros2 run livox_ros_driver2 pointcloud_zstd_compressor
+  2. When SANY_RECORD_BAG=1, start:
+     ros2 run livox_ros_driver2 pointcloud_zstd_compressor
 
 Useful environment variables:
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
-  LIGHTNING_LM_LIVOX_SETUP    Full Livox SDK setup.bash containing CompressedPointCloud2
+  LIGHTNING_LM_LIVOX_SETUP    Full Livox SDK setup.bash used by bag recording
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
-  SANY_TOPIC_WAIT_SECONDS     Compressed-input discovery timeout (default: 60)
+  SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
   SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
   SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
@@ -86,10 +87,10 @@ fi
 [[ "${run_name}" != */* ]] || fail "run_name must not contain '/'."
 [[ -r "${ros_setup}" ]] || fail "ROS setup not found: ${ros_setup}"
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
-[[ -r "${livox_setup}" ]] || fail "Livox SDK setup not found: ${livox_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
 [[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
 if [[ "${record_bag}" == "1" ]]; then
+  [[ -r "${livox_setup}" ]] || fail "Livox SDK setup not found: ${livox_setup}"
   [[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
 fi
 [[ "${out_root}" == /* ]] || fail "LIGHTNING_LM_OUT_ROOT must be absolute."
@@ -109,16 +110,19 @@ fi
 set +u
 source "${ros_setup}"
 source "${install_setup}"
-# lightning-lm embeds an older package with the same livox_ros_driver2 name.
-# Force the full SDK to the front so rosbag resolves CompressedPointCloud2
-# from it even when the workspace setup already loaded the SDK as an underlay.
-livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
-for path_variable in \
-  AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
-  LD_LIBRARY_PATH PYTHONPATH PATH PKG_CONFIG_PATH; do
-  remove_path_entries_under "${path_variable}" "${livox_install_root}"
-done
-source "${livox_setup}"
+livox_install_root=""
+if [[ "${record_bag}" == "1" ]]; then
+  # lightning-lm embeds an older package with the same livox_ros_driver2 name.
+  # Force the full SDK to the front so rosbag resolves CompressedPointCloud2
+  # from it even when the workspace setup already loaded the SDK as an underlay.
+  livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
+  for path_variable in \
+    AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
+    LD_LIBRARY_PATH PYTHONPATH PATH PKG_CONFIG_PATH; do
+    remove_path_entries_under "${path_variable}" "${livox_install_root}"
+  done
+  source "${livox_setup}"
+fi
 set -u
 
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
@@ -126,17 +130,19 @@ command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
 if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
+  livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
+    fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
+  case "${livox_prefix}" in
+    "${livox_install_root}"|"${livox_install_root}"/*) ;;
+    *) fail "livox_ros_driver2 resolved to ${livox_prefix}, expected the full SDK under ${livox_install_root}." ;;
+  esac
+  ros2 interface show livox_ros_driver2/msg/CompressedPointCloud2 >/dev/null 2>&1 ||
+    fail "CompressedPointCloud2 is missing from ${livox_prefix}; rebuild the full Livox SDK."
+  [[ -r "${livox_prefix}/lib/liblivox_ros_driver2__rosidl_typesupport_cpp.so" ]] ||
+    fail "CompressedPointCloud2 C++ typesupport library is missing under ${livox_prefix}/lib."
+else
+  livox_prefix="not-required"
 fi
-livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
-  fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
-case "${livox_prefix}" in
-  "${livox_install_root}"|"${livox_install_root}"/*) ;;
-  *) fail "livox_ros_driver2 resolved to ${livox_prefix}, expected the full SDK under ${livox_install_root}." ;;
-esac
-ros2 interface show livox_ros_driver2/msg/CompressedPointCloud2 >/dev/null 2>&1 ||
-  fail "CompressedPointCloud2 is missing from ${livox_prefix}; rebuild the full Livox SDK."
-[[ -r "${livox_prefix}/lib/liblivox_ros_driver2__rosidl_typesupport_cpp.so" ]] ||
-  fail "CompressedPointCloud2 C++ typesupport library is missing under ${livox_prefix}/lib."
 
 sensor_topics="$({ python3 - "${config_path}" <<'PY'
 import re
@@ -170,32 +176,44 @@ if not imu_topic:
 
 print(str(imu_topic))
 for _, topic in lidar_topics:
-    print(topic if topic.endswith("/zstd") else f"{topic}/zstd")
+    print(topic)
 PY
 } 2>&1)" || fail "failed to read sensor topics from ${config_path}: ${sensor_topics}"
 mapfile -t configured_sensor_topics <<<"${sensor_topics}"
 (( ${#configured_sensor_topics[@]} >= 2 )) || fail "config must provide at least one LiDAR and one IMU topic."
 
 imu_topic="${SANY_IMU_TOPIC:-${configured_sensor_topics[0]}}"
-if [[ -n "${SANY_COMPRESSED_LIDAR_TOPICS:-}" ]]; then
-  read -r -a lidar_topics <<<"${SANY_COMPRESSED_LIDAR_TOPICS}"
-else
-  lidar_topics=("${configured_sensor_topics[@]:1}")
+lidar_topics=("${configured_sensor_topics[@]:1}")
+required_topics=("${lidar_topics[@]}" "${imu_topic}")
+compressed_lidar_topics=()
+record_topics=()
+if [[ "${record_bag}" == "1" ]]; then
+  if [[ -n "${SANY_COMPRESSED_LIDAR_TOPICS:-}" ]]; then
+    read -r -a compressed_lidar_topics <<<"${SANY_COMPRESSED_LIDAR_TOPICS}"
+  else
+    for topic in "${lidar_topics[@]}"; do
+      if [[ "${topic}" == */zstd ]]; then
+        compressed_lidar_topics+=("${topic}")
+      else
+        compressed_lidar_topics+=("${topic%/}/zstd")
+      fi
+    done
+  fi
+  (( ${#compressed_lidar_topics[@]} > 0 )) || fail "at least one compressed LiDAR topic is required for bag recording."
+  required_topics+=("${compressed_lidar_topics[@]}")
+  record_topics=(
+    "${compressed_lidar_topics[@]}"
+    "${imu_topic}"
+    /PosRes
+    /slamPoseRaw_topic
+    /localization/fault_status
+    /localization/loc_status
+    /localization/pipeline_diagnostics
+    /tf
+    /tf_static
+    /rosout
+  )
 fi
-(( ${#lidar_topics[@]} > 0 )) || fail "at least one compressed LiDAR topic is required."
-
-record_topics=(
-  "${lidar_topics[@]}"
-  "${imu_topic}"
-  /PosRes
-  /slamPoseRaw_topic
-  /localization/fault_status
-  /localization/loc_status
-  /localization/pipeline_diagnostics
-  /tf
-  /tf_static
-  /rosout
-)
 
 mkdir -p "${out_root}"
 out_root="$(cd -- "${out_root}" && pwd)"
@@ -220,7 +238,7 @@ wait_for_inputs() {
   while ((SECONDS < deadline)); do
     listed="$(ros2 topic list)"
     missing=0
-    for topic in "${lidar_topics[@]}" "${imu_topic}"; do
+    for topic in "${required_topics[@]}"; do
       grep -Fqx "${topic}" <<<"${listed}" || missing=$((missing + 1))
     done
     ((missing == 0)) && return 0
@@ -228,7 +246,7 @@ wait_for_inputs() {
   done
   echo "Missing required topics:" >&2
   listed="$(ros2 topic list)"
-  for topic in "${lidar_topics[@]}" "${imu_topic}"; do
+  for topic in "${required_topics[@]}"; do
     grep -Fqx "${topic}" <<<"${listed}" || echo "  ${topic}" >&2
   done
   return 1
@@ -254,7 +272,7 @@ snapshot_incident() {
     ros2 topic list -t 2>&1 || true
     echo
     echo "[input_topic_info]"
-    for topic in "${lidar_topics[@]}" "${imu_topic}"; do
+    for topic in "${required_topics[@]}"; do
       echo "--- ${topic}"
       ros2 topic info --verbose "${topic}" 2>&1 || true
     done
@@ -324,9 +342,18 @@ stop_children() {
 trap 'stop_children; exit 130' INT TERM
 trap stop_children EXIT
 
-echo "Waiting for ${#lidar_topics[@]} Zstd LiDAR topics and the primary IMU..."
-wait_for_inputs || fail "required compressed sensor inputs did not appear."
+if [[ "${record_bag}" == "1" ]]; then
+  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#compressed_lidar_topics[@]} Zstd recorder topics, and the primary IMU..."
+else
+  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU..."
+fi
+wait_for_inputs || fail "required sensor inputs did not appear."
 for topic in "${lidar_topics[@]}"; do
+  actual_type="$(ros2 topic type "${topic}")"
+  [[ "${actual_type}" == "sensor_msgs/msg/PointCloud2" ]] ||
+    fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/PointCloud2"
+done
+for topic in "${compressed_lidar_topics[@]}"; do
   actual_type="$(ros2 topic type "${topic}")"
   [[ "${actual_type}" == "livox_ros_driver2/msg/CompressedPointCloud2" ]] ||
     fail "${topic} has type ${actual_type}, expected livox_ros_driver2/msg/CompressedPointCloud2"
@@ -343,7 +370,8 @@ actual_type="$(ros2 topic type "${imu_topic}")"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
   echo "record_bag=${record_bag}"
-  echo "compressed_lidar_topics=${lidar_topics[*]}"
+  echo "raw_lidar_topics=${lidar_topics[*]}"
+  echo "compressed_lidar_topics=${compressed_lidar_topics[*]:-<disabled>}"
   echo "primary_imu_topic=${imu_topic}"
   echo "git_commit=$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unavailable)"
   echo "config_sha256=$(sha256sum "${config_path}" | awk '{print $1}')"

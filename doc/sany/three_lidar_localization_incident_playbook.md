@@ -49,7 +49,7 @@
 
 ## 域控部署与运行
 
-在 `feature/gj_change_2025.11.19` 构建并部署后，先启动三路 Livox、主 IMU 和无损 Zstd 压缩器：
+在 `feature/gj_change_2025.11.19` 构建并部署后，先启动三路 Livox 和主 IMU。仅在需要录包时启动无损 Zstd 压缩器：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -68,7 +68,14 @@ export LIGHTNING_LM_OUT_ROOT=/home/nvidia/project/gj_ws/runs
 bash scripts/run_sany_online_diagnostics.sh
 ```
 
-默认至少要求 20 GiB 可用空间；运行时间不设上限，直到定位进程退出或 Ctrl-C。脚本按配置录制全部 Zstd 点云、主 IMU、定位输出和诊断话题，使用 MCAP fastwrite 与 1 GiB cache。Zstd 点云是无损数据，未录制相机。
+开启录包时默认至少要求 20 GiB 可用空间；运行时间不设上限，直到定位进程退出或 Ctrl-C。脚本按配置录制全部 Zstd 点云、主 IMU、定位输出和诊断话题，使用 MCAP fastwrite 与 1 GiB cache。Zstd 点云是无损数据，未录制相机。
+
+不需要录包时设置 `SANY_RECORD_BAG=0`。此模式只等待定位 YAML 中的原始 `sensor_msgs/msg/PointCloud2` 雷达话题和主 IMU，不要求 `/zstd` 话题、压缩节点、完整 Livox 压缩消息环境、MCAP 插件、录包 QoS 文件或最低录包磁盘空间：
+
+```bash
+export SANY_RECORD_BAG=0
+bash scripts/run_sany_online_diagnostics.sh sany_4lidar_no_bag
+```
 
 脚本会从 `LIGHTNING_LM_CONFIG` 的 `multi_lidar.topics` 自动读取雷达数量、主 IMU，并把每个原始雷达 topic 映射到对应的 `/zstd` 录制 topic。因此切换为当前域控四雷达配置时无需修改脚本：
 
