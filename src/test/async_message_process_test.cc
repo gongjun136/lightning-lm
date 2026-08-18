@@ -107,5 +107,37 @@ int main() {
         std::cerr << "latest-only queue replayed a stale buffered message" << std::endl;
         return 1;
     }
+
+    lightning::sys::AsyncMessageProcess<int> in_flight_processor;
+    std::atomic<bool> release_prefill{false};
+    std::atomic<bool> prefill_started{false};
+    std::atomic<bool> release_in_flight{false};
+    std::atomic<bool> in_flight_started{false};
+    in_flight_processor.SetMaxSize(100);
+    in_flight_processor.SetProcFunc([&](int value) {
+        if (value == -1) {
+            prefill_started = true;
+            while (!release_prefill.load()) std::this_thread::yield();
+        }
+        if (value == 0) {
+            in_flight_started = true;
+            while (!release_in_flight.load()) std::this_thread::yield();
+        }
+    });
+    in_flight_processor.Start();
+    in_flight_processor.AddMessage(-1);
+    while (!prefill_started.load()) std::this_thread::yield();
+    for (int value = 0; value < 50; ++value) in_flight_processor.AddMessage(value);
+    release_prefill = true;
+    while (!in_flight_started.load()) std::this_thread::yield();
+    for (int value = 50; value < 200; ++value) in_flight_processor.AddMessage(value);
+    if (in_flight_processor.PendingCount() > 101) {
+        std::cerr << "bounded queue moved an unbounded batch in flight" << std::endl;
+        release_in_flight = true;
+        in_flight_processor.Quit();
+        return 1;
+    }
+    release_in_flight = true;
+    in_flight_processor.Quit();
     return 0;
 }

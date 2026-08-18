@@ -126,21 +126,18 @@ void AsyncMessageProcess<T>::ProcLoop() {
         cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
         if (exit_flag_ && msg_buffer_.empty()) break;
 
-        // Take every message currently available. If Quit() arrives while the
-        // batch is being processed, the next loop drains messages accumulated
-        // in the meantime before the worker exits.
-        std::deque<T> buffer;
-        buffer.swap(msg_buffer_);
-        in_flight_count_ = buffer.size();
-        update_flag_ = false;
+        // Keep only the message currently executing outside the bounded
+        // buffer. Swapping the complete queue into an unbounded in-flight
+        // batch defeats max_size_ while a slow callback is running.
+        T msg = std::move(msg_buffer_.front());
+        msg_buffer_.pop_front();
+        in_flight_count_ = 1;
+        update_flag_ = !msg_buffer_.empty();
         lock.unlock();
 
-        // 处理之
-        for (const auto& msg : buffer) {
-            custom_func_(msg);
-            --in_flight_count_;
-            ++processed_count_;
-        }
+        custom_func_(msg);
+        in_flight_count_ = 0;
+        ++processed_count_;
     }
 }
 

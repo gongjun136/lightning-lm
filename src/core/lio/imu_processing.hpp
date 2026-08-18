@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include "common/eigen_types.h"
@@ -55,6 +56,9 @@ class ImuProcess {
 
     /// 重置IMU初始化状态和跨帧缓存，通常在重定位或重新开始处理数据时调用。
     void Reset();
+    /// 在输入时间不连续后重建跨帧积分起点，保留已初始化的IMU标定和当前ESKF状态。
+    void ResetIntegrationBridge(const lightning::IMUPtr &imu, double lidar_end_time,
+                                const NavState &state);
     /// 设置Lidar到IMU的外参，transl和rot用于点云去畸变时在Lidar系与IMU系之间变换。
     void SetExtrinsic(const Vec3d &transl, const Mat3d &rot);
     /// 设置陀螺仪噪声缩放参数，初始化阶段会结合量测统计得到实际过程噪声。
@@ -161,6 +165,18 @@ inline void ImuProcess::Reset() {
     initial_rotation_ = SO3();
     last_imu_.reset(new lightning::IMU());
     cur_pcl_un_.reset(new PointCloudType());
+}
+
+inline void ImuProcess::ResetIntegrationBridge(const lightning::IMUPtr &imu,
+                                               double lidar_end_time,
+                                               const NavState &state) {
+    imu_pose_.clear();
+    cur_pcl_un_.reset(new PointCloudType());
+    last_lidar_end_time_ = lidar_end_time;
+    last_imu_ = imu ? imu : std::make_shared<lightning::IMU>();
+    angvel_last_ = last_imu_->angular_velocity - state.bg_;
+    acc_s_last_ = state.rot_ * (ScaleAccelerationForPrediction(last_imu_->linear_acceleration) - state.ba_) +
+                  state.grav_;
 }
 
 inline void ImuProcess::SetExtrinsic(const Vec3d &transl, const Mat3d &rot) {

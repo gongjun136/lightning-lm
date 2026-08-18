@@ -363,6 +363,22 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         return RunStatus::kConsumed;
     }
 
+    const double lidar_gap =
+        last_lidar_time_ > 0.0 ? measures_.lidar_begin_time_ - last_lidar_time_ : 0.0;
+    if (lidar_gap > 0.5) {
+        LOG(ERROR) << "检测到雷达断流，时长：" << lidar_gap
+                   << "; skip discontinuous frame and reset IMU integration bridge";
+        auto safe_state = kf_.GetX();
+        safe_state.timestamp_ = measures_.lidar_end_time_;
+        kf_.ChangeX(safe_state);
+        kf_imu_ = kf_;
+        p_imu_->ResetIntegrationBridge(measures_.imu_.back(), measures_.lidar_end_time_, safe_state);
+        last_lidar_time_ = measures_.lidar_begin_time_;
+        last_tracking_healthy_ = false;
+        return RunStatus::kConsumed;
+    }
+    last_lidar_time_ = measures_.lidar_begin_time_;
+
     using BenchClock = std::chrono::steady_clock;
     const auto elapsed_ms = [](const BenchClock::time_point &start) {
         return std::chrono::duration<double, std::milli>(BenchClock::now() - start).count();
@@ -455,12 +471,6 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     LOG(INFO) << "=============================";
     LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
               << ", end: " << measures_.lidar_end_time_;
-
-    if (last_lidar_time_ > 0 && (measures_.lidar_begin_time_ - last_lidar_time_) > 0.5) {
-        LOG(ERROR) << "检测到雷达断流，时长：" << (measures_.lidar_begin_time_ - last_lidar_time_);
-    }
-
-    last_lidar_time_ = measures_.lidar_begin_time_;
 
     // 初始若干秒内地图还很稀疏，ObsModel和MapIncremental会根据这个标志放宽部分逻辑。
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
