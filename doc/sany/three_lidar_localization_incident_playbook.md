@@ -49,7 +49,7 @@
 
 ## 域控部署与运行
 
-在 `feature/gj_change_2025.11.19` 构建并部署后，先启动三路 Livox 和主 IMU。仅在需要录包时启动无损 Zstd 压缩器：
+在 `feature/gj_change_2025.11.19` 构建并部署后，先启动三路 Livox；不录包时只要求主 IMU，录包时要求 YAML 中配置的全部 IMU。仅在需要录包时启动无损 Zstd 压缩器：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -68,7 +68,7 @@ export LIGHTNING_LM_OUT_ROOT=/home/nvidia/project/gj_ws/runs
 bash scripts/run_sany_online_diagnostics.sh
 ```
 
-开启录包时默认至少要求 20 GiB 可用空间；运行时间不设上限，直到定位进程退出或 Ctrl-C。脚本按配置录制全部 Zstd 点云、主 IMU、定位输出和诊断话题，使用 MCAP fastwrite 与 1 GiB cache。Zstd 点云是无损数据，未录制相机。
+开启录包时默认至少要求 20 GiB 可用空间；运行时间不设上限，直到定位进程退出或 Ctrl-C。脚本按配置录制全部 Zstd 点云、YAML 中配置的全部 IMU、定位输出和诊断话题，使用 MCAP fastwrite 与 1 GiB cache。定位算法仍只使用主 IMU。Zstd 点云是无损数据，未录制相机。
 
 不需要录包时设置 `SANY_RECORD_BAG=0`。此模式只等待定位 YAML 中的原始 `sensor_msgs/msg/PointCloud2` 雷达话题和主 IMU，不要求 `/zstd` 话题、压缩节点、完整 Livox 压缩消息环境、MCAP 插件、录包 QoS 文件或最低录包磁盘空间：
 
@@ -77,7 +77,7 @@ export SANY_RECORD_BAG=0
 bash scripts/run_sany_online_diagnostics.sh sany_4lidar_no_bag
 ```
 
-脚本会从 `LIGHTNING_LM_CONFIG` 的 `multi_lidar.topics` 自动读取雷达数量、主 IMU，并把每个原始雷达 topic 映射到对应的 `/zstd` 录制 topic。因此切换为当前域控四雷达配置时无需修改脚本：
+脚本会从 `LIGHTNING_LM_CONFIG` 的 `multi_lidar.topics` 自动读取雷达数量、主 IMU 和全部 IMU 录制话题，并把每个原始雷达 topic 映射到对应的 `/zstd` 录制 topic。因此切换为当前域控四雷达配置时无需修改脚本：
 
 ```bash
 export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml
@@ -87,7 +87,7 @@ bash scripts/run_sany_online_diagnostics.sh sany_4lidar_diag
 
 四雷达建图配置为 `config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`，不应用它代替在线定位 YAML。两个正式配置均纳入 `config/`；每次运行拷贝到 `runs/<run>/config.yaml` 的文件只是快照，不是下一次部署的配置源。
 
-该定位配置对应当前域控的 184/108/133/143 四台 MID-360，主雷达和主 IMU 为 184。运行前必须确认第四路 143 的外参仍对应当前车辆，并且地图目录包含与该配置匹配的 `index.txt`、分块点云、`map_frame.yaml` 和 `solid_relocalization/database.yaml`。若使用其他雷达编号，可通过 `SANY_COMPRESSED_LIDAR_TOPICS` 和 `SANY_IMU_TOPIC` 显式覆盖录制话题，但算法订阅话题与外参仍以 YAML 为准。
+该定位配置对应当前域控的 184/108/133/143 四台 MID-360，主雷达和主 IMU 为 184。运行前必须确认第四路 143 的外参仍对应当前车辆，并且地图目录包含与该配置匹配的 `index.txt`、分块点云、`map_frame.yaml` 和 `solid_relocalization/database.yaml`。若使用其他雷达编号，可通过 `SANY_COMPRESSED_LIDAR_TOPICS` 覆盖压缩点云录制话题；`SANY_IMU_TOPIC` 只覆盖定位使用的主 IMU，并会确保该话题也被录制。其余 IMU 录制话题来自 YAML，算法订阅话题与外参仍以 YAML 为准。
 
 当 `/PosRes` 在首次正常发布后静默 2 s，脚本在 `snapshots/` 保存一次诊断、topic/publisher、进程、内存、磁盘、网卡和时钟快照；恢复后写入 `logs/posres_watchdog.csv`，后续再次丢失会生成新的快照。它不会自动重启定位。
 

@@ -27,7 +27,8 @@ Usage:
   scripts/run_sany_online_diagnostics.sh [run_name]
 
 Required before launch:
-  1. Start every Livox driver configured by LIGHTNING_LM_CONFIG and the primary IMU.
+  1. Start every Livox driver configured by LIGHTNING_LM_CONFIG.
+     No-bag mode requires the primary IMU; bag mode requires all configured IMUs.
   2. When SANY_RECORD_BAG=1, start:
      ros2 run livox_ros_driver2 pointcloud_zstd_compressor
 
@@ -46,6 +47,7 @@ Useful environment variables:
 
 The run continues until localization exits or Ctrl-C. A /PosRes loss only
 records a snapshot; it does not stop or restart localization.
+When recording, every IMU listed under multi_lidar.topics is added to the bag.
 EOF
 }
 
@@ -157,17 +159,23 @@ configured = multi.get("topics") or {}
 
 if multi.get("enabled", False):
     lidar_topics = []
+    imu_topics = []
     for key, topic in configured.items():
         match = re.fullmatch(r"lidar_(\d+)", str(key))
         if match and topic:
             lidar_topics.append((int(match.group(1)), str(topic)))
+        match = re.fullmatch(r"imu_(\d+)", str(key))
+        if match and topic:
+            imu_topics.append((int(match.group(1)), str(topic)))
     lidar_topics.sort()
+    imu_topics.sort()
     primary_id = int(multi.get("primary_lidar_id", 0))
     imu_topic = configured.get(f"imu_{primary_id}") or common.get("imu_topic")
 else:
     topic = common.get("lidar_topic")
     lidar_topics = [(0, str(topic))] if topic else []
     imu_topic = common.get("imu_topic")
+    imu_topics = [(0, str(imu_topic))] if imu_topic else []
 
 if not lidar_topics:
     raise SystemExit("no LiDAR topics found in the localization config")
@@ -175,19 +183,27 @@ if not imu_topic:
     raise SystemExit("primary IMU topic is missing from the localization config")
 
 print(str(imu_topic))
+print(" ".join(topic for _, topic in imu_topics))
 for _, topic in lidar_topics:
     print(topic)
 PY
 } 2>&1)" || fail "failed to read sensor topics from ${config_path}: ${sensor_topics}"
 mapfile -t configured_sensor_topics <<<"${sensor_topics}"
-(( ${#configured_sensor_topics[@]} >= 2 )) || fail "config must provide at least one LiDAR and one IMU topic."
+(( ${#configured_sensor_topics[@]} >= 3 )) || fail "config must provide at least one LiDAR and one IMU topic."
 
 imu_topic="${SANY_IMU_TOPIC:-${configured_sensor_topics[0]}}"
-lidar_topics=("${configured_sensor_topics[@]:1}")
-required_topics=("${lidar_topics[@]}" "${imu_topic}")
+read -r -a configured_imu_topics <<<"${configured_sensor_topics[1]}"
+lidar_topics=("${configured_sensor_topics[@]:2}")
 compressed_lidar_topics=()
+record_imu_topics=()
+required_imu_topics=("${imu_topic}")
 record_topics=()
 if [[ "${record_bag}" == "1" ]]; then
+  record_imu_topics=("${configured_imu_topics[@]}")
+  if [[ " ${record_imu_topics[*]} " != *" ${imu_topic} "* ]]; then
+    record_imu_topics+=("${imu_topic}")
+  fi
+  required_imu_topics=("${record_imu_topics[@]}")
   if [[ -n "${SANY_COMPRESSED_LIDAR_TOPICS:-}" ]]; then
     read -r -a compressed_lidar_topics <<<"${SANY_COMPRESSED_LIDAR_TOPICS}"
   else
@@ -200,10 +216,9 @@ if [[ "${record_bag}" == "1" ]]; then
     done
   fi
   (( ${#compressed_lidar_topics[@]} > 0 )) || fail "at least one compressed LiDAR topic is required for bag recording."
-  required_topics+=("${compressed_lidar_topics[@]}")
   record_topics=(
     "${compressed_lidar_topics[@]}"
-    "${imu_topic}"
+    "${record_imu_topics[@]}"
     /PosRes
     /slamPoseRaw_topic
     /localization/fault_status
@@ -214,6 +229,7 @@ if [[ "${record_bag}" == "1" ]]; then
     /rosout
   )
 fi
+required_topics=("${lidar_topics[@]}" "${required_imu_topics[@]}" "${compressed_lidar_topics[@]}")
 
 mkdir -p "${out_root}"
 out_root="$(cd -- "${out_root}" && pwd)"
@@ -343,7 +359,7 @@ trap 'stop_children; exit 130' INT TERM
 trap stop_children EXIT
 
 if [[ "${record_bag}" == "1" ]]; then
-  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#compressed_lidar_topics[@]} Zstd recorder topics, and the primary IMU..."
+  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#record_imu_topics[@]} IMU topics, and ${#compressed_lidar_topics[@]} Zstd recorder topics..."
 else
   echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU..."
 fi
@@ -358,9 +374,11 @@ for topic in "${compressed_lidar_topics[@]}"; do
   [[ "${actual_type}" == "livox_ros_driver2/msg/CompressedPointCloud2" ]] ||
     fail "${topic} has type ${actual_type}, expected livox_ros_driver2/msg/CompressedPointCloud2"
 done
-actual_type="$(ros2 topic type "${imu_topic}")"
-[[ "${actual_type}" == "sensor_msgs/msg/Imu" ]] ||
-  fail "${imu_topic} has type ${actual_type}, expected sensor_msgs/msg/Imu"
+for topic in "${required_imu_topics[@]}"; do
+  actual_type="$(ros2 topic type "${topic}")"
+  [[ "${actual_type}" == "sensor_msgs/msg/Imu" ]] ||
+    fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/Imu"
+done
 
 {
   echo "started_at=$(date --iso-8601=ns)"
@@ -373,6 +391,7 @@ actual_type="$(ros2 topic type "${imu_topic}")"
   echo "raw_lidar_topics=${lidar_topics[*]}"
   echo "compressed_lidar_topics=${compressed_lidar_topics[*]:-<disabled>}"
   echo "primary_imu_topic=${imu_topic}"
+  echo "recorded_imu_topics=${record_imu_topics[*]:-<disabled>}"
   echo "git_commit=$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unavailable)"
   echo "config_sha256=$(sha256sum "${config_path}" | awk '{print $1}')"
   echo "kernel=$(uname -a)"
