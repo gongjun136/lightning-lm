@@ -14,6 +14,7 @@ map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
 run_name="${1:-sany_loc_diag_$(date +%Y%m%d_%H%M%S)}"
 qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_qos.yaml}"
+record_bag="${SANY_RECORD_BAG:-1}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
 posres_timeout_seconds="${SANY_POSRES_TIMEOUT_SECONDS:-2}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
@@ -33,6 +34,7 @@ Useful environment variables:
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
   LIGHTNING_LM_LIVOX_SETUP    Full Livox SDK setup.bash containing CompressedPointCloud2
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
+  SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
   SANY_TOPIC_WAIT_SECONDS     Compressed-input discovery timeout (default: 60)
   SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
   SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
@@ -86,7 +88,10 @@ fi
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${livox_setup}" ]] || fail "Livox SDK setup not found: ${livox_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
-[[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
+[[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
+if [[ "${record_bag}" == "1" ]]; then
+  [[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
+fi
 [[ "${out_root}" == /* ]] || fail "LIGHTNING_LM_OUT_ROOT must be absolute."
 [[ "${config_path}" == /* ]] || fail "LIGHTNING_LM_CONFIG must be absolute."
 if [[ -n "${map_path}" && "${map_path}" != /* ]]; then
@@ -97,7 +102,9 @@ if [[ -n "${map_path}" && ! -e "${map_path}" ]]; then
 fi
 [[ "${topic_wait_seconds}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_TOPIC_WAIT_SECONDS must be positive."
 [[ "${posres_timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_POSRES_TIMEOUT_SECONDS must be positive."
-[[ "${min_free_gb}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_MIN_FREE_GB must be positive."
+if [[ "${record_bag}" == "1" ]]; then
+  [[ "${min_free_gb}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_MIN_FREE_GB must be positive."
+fi
 
 set +u
 source "${ros_setup}"
@@ -117,7 +124,9 @@ set -u
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
 command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
-grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
+if [[ "${record_bag}" == "1" ]]; then
+  grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
+fi
 livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
   fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
 case "${livox_prefix}" in
@@ -192,11 +201,16 @@ mkdir -p "${out_root}"
 out_root="$(cd -- "${out_root}" && pwd)"
 run_dir="${out_root}/${run_name}"
 [[ ! -e "${run_dir}" ]] || fail "run directory already exists: ${run_dir}"
-available_kb="$(df -Pk "${out_root}" | awk 'NR==2 {print $4}')"
-required_kb=$((min_free_gb * 1024 * 1024))
-((available_kb >= required_kb)) || fail "less than ${min_free_gb} GiB free under ${out_root}"
+if [[ "${record_bag}" == "1" ]]; then
+  available_kb="$(df -Pk "${out_root}" | awk 'NR==2 {print $4}')"
+  required_kb=$((min_free_gb * 1024 * 1024))
+  ((available_kb >= required_kb)) || fail "less than ${min_free_gb} GiB free under ${out_root}"
+fi
 
-mkdir -p "${run_dir}/bag" "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
+mkdir -p "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
+if [[ "${record_bag}" == "1" ]]; then
+  mkdir -p "${run_dir}/bag"
+fi
 config_path="$(realpath "${config_path}")"
 cp -- "${config_path}" "${run_dir}/config.yaml"
 
@@ -328,6 +342,7 @@ actual_type="$(ros2 topic type "${imu_topic}")"
   echo "config_path=${config_path}"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
+  echo "record_bag=${record_bag}"
   echo "compressed_lidar_topics=${lidar_topics[*]}"
   echo "primary_imu_topic=${imu_topic}"
   echo "git_commit=$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unavailable)"
@@ -338,25 +353,27 @@ actual_type="$(ros2 topic type "${imu_topic}")"
 git -C "${repo_dir}" status --short >"${run_dir}/git_status.txt" 2>&1 || true
 ros2 topic list -t >"${run_dir}/topics_at_start.txt" 2>&1 || true
 
-ros2 bag record \
-  --storage mcap \
-  --storage-preset-profile fastwrite \
-  --max-cache-size 1073741824 \
-  --qos-profile-overrides-path "${qos_file}" \
-  --output "${run_dir}/bag/localization_incident" \
-  "${record_topics[@]}" \
-  >"${run_dir}/logs/rosbag.stdout.log" \
-  2>"${run_dir}/logs/rosbag.stderr.log" &
-recorder_pid=$!
-child_pids+=("${recorder_pid}")
-sleep 1
-if ! kill -0 "${recorder_pid}" 2>/dev/null; then
-  set +e
-  wait "${recorder_pid}"
-  recorder_status=$?
-  set -e
-  tail -n 40 "${run_dir}/logs/rosbag.stderr.log" >&2 || true
-  fail "rosbag recorder exited during startup with status ${recorder_status}."
+if [[ "${record_bag}" == "1" ]]; then
+  ros2 bag record \
+    --storage mcap \
+    --storage-preset-profile fastwrite \
+    --max-cache-size 1073741824 \
+    --qos-profile-overrides-path "${qos_file}" \
+    --output "${run_dir}/bag/localization_incident" \
+    "${record_topics[@]}" \
+    >"${run_dir}/logs/rosbag.stdout.log" \
+    2>"${run_dir}/logs/rosbag.stderr.log" &
+  recorder_pid=$!
+  child_pids+=("${recorder_pid}")
+  sleep 1
+  if ! kill -0 "${recorder_pid}" 2>/dev/null; then
+    set +e
+    wait "${recorder_pid}"
+    recorder_status=$?
+    set -e
+    tail -n 40 "${run_dir}/logs/rosbag.stderr.log" >&2 || true
+    fail "rosbag recorder exited during startup with status ${recorder_status}."
+  fi
 fi
 
 watch_posres &
@@ -379,7 +396,11 @@ if [[ -n "${map_path}" ]]; then
   algorithm_args+=(--map="${map_path}")
 fi
 
-echo "Recording to ${run_dir}; Ctrl-C stops the run cleanly."
+if [[ "${record_bag}" == "1" ]]; then
+  echo "Running diagnostics with background bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
+else
+  echo "Running diagnostics without bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
+fi
 set +e
 stdbuf -oL -eL "${algorithm_args[@]}" \
   >"${run_dir}/logs/run_loc_online.stdout.log" \
