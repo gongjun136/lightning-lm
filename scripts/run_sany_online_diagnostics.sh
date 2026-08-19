@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run SANY multi-LiDAR localization with an optional lossless compressed MCAP
+# Run SANY multi-LiDAR localization with an optional raw-sensor MCAP
 # recorder, a /PosRes watchdog, and incident snapshots. Localization is never
 # restarted by this script; the in-process global relocalizer owns recovery.
 set -euo pipefail
@@ -8,8 +8,20 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd -- "${script_dir}/.." && pwd)}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 install_setup="${LIGHTNING_LM_INSTALL_SETUP:-${repo_dir}/install/setup.bash}"
-livox_setup="${LIGHTNING_LM_LIVOX_SETUP:-${repo_dir}/../sdk/livox_sdk/install/setup.bash}"
-config_path="${LIGHTNING_LM_CONFIG:-${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_blind5.yaml}"
+lidar_layout="${SANY_LIDAR_LAYOUT:-4}"
+case "${lidar_layout}" in
+  3)
+    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_blind5.yaml"
+    ;;
+  4)
+    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml"
+    ;;
+  *)
+    echo "ERROR: SANY_LIDAR_LAYOUT must be 3 or 4." >&2
+    exit 1
+    ;;
+esac
+config_path="${LIGHTNING_LM_CONFIG:-${default_config_path}}"
 map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
 run_name="${1:-sany_loc_diag_$(date +%Y%m%d_%H%M%S)}"
@@ -18,6 +30,8 @@ record_bag="${SANY_RECORD_BAG:-1}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
 posres_timeout_seconds="${SANY_POSRES_TIMEOUT_SECONDS:-2}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
+wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
+enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
 
 usage() {
   cat <<'EOF'
@@ -29,57 +43,32 @@ Usage:
 Required before launch:
   1. Start every Livox driver configured by LIGHTNING_LM_CONFIG.
      No-bag mode requires the primary IMU; bag mode requires all configured IMUs.
-  2. When SANY_RECORD_BAG=1, start:
-     ros2 run livox_ros_driver2 pointcloud_zstd_compressor
+  2. When CAN observation is enabled, start the CAN bridge that publishes
+     /SpeThrCAN4_topic.
 
 Useful environment variables:
+  SANY_LIDAR_LAYOUT           Select bundled localization YAML: 3 or 4 (default: 4)
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
-  LIGHTNING_LM_LIVOX_SETUP    Full Livox SDK setup.bash used by bag recording
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
   SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
   SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
   SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
-  SANY_COMPRESSED_LIDAR_TOPICS
-                              Optional space-separated recorder topic override
+  SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
+  SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
 
 The run continues until localization exits or Ctrl-C. A /PosRes loss only
 records a snapshot; it does not stop or restart localization.
-When recording, every IMU listed under multi_lidar.topics is added to the bag.
+When recording, every raw PointCloud2, every configured IMU, and the CAN topic
+are added to the bag even when CAN observation is disabled.
 EOF
 }
 
 fail() {
   echo "ERROR: $*" >&2
   exit 1
-}
-
-# colcon setup files prepend path entries only when they are not already
-# present. The Lightning install may load the Livox SDK as a recorded underlay
-# before adding Lightning's embedded livox_ros_driver2, leaving that older
-# package first even when the SDK setup is sourced again. Remove SDK entries
-# immediately before re-sourcing it so the full SDK reliably wins.
-remove_path_entries_under() {
-  local variable_name="$1"
-  local root="${2%/}"
-  local value="${!variable_name-}"
-  local cleaned=""
-  local entry
-  local entries=()
-
-  IFS=: read -r -a entries <<<"${value}"
-  for entry in "${entries[@]}"; do
-    [[ -n "${entry}" ]] || continue
-    case "${entry}" in
-      "${root}"|"${root}"/*) continue ;;
-    esac
-    cleaned="${cleaned:+${cleaned}:}${entry}"
-  done
-
-  printf -v "${variable_name}" '%s' "${cleaned}"
-  export "${variable_name}"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -91,10 +80,13 @@ fi
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
 [[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
+[[ "${enable_can_observation}" == "0" || "${enable_can_observation}" == "1" ]] ||
+  fail "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1."
+export SANY_ENABLE_CAN_OBSERVATION="${enable_can_observation}"
 if [[ "${record_bag}" == "1" ]]; then
-  [[ -r "${livox_setup}" ]] || fail "Livox SDK setup not found: ${livox_setup}"
   [[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
 fi
+[[ "${wheel_speed_topic}" == /* ]] || fail "SANY_WHEEL_SPEED_TOPIC must be an absolute topic name."
 [[ "${out_root}" == /* ]] || fail "LIGHTNING_LM_OUT_ROOT must be absolute."
 [[ "${config_path}" == /* ]] || fail "LIGHTNING_LM_CONFIG must be absolute."
 if [[ -n "${map_path}" && "${map_path}" != /* ]]; then
@@ -112,19 +104,6 @@ fi
 set +u
 source "${ros_setup}"
 source "${install_setup}"
-livox_install_root=""
-if [[ "${record_bag}" == "1" ]]; then
-  # lightning-lm embeds an older package with the same livox_ros_driver2 name.
-  # Force the full SDK to the front so rosbag resolves CompressedPointCloud2
-  # from it even when the workspace setup already loaded the SDK as an underlay.
-  livox_install_root="$(cd -- "$(dirname -- "${livox_setup}")" && pwd)"
-  for path_variable in \
-    AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH \
-    LD_LIBRARY_PATH PYTHONPATH PATH PKG_CONFIG_PATH; do
-    remove_path_entries_under "${path_variable}" "${livox_install_root}"
-  done
-  source "${livox_setup}"
-fi
 set -u
 
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
@@ -132,18 +111,6 @@ command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
 if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
-  livox_prefix="$(ros2 pkg prefix livox_ros_driver2 2>/dev/null)" ||
-    fail "livox_ros_driver2 is unavailable after sourcing ${livox_setup}."
-  case "${livox_prefix}" in
-    "${livox_install_root}"|"${livox_install_root}"/*) ;;
-    *) fail "livox_ros_driver2 resolved to ${livox_prefix}, expected the full SDK under ${livox_install_root}." ;;
-  esac
-  ros2 interface show livox_ros_driver2/msg/CompressedPointCloud2 >/dev/null 2>&1 ||
-    fail "CompressedPointCloud2 is missing from ${livox_prefix}; rebuild the full Livox SDK."
-  [[ -r "${livox_prefix}/lib/liblivox_ros_driver2__rosidl_typesupport_cpp.so" ]] ||
-    fail "CompressedPointCloud2 C++ typesupport library is missing under ${livox_prefix}/lib."
-else
-  livox_prefix="not-required"
 fi
 
 sensor_topics="$({ python3 - "${config_path}" <<'PY'
@@ -194,7 +161,6 @@ mapfile -t configured_sensor_topics <<<"${sensor_topics}"
 imu_topic="${SANY_IMU_TOPIC:-${configured_sensor_topics[0]}}"
 read -r -a configured_imu_topics <<<"${configured_sensor_topics[1]}"
 lidar_topics=("${configured_sensor_topics[@]:2}")
-compressed_lidar_topics=()
 record_imu_topics=()
 required_imu_topics=("${imu_topic}")
 record_topics=()
@@ -204,21 +170,10 @@ if [[ "${record_bag}" == "1" ]]; then
     record_imu_topics+=("${imu_topic}")
   fi
   required_imu_topics=("${record_imu_topics[@]}")
-  if [[ -n "${SANY_COMPRESSED_LIDAR_TOPICS:-}" ]]; then
-    read -r -a compressed_lidar_topics <<<"${SANY_COMPRESSED_LIDAR_TOPICS}"
-  else
-    for topic in "${lidar_topics[@]}"; do
-      if [[ "${topic}" == */zstd ]]; then
-        compressed_lidar_topics+=("${topic}")
-      else
-        compressed_lidar_topics+=("${topic%/}/zstd")
-      fi
-    done
-  fi
-  (( ${#compressed_lidar_topics[@]} > 0 )) || fail "at least one compressed LiDAR topic is required for bag recording."
   record_topics=(
-    "${compressed_lidar_topics[@]}"
+    "${lidar_topics[@]}"
     "${record_imu_topics[@]}"
+    "${wheel_speed_topic}"
     /PosRes
     /slamPoseRaw_topic
     /localization/fault_status
@@ -229,7 +184,10 @@ if [[ "${record_bag}" == "1" ]]; then
     /rosout
   )
 fi
-required_topics=("${lidar_topics[@]}" "${required_imu_topics[@]}" "${compressed_lidar_topics[@]}")
+required_topics=("${lidar_topics[@]}" "${required_imu_topics[@]}")
+if [[ "${enable_can_observation}" == "1" ]]; then
+  required_topics+=("${wheel_speed_topic}")
+fi
 
 mkdir -p "${out_root}"
 out_root="$(cd -- "${out_root}" && pwd)"
@@ -359,9 +317,17 @@ trap 'stop_children; exit 130' INT TERM
 trap stop_children EXIT
 
 if [[ "${record_bag}" == "1" ]]; then
-  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#record_imu_topics[@]} IMU topics, and ${#compressed_lidar_topics[@]} Zstd recorder topics..."
+  if [[ "${enable_can_observation}" == "1" ]]; then
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#record_imu_topics[@]} IMU topics, and CAN wheel speed..."
+  else
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and ${#record_imu_topics[@]} IMU topics; CAN observation is disabled."
+  fi
 else
-  echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU..."
+  if [[ "${enable_can_observation}" == "1" ]]; then
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, the primary IMU, and CAN wheel speed..."
+  else
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU; CAN observation is disabled."
+  fi
 fi
 wait_for_inputs || fail "required sensor inputs did not appear."
 for topic in "${lidar_topics[@]}"; do
@@ -369,27 +335,27 @@ for topic in "${lidar_topics[@]}"; do
   [[ "${actual_type}" == "sensor_msgs/msg/PointCloud2" ]] ||
     fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/PointCloud2"
 done
-for topic in "${compressed_lidar_topics[@]}"; do
-  actual_type="$(ros2 topic type "${topic}")"
-  [[ "${actual_type}" == "livox_ros_driver2/msg/CompressedPointCloud2" ]] ||
-    fail "${topic} has type ${actual_type}, expected livox_ros_driver2/msg/CompressedPointCloud2"
-done
 for topic in "${required_imu_topics[@]}"; do
   actual_type="$(ros2 topic type "${topic}")"
   [[ "${actual_type}" == "sensor_msgs/msg/Imu" ]] ||
     fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/Imu"
 done
+if [[ "${enable_can_observation}" == "1" ]]; then
+  wheel_speed_type="$(ros2 topic type "${wheel_speed_topic}")"
+  [[ "${wheel_speed_type}" == "geosun_msgs/msg/SpeThrCAN4" ]] ||
+    fail "${wheel_speed_topic} has type ${wheel_speed_type}, expected geosun_msgs/msg/SpeThrCAN4"
+fi
 
 {
   echo "started_at=$(date --iso-8601=ns)"
   echo "repo_dir=${repo_dir}"
-  echo "livox_prefix=${livox_prefix}"
   echo "config_path=${config_path}"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
   echo "record_bag=${record_bag}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
-  echo "compressed_lidar_topics=${compressed_lidar_topics[*]:-<disabled>}"
+  echo "enable_can_observation=${enable_can_observation}"
+  echo "wheel_speed_topic=${wheel_speed_topic}"
   echo "primary_imu_topic=${imu_topic}"
   echo "recorded_imu_topics=${record_imu_topics[*]:-<disabled>}"
   echo "git_commit=$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unavailable)"

@@ -185,6 +185,19 @@ int main() {
     publication_gate.ObserveLidarMatch(true);
     Require(publication_gate.MapOutputsEnabled(), "one valid match immediately resumes map outputs");
 
+    LocalizationPublicationGate freshness_gate(5);
+    freshness_gate.SetMaxLidarMatchAge(0.6);
+    freshness_gate.ObserveLidarMatch(true, 10.0);
+    Require(freshness_gate.MapOutputsEnabled(10.6), "lidar match remains fresh at the age boundary");
+    Require(!freshness_gate.MapOutputsEnabled(10.61), "stale lidar worker disables map outputs");
+    Require(freshness_gate.LidarMatchStale(10.61), "stale lidar worker is diagnosed explicitly");
+    Require(Near(freshness_gate.LidarMatchAgeSec(10.7), 0.7), "lidar match age uses sensor time");
+    Require(Near(freshness_gate.LastLidarMatchStamp(), 10.0), "last completed lidar match is retained");
+    freshness_gate.ObserveLidarMatch(false, 10.7);
+    Require(!freshness_gate.MapOutputsEnabled(10.7), "an invalid frame cannot clear a stale-output latch");
+    freshness_gate.ObserveLidarMatch(true, 10.8);
+    Require(freshness_gate.MapOutputsEnabled(10.8), "a fresh valid match clears the stale-output latch");
+
     LocalizationTelemetryState telemetry(5, 500, 0.1);
     telemetry.Start();
     const auto telemetry_stamp = math::FromSec(20.0);
@@ -223,6 +236,16 @@ int main() {
     Require(fault.level == lightning::msg::FaultStatus::LEVEL_NO_FAULT &&
                 fault.fault_type == 0 && fault.description.empty(),
             "GOOD clears localization faults");
+    telemetry.ObserveLocalizationStale(true);
+    fault = telemetry.MakeFaultStatus(telemetry_stamp);
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0 &&
+                telemetry.MakeLocalizationStatus(telemetry_stamp).status ==
+                    lightning::msg::LocalizationStatus::STATUS_FAIL,
+            "a stalled lidar worker changes GOOD to localization lost");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::GOOD, 0);
+    Require(telemetry.MakeFaultStatus(telemetry_stamp).level ==
+                lightning::msg::FaultStatus::LEVEL_NO_FAULT,
+            "a new GOOD match recovers from lidar freshness timeout");
 
     geometry_msgs::msg::PoseStamped path_pose;
     path_pose.header.frame_id = "map";

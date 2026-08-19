@@ -171,10 +171,25 @@ bool PGO::ProcessDR(const NavState& dr_result) {
     while (impl_->dr_pose_queue_.size() >= pgo::PGO_MAX_SIZE_OF_RELATIVE_POSE_QUEUE) {
         impl_->dr_pose_queue_.pop_front();
     }
+
+    const bool was_parking = is_parking_;
+    dr_is_parking_ = dr_result.is_parking_;
+    // A stationary request can arrive before the first fused map pose. Do not
+    // freeze an uninitialized (invalid) result and thereby block PGO startup.
+    is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
+    if (is_parking_ && !was_parking && impl_->result_.valid_) {
+        parking_result_ = impl_->result_;
+        if (dr_extrapolation_enabled_) ExtrapolateLocResult(parking_result_);
+        parking_result_.is_parking_ = true;
+        parking_result_.vel_b_ = Vec3d::Zero();
+    } else if (!is_parking_ && was_parking) {
+        parking_result_ = LocalizationResult{};
+    }
     if (!impl_->dr_pose_queue_.empty() && !is_parking_) {
         PubResult();
     } else if (is_parking_ && high_freq_output_func_) {
         parking_result_.timestamp_ = dr_result.timestamp_;
+        parking_result_.vel_b_ = Vec3d::Zero();
         high_freq_output_func_(parking_result_);
     }
 
@@ -220,9 +235,6 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
     if (!impl_->dr_pose_queue_.empty() && lio_result.timestamp_ >= impl_->dr_pose_queue_.back().timestamp_ &&
         !is_parking_) {
         PubResult();
-    } else if (is_parking_ && high_freq_output_func_) {
-        parking_result_.timestamp_ = lio_result.timestamp_;
-        high_freq_output_func_(parking_result_);
     }
 
     return true;
@@ -230,10 +242,14 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
 
 bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     UL lock(impl_->data_mutex_);
-    is_parking_ = loc_result.is_parking_;
-    if (is_parking_ && high_freq_output_func_) {
-        parking_result_ = loc_result;
-        high_freq_output_func_(loc_result);
+    lidar_loc_is_parking_ = loc_result.is_parking_;
+    is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
+    if (is_parking_) {
+        // Keep running LidarLoc for health monitoring and global relocalization,
+        // but do not feed scan-to-map jitter into a vehicle that the stationary
+        // detector confirms is stopped. An accepted global relocalization resets PGO first,
+        // so a genuine map correction can still initialize a new held pose.
+        // ProcessDR remains the single monotonic parked-output clock.
         return true;
     }
 
@@ -334,6 +350,9 @@ bool PGO::Reset() {
     last_lidar_loc_input_time_ = -1.0;
     high_freq_result_ = LocalizationResult{};
     parking_result_ = LocalizationResult{};
+    is_parking_ = false;
+    dr_is_parking_ = false;
+    lidar_loc_is_parking_ = false;
     return impl_->Reset();
 }
 

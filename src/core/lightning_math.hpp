@@ -729,20 +729,28 @@ inline bool PoseInterp(double query_time, C&& data, FT&& take_time_func, FP&& ta
         }
     }
 
-    auto match_iter = data.begin();
-    for (auto iter = data.begin(); iter != data.end(); ++iter) {
-        auto next_iter = iter;
-        next_iter++;
+    auto match_iter_n = data.end();
+    --match_iter_n;
+    auto match_iter = match_iter_n;
+    --match_iter;
+    // High-frequency PGO queries almost always target the previous DR sample.
+    // Resolve that tail interval in O(1) instead of scanning a queue that can
+    // contain thousands of IMU states on every sample.
+    if (query_time < take_time_func(*match_iter)) {
+        match_iter = data.begin();
+        for (auto iter = data.begin(); iter != data.end(); ++iter) {
+            auto next_iter = iter;
+            next_iter++;
 
-        if (next_iter == data.end() ||
-            (take_time_func(*iter) < query_time && take_time_func(*next_iter) >= query_time)) {
-            match_iter = iter;
-            break;
+            if (next_iter == data.end() ||
+                (take_time_func(*iter) < query_time && take_time_func(*next_iter) >= query_time)) {
+                match_iter = iter;
+                break;
+            }
         }
+        match_iter_n = match_iter;
+        match_iter_n++;
     }
-
-    auto match_iter_n = match_iter;
-    match_iter_n++;
     if (match_iter_n == data.end() || take_time_func(*match_iter) >= query_time) {
         // 就一个，那就返回他
         best_match = *match_iter;
@@ -751,13 +759,13 @@ inline bool PoseInterp(double query_time, C&& data, FT&& take_time_func, FP&& ta
     }
 
     double dt = take_time_func(*match_iter_n) - take_time_func(*match_iter);
-    double s = (query_time - take_time_func(*match_iter)) / dt;  // s=0 时为第一帧，s=1时为next
     // 出现了 dt为0的bug
     if (fabs(dt) < 1e-6) {
         best_match = *match_iter;
         result = take_pose_func(*match_iter);
         return true;
     }
+    double s = (query_time - take_time_func(*match_iter)) / dt;  // s=0 时为第一帧，s=1时为next
 
     SE3 pose_first = take_pose_func(*match_iter);
     SE3 pose_next = take_pose_func(*match_iter_n);

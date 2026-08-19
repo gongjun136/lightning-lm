@@ -157,6 +157,14 @@ class LaserMapping {
         }
     }
 
+    /// Apply a conservative zero-velocity constraint to the high-frequency
+    /// prediction state after an external stationary detector has fired.
+    void SetIMUVelocity(const Vec3d& velocity) {
+        auto state = kf_imu_.GetX();
+        state.SetVel(velocity);
+        kf_imu_.ChangeX(state);
+    }
+
     /// 获取最近一次去畸变后的点云，点仍在当前Lidar坐标系下。
     CloudPtr GetScanUndist() const { return scan_undistort_; }
     /// 获取当前去畸变点云叠加附近投影关键帧后的点云。

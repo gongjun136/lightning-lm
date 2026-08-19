@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -89,6 +91,9 @@ class Localization {
     /// 处理IMU消息
     void ProcessIMUMsg(IMUPtr imu);
 
+    /// Observe signed longitudinal vehicle speed converted from CAN motor rpm.
+    void ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps);
+
     // void ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) override;
 
     /// 由外部设置pose，适用于手动重定位
@@ -172,12 +177,41 @@ class Localization {
     bool ShouldThrottleLidarInput(double timestamp);
     void ObserveSensorEnqueued(double timestamp);
     void ObserveSensorProcessed(double timestamp);
+    void ObserveLioForStaticDetector(const NavState& state);
+    void ObserveLidarLocForStaticDetector(const LocalizationResult& result);
+    bool UpdateImuStaticState(const IMUPtr& imu);
     sys::AsyncMessageProcess<SensorInput> sensor_proc_;
     sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
+    // ROS/DDS publication must never hold the ordered sensor/PGO processing
+    // path. Capacity one intentionally keeps only the newest live pose.
+    sys::AsyncMessageProcess<LocalizationResult> high_frequency_output_proc_;
     int lidar_odom_skip_cnt_ = 0;
     double online_sensor_max_lag_sec_ = 0.0;
     double online_sensor_resume_lag_sec_ = 0.0;
     std::atomic_bool lidar_overload_throttled_{false};
+
+    struct StaticImuSample {
+        double timestamp = 0.0;
+        double gyro_norm = 0.0;
+        double accel_norm = 0.0;
+    };
+    mutable std::mutex static_detector_mutex_;
+    std::deque<StaticImuSample> static_imu_window_;
+    double static_gyro_sum_ = 0.0;
+    double static_gyro_sq_sum_ = 0.0;
+    double static_accel_sum_ = 0.0;
+    double static_accel_sq_sum_ = 0.0;
+    double last_static_lio_stamp_ = 0.0;
+    double last_static_lio_speed_ = 0.0;
+    bool last_static_lio_reliable_ = false;
+    double last_valid_lidar_loc_stamp_ = 0.0;
+    double last_wheel_speed_stamp_ = 0.0;
+    std::chrono::steady_clock::time_point last_wheel_speed_arrival_{};
+    double last_wheel_speed_mps_ = 0.0;
+    bool wheel_speed_observed_ = false;
+    int static_exit_count_ = 0;
+    bool imu_static_hold_enabled_ = false;
+    bool imu_static_hold_active_ = false;
 
     /// 结果数据 =====================================================================================================
     LocalizationResult loc_result_;

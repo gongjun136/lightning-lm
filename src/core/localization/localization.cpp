@@ -2,7 +2,9 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
+#include <limits>
 
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
@@ -94,6 +96,28 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     options_.lidar_odom_skip_num_ =
         system && system["lidar_odom_skip_num"] ? system["lidar_odom_skip_num"].as<int>() : 1;
     options_.loc_on_kf_ = yaml.GetValue<bool>("lidar_loc", "loc_on_kf");
+    imu_static_hold_enabled_ =
+        system && system["enable_imu_static_hold"]
+            ? system["enable_imu_static_hold"].as<bool>()
+            : false;
+    {
+        std::lock_guard<std::mutex> static_lock(static_detector_mutex_);
+        static_imu_window_.clear();
+        static_gyro_sum_ = 0.0;
+        static_gyro_sq_sum_ = 0.0;
+        static_accel_sum_ = 0.0;
+        static_accel_sq_sum_ = 0.0;
+        last_static_lio_stamp_ = 0.0;
+        last_static_lio_speed_ = 0.0;
+        last_static_lio_reliable_ = false;
+        last_valid_lidar_loc_stamp_ = 0.0;
+        last_wheel_speed_stamp_ = 0.0;
+        last_wheel_speed_arrival_ = {};
+        last_wheel_speed_mps_ = 0.0;
+        wheel_speed_observed_ = false;
+        static_exit_count_ = 0;
+        imu_static_hold_active_ = false;
+    }
 
     const size_t sensor_queue_size =
         system && system["online_sensor_queue_size"]
@@ -138,6 +162,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
     sensor_proc_.SetName("传感器顺序队列");
     lidar_loc_proc_cloud_.SetName("激光定位");
+    high_frequency_output_proc_.SetName("高频定位输出");
+    high_frequency_output_proc_.SetMaxSize(1);
 
     // 允许跳帧
     lidar_loc_proc_cloud_.SetSkipParam(options_.enable_lidar_loc_skip_, options_.lidar_loc_skip_num_);
@@ -178,7 +204,16 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     pgo_->SetGlobalOutputHandleFunction([this](const LocalizationResult& res) {
         if (global_localization_result_callback_) global_localization_result_callback_(res);
     });
-    pgo_->SetHighFrequencyGlobalOutputHandleFunction(publish_localization_result);
+    high_frequency_output_proc_.SetProcFunc(publish_localization_result);
+    pgo_->SetHighFrequencyGlobalOutputHandleFunction(
+        [this, publish_localization_result](const LocalizationResult& result) {
+            if (options_.online_mode_) {
+                high_frequency_output_proc_.AddMessage(result);
+            } else {
+                publish_localization_result(result);
+            }
+        });
+    if (options_.online_mode_) high_frequency_output_proc_.Start();
 
     /// 预处理器
     preprocess_.reset(new PointCloudPreprocess());
@@ -292,12 +327,13 @@ void Localization::ProcessSensorInput(const SensorInput& input) {
     const double timestamp = input.is_imu && input.imu
                                  ? input.imu->timestamp
                                  : (input.cloud ? static_cast<double>(input.cloud->header.stamp) * 1e-9 : 0.0);
-    ObserveSensorProcessed(timestamp);
     if (input.is_imu) {
         ProcessIMUData(input.imu);
     } else {
         LidarOdomProcCloud(input.cloud, input.lidar_id);
     }
+    // This frontier means callback completion, not merely dequeue/start.
+    ObserveSensorProcessed(timestamp);
 }
 
 void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
@@ -323,6 +359,7 @@ void Localization::DrainLioOutputs() {
         if (status != LaserMapping::RunStatus::kOutput) continue;
 
         auto lo_state = lio_->GetState();
+        ObserveLioForStaticDetector(lo_state);
 
         lidar_loc_->ProcessLO(lo_state);
         pgo_->ProcessLidarOdom(lo_state);
@@ -421,8 +458,7 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
         lidar_overload_throttled_ = true;
         throttled = true;
         LOG(WARNING) << "sensor queue lag reached " << lag_sec
-                     << " sec; throttling lidar input until lag falls below "
-                     << online_sensor_resume_lag_sec_ << " sec";
+                     << " sec; keeping fresh lidar admissible while the bounded queue evicts stale input";
     } else if (throttled && lag_sec <= online_sensor_resume_lag_sec_) {
         lidar_overload_throttled_ = false;
         throttled = false;
@@ -430,12 +466,15 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
                   << " sec; resuming lidar input";
     }
 
-    if (!throttled) return false;
-    sensor_proc_.RecordDroppedMessage();
-    LOG_EVERY_N(WARNING, 100) << "drop lidar at " << std::setprecision(14) << timestamp
-                              << " for realtime overload protection; lag_sec=" << lag_sec
-                              << ", queue_pending=" << sensor_proc_.PendingCount();
-    return true;
+    if (throttled) {
+        LOG_EVERY_N(WARNING, 100) << "sensor overload at lidar " << std::setprecision(14)
+                                  << timestamp << "; lag_sec=" << lag_sec
+                                  << ", queue_pending=" << sensor_proc_.PendingCount()
+                                  << ", lidar remains admitted";
+    }
+    // Never latch into a state that rejects every future lidar frame. The
+    // bounded FIFO already removes the oldest stale input under overload.
+    return false;
 }
 
 void Localization::ObserveSensorProcessed(double timestamp) {
@@ -461,6 +500,154 @@ void Localization::ObserveSensorProcessed(double timestamp) {
         std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
 }
 
+void Localization::ObserveLioForStaticDetector(const NavState& state) {
+    if (!imu_static_hold_enabled_ || state.timestamp_ <= 0.0) return;
+    std::lock_guard<std::mutex> lock(static_detector_mutex_);
+    last_static_lio_stamp_ = state.timestamp_;
+    last_static_lio_speed_ = state.GetVel().norm();
+    last_static_lio_reliable_ = state.lidar_odom_reliable_;
+}
+
+void Localization::ObserveLidarLocForStaticDetector(const LocalizationResult& result) {
+    // LidarLoc owns lidar_loc_valid_, but valid_ is only populated later by
+    // PGO. Requiring valid_ here permanently prevented online static entry.
+    if (!imu_static_hold_enabled_ || !result.lidar_loc_valid_ ||
+        result.timestamp_ <= 0.0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(static_detector_mutex_);
+    last_valid_lidar_loc_stamp_ = result.timestamp_;
+}
+
+bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
+    if (!imu_static_hold_enabled_ || !imu || imu->timestamp <= 0.0) return false;
+
+    constexpr double kWindowSec = 1.0;
+    constexpr double kMinWindowSec = 0.8;
+    constexpr double kEnterGyroMean = 0.025;
+    constexpr double kEnterGyroStd = 0.010;
+    constexpr double kEnterAccelCv = 0.025;
+    constexpr double kEnterLioSpeed = 0.05;
+    constexpr double kExitLioSpeed = 0.08;
+    constexpr double kExitLioSpeedWithZeroCan = 0.30;
+    constexpr double kMaxLioAgeSec = 0.4;
+    constexpr double kMaxValidLocAgeSec = 0.8;
+    constexpr double kExitGyro = 0.05;
+    constexpr double kExitAccelRatio = 0.05;
+    constexpr double kMaxWheelSpeedAgeSec = 0.25;
+    constexpr double kEnterWheelSpeed = 0.03;
+    constexpr double kExitWheelSpeed = 0.05;
+    constexpr int kExitSamples = 3;
+
+    const StaticImuSample sample{imu->timestamp, imu->angular_velocity.norm(),
+                                 imu->linear_acceleration.norm()};
+    std::lock_guard<std::mutex> lock(static_detector_mutex_);
+    static_imu_window_.push_back(sample);
+    static_gyro_sum_ += sample.gyro_norm;
+    static_gyro_sq_sum_ += sample.gyro_norm * sample.gyro_norm;
+    static_accel_sum_ += sample.accel_norm;
+    static_accel_sq_sum_ += sample.accel_norm * sample.accel_norm;
+    while (!static_imu_window_.empty() &&
+           sample.timestamp - static_imu_window_.front().timestamp > kWindowSec) {
+        const auto& old = static_imu_window_.front();
+        static_gyro_sum_ -= old.gyro_norm;
+        static_gyro_sq_sum_ -= old.gyro_norm * old.gyro_norm;
+        static_accel_sum_ -= old.accel_norm;
+        static_accel_sq_sum_ -= old.accel_norm * old.accel_norm;
+        static_imu_window_.pop_front();
+    }
+
+    const double count = static_cast<double>(static_imu_window_.size());
+    if (count < 2.0) return imu_static_hold_active_;
+    const double gyro_mean = static_gyro_sum_ / count;
+    const double accel_mean = static_accel_sum_ / count;
+    const double gyro_std = std::sqrt(std::max(0.0, static_gyro_sq_sum_ / count - gyro_mean * gyro_mean));
+    const double accel_std = std::sqrt(std::max(0.0, static_accel_sq_sum_ / count - accel_mean * accel_mean));
+    const double accel_scale = std::max(1e-6, accel_mean);
+    const double accel_cv = accel_std / accel_scale;
+    const double accel_delta_ratio = std::abs(sample.accel_norm - accel_mean) / accel_scale;
+    const double window_span = sample.timestamp - static_imu_window_.front().timestamp;
+    const double lio_age = sample.timestamp - last_static_lio_stamp_;
+    const double loc_age = sample.timestamp - last_valid_lidar_loc_stamp_;
+    const bool fresh_lio = lio_age >= 0.0 && lio_age <= kMaxLioAgeSec;
+    const bool fresh_valid_loc = loc_age >= 0.0 && loc_age <= kMaxValidLocAgeSec;
+    // CAN is published by the other Orin. Its header clock can have a fixed
+    // offset from the LiDAR/IMU clock, so cross-sensor header subtraction is
+    // not a valid freshness test. Steady callback-arrival time detects an
+    // actual CAN silence without depending on clock synchronization.
+    const double wheel_arrival_age = wheel_speed_observed_
+        ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                        last_wheel_speed_arrival_).count()
+        : std::numeric_limits<double>::infinity();
+    const bool fresh_wheel_speed = wheel_speed_observed_ &&
+                                   wheel_arrival_age <= kMaxWheelSpeedAgeSec;
+    const bool wheel_reports_stationary =
+        fresh_wheel_speed && std::abs(last_wheel_speed_mps_) < kEnterWheelSpeed;
+
+    if (!imu_static_hold_active_) {
+        const bool stable_imu_window = gyro_mean < kEnterGyroMean &&
+                                       gyro_std < kEnterGyroStd &&
+                                       accel_cv < kEnterAccelCv;
+        // A running loader has substantially more stationary IMU vibration
+        // than the no-CAN bags. Once the motor-speed signal is present, use a
+        // debounced zero wheel speed as the stationary observation and retain
+        // low-speed LIO plus a fresh map match as independent safeguards. Old
+        // bags without CAN continue to require the strict IMU window.
+        const bool stationary_observation = fresh_wheel_speed
+                                                ? wheel_reports_stationary
+                                                : stable_imu_window;
+        if (window_span >= kMinWindowSec && stationary_observation && fresh_lio &&
+            fresh_valid_loc &&
+            last_static_lio_reliable_ &&
+            last_static_lio_speed_ < kEnterLioSpeed) {
+            imu_static_hold_active_ = true;
+            static_exit_count_ = 0;
+            LOG(WARNING) << "enter conservative IMU static hold at " << std::setprecision(14)
+                         << sample.timestamp << ", lio_speed=" << last_static_lio_speed_
+                         << ", wheel_speed="
+                         << (fresh_wheel_speed ? last_wheel_speed_mps_ : 0.0)
+                         << ", wheel_observed=" << wheel_speed_observed_
+                         << ", gyro_mean=" << gyro_mean << ", accel_cv=" << accel_cv;
+        }
+        return imu_static_hold_active_;
+    }
+
+    const bool inertial_motion = sample.gyro_norm > kExitGyro ||
+                                 accel_delta_ratio > kExitAccelRatio;
+    // Fresh zero CAN suppresses engine-vibration false exits. A moving CAN
+    // sample or LIO motion still releases the hold within three IMU samples;
+    // if CAN becomes stale, the IMU fallback is active again.
+    const double lio_exit_speed = wheel_reports_stationary
+                                      ? kExitLioSpeedWithZeroCan
+                                      : kExitLioSpeed;
+    const bool moving = (fresh_wheel_speed &&
+                         std::abs(last_wheel_speed_mps_) > kExitWheelSpeed) ||
+                        (fresh_lio && last_static_lio_speed_ > lio_exit_speed) ||
+                        (!wheel_reports_stationary && inertial_motion);
+    static_exit_count_ = moving ? static_exit_count_ + 1 : 0;
+    if (static_exit_count_ >= kExitSamples) {
+        imu_static_hold_active_ = false;
+        static_exit_count_ = 0;
+        LOG(WARNING) << "exit conservative IMU static hold at " << std::setprecision(14)
+                     << sample.timestamp << ", gyro=" << sample.gyro_norm
+                     << ", accel_delta_ratio=" << accel_delta_ratio
+                     << ", lio_speed=" << last_static_lio_speed_
+                     << ", wheel_speed=" << last_wheel_speed_mps_;
+    }
+    return imu_static_hold_active_;
+}
+
+void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps) {
+    if (!imu_static_hold_enabled_ || !std::isfinite(longitudinal_speed_mps)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(static_detector_mutex_);
+    last_wheel_speed_stamp_ = timestamp;
+    last_wheel_speed_arrival_ = std::chrono::steady_clock::now();
+    last_wheel_speed_mps_ = longitudinal_speed_mps;
+    wheel_speed_observed_ = true;
+}
+
 void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
@@ -468,6 +655,7 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
     lidar_loc_->ProcessCloud(scan_undist);
 
     auto res = lidar_loc_->GetLocalizationResult();
+    ObserveLidarLocForStaticDetector(res);
     const auto match_stats = lidar_loc_->GetLastMatchStats();
     {
         std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
@@ -548,14 +736,13 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         return;
     }
 
-    // /// 停车判定
-    // constexpr auto kThVbrbStill = 0.05;  // 0.08;
-    // constexpr auto kThOmegaStill = 0.05;
-
-    // if (dr_state.GetVel().norm() < kThVbrbStill && imu->angular_velocity.norm() < kThOmegaStill) {
-    //     dr_state.is_parking_ = true;
-    //     dr_state.SetVel(Vec3d::Zero());
-    // }
+    if (UpdateImuStaticState(imu)) {
+        dr_state.is_parking_ = true;
+        dr_state.SetVel(Vec3d::Zero());
+        // Prevent the high-frequency ESKF prediction from integrating a
+        // stationary bias into unbounded velocity and position drift.
+        lio_->SetIMUVelocity(Vec3d::Zero());
+    }
 
     /// 如果没有odm, 用lio替代DR
 
@@ -563,7 +750,11 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     //           << dr_state.GetPose().translation().transpose()
     //           << ", q=" << dr_state.GetPose().unit_quaternion().coeffs().transpose();
 
-    lidar_loc_->ProcessDR(dr_state);
+    // Lidar localization must continue matching while parked so freshness and
+    // relocalization are based on real scans, not on a synthetic parking flag.
+    auto lidar_loc_dr_state = dr_state;
+    lidar_loc_dr_state.is_parking_ = false;
+    lidar_loc_->ProcessDR(lidar_loc_dr_state);
     pgo_->ProcessDR(dr_state);
 }
 
@@ -603,6 +794,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
 void Localization::Finish() {
     sensor_proc_.Quit();
     lidar_loc_proc_cloud_.Quit();
+    high_frequency_output_proc_.Quit();
     std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_) lidar_loc_->Finish();
     if (ui_) {

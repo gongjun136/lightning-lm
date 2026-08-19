@@ -1,22 +1,22 @@
-/livox/lidar_192_168_3_184/zstd:
+/livox/lidar_192_168_3_184:
   history: keep_last
   depth: 64
   reliability: reliable
   durability: volatile
 
-/livox/lidar_192_168_1_108/zstd:
+/livox/lidar_192_168_1_108:
   history: keep_last
   depth: 64
   reliability: reliable
   durability: volatile
 
-/livox/lidar_192_168_2_133/zstd:
+/livox/lidar_192_168_2_133:
   history: keep_last
   depth: 64
   reliability: reliable
   durability: volatile
 
-/livox/lidar_192_168_4_143/zstd:
+/livox/lidar_192_168_4_143:
   history: keep_last
   depth: 64
   reliability: reliable
@@ -26,6 +26,30 @@
   history: keep_last
   depth: 2048
   reliability: best_effort
+  durability: volatile
+
+/livox/imu_192_168_1_108:
+  history: keep_last
+  depth: 2048
+  reliability: best_effort
+  durability: volatile
+
+/livox/imu_192_168_2_133:
+  history: keep_last
+  depth: 2048
+  reliability: best_effort
+  durability: volatile
+
+/livox/imu_192_168_4_143:
+  history: keep_last
+  depth: 2048
+  reliability: best_effort
+  durability: volatile
+
+/SpeThrCAN4_topic:
+  history: keep_last
+  depth: 256
+  reliability: reliable
   durability: volatile
 
 /PosRes:

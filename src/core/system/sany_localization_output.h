@@ -61,8 +61,13 @@ class LocalizationPublicationGate {
     explicit LocalizationPublicationGate(std::size_t lost_frame_threshold = 5);
 
     void SetLostFrameThreshold(std::size_t lost_frame_threshold);
-    void ObserveLidarMatch(bool valid);
-    bool MapOutputsEnabled() const;
+    void SetMaxLidarMatchAge(double max_age_sec);
+    void ObserveLidarMatch(bool valid, double sensor_stamp = 0.0);
+    bool MapOutputsEnabled(double current_sensor_stamp = 0.0) const;
+    bool LidarMatchStale(double current_sensor_stamp) const;
+    double LidarMatchAgeSec(double current_sensor_stamp) const;
+    double LastLidarMatchStamp() const;
+    double LastValidLidarMatchStamp() const;
     std::size_t ConsecutiveLostFrames() const;
 
    private:
@@ -70,6 +75,10 @@ class LocalizationPublicationGate {
     std::size_t lost_frame_threshold_ = 5;
     std::size_t consecutive_lost_frames_ = 0;
     bool has_valid_match_ = false;
+    double max_lidar_match_age_sec_ = 0.0;
+    double last_lidar_match_stamp_ = 0.0;
+    double last_valid_lidar_match_stamp_ = 0.0;
+    mutable bool stale_latched_ = false;
 };
 
 class FrameDecimator {
@@ -98,6 +107,7 @@ class LocalizationTelemetryState {
     void Start();
     void ObserveLocalization(loc::LocalizationStatus status,
                              std::size_t consecutive_lost_frames);
+    void ObserveLocalizationStale(bool stale);
     void ObservePose(const geometry_msgs::msg::PoseStamped& pose);
 
     lightning::msg::LocalizationStatus MakeLocalizationStatus(

@@ -9,6 +9,13 @@ string imu_topic
 uint64 imu_message_count
 float64 imu_last_sensor_stamp
 float64 imu_silence_sec
+string wheel_speed_topic
+uint64 wheel_speed_message_count
+float64 wheel_speed_last_sensor_stamp
+float64 wheel_speed_silence_sec
+float64 wheel_speed_mps
+float64 motor_speed_rpm
+float64 motor_torque_nm
 
 uint64 sensor_queue_pending
 uint64 sensor_queue_dropped
@@ -34,5 +41,9 @@ string last_relocalization_reason
 
 uint32 consecutive_lost_frames
 bool map_outputs_enabled
+bool lidar_match_stale
+float64 lidar_match_age_sec
+float64 last_lidar_match_stamp
+float64 last_valid_lidar_match_stamp
 float64 last_localization_stamp
 float64 last_posres_stamp

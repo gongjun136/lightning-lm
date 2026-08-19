@@ -9,8 +9,12 @@ multi_lidar:
   primary_lidar_id: 0
   frame_period: 0.1
   match_tolerance: 0.002
-  reorder_window: 0.5
-  min_lidars: 1
+  # Complete three-LiDAR frames are emitted immediately. If one packet is
+  # absent, wait at most two frame periods instead of stalling later buckets.
+  reorder_window: 0.2
+  # Preserve localization through one transient sensor loss without accepting
+  # a geometrically weak single-LiDAR fused frame.
+  min_lidars: 2
   online_extrinsic_estimation: false
   topics:
     lidar_0: "/livox/lidar_192_168_3_184"
@@ -116,6 +120,23 @@ roi:
 system:
   with_ui: false
   with_loop_closing: false
+  # The three-LiDAR stream has no observed inter-Orin loss, so a smaller queue
+  # keeps latency low while still absorbing normal DDS scheduling jitter.
+  online_sensor_queue_size: 128
+  online_sensor_max_lag_sec: 0.5
+  online_sensor_resume_lag_sec: 0.1
+  online_lidar_loc_queue_size: 1
+  # Do not keep publishing IMU extrapolation after lidar localization becomes
+  # stale. A new valid map match is required before map-frame output recovers.
+  localization_output_max_lidar_age_sec: 0.6
+  enable_imu_static_hold: true
+  enable_wheel_speed_observation: true
+  wheel_speed_topic: /SpeThrCAN4_topic
+  # x[rpm] * 2*pi*0.756/(2.895*22.668*60) -> signed vehicle speed [m/s]
+  wheel_speed_scale_mps_per_rpm: 0.00120639253574024
+  lidar_qos:
+    reliability: reliable
+    depth: 16
 
 loop_closing:
   with_height: false

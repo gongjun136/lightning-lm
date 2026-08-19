@@ -4,7 +4,10 @@
 
 #include "core/system/loc_system.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <utility>
@@ -81,6 +84,47 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         return false;
     }
     publication_gate_.SetLostFrameThreshold(static_cast<std::size_t>(lost_frame_threshold));
+    const double max_lidar_match_age_sec =
+        root["system"] && root["system"]["localization_output_max_lidar_age_sec"]
+            ? root["system"]["localization_output_max_lidar_age_sec"].as<double>()
+            : 0.6;
+    if (max_lidar_match_age_sec <= 0.0) {
+        LOG(ERROR) << "system.localization_output_max_lidar_age_sec must be positive";
+        return false;
+    }
+    publication_gate_.SetMaxLidarMatchAge(max_lidar_match_age_sec);
+    wheel_speed_observation_enabled_ =
+        root["system"] && root["system"]["enable_wheel_speed_observation"]
+            ? root["system"]["enable_wheel_speed_observation"].as<bool>()
+            : true;
+    if (const char* override_value = std::getenv("SANY_ENABLE_CAN_OBSERVATION")) {
+        const std::string value(override_value);
+        if (value == "0") {
+            wheel_speed_observation_enabled_ = false;
+        } else if (value == "1") {
+            wheel_speed_observation_enabled_ = true;
+        } else {
+            LOG(ERROR) << "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1";
+            return false;
+        }
+    }
+    wheel_speed_topic_ =
+        root["system"] && root["system"]["wheel_speed_topic"]
+            ? root["system"]["wheel_speed_topic"].as<std::string>()
+            : "/SpeThrCAN4_topic";
+    if (const char* override_topic = std::getenv("SANY_WHEEL_SPEED_TOPIC")) {
+        wheel_speed_topic_ = override_topic;
+    }
+    wheel_speed_scale_mps_per_rpm_ =
+        root["system"] && root["system"]["wheel_speed_scale_mps_per_rpm"]
+            ? root["system"]["wheel_speed_scale_mps_per_rpm"].as<double>()
+            : 0.00120639253574024;
+    if (wheel_speed_topic_.empty() || wheel_speed_topic_.front() != '/' ||
+        !std::isfinite(wheel_speed_scale_mps_per_rpm_) ||
+        wheel_speed_scale_mps_per_rpm_ <= 0.0) {
+        LOG(ERROR) << "invalid system wheel-speed topic or rpm conversion scale";
+        return false;
+    }
     telemetry_ = std::make_unique<sany_output::LocalizationTelemetryState>(
         static_cast<std::size_t>(lost_frame_threshold));
 
@@ -181,6 +225,24 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        wheel_speed_input_stats_.topic = wheel_speed_topic_;
+    }
+    if (wheel_speed_observation_enabled_) {
+        wheel_speed_sub_ = node_->create_subscription<geosun_msgs::msg::SpeThrCAN4>(
+            wheel_speed_topic_, rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile(),
+            [this](geosun_msgs::msg::SpeThrCAN4::SharedPtr message) {
+                const double sensor_stamp = ToSec(message->header.stamp);
+                ObserveWheelSpeedInput(sensor_stamp, message->x, message->y);
+            });
+        LOG(INFO) << "wheel-speed observation enabled: topic=" << wheel_speed_topic_
+                  << ", scale=" << std::setprecision(16)
+                  << wheel_speed_scale_mps_per_rpm_ << " m/s/rpm";
+    } else {
+        LOG(WARNING) << "wheel-speed observation disabled; using lidar/IMU-only fallback";
+    }
+
     const auto pose_qos =
         rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
     const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
@@ -204,6 +266,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     if (options_.pub_tf_) {
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
         loc_->SetTFCallback([this](const geometry_msgs::msg::TransformStamped &pose) {
+            if (!publication_gate_.MapOutputsEnabled(ToSec(pose.header.stamp))) return;
             tf_broadcaster_->sendTransform(
                 sany_output::TransformTfForOutput(pose, fixed_map_transform_));
         });
@@ -322,6 +385,7 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
     last_localization_stamp_ = result.timestamp_;
+    if (!publication_gate_.MapOutputsEnabled(result.timestamp_)) return;
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -329,14 +393,24 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             localization_states_.push_back(state);
         }
     }
-    if (!publication_gate_.MapOutputsEnabled()) return;
     if (!pos_res_pub_ || !pose_pub_) return;
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
-    const auto position =
-        sany_output::MakePosResMessage(map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
+    double vehicle_speed = result.vel_b_.x();
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        constexpr double kMaxWheelSpeedWallAgeSec = 0.25;
+        if (wheel_speed_input_stats_.has_arrival &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          wheel_speed_input_stats_.last_arrival)
+                    .count() <= kMaxWheelSpeedWallAgeSec) {
+            vehicle_speed = last_wheel_speed_mps_;
+        }
+    }
+    const auto position = sany_output::MakePosResMessage(
+        map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
     pos_res_pub_->publish(position);
     last_posres_stamp_ = result.timestamp_;
     const auto pose = sany_output::MakePoseMessage(position);
@@ -345,7 +419,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
-    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_);
+    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
     if (telemetry_) {
         telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
     }
@@ -359,7 +433,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
         sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body_),
         rear_axle_frame_));
     const bool publish_map_frame = map_cloud_decimator_.Tick();
-    if (publish_map_frame && publication_gate_.MapOutputsEnabled()) {
+    if (publish_map_frame && publication_gate_.MapOutputsEnabled(end_time)) {
         // LidarLoc registers this exact cloud in the map frame and result.pose_ is T_map_lidar.
         const SE3 output_lidar_pose =
             sany_output::TransformPoseForOutput(result.pose_, fixed_map_transform_);
@@ -371,13 +445,12 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 void LocSystem::PublishHealthStatus() {
     if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
     const builtin_interfaces::msg::Time stamp = node_->now();
-    fault_status_pub_->publish(telemetry_->MakeFaultStatus(stamp));
-    loc_status_pub_->publish(telemetry_->MakeLocalizationStatus(stamp));
 
     lightning::msg::PipelineDiagnostics diagnostics;
     diagnostics.header.stamp = stamp;
     diagnostics.header.frame_id = map_frame_;
     const auto now = std::chrono::steady_clock::now();
+    double latest_input_sensor_stamp = 0.0;
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         for (const auto& [lidar_id, stats] : lidar_input_stats_) {
@@ -387,6 +460,7 @@ void LocSystem::PublishHealthStatus() {
             diagnostics.lidar_last_sensor_stamps.push_back(stats.last_sensor_stamp);
             diagnostics.lidar_silence_sec.push_back(
                 stats.has_arrival ? std::chrono::duration<double>(now - stats.last_arrival).count() : -1.0);
+            latest_input_sensor_stamp = std::max(latest_input_sensor_stamp, stats.last_sensor_stamp);
         }
         diagnostics.imu_topic = imu_input_stats_.topic;
         diagnostics.imu_message_count = imu_input_stats_.message_count;
@@ -395,7 +469,23 @@ void LocSystem::PublishHealthStatus() {
             imu_input_stats_.has_arrival
                 ? std::chrono::duration<double>(now - imu_input_stats_.last_arrival).count()
                 : -1.0;
+        latest_input_sensor_stamp =
+            std::max(latest_input_sensor_stamp, imu_input_stats_.last_sensor_stamp);
+        diagnostics.wheel_speed_topic = wheel_speed_input_stats_.topic;
+        diagnostics.wheel_speed_message_count = wheel_speed_input_stats_.message_count;
+        diagnostics.wheel_speed_last_sensor_stamp = wheel_speed_input_stats_.last_sensor_stamp;
+        diagnostics.wheel_speed_silence_sec =
+            wheel_speed_input_stats_.has_arrival
+                ? std::chrono::duration<double>(now - wheel_speed_input_stats_.last_arrival).count()
+                : -1.0;
+        diagnostics.wheel_speed_mps = last_wheel_speed_mps_;
+        diagnostics.motor_speed_rpm = last_motor_rpm_;
+        diagnostics.motor_torque_nm = last_motor_torque_;
     }
+    const bool lidar_match_stale = publication_gate_.LidarMatchStale(latest_input_sensor_stamp);
+    telemetry_->ObserveLocalizationStale(lidar_match_stale);
+    fault_status_pub_->publish(telemetry_->MakeFaultStatus(stamp));
+    loc_status_pub_->publish(telemetry_->MakeLocalizationStatus(stamp));
     const auto runtime = loc_->GetRuntimeStats();
     diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
     diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;
@@ -418,7 +508,29 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.last_relocalization_search_time_ms = runtime.last_relocalization_search_time_ms;
     diagnostics.last_relocalization_reason = runtime.last_relocalization_reason;
     diagnostics.consecutive_lost_frames = publication_gate_.ConsecutiveLostFrames();
-    diagnostics.map_outputs_enabled = publication_gate_.MapOutputsEnabled();
+    const bool map_outputs_enabled =
+        publication_gate_.MapOutputsEnabled(latest_input_sensor_stamp);
+    const bool map_outputs_were_enabled =
+        map_outputs_enabled_last_.exchange(map_outputs_enabled);
+    if (map_outputs_enabled) {
+        const bool had_enabled_output = map_outputs_ever_enabled_.exchange(true);
+        if (had_enabled_output && !map_outputs_were_enabled) {
+            LOG(WARNING) << "localization map outputs recovered after a fresh valid lidar match";
+        }
+    } else if (map_outputs_were_enabled) {
+        LOG(ERROR) << "localization map outputs disabled: lidar_match_stale="
+                   << lidar_match_stale << ", lidar_match_age_sec="
+                   << publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp)
+                   << ", consecutive_lost_frames="
+                   << publication_gate_.ConsecutiveLostFrames();
+    }
+    diagnostics.map_outputs_enabled = map_outputs_enabled;
+    diagnostics.lidar_match_stale = lidar_match_stale;
+    diagnostics.lidar_match_age_sec =
+        publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp);
+    diagnostics.last_lidar_match_stamp = publication_gate_.LastLidarMatchStamp();
+    diagnostics.last_valid_lidar_match_stamp =
+        publication_gate_.LastValidLidarMatchStamp();
     diagnostics.last_localization_stamp = last_localization_stamp_.load();
     diagnostics.last_posres_stamp = last_posres_stamp_.load();
     pipeline_diagnostics_pub_->publish(diagnostics);
@@ -446,8 +558,25 @@ void LocSystem::ObserveImuInput(double sensor_stamp) {
     imu_input_stats_.has_arrival = true;
 }
 
+void LocSystem::ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
+                                       double motor_torque) {
+    const double speed_mps = motor_rpm * wheel_speed_scale_mps_per_rpm_;
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        ++wheel_speed_input_stats_.message_count;
+        wheel_speed_input_stats_.last_sensor_stamp = sensor_stamp;
+        wheel_speed_input_stats_.last_arrival = std::chrono::steady_clock::now();
+        wheel_speed_input_stats_.has_arrival = true;
+        last_motor_rpm_ = motor_rpm;
+        last_motor_torque_ = motor_torque;
+        last_wheel_speed_mps_ = speed_mps;
+    }
+    if (loc_started_ && loc_) loc_->ProcessWheelSpeed(sensor_stamp, speed_mps);
+}
+
 void LocSystem::PublishPath() {
     if (!node_ || !telemetry_ || !path_pub_ || telemetry_->PathSize() == 0) return;
+    if (!publication_gate_.MapOutputsEnabled(last_localization_stamp_.load())) return;
     const builtin_interfaces::msg::Time stamp = node_->now();
     path_pub_->publish(telemetry_->MakePath(stamp));
 }

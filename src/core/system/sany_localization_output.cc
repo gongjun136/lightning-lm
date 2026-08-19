@@ -224,21 +224,67 @@ void LocalizationPublicationGate::SetLostFrameThreshold(std::size_t lost_frame_t
     lost_frame_threshold_ = std::max<std::size_t>(1, lost_frame_threshold);
     consecutive_lost_frames_ = 0;
     has_valid_match_ = false;
+    last_lidar_match_stamp_ = 0.0;
+    last_valid_lidar_match_stamp_ = 0.0;
+    stale_latched_ = false;
 }
 
-void LocalizationPublicationGate::ObserveLidarMatch(bool valid) {
+void LocalizationPublicationGate::SetMaxLidarMatchAge(double max_age_sec) {
     std::lock_guard<std::mutex> lock(mutex_);
+    max_lidar_match_age_sec_ = std::max(0.0, max_age_sec);
+}
+
+void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (sensor_stamp > 0.0) {
+        last_lidar_match_stamp_ = std::max(last_lidar_match_stamp_, sensor_stamp);
+    }
     if (valid) {
         has_valid_match_ = true;
         consecutive_lost_frames_ = 0;
+        stale_latched_ = false;
+        if (sensor_stamp > 0.0) {
+            last_valid_lidar_match_stamp_ =
+                std::max(last_valid_lidar_match_stamp_, sensor_stamp);
+        }
     } else if (has_valid_match_) {
         ++consecutive_lost_frames_;
     }
 }
 
-bool LocalizationPublicationGate::MapOutputsEnabled() const {
+bool LocalizationPublicationGate::MapOutputsEnabled(double current_sensor_stamp) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_;
+    const bool stale = max_lidar_match_age_sec_ > 0.0 && current_sensor_stamp > 0.0 &&
+                       last_lidar_match_stamp_ > 0.0 &&
+                       current_sensor_stamp - last_lidar_match_stamp_ > max_lidar_match_age_sec_;
+    if (stale) stale_latched_ = true;
+    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_ &&
+           !stale_latched_;
+}
+
+bool LocalizationPublicationGate::LidarMatchStale(double current_sensor_stamp) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool stale = has_valid_match_ && max_lidar_match_age_sec_ > 0.0 &&
+                       current_sensor_stamp > 0.0 && last_lidar_match_stamp_ > 0.0 &&
+                       current_sensor_stamp - last_lidar_match_stamp_ > max_lidar_match_age_sec_;
+    if (stale) stale_latched_ = true;
+    return stale;
+}
+
+double LocalizationPublicationGate::LidarMatchAgeSec(double current_sensor_stamp) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (current_sensor_stamp <= 0.0 || last_lidar_match_stamp_ <= 0.0) return -1.0;
+    return std::max(0.0, current_sensor_stamp - last_lidar_match_stamp_);
+}
+
+double LocalizationPublicationGate::LastLidarMatchStamp() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_lidar_match_stamp_;
+}
+
+double LocalizationPublicationGate::LastValidLidarMatchStamp() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_valid_lidar_match_stamp_;
 }
 
 std::size_t LocalizationPublicationGate::ConsecutiveLostFrames() const {
@@ -271,6 +317,14 @@ void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus sta
         (has_good_localization_ && consecutive_lost_frames >= lost_frame_threshold_)) {
         localization_lost_latched_ = true;
     }
+}
+
+void LocalizationTelemetryState::ObserveLocalizationStale(bool stale) {
+    if (!stale) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!has_good_localization_) return;
+    current_status_ = lightning::msg::LocalizationStatus::STATUS_FAIL;
+    localization_lost_latched_ = true;
 }
 
 void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamped& pose) {

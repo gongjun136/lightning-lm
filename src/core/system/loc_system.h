@@ -12,6 +12,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geosun_msgs/msg/pos_res.hpp>
+#include <geosun_msgs/msg/spe_thr_can4.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -78,6 +79,8 @@ class LocSystem {
     void RegisterLidarInput(int lidar_id, const std::string& topic);
     void ObserveLidarInput(int lidar_id, double sensor_stamp);
     void ObserveImuInput(double sensor_stamp);
+    void ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
+                                double motor_torque);
 
     struct InputTopicStats {
         std::string topic;
@@ -103,6 +106,9 @@ class LocSystem {
     std::string livox_topic_;
     std::string map_frame_ = "map";
     std::string rear_axle_frame_ = "rear_axle";
+    bool wheel_speed_observation_enabled_ = true;
+    std::string wheel_speed_topic_ = "/SpeThrCAN4_topic";
+    double wheel_speed_scale_mps_per_rpm_ = 0.00120639253574024;
     Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
     sany_output::FixedMapTransform fixed_map_transform_;
     sany_output::LocalizationPublicationGate publication_gate_;
@@ -115,12 +121,19 @@ class LocSystem {
     mutable std::mutex input_stats_mutex_;
     std::map<int, InputTopicStats> lidar_input_stats_;
     InputTopicStats imu_input_stats_;
+    InputTopicStats wheel_speed_input_stats_;
+    double last_wheel_speed_mps_ = 0.0;
+    double last_motor_rpm_ = 0.0;
+    double last_motor_torque_ = 0.0;
     std::atomic<double> last_localization_stamp_{0.0};
     std::atomic<double> last_posres_stamp_{0.0};
+    std::atomic_bool map_outputs_ever_enabled_{false};
+    std::atomic_bool map_outputs_enabled_last_{false};
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
+    rclcpp::Subscription<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_sub_ = nullptr;
 
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;

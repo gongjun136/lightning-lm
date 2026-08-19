@@ -83,8 +83,12 @@ int main() {
     velocity_pgo.SetDrSmoothingEnabled(false);
     velocity_pgo.SetDrExtrapolationEnabled(true);
     LocalizationResult velocity_output;
+    int velocity_output_count = 0;
     velocity_pgo.SetHighFrequencyGlobalOutputHandleFunction(
-        [&](const LocalizationResult& result) { velocity_output = result; });
+        [&](const LocalizationResult& result) {
+            velocity_output = result;
+            ++velocity_output_count;
+        });
 
     const SO3 body_rotation = SO3::exp(Vec3d(0.0, 0.0, 0.4));
     NavState velocity_seed_before;
@@ -120,6 +124,85 @@ int main() {
             "high-frequency output advances to the latest DR timestamp");
     Require((velocity_output.vel_b_ - latest_body_velocity).norm() < 1e-9,
             "high-frequency output refreshes body velocity from the latest DR state");
+
+    NavState parked_dr = latest_dr;
+    parked_dr.timestamp_ = 2000.03;
+    parked_dr.is_parking_ = true;
+    parked_dr.SetVel(Vec3d::Zero());
+    Require(velocity_pgo.ProcessDR(parked_dr), "accept first stationary DR state");
+    const SE3 parked_output_pose = velocity_output.pose_;
+    parked_dr.timestamp_ = 2000.04;
+    parked_dr.pos_ += Vec3d(10.0, 0.0, 0.0);
+    Require(velocity_pgo.ProcessDR(parked_dr), "accept drifting DR while stationary hold is active");
+    Require((velocity_output.pose_.translation() - parked_output_pose.translation()).norm() < 1e-9,
+            "stationary hold rejects subsequent DR position drift");
+    Require(velocity_output.is_parking_ && velocity_output.vel_b_.norm() < 1e-9,
+            "stationary output is explicitly marked and has zero velocity");
+
+    LocalizationResult parked_map_update;
+    parked_map_update.timestamp_ = 2000.035;
+    parked_map_update.pose_ = SE3(body_rotation, Vec3d(1.0, 2.0, 3.0));
+    parked_map_update.valid_ = false;
+    parked_map_update.lidar_loc_valid_ = true;
+    parked_map_update.status_ = LocalizationStatus::GOOD;
+    const int output_count_before_map_update = velocity_output_count;
+    Require(velocity_pgo.ProcessLidarLoc(parked_map_update),
+            "continue processing valid map matches while stationary");
+    Require(velocity_output_count == output_count_before_map_update,
+            "parked lidar match does not publish on the lidar timestamp");
+    parked_dr.timestamp_ = 2000.045;
+    Require(velocity_pgo.ProcessDR(parked_dr), "publish the held pose on the next DR sample");
+    Require(std::abs(velocity_output.timestamp_ - parked_dr.timestamp_) < 1e-9,
+            "parked output timestamps remain monotonic");
+    Require((velocity_output.pose_.translation() - parked_output_pose.translation()).norm() < 1e-9,
+            "stationary output rejects scan-to-map pose jitter");
+
+    NavState moving_dr = parked_dr;
+    moving_dr.timestamp_ = 2000.05;
+    moving_dr.is_parking_ = false;
+    moving_dr.SetVel(body_rotation * latest_body_velocity);
+    Require(velocity_pgo.ProcessDR(moving_dr), "resume PGO extrapolation after stationary hold");
+    Require(!velocity_output.is_parking_, "motion releases the PGO stationary output");
+
+    PGO parked_initialization_pgo;
+    parked_initialization_pgo.SetDebug(false);
+    parked_initialization_pgo.SetDrSmoothingEnabled(false);
+    parked_initialization_pgo.SetDrExtrapolationEnabled(false);
+    LocalizationResult parked_initialization_output;
+    parked_initialization_pgo.SetHighFrequencyGlobalOutputHandleFunction(
+        [&](const LocalizationResult& result) { parked_initialization_output = result; });
+    NavState parked_initialization_state;
+    parked_initialization_state.timestamp_ = 2500.0;
+    parked_initialization_state.pose_is_ok_ = true;
+    parked_initialization_state.lidar_odom_reliable_ = true;
+    parked_initialization_state.is_parking_ = true;
+    Require(parked_initialization_pgo.ProcessLidarOdom(parked_initialization_state),
+            "accept parked initialization lidar odometry");
+    Require(parked_initialization_pgo.ProcessDR(parked_initialization_state),
+            "accept parked initialization DR");
+    parked_initialization_state.timestamp_ = 2500.2;
+    Require(parked_initialization_pgo.ProcessLidarOdom(parked_initialization_state),
+            "accept second parked initialization lidar odometry");
+    Require(parked_initialization_pgo.ProcessDR(parked_initialization_state),
+            "accept second parked initialization DR");
+    LocalizationResult parked_initialization_loc;
+    parked_initialization_loc.timestamp_ = 2500.2;
+    parked_initialization_loc.pose_ = T_world_odom;
+    parked_initialization_loc.valid_ = false;
+    parked_initialization_loc.lidar_loc_valid_ = true;
+    parked_initialization_loc.lidar_loc_odom_error_normal_ = true;
+    parked_initialization_loc.lidar_loc_smooth_flag_ = true;
+    parked_initialization_loc.confidence_ = 1.0;
+    parked_initialization_loc.status_ = LocalizationStatus::GOOD;
+    Require(parked_initialization_pgo.ProcessLidarLoc(parked_initialization_loc),
+            "initialize PGO while stationary hold is requested");
+    Require(parked_initialization_output.valid_,
+            "stationary request does not suppress the first fused map pose");
+    parked_initialization_state.timestamp_ = 2500.3;
+    Require(parked_initialization_pgo.ProcessDR(parked_initialization_state),
+            "enter stationary output after parked initialization");
+    Require(parked_initialization_output.valid_ && parked_initialization_output.is_parking_,
+            "parked initialization transitions to a valid stationary output");
 
     PGO recovery_pgo;
     recovery_pgo.SetDebug(false);

@@ -9,11 +9,13 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
 #include <thread>
 
+#include "geosun_msgs/msg/spe_thr_can4.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 #include "wrapper/bag_io.h"
 
@@ -61,6 +63,42 @@ class OnlineBagPlayer {
             imu_pub_->publish(*msg);
             return rclcpp::ok();
         });
+
+        const YAML::Node system = root["system"];
+        bool wheel_speed_observation_enabled =
+            system && system["enable_wheel_speed_observation"]
+                ? system["enable_wheel_speed_observation"].as<bool>()
+                : true;
+        if (const char* override_value = std::getenv("SANY_ENABLE_CAN_OBSERVATION")) {
+            const std::string value(override_value);
+            if (value == "0") {
+                wheel_speed_observation_enabled = false;
+            } else if (value == "1") {
+                wheel_speed_observation_enabled = true;
+            } else {
+                LOG(ERROR) << "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1";
+                return false;
+            }
+        }
+        const std::string wheel_speed_topic =
+            system && system["wheel_speed_topic"]
+                ? system["wheel_speed_topic"].as<std::string>()
+                : "/SpeThrCAN4_topic";
+        const std::string selected_wheel_speed_topic =
+            std::getenv("SANY_WHEEL_SPEED_TOPIC")
+                ? std::getenv("SANY_WHEEL_SPEED_TOPIC")
+                : wheel_speed_topic;
+        if (wheel_speed_observation_enabled && !selected_wheel_speed_topic.empty()) {
+            wheel_speed_pub_ = node_->create_publisher<geosun_msgs::msg::SpeThrCAN4>(
+                selected_wheel_speed_topic, rclcpp::QoS(rclcpp::KeepLast(50)).reliable());
+            bag_->AddHandle(selected_wheel_speed_topic, [this](const RosbagIO::MsgType& serialized) {
+                auto msg = std::make_shared<geosun_msgs::msg::SpeThrCAN4>();
+                rclcpp::SerializedMessage data(*serialized->serialized_data);
+                wheel_speed_serialization_.deserialize_message(&data, msg.get());
+                wheel_speed_pub_->publish(*msg);
+                return rclcpp::ok();
+            });
+        }
 
         const bool multi_lidar = root["multi_lidar"] && root["multi_lidar"]["enabled"] &&
                                  root["multi_lidar"]["enabled"].as<bool>();
@@ -124,6 +162,8 @@ class OnlineBagPlayer {
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
     rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_pub_;
+    rclcpp::Publisher<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_pub_;
+    rclcpp::Serialization<geosun_msgs::msg::SpeThrCAN4> wheel_speed_serialization_;
     std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_pubs_;
 };
 

@@ -104,6 +104,8 @@ class PGO {
     double last_lidar_loc_time_ = 0.;        // 上次激光定位时间戳
     double last_lidar_loc_input_time_ = -1.;
     bool is_parking_ = false;
+    bool dr_is_parking_ = false;
+    bool lidar_loc_is_parking_ = false;
     bool dr_smoothing_enabled_ = true;
     bool dr_extrapolation_enabled_ = true;
 };
