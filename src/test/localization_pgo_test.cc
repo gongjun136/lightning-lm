@@ -1,4 +1,5 @@
 #include "core/localization/pose_graph/pgo.h"
+#include "core/localization/pose_graph/smoother.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -18,6 +19,19 @@ void Require(bool condition, const char* message) {
 int main() {
     using namespace lightning;
     using namespace lightning::loc;
+
+    PoseSmoother smoother;
+    Require(smoother.PushDRPose(SE3(Quatd::Identity(), Vec3d::Zero()), 100.0, 3.0),
+            "smoother accepts the first timed DR pose");
+    Require(smoother.PushDRPose(
+                SE3(Quatd::Identity(), Vec3d(0.63, 0.0, 0.0)), 100.2, 3.0),
+            "time-aware smoother accepts plausible 0.63 m motion over 0.2 s");
+    Require(smoother.PushDRPose(
+                SE3(Quatd::Identity(), Vec3d(0.63, 0.0, 0.0)), 100.2, 3.0),
+            "smoother treats a repeated PubResult DR sample as idempotent");
+    Require(!smoother.PushDRPose(
+                SE3(Quatd::Identity(), Vec3d(10.0, 0.0, 0.0)), 100.3, 3.0),
+            "time-aware smoother rejects an implausible pose jump");
 
     PGO pgo;
     pgo.SetDebug(false);
@@ -163,6 +177,30 @@ int main() {
     moving_dr.SetVel(body_rotation * latest_body_velocity);
     Require(velocity_pgo.ProcessDR(moving_dr), "resume PGO extrapolation after stationary hold");
     Require(!velocity_output.is_parking_, "motion releases the PGO stationary output");
+
+    // Reproduce a hold long enough to evict the pre-hold fused timestamp from
+    // the bounded DR queue.  The first moving result must continue from the
+    // held sensor-time epoch rather than publishing that evicted old result.
+    NavState long_parked_dr = moving_dr;
+    long_parked_dr.is_parking_ = true;
+    long_parked_dr.SetVel(Vec3d::Zero());
+    for (int index = 1; index <= 10010; ++index) {
+        long_parked_dr.timestamp_ = moving_dr.timestamp_ + 0.01 * index;
+        Require(velocity_pgo.ProcessDR(long_parked_dr),
+                "accept DR throughout long stationary hold");
+    }
+    const double last_long_parked_stamp = velocity_output.timestamp_;
+    NavState long_hold_exit = long_parked_dr;
+    long_hold_exit.timestamp_ += 0.01;
+    long_hold_exit.is_parking_ = false;
+    long_hold_exit.SetVel(body_rotation * latest_body_velocity);
+    Require(velocity_pgo.ProcessDR(long_hold_exit),
+            "resume PGO after the pre-hold DR epoch was evicted");
+    Require(velocity_output.timestamp_ > last_long_parked_stamp &&
+                std::abs(velocity_output.timestamp_ - long_hold_exit.timestamp_) < 1e-9,
+            "long stationary hold exit does not release the frozen old timestamp");
+    Require(!velocity_output.is_parking_,
+            "long stationary hold exit clears the parking marker");
 
     PGO parked_initialization_pgo;
     parked_initialization_pgo.SetDebug(false);

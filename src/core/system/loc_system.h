@@ -26,6 +26,7 @@
 #include "common/eigen_types.h"
 #include "common/imu.h"
 #include "common/keyframe.h"
+#include "common/timestamp_gate.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
 #include "lightning/msg/pipeline_diagnostics.hpp"
@@ -77,7 +78,7 @@ class LocSystem {
     void PublishHealthStatus();
     void PublishPath();
     void RegisterLidarInput(int lidar_id, const std::string& topic);
-    void ObserveLidarInput(int lidar_id, double sensor_stamp);
+    bool ObserveLidarInput(int lidar_id, double sensor_stamp);
     void ObserveImuInput(double sensor_stamp);
     void ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
                                 double motor_torque);
@@ -85,6 +86,7 @@ class LocSystem {
     struct InputTopicStats {
         std::string topic;
         std::uint64_t message_count = 0;
+        std::uint64_t stale_drop_count = 0;
         double last_sensor_stamp = 0.0;
         std::chrono::steady_clock::time_point last_arrival;
         bool has_arrival = false;
@@ -109,6 +111,7 @@ class LocSystem {
     bool wheel_speed_observation_enabled_ = true;
     std::string wheel_speed_topic_ = "/SpeThrCAN4_topic";
     double wheel_speed_scale_mps_per_rpm_ = 0.00120639253574024;
+    double online_lidar_input_max_timestamp_lag_sec_ = 0.0;
     Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
     sany_output::FixedMapTransform fixed_map_transform_;
     sany_output::LocalizationPublicationGate publication_gate_;
@@ -119,6 +122,7 @@ class LocSystem {
     std::vector<NavState> global_localization_states_;
     bool finished_ = false;
     mutable std::mutex input_stats_mutex_;
+    MaximumLagTimestampGate lidar_input_timestamp_gate_;
     std::map<int, InputTopicStats> lidar_input_stats_;
     InputTopicStats imu_input_stats_;
     InputTopicStats wheel_speed_input_stats_;
@@ -127,6 +131,8 @@ class LocSystem {
     double last_motor_torque_ = 0.0;
     std::atomic<double> last_localization_stamp_{0.0};
     std::atomic<double> last_posres_stamp_{0.0};
+    std::mutex posres_publish_mutex_;
+    MonotonicTimestampGate posres_timestamp_gate_;
     std::atomic_bool map_outputs_ever_enabled_{false};
     std::atomic_bool map_outputs_enabled_last_{false};
 

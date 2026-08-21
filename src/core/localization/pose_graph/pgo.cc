@@ -103,7 +103,9 @@ void PGO::PubResult() {
         }
 
         if (dr_smoothing_enabled_ && !impl_->dr_pose_queue_.empty()) {
-            smoother_->PushDRPose(impl_->dr_pose_queue_.back().GetPose());
+            const auto& latest_dr = impl_->dr_pose_queue_.back();
+            smoother_->PushDRPose(latest_dr.GetPose(), latest_dr.timestamp_,
+                                  latest_dr.GetVel().norm());
         }
 
         impl_->result_.timestamp_ = result.timestamp_;
@@ -183,6 +185,20 @@ bool PGO::ProcessDR(const NavState& dr_result) {
         parking_result_.is_parking_ = true;
         parking_result_.vel_b_ = Vec3d::Zero();
     } else if (!is_parking_ && was_parking) {
+        // While parked, ProcessDR publishes parking_result_ on the live IMU
+        // clock but deliberately leaves impl_->result_ frozen.  After a long
+        // hold the DR queue no longer contains the frozen result timestamp, so
+        // ExtrapolateLocResult cannot bridge from impl_->result_ and PubResult
+        // would release that old timestamp when motion resumes.  Promote the
+        // last held output to the fused-state epoch before resuming instead.
+        if (parking_result_.valid_) {
+            impl_->result_ = parking_result_;
+            impl_->result_.timestamp_ = dr_result.timestamp_;
+            impl_->result_.is_parking_ = false;
+            impl_->result_.vel_b_ =
+                dr_result.GetRot().inverse() * dr_result.GetVel();
+            smoother_->Reset();
+        }
         parking_result_ = LocalizationResult{};
     }
     if (!impl_->dr_pose_queue_.empty() && !is_parking_) {

@@ -30,6 +30,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         Finish();
         lock.lock();
     }
+    live_output_timestamp_gate_.Reset();
 
     YAML_IO yaml(yaml_path);
     options_.with_ui_ = yaml.GetValue<bool>("system", "with_ui");
@@ -177,6 +178,15 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
     /// TODO: 发布
     auto publish_localization_result = [this](const LocalizationResult& res) {
+        std::lock_guard<std::mutex> dispatch_lock(live_output_dispatch_mutex_);
+        const auto timestamp_decision = live_output_timestamp_gate_.Observe(res.timestamp_);
+        if (!timestamp_decision.accepted) {
+            LOG(WARNING) << "drop non-monotonic live localization output: timestamp="
+                         << std::setprecision(16) << res.timestamp_
+                         << ", last_accepted=" << timestamp_decision.reference_timestamp
+                         << ", rollback_sec=" << timestamp_decision.lag_sec;
+            return;
+        }
         // if (loc_result_.timestamp_ > 0) {
         //             double loc_fps = 1.0 / (res.timestamp_ - loc_result_.timestamp_);
         //             // LOG_EVERY_N(INFO, 10) << "loc fps: " << loc_fps;
@@ -414,14 +424,21 @@ SO3 Localization::GetInitialLidarRotation() const {
 }
 
 Localization::RuntimeStats Localization::GetRuntimeStats() const {
-    std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
-    RuntimeStats stats = runtime_stats_;
+    RuntimeStats stats;
+    {
+        std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+        stats = runtime_stats_;
+    }
     stats.sensor_queue_pending = sensor_proc_.PendingCount();
     stats.sensor_queue_dropped = sensor_proc_.DroppedCount();
     stats.sensor_queue_processed = sensor_proc_.ProcessedCount();
     stats.localization_queue_pending = lidar_loc_proc_cloud_.PendingCount();
     stats.localization_queue_dropped = lidar_loc_proc_cloud_.DroppedCount();
     stats.localization_queue_processed = lidar_loc_proc_cloud_.ProcessedCount();
+    stats.live_output_non_monotonic_drop_count =
+        live_output_timestamp_gate_.RejectedCount();
+    stats.worst_live_output_timestamp_rollback_sec =
+        live_output_timestamp_gate_.WorstRollbackSec();
     return stats;
 }
 

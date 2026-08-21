@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <deque>
 
 #include "common/eigen_types.h"
@@ -24,26 +26,60 @@ class PoseSmoother {
     explicit PoseSmoother(double factor = 0.3) { smooth_factor_ = factor; }
     PoseSmoother(const PoseSmoother&) = default;
 
-    void PushDRPose(const SE3& dr_pose) {
+    bool PushDRPose(const SE3& dr_pose, double timestamp, double speed_mps) {
         UL lock(data_mutex_);
+
+        if (!std::isfinite(timestamp) || timestamp <= 0.0 || !std::isfinite(speed_mps)) {
+            LOG(WARNING) << "smoother rejects invalid DR metadata: timestamp="
+                         << timestamp << ", speed_mps=" << speed_mps;
+            motion_effective_ = false;
+            return false;
+        }
 
         /// 检查dr pose和末尾那个pose之间的距离
         if (!dr_queue_.empty()) {
-            if ((dr_pose.translation() - dr_queue_.back().translation()).norm() >= smoother_dr_limit_trans_) {
+            const double dt = timestamp - dr_queue_.back().timestamp;
+            if (dt <= 0.0) {
+                const double repeated_pose_distance =
+                    (dr_pose.translation() - dr_queue_.back().pose.translation()).norm();
+                if (std::abs(dt) <= 1e-9 && repeated_pose_distance <= 1e-9) {
+                    // PubResult may run again for an LIO update without a new
+                    // DR sample. Preserve the former identity-motion behavior.
+                    motion_effective_ = true;
+                    dr_queue_.push_back({dr_pose, timestamp, speed_mps});
+                    while (dr_queue_.size() > max_size_) dr_queue_.pop_front();
+                    return true;
+                }
+                LOG(WARNING) << "smoother rejects non-increasing DR timestamp: "
+                             << timestamp << " <= " << dr_queue_.back().timestamp;
+                motion_effective_ = false;
+                return false;
+            }
+            const double distance =
+                (dr_pose.translation() - dr_queue_.back().pose.translation()).norm();
+            const double reference_speed =
+                std::max(std::abs(speed_mps), std::abs(dr_queue_.back().speed_mps));
+            const double allowed_distance =
+                std::max(smoother_dr_limit_trans_,
+                         smoother_dr_speed_scale_ * reference_speed * dt +
+                             smoother_dr_distance_margin_);
+            if (distance >= allowed_distance) {
                 /// 无效
-                LOG(WARNING) << "smoother motion is too large: "
-                             << (dr_pose.translation() - dr_queue_.back().translation()).norm();
+                LOG(WARNING) << "smoother motion is too large: distance=" << distance
+                             << ", dt=" << dt << ", speed_mps=" << reference_speed
+                             << ", allowed_distance=" << allowed_distance;
                 dr_queue_.clear();
                 motion_effective_ = false;
-                return;
+                return false;
             }
         }
 
         motion_effective_ = true;
-        dr_queue_.emplace_back(dr_pose);
+        dr_queue_.push_back({dr_pose, timestamp, speed_mps});
         while (dr_queue_.size() > max_size_) {
             dr_queue_.pop_front();
         }
+        return true;
     }
 
     void PushPose(const SE3& pose) {
@@ -59,7 +95,7 @@ class PoseSmoother {
 
         if (motion_effective_) {
             if (n >= 2) {
-                motion = dr_queue_[n - 2].inverse() * dr_queue_[n - 1];
+                motion = dr_queue_[n - 2].pose.inverse() * dr_queue_[n - 1].pose;
             } else {
                 motion = SE3();
             }
@@ -120,10 +156,17 @@ class PoseSmoother {
     double smoother_trans_limit_ = 5.0;     // 平滑器从输入到输出允许的最大平移量
     double smoother_trans_limit2_ = 2.0;    // 平滑器从输入到输出允许的最大平移量
     double smoother_dr_limit_trans_ = 0.3;  // 平滑器允许的DR跳变量
+    double smoother_dr_speed_scale_ = 1.5;
+    double smoother_dr_distance_margin_ = 0.1;
     SE3 output_pose_;
 
+    struct TimedDrPose {
+        SE3 pose;
+        double timestamp = 0.0;
+        double speed_mps = 0.0;
+    };
     std::deque<SE3> pose_queue_;  // 平滑之后的
-    std::deque<SE3> dr_queue_;    // 平滑之后的
+    std::deque<TimedDrPose> dr_queue_;  // 带时间和速度的DR观测
 };
 
 }  // namespace lightning::loc

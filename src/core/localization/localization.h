@@ -11,6 +11,7 @@
 #include "std_msgs/msg/int32.hpp"
 
 #include "common/imu.h"
+#include "common/timestamp_gate.h"
 #include "core/lio/laser_mapping.h"
 #include "core/localization/localization_result.h"
 #include "core/system/async_message_process.h"
@@ -44,6 +45,8 @@ class Localization {
         double max_sensor_lag_sec = 0.0;
         std::uint64_t severe_timestamp_rollback_count = 0;
         double worst_timestamp_rollback_sec = 0.0;
+        std::uint64_t live_output_non_monotonic_drop_count = 0;
+        double worst_live_output_timestamp_rollback_sec = 0.0;
         std::uint64_t relocalization_attempt_count = 0;
         std::uint64_t relocalization_accept_count = 0;
         bool last_relocalization_candidate_found = false;
@@ -146,6 +149,10 @@ class Localization {
     std::mutex input_mutex_;
     // Serialize ordered LIO/PGO state updates without blocking ROS callbacks.
     std::mutex processing_mutex_;
+    // Keep the timestamp check and all live callbacks in the same critical
+    // section so two producer threads cannot publish in reverse order.
+    std::mutex live_output_dispatch_mutex_;
+    MonotonicTimestampGate live_output_timestamp_gate_;
     Options options_;
 
     /// 预处理

@@ -3,6 +3,7 @@ std_msgs/Header header
 int32[] lidar_ids
 string[] lidar_topics
 uint64[] lidar_message_counts
+uint64[] lidar_stale_drop_counts
 float64[] lidar_last_sensor_stamps
 float64[] lidar_silence_sec
 string imu_topic
@@ -31,6 +32,8 @@ float64 current_sensor_lag_sec
 float64 max_sensor_lag_sec
 uint64 severe_timestamp_rollback_count
 float64 worst_timestamp_rollback_sec
+uint64 live_output_non_monotonic_drop_count
+float64 worst_live_output_timestamp_rollback_sec
 
 uint64 relocalization_attempt_count
 uint64 relocalization_accept_count
@@ -49,3 +52,5 @@ float64 last_lidar_match_stamp
 float64 last_valid_lidar_match_stamp
 float64 last_localization_stamp
 float64 last_posres_stamp
+uint64 posres_non_monotonic_drop_count
+float64 worst_posres_timestamp_rollback_sec

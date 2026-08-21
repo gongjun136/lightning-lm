@@ -79,6 +79,23 @@ target_link_libraries(align_maps_offline
         ${third_party_libs}
 )
 
+add_executable(pos_res_recorder
+        pos_res_recorder.cc
+)
+
+ament_target_dependencies(pos_res_recorder
+        rclcpp
+        tf2
+)
+
+add_dependencies(pos_res_recorder
+        geosun_msgs__rosidl_typesupport_cpp
+)
+
+target_link_libraries(pos_res_recorder
+        geosun_msgs__rosidl_typesupport_cpp
+)
+
 add_executable(test_ui
         test_ui.cc
 )
@@ -98,5 +115,5 @@ target_link_libraries(test_ui_init_quit
 )
 
 install(TARGETS run_frontend_offline run_frontend_online run_slam_offline run_slam_online run_loc_offline run_loc_online
-        convert_voxel_slam_map build_solid_database align_maps_offline
+        convert_voxel_slam_map build_solid_database align_maps_offline pos_res_recorder
         DESTINATION lib/${PROJECT_NAME})

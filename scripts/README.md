@@ -131,6 +131,7 @@ run_frontend_offline.sh 输出文件说明：
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
 | `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |
 | `analyze_frontend_topic_bag.py` | 审计在线前端录制的五个公开 Topic，包括消息类型、字段、频率、时间戳和 `lidar_id`。 |
+| `plot_posres_statistics.py` | 可视化 `/PosRes` 接收间隔、端到端时延和每秒接收数量。输入由 `pos_res_recorder` 生成的两个 CSV。 |
 
 ## 公共复现工具
 
@@ -180,3 +181,26 @@ bash scripts/run_frontend_offline_batch.sh \
 ```
 
 所有输出目录都应预先不存在或不含同名运行产物。正式实验前执行 `git status --short`，确保工作树干净。
+
+### 记录并可视化在线 `/PosRes`
+
+构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
+
+```bash
+ros2 run lightning pos_res_recorder --ros-args \
+  -p topic:=/PosRes \
+  -p output_dir:=./posres_record
+```
+
+输出包括 `posres_trajectory.tum`（可由 evo 读取）、逐消息的 `posres_timing.csv`，以及一秒窗口的
+`posres_rate.csv`。生成统计图：
+
+```bash
+python3 scripts/plot_posres_statistics.py \
+  --timing ./posres_record/posres_timing.csv \
+  --rate ./posres_record/posres_rate.csv \
+  --output ./posres_record/posres_statistics.png
+```
+
+`latency_ms` 是接收节点 ROS 时钟减消息 `header.stamp`；两台机器运行发布端和接收端时，应先做
+NTP/PTP 时钟同步。`interarrival_receive_ms` 使用单调时钟，不受系统时间校准影响。

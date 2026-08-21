@@ -39,6 +39,10 @@ LocSystem::~LocSystem() {
 
 bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_override) {
     finished_ = false;
+    lidar_input_timestamp_gate_.Reset();
+    posres_timestamp_gate_.Reset();
+    last_localization_stamp_ = 0.0;
+    last_posres_stamp_ = 0.0;
     loc::Localization::Options opt;
     opt.online_mode_ = true;
     loc_ = std::make_shared<loc::Localization>(opt);
@@ -93,6 +97,17 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         return false;
     }
     publication_gate_.SetMaxLidarMatchAge(max_lidar_match_age_sec);
+    online_lidar_input_max_timestamp_lag_sec_ =
+        root["system"] && root["system"]["online_lidar_input_max_timestamp_lag_sec"]
+            ? root["system"]["online_lidar_input_max_timestamp_lag_sec"].as<double>()
+            : 0.0;
+    if (!std::isfinite(online_lidar_input_max_timestamp_lag_sec_) ||
+        online_lidar_input_max_timestamp_lag_sec_ < 0.0) {
+        LOG(ERROR) << "system.online_lidar_input_max_timestamp_lag_sec must be finite and non-negative";
+        return false;
+    }
+    lidar_input_timestamp_gate_.SetMaximumLag(
+        online_lidar_input_max_timestamp_lag_sec_);
     wheel_speed_observation_enabled_ =
         root["system"] && root["system"]["enable_wheel_speed_observation"]
             ? root["system"]["enable_wheel_speed_observation"].as<bool>()
@@ -304,21 +319,21 @@ void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &clo
     const int lidar_id = loc_ && loc_->IsMultiLidarEnabled()
                              ? loc_->GetMultiLidarConfig().primary_lidar_id
                              : 0;
-    ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0);
+    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud);
     }
 }
 
 void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id) {
-    ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0);
+    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud, lidar_id);
     }
 }
 
 void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud) {
-    ObserveLidarInput(0, cloud ? ToSec(cloud->header.stamp) : 0.0);
+    if (!ObserveLidarInput(0, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
     if (loc_started_) {
         loc_->ProcessLivoxLidarMsg(cloud);
     }
@@ -384,6 +399,15 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
+    std::lock_guard<std::mutex> publish_lock(posres_publish_mutex_);
+    const auto timestamp_decision = posres_timestamp_gate_.Observe(result.timestamp_);
+    if (!timestamp_decision.accepted) {
+        LOG(WARNING) << "drop non-monotonic PosRes candidate: timestamp="
+                     << std::setprecision(16) << result.timestamp_
+                     << ", last_accepted=" << timestamp_decision.reference_timestamp
+                     << ", rollback_sec=" << timestamp_decision.lag_sec;
+        return;
+    }
     last_localization_stamp_ = result.timestamp_;
     if (!publication_gate_.MapOutputsEnabled(result.timestamp_)) return;
     const NavState state = result.ToNavState();
@@ -393,7 +417,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             localization_states_.push_back(state);
         }
     }
-    if (!pos_res_pub_ || !pose_pub_) return;
+    if (!pos_res_pub_ && !pose_pub_) return;
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
@@ -411,11 +435,15 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     const auto position = sany_output::MakePosResMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
-    pos_res_pub_->publish(position);
-    last_posres_stamp_ = result.timestamp_;
-    const auto pose = sany_output::MakePoseMessage(position);
-    pose_pub_->publish(pose);
-    if (telemetry_) telemetry_->ObservePose(pose);
+    if (pos_res_pub_) {
+        pos_res_pub_->publish(position);
+        last_posres_stamp_ = result.timestamp_;
+    }
+    if (pose_pub_) {
+        const auto pose = sany_output::MakePoseMessage(position);
+        pose_pub_->publish(pose);
+        if (telemetry_) telemetry_->ObservePose(pose);
+    }
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
@@ -457,6 +485,7 @@ void LocSystem::PublishHealthStatus() {
             diagnostics.lidar_ids.push_back(lidar_id);
             diagnostics.lidar_topics.push_back(stats.topic);
             diagnostics.lidar_message_counts.push_back(stats.message_count);
+            diagnostics.lidar_stale_drop_counts.push_back(stats.stale_drop_count);
             diagnostics.lidar_last_sensor_stamps.push_back(stats.last_sensor_stamp);
             diagnostics.lidar_silence_sec.push_back(
                 stats.has_arrival ? std::chrono::duration<double>(now - stats.last_arrival).count() : -1.0);
@@ -509,6 +538,10 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.max_sensor_lag_sec = runtime.max_sensor_lag_sec;
     diagnostics.severe_timestamp_rollback_count = runtime.severe_timestamp_rollback_count;
     diagnostics.worst_timestamp_rollback_sec = runtime.worst_timestamp_rollback_sec;
+    diagnostics.live_output_non_monotonic_drop_count =
+        runtime.live_output_non_monotonic_drop_count;
+    diagnostics.worst_live_output_timestamp_rollback_sec =
+        runtime.worst_live_output_timestamp_rollback_sec;
     diagnostics.relocalization_attempt_count = runtime.relocalization_attempt_count;
     diagnostics.relocalization_accept_count = runtime.relocalization_accept_count;
     diagnostics.last_relocalization_candidate_found = runtime.last_relocalization_candidate_found;
@@ -543,6 +576,10 @@ void LocSystem::PublishHealthStatus() {
         publication_gate_.LastValidLidarMatchStamp();
     diagnostics.last_localization_stamp = last_localization_stamp_.load();
     diagnostics.last_posres_stamp = last_posres_stamp_.load();
+    diagnostics.posres_non_monotonic_drop_count =
+        posres_timestamp_gate_.RejectedCount();
+    diagnostics.worst_posres_timestamp_rollback_sec =
+        posres_timestamp_gate_.WorstRollbackSec();
     pipeline_diagnostics_pub_->publish(diagnostics);
 }
 
@@ -551,13 +588,30 @@ void LocSystem::RegisterLidarInput(int lidar_id, const std::string& topic) {
     lidar_input_stats_[lidar_id].topic = topic;
 }
 
-void LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
-    std::lock_guard<std::mutex> lock(input_stats_mutex_);
-    auto& stats = lidar_input_stats_[lidar_id];
-    ++stats.message_count;
-    stats.last_sensor_stamp = sensor_stamp;
-    stats.last_arrival = std::chrono::steady_clock::now();
-    stats.has_arrival = true;
+bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
+    const auto timestamp_decision = lidar_input_timestamp_gate_.Observe(sensor_stamp);
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        auto& stats = lidar_input_stats_[lidar_id];
+        ++stats.message_count;
+        stats.last_arrival = std::chrono::steady_clock::now();
+        stats.has_arrival = true;
+        if (timestamp_decision.accepted) {
+            stats.last_sensor_stamp = std::max(stats.last_sensor_stamp, sensor_stamp);
+        } else {
+            ++stats.stale_drop_count;
+        }
+    }
+    if (!timestamp_decision.accepted) {
+        LOG_EVERY_N(WARNING, 10)
+            << "drop stale/invalid lidar input before preprocessing: lidar_id="
+            << lidar_id << ", timestamp=" << std::setprecision(16) << sensor_stamp
+            << ", newest_timestamp=" << timestamp_decision.reference_timestamp
+            << ", lag_sec=" << timestamp_decision.lag_sec
+            << ", configured_max_lag_sec="
+            << online_lidar_input_max_timestamp_lag_sec_;
+    }
+    return timestamp_decision.accepted;
 }
 
 void LocSystem::ObserveImuInput(double sensor_stamp) {

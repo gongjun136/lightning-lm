@@ -1,4 +1,5 @@
 #include "core/system/sany_localization_output.h"
+#include "common/timestamp_gate.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -26,6 +27,31 @@ bool Near(double left, double right, double tolerance = 1e-6) {
 int main() {
     using namespace lightning;
     using namespace lightning::sany_output;
+
+    MonotonicTimestampGate live_output_gate;
+    Require(live_output_gate.Observe(100.0).accepted,
+            "monotonic output gate accepts the first timestamp");
+    Require(!live_output_gate.Observe(100.0).accepted,
+            "monotonic output gate rejects a duplicate timestamp");
+    Require(!live_output_gate.Observe(99.5).accepted,
+            "monotonic output gate rejects a timestamp rollback");
+    Require(live_output_gate.Observe(100.1).accepted,
+            "monotonic output gate resumes on a newer timestamp");
+    Require(live_output_gate.RejectedCount() == 2 &&
+                Near(live_output_gate.WorstRollbackSec(), 0.5) &&
+                Near(live_output_gate.LastAcceptedTimestamp(), 100.1),
+            "monotonic output gate reports duplicate and rollback diagnostics");
+
+    MaximumLagTimestampGate lidar_input_gate;
+    lidar_input_gate.SetMaximumLag(0.3);
+    Require(lidar_input_gate.Observe(200.0).accepted &&
+                lidar_input_gate.Observe(199.75).accepted,
+            "lidar timestamp gate permits bounded cross-topic reordering");
+    const auto stale_lidar = lidar_input_gate.Observe(198.0);
+    Require(!stale_lidar.accepted && Near(stale_lidar.lag_sec, 2.0),
+            "lidar timestamp gate rejects a cross-topic stale frame");
+    Require(lidar_input_gate.Observe(200.1).accepted,
+            "lidar timestamp gate continues with current frames after a stale drop");
 
     YAML::Node transform_root;
     auto fixed = transform_root["output"]["fixed_map_transform"];
