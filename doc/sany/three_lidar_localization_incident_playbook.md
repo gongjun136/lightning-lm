@@ -85,7 +85,7 @@ ros2 run livox_ros_driver2 pointcloud_zstd_compressor
 ```bash
 cd /home/nvidia/project/gj_ws/lightning-lm
 export LIGHTNING_LM_INSTALL_SETUP=/home/nvidia/project/gj_ws/lightning-lm/install/setup.bash
-export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_blind5.yaml
+export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml
 export SANY_MAP_PATH=/absolute/path/to/map
 export LIGHTNING_LM_OUT_ROOT=/home/nvidia/project/gj_ws/runs
 bash scripts/run_sany_online_diagnostics.sh

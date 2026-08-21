@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -206,9 +205,9 @@ class Localization {
     bool last_static_lio_reliable_ = false;
     double last_valid_lidar_loc_stamp_ = 0.0;
     double last_wheel_speed_stamp_ = 0.0;
-    std::chrono::steady_clock::time_point last_wheel_speed_arrival_{};
     double last_wheel_speed_mps_ = 0.0;
     bool wheel_speed_observed_ = false;
+    bool wheel_timestamp_mismatch_reported_ = false;
     int static_exit_count_ = 0;
     bool imu_static_hold_enabled_ = false;
     bool imu_static_hold_active_ = false;

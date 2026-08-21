@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
-#include <limits>
 
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
@@ -112,9 +111,9 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         last_static_lio_reliable_ = false;
         last_valid_lidar_loc_stamp_ = 0.0;
         last_wheel_speed_stamp_ = 0.0;
-        last_wheel_speed_arrival_ = {};
         last_wheel_speed_mps_ = 0.0;
         wheel_speed_observed_ = false;
+        wheel_timestamp_mismatch_reported_ = false;
         static_exit_count_ = 0;
         imu_static_hold_active_ = false;
     }
@@ -571,16 +570,25 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     const double loc_age = sample.timestamp - last_valid_lidar_loc_stamp_;
     const bool fresh_lio = lio_age >= 0.0 && lio_age <= kMaxLioAgeSec;
     const bool fresh_valid_loc = loc_age >= 0.0 && loc_age <= kMaxValidLocAgeSec;
-    // CAN is published by the other Orin. Its header clock can have a fixed
-    // offset from the LiDAR/IMU clock, so cross-sensor header subtraction is
-    // not a valid freshness test. Steady callback-arrival time detects an
-    // actual CAN silence without depending on clock synchronization.
-    const double wheel_arrival_age = wheel_speed_observed_
-        ? std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                        last_wheel_speed_arrival_).count()
-        : std::numeric_limits<double>::infinity();
+    // PTP now aligns the CAN and LiDAR/IMU Header clocks. Use sensor time so a
+    // continuously delivered but stale or mis-timestamped CAN sample cannot
+    // override the IMU/LIO fallback.
+    const double wheel_imu_timestamp_delta = last_wheel_speed_stamp_ - sample.timestamp;
     const bool fresh_wheel_speed = wheel_speed_observed_ &&
-                                   wheel_arrival_age <= kMaxWheelSpeedAgeSec;
+                                   last_wheel_speed_stamp_ > 0.0 &&
+                                   std::abs(wheel_imu_timestamp_delta) <= kMaxWheelSpeedAgeSec;
+    if (wheel_speed_observed_ && !fresh_wheel_speed &&
+        !wheel_timestamp_mismatch_reported_) {
+        wheel_timestamp_mismatch_reported_ = true;
+        LOG(WARNING) << "ignore CAN wheel speed: CAN-IMU Header delta="
+                     << std::setprecision(14) << wheel_imu_timestamp_delta
+                     << " sec exceeds " << kMaxWheelSpeedAgeSec
+                     << " sec; using IMU/LIO fallback";
+    } else if (fresh_wheel_speed && wheel_timestamp_mismatch_reported_) {
+        wheel_timestamp_mismatch_reported_ = false;
+        LOG(INFO) << "CAN wheel-speed Header alignment recovered: CAN-IMU delta="
+                  << std::setprecision(14) << wheel_imu_timestamp_delta << " sec";
+    }
     const bool wheel_reports_stationary =
         fresh_wheel_speed && std::abs(last_wheel_speed_mps_) < kEnterWheelSpeed;
 
@@ -643,7 +651,6 @@ void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed
     }
     std::lock_guard<std::mutex> lock(static_detector_mutex_);
     last_wheel_speed_stamp_ = timestamp;
-    last_wheel_speed_arrival_ = std::chrono::steady_clock::now();
     last_wheel_speed_mps_ = longitudinal_speed_mps;
     wheel_speed_observed_ = true;
 }

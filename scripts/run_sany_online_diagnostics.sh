@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run SANY multi-LiDAR localization with an optional raw-sensor MCAP
-# recorder, a /PosRes watchdog, and incident snapshots. Localization is never
-# restarted by this script; the in-process global relocalizer owns recovery.
+# recorder and optional /PosRes watchdog incident snapshots. Localization is
+# never restarted by this script; the in-process global relocalizer owns recovery.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,7 @@ install_setup="${LIGHTNING_LM_INSTALL_SETUP:-${repo_dir}/install/setup.bash}"
 lidar_layout="${SANY_LIDAR_LAYOUT:-4}"
 case "${lidar_layout}" in
   3)
-    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_blind5.yaml"
+    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml"
     ;;
   4)
     default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml"
@@ -29,6 +29,7 @@ qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_
 record_bag="${SANY_RECORD_BAG:-1}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
 posres_timeout_seconds="${SANY_POSRES_TIMEOUT_SECONDS:-2}"
+enable_posres_watchdog="${SANY_ENABLE_POSRES_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
@@ -52,6 +53,7 @@ Useful environment variables:
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
   SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
+  SANY_ENABLE_POSRES_WATCHDOG Watch /PosRes and capture loss snapshots: 1=yes, 0=no (default: 0)
   SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
   SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
@@ -59,8 +61,9 @@ Useful environment variables:
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
 
-The run continues until localization exits or Ctrl-C. A /PosRes loss only
-records a snapshot; it does not stop or restart localization.
+The run continues until localization exits or Ctrl-C. When the watchdog is
+enabled, a /PosRes loss only records a snapshot; it does not stop or restart
+localization.
 When recording, every raw PointCloud2, every configured IMU, and the CAN topic
 are added to the bag even when CAN observation is disabled.
 EOF
@@ -80,6 +83,8 @@ fi
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
 [[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
+[[ "${enable_posres_watchdog}" == "0" || "${enable_posres_watchdog}" == "1" ]] ||
+  fail "SANY_ENABLE_POSRES_WATCHDOG must be 0 or 1."
 [[ "${enable_can_observation}" == "0" || "${enable_can_observation}" == "1" ]] ||
   fail "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1."
 export SANY_ENABLE_CAN_OBSERVATION="${enable_can_observation}"
@@ -96,7 +101,10 @@ if [[ -n "${map_path}" && ! -e "${map_path}" ]]; then
   fail "SANY_MAP_PATH does not exist: ${map_path}"
 fi
 [[ "${topic_wait_seconds}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_TOPIC_WAIT_SECONDS must be positive."
-[[ "${posres_timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_POSRES_TIMEOUT_SECONDS must be positive."
+if [[ "${enable_posres_watchdog}" == "1" ]]; then
+  [[ "${posres_timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
+    fail "SANY_POSRES_TIMEOUT_SECONDS must be positive."
+fi
 if [[ "${record_bag}" == "1" ]]; then
   [[ "${min_free_gb}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_MIN_FREE_GB must be positive."
 fi
@@ -353,6 +361,7 @@ fi
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
   echo "record_bag=${record_bag}"
+  echo "enable_posres_watchdog=${enable_posres_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
   echo "enable_can_observation=${enable_can_observation}"
   echo "wheel_speed_topic=${wheel_speed_topic}"
@@ -389,9 +398,11 @@ if [[ "${record_bag}" == "1" ]]; then
   fi
 fi
 
-watch_posres &
-watchdog_pid=$!
-child_pids+=("${watchdog_pid}")
+if [[ "${enable_posres_watchdog}" == "1" ]]; then
+  watch_posres &
+  watchdog_pid=$!
+  child_pids+=("${watchdog_pid}")
+fi
 
 if command -v tegrastats >/dev/null 2>&1; then
   tegrastats --interval 1000 >"${run_dir}/logs/tegrastats.log" 2>&1 &

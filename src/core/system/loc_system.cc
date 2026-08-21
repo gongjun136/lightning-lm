@@ -401,11 +401,11 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     double vehicle_speed = result.vel_b_.x();
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
-        constexpr double kMaxWheelSpeedWallAgeSec = 0.25;
+        constexpr double kMaxWheelSpeedTimestampDeltaSec = 0.25;
         if (wheel_speed_input_stats_.has_arrival &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                          wheel_speed_input_stats_.last_arrival)
-                    .count() <= kMaxWheelSpeedWallAgeSec) {
+            wheel_speed_input_stats_.last_sensor_stamp > 0.0 &&
+            std::abs(result.timestamp_ - wheel_speed_input_stats_.last_sensor_stamp) <=
+                kMaxWheelSpeedTimestampDeltaSec) {
             vehicle_speed = last_wheel_speed_mps_;
         }
     }
@@ -481,6 +481,16 @@ void LocSystem::PublishHealthStatus() {
         diagnostics.wheel_speed_mps = last_wheel_speed_mps_;
         diagnostics.motor_speed_rpm = last_motor_rpm_;
         diagnostics.motor_torque_nm = last_motor_torque_;
+        constexpr double kMaxWheelSpeedTimestampDeltaSec = 0.25;
+        if (imu_input_stats_.last_sensor_stamp > 0.0 &&
+            wheel_speed_input_stats_.last_sensor_stamp > 0.0) {
+            diagnostics.wheel_speed_imu_stamp_delta_sec =
+                wheel_speed_input_stats_.last_sensor_stamp -
+                imu_input_stats_.last_sensor_stamp;
+            diagnostics.wheel_speed_timestamp_aligned =
+                std::abs(diagnostics.wheel_speed_imu_stamp_delta_sec) <=
+                kMaxWheelSpeedTimestampDeltaSec;
+        }
     }
     const bool lidar_match_stale = publication_gate_.LidarMatchStale(latest_input_sensor_stamp);
     telemetry_->ObserveLocalizationStale(lidar_match_stale);

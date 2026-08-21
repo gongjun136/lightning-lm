@@ -16,6 +16,8 @@ float64 wheel_speed_silence_sec
 float64 wheel_speed_mps
 float64 motor_speed_rpm
 float64 motor_torque_nm
+float64 wheel_speed_imu_stamp_delta_sec
+bool wheel_speed_timestamp_aligned
 
 uint64 sensor_queue_pending
 uint64 sensor_queue_dropped

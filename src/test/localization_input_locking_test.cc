@@ -186,9 +186,7 @@ int main() {
             LocalizationLockingTestPeer::ObserveLidarLoc(can_static_localization, lidar_loc);
         }
         if (index % 2 == 0) {
-            // CAN is sourced from the other Orin and its header clock is not
-            // required to share the LiDAR/IMU epoch.
-            can_static_localization.ProcessWheelSpeed(timestamp - 35.0, 0.0);
+            can_static_localization.ProcessWheelSpeed(timestamp, 0.0);
         }
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = timestamp;
@@ -212,7 +210,7 @@ int main() {
     LocalizationLockingTestPeer::ObserveLio(can_static_localization, vibrating_lio);
     for (int index = 1; index <= 3; ++index) {
         const double timestamp = 201.2 + 0.01 * index;
-        can_static_localization.ProcessWheelSpeed(timestamp - 35.0, 0.0);
+        can_static_localization.ProcessWheelSpeed(timestamp, 0.0);
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = timestamp;
         imu->angular_velocity = lightning::Vec3d(0.09, 0.01, -0.02);
@@ -222,6 +220,53 @@ int main() {
     }
     if (!static_active) {
         std::cerr << "fresh zero CAN did not suppress a stationary LIO vibration spike"
+                  << std::endl;
+        return 1;
+    }
+
+    Localization offset_can_localization;
+    LocalizationLockingTestPeer::EnableImuStaticHold(offset_can_localization);
+    for (int index = 0; index <= 120; ++index) {
+        const double timestamp = 300.0 + 0.01 * index;
+        if (index % 10 == 0) {
+            lightning::NavState lio_state;
+            lio_state.timestamp_ = timestamp;
+            lio_state.pose_is_ok_ = true;
+            lio_state.lidar_odom_reliable_ = true;
+            lio_state.SetVel(lightning::Vec3d::Zero());
+            LocalizationLockingTestPeer::ObserveLio(offset_can_localization, lio_state);
+
+            lightning::loc::LocalizationResult lidar_loc;
+            lidar_loc.timestamp_ = timestamp;
+            lidar_loc.lidar_loc_valid_ = true;
+            LocalizationLockingTestPeer::ObserveLidarLoc(offset_can_localization, lidar_loc);
+        }
+        if (index % 2 == 0) {
+            offset_can_localization.ProcessWheelSpeed(timestamp - 37.0, 0.0);
+        }
+        auto imu = std::make_shared<lightning::IMU>();
+        imu->timestamp = timestamp;
+        const double vibration = index % 2 == 0 ? 0.09 : 0.04;
+        imu->angular_velocity = lightning::Vec3d(vibration, 0.01, -0.02);
+        imu->linear_acceleration = lightning::Vec3d(
+            0.0, 0.0, index % 2 == 0 ? 1.08 : 0.94);
+        static_active = LocalizationLockingTestPeer::UpdateImuStaticState(
+            offset_can_localization, imu);
+    }
+    if (static_active) {
+        std::cerr << "37-second-offset CAN incorrectly overrode the IMU fallback"
+                  << std::endl;
+        return 1;
+    }
+    offset_can_localization.ProcessWheelSpeed(301.21, 0.0);
+    auto aligned_imu = std::make_shared<lightning::IMU>();
+    aligned_imu->timestamp = 301.21;
+    aligned_imu->angular_velocity = lightning::Vec3d(0.09, 0.01, -0.02);
+    aligned_imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 1.08);
+    static_active = LocalizationLockingTestPeer::UpdateImuStaticState(
+        offset_can_localization, aligned_imu);
+    if (!static_active) {
+        std::cerr << "timestamp-aligned zero CAN did not recover the stationary observation"
                   << std::endl;
         return 1;
     }
