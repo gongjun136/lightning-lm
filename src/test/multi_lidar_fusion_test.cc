@@ -216,7 +216,7 @@ void TestAdaptiveLoadOrderAndQualityGate() {
     MultiLidarConfig config = MakeConfig();
     auto& load = config.adaptive_load;
     load.enabled = true;
-    load.tracking_min_lidars = 1;
+    load.tracking_min_lidars = 3;
     load.relocalization_min_lidars = 3;
     load.cloud_publish_min_lidars = 3;
     load.degrade_consecutive_frames = 2;
@@ -255,7 +255,8 @@ void TestAdaptiveLoadOrderAndQualityGate() {
     for (int i = 0; i < 8; ++i) {
         controller.Observe(0.17, 0.21, true);
     }
-    Require(controller.TargetLidarCount() == 1, "healthy sustained overload can reach primary-only tracking");
+    Require(controller.TargetLidarCount() == 3,
+            "sustained overload never reduces localization below three lidars");
     controller.SetLocalizationGood(false);
     Require(controller.TargetLidarCount() == 3,
             "initialization and relocalization clamp the minimum lidar count");
@@ -308,9 +309,10 @@ void TestFormalSanyAdaptiveConfigs() {
                 "formal SANY adaptive load is enabled");
         Require(static_cast<int>(config.lidars.size()) == expected_lidar_count,
                 "formal SANY lidar count");
-        Require(config.primary_lidar_id == 0 && config.reorder_window == 0.1,
-                "formal SANY primary and bounded reorder window");
-        Require(config.adaptive_load.tracking_min_lidars == 1 &&
+        Require(config.primary_lidar_id == 0 && config.reorder_window == 0.1 &&
+                    config.min_lidars == 3,
+                "formal SANY primary, three-lidar minimum and bounded reorder window");
+        Require(config.adaptive_load.tracking_min_lidars == 3 &&
                     config.adaptive_load.relocalization_min_lidars ==
                         expected_relocalization_min &&
                     config.adaptive_load.cloud_publish_min_lidars == 3 &&
@@ -321,18 +323,21 @@ void TestFormalSanyAdaptiveConfigs() {
                     config.adaptive_load.point_strides == std::vector<int>({1, 2, 3}),
                 "formal SANY latency and point-stride policy");
         const YAML::Node system = root["system"];
-        Require(system && system["pub_tf"] && !system["pub_tf"].as<bool>() &&
+        Require(root["fasterlio"]["skip_lidar_num"].as<int>() == 0 && system &&
+                    system["enable_lidar_loc_skip"] &&
+                    !system["enable_lidar_loc_skip"].as<bool>() &&
+                    system["pub_tf"] && !system["pub_tf"].as<bool>() &&
                     system["enable_wheel_speed_dr_observation"].as<bool>() &&
                     system["localization_output_max_lidar_age_sec"].as<double>() == 0.5 &&
                     system["wheel_speed_dr_max_age_sec"].as<double>() == 0.25 &&
                     system["wheel_speed_dr_max_velocity_step_mps"].as<double>() == 0.35,
-                "formal SANY output freshness and wheel-speed DR gates are explicit");
+                "formal SANY fixed-skip, output freshness and wheel-speed DR gates are explicit");
     };
 
     check_config(
         "config/reproduction/multi_lidar/sany_3livox/"
         "sany_3lidar_localization_solid.yaml",
-        3, 2);
+        3, 3);
     check_config(
         "config/reproduction/multi_lidar/sany_4livox/"
         "sany_4lidar_localization_solid.yaml",

@@ -15,12 +15,12 @@ multi_lidar:
   # The rear LiDAR crosses the Orin boundary; release an incomplete localization
   # frame after one nominal period instead of building a stale backlog.
   reorder_window: 0.1
-  # Legacy/relocalization minimum. GOOD tracking may temporarily use only the
-  # primary front LiDAR after point-stride degradation has been exhausted.
+  # The delayed rear LiDAR may be excluded, but localization always keeps at
+  # least three LiDARs and the primary front 184.
   min_lidars: 3
   adaptive_load:
     enabled: true
-    tracking_min_lidars: 1
+    tracking_min_lidars: 3
     relocalization_min_lidars: 3
     cloud_publish_min_lidars: 3
     cloud_publish_require_primary: true
@@ -171,10 +171,10 @@ fasterlio:
   scan_line: 4
   blind: 0.5
   time_scale: 1e-3
-  # The Orin trace shows 10 Hz scan matching consumes 49-82% CPU on average
-  # with 96-193 ms P95 latency. Match at 5 Hz and keep IMU propagation at its
-  # native rate so online sensor time remains current.
-  skip_lidar_num: 2
+  # Do not lengthen DR with periodic skipping. Adaptive point/lidar reduction
+  # runs first; bounded queues and the hard-stale gate drop observations only
+  # when processing can no longer stay real-time.
+  skip_lidar_num: 0
   point_filter_num: 3
   max_iteration: 4
   filter_size_scan: 0.5
@@ -231,6 +231,7 @@ system:
   online_sensor_max_lag_sec: 0.5
   online_sensor_resume_lag_sec: 0.1
   online_lidar_loc_queue_size: 1
+  enable_lidar_loc_skip: false
   # Drop a delayed cross-Orin scan before preprocessing when its sensor time is
   # more than three frame periods behind the newest LiDAR input.
   online_lidar_input_max_timestamp_lag_sec: 0.3

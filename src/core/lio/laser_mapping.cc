@@ -303,6 +303,13 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
                   << ", reorder_window=" << multi_lidar_config_.reorder_window;
     }
     adaptive_lidar_load_controller_.Reset(multi_lidar_config_);
+    if (multi_lidar_config_.adaptive_load.enabled && enable_skip_lidar_) {
+        LOG(WARNING) << "ignore fasterlio.skip_lidar_num=" << skip_lidar_num_
+                     << " because adaptive multi-lidar load control is enabled; fixed skipping "
+                        "would lengthen dead reckoning before exhausting point/lidar degradation";
+        enable_skip_lidar_ = false;
+        skip_lidar_cnt_ = 0;
+    }
 
     std::string self_filter_error;
     if (!LoadSelfPointFilterConfig(yaml, self_point_filter_config_, &self_filter_error)) {
