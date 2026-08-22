@@ -40,8 +40,9 @@ DEFINE_string(output_csv, "", "output per-localization-frame CSV; disabled when 
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
 DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline processing");
 DEFINE_bool(publish_topics, true,
-            "publish SANY localization outputs on /PosRes, /slamPoseRaw_topic, /LidarDataInv, and /LidarDataInL");
-DEFINE_string(output_bag, "", "write the four SANY localization output topics directly to a ROS 2 bag");
+            "publish SANY localization outputs on /PosRes, /localization/pose_vel, "
+            "/slamPoseRaw_topic, /LidarDataInv, and /LidarDataInL");
+DEFINE_string(output_bag, "", "write the five SANY localization output topics directly to a ROS 2 bag");
 DEFINE_bool(use_config_initial_pose, true,
             "use offline_localization.initial_pose from YAML; disable to require global initialization");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
@@ -76,10 +77,12 @@ class OfflineLocalizationPublisher {
         if (publish_topics) {
             node_ = std::make_shared<rclcpp::Node>("offline_multi_lidar_localization");
             const auto pose_qos =
-                rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
+                rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
             const auto cloud_qos =
-                rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+                rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
             pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
+            vehicle_pose_pub_ = node_->create_publisher<lightning::msg::VehiclePose>(
+                "/localization/pose_vel", pose_qos);
             pose_pub_ =
                 node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
             inv_cloud_pub_ =
@@ -87,9 +90,9 @@ class OfflineLocalizationPublisher {
             map_cloud_pub_ =
                 node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
             const auto health_qos =
-                rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
+                rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
             const auto path_qos =
-                rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+                rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
             fault_status_pub_ = node_->create_publisher<lightning::msg::FaultStatus>(
                 "/localization/fault_status", health_qos);
             loc_status_pub_ = node_->create_publisher<lightning::msg::LocalizationStatus>(
@@ -111,7 +114,7 @@ class OfflineLocalizationPublisher {
     void PublishPose(const lightning::loc::LocalizationResult& result,
                      const lightning::SO3& initial_lidar_rotation) {
         if (!result.valid_ || result.timestamp_ <= 0.0 ||
-            !publication_gate_.MapOutputsEnabled()) {
+            !publication_gate_.PoseOutputsEnabled()) {
             return;
         }
         const lightning::SE3 map_rear_axle_pose = lightning::sany_output::MakeMapRearAxlePose(
@@ -119,12 +122,15 @@ class OfflineLocalizationPublisher {
         const auto position = lightning::sany_output::MakePosResMessage(
             map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
         if (pos_res_pub_) pos_res_pub_->publish(position);
+        const auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(position);
+        if (vehicle_pose_pub_) vehicle_pose_pub_->publish(vehicle_pose);
         const auto pose = lightning::sany_output::MakePoseMessage(position);
         if (pose_pub_) pose_pub_->publish(pose);
         telemetry_.ObservePose(pose);
         if (bag_writer_) {
             const rclcpp::Time stamp(position.header.stamp);
             bag_writer_->write(position, "/PosRes", stamp);
+            bag_writer_->write(vehicle_pose, "/localization/pose_vel", stamp);
             bag_writer_->write(pose, "/slamPoseRaw_topic", stamp);
         }
     }
@@ -180,6 +186,7 @@ class OfflineLocalizationPublisher {
    private:
     rclcpp::Node::SharedPtr node_;
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_;
+    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_;
@@ -600,6 +607,7 @@ int main(int argc, char** argv) {
                 }
 
                 const auto current_scan = lio.GetScanUndist();
+                const auto publication_scan = lio.GetPublicationCloud();
                 const auto scan = lio.GetProjCloud();
                 if (FLAGS_force_relocalization_frame > 0 &&
                     loc_frames + 1 == FLAGS_force_relocalization_frame) {
@@ -628,9 +636,12 @@ int main(int argc, char** argv) {
                     final_result = latest_final_result;
                 }
                 if (topic_publisher) {
-                    topic_publisher->PublishCloud(loc_result.pose_, current_scan ? current_scan : scan,
-                                                  lio.GetLastFrameBeginTime(), lio.GetLastFrameEndTime(),
-                                                  lio.GetInitialLidarRotation());
+                    if (lio.CanPublishCurrentCloud()) {
+                        topic_publisher->PublishCloud(
+                            loc_result.pose_, publication_scan ? publication_scan : scan,
+                            lio.GetLastFrameBeginTime(), lio.GetLastFrameEndTime(),
+                            lio.GetInitialLidarRotation());
+                    }
                     topic_publisher->PublishTelemetry(loc_result.timestamp_);
                 }
 

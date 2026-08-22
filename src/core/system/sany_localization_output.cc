@@ -153,6 +153,20 @@ geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& 
     return message;
 }
 
+lightning::msg::VehiclePose MakeVehiclePoseMessage(
+    const geosun_msgs::msg::PosRes& position) {
+    lightning::msg::VehiclePose message;
+    message.header = position.header;
+    message.x = position.f8enh[0];
+    message.y = position.f8enh[1];
+    message.z = position.f8enh[2];
+    message.roll = position.f8pry[0];
+    message.pitch = position.f8pry[1];
+    message.yaw = position.f8pry[2];
+    message.speed = position.f8vehiclespeed;
+    return message;
+}
+
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
                                                const SE3& T_output_lidar, const std::string& frame_id) {
     sensor_msgs::msg::PointCloud2 message;
@@ -252,6 +266,11 @@ void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
     }
 }
 
+bool LocalizationPublicationGate::PoseOutputsEnabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_;
+}
+
 bool LocalizationPublicationGate::MapOutputsEnabled(double current_sensor_stamp) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool stale = max_lidar_match_age_sec_ > 0.0 && current_sensor_stamp > 0.0 &&
@@ -322,9 +341,8 @@ void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus sta
 void LocalizationTelemetryState::ObserveLocalizationStale(bool stale) {
     if (!stale) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!has_good_localization_) return;
-    current_status_ = lightning::msg::LocalizationStatus::STATUS_FAIL;
-    localization_lost_latched_ = true;
+    if (!has_good_localization_ || localization_lost_latched_) return;
+    current_status_ = lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR;
 }
 
 void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamped& pose) {

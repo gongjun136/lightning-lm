@@ -136,7 +136,9 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         /// 创建 ROS2 节点
         node_ = std::make_shared<rclcpp::Node>("lightning_slam");
         if (backend_) {
-            tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
+            auto tf_qos = tf2_ros::DynamicBroadcasterQoS();
+            tf_qos.best_effort();
+            tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_, tf_qos);
             backend_->SetOptimizedCallback([this]() {
                 PublishMapToOdom();
                 if (g2p5_) g2p5_->RedrawGlobalMap();

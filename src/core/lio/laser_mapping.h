@@ -2,7 +2,12 @@
 #define FASTER_LIO_LASER_MAPPING_H
 
 #include <pcl/filters/voxel_grid.h>
+#include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <mutex>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <thread>
 
@@ -23,6 +28,39 @@ namespace lightning {
 namespace ui {
 class PangolinWindow;
 }
+
+struct WheelSpeedDrConfig {
+    bool enabled = false;
+    double base_std_mps = 0.35;
+    double stationary_std_mps = 0.08;
+    double stationary_speed_threshold_mps = 0.03;
+    double max_age_sec = 0.25;
+    double future_tolerance_sec = 0.03;
+    double max_acceleration_mps2 = 4.0;
+    double max_abs_innovation_mps = 1.5;
+    double normalized_innovation_squared_gate = 9.0;
+    double torque_reference_nm = 1000.0;
+    double torque_std_scale = 3.0;
+    double max_velocity_step_mps = 0.35;
+};
+
+struct WheelSpeedDrStats {
+    std::uint64_t input_count = 0;
+    std::uint64_t invalid_input_count = 0;
+    std::uint64_t timestamp_reject_count = 0;
+    std::uint64_t acceleration_reject_count = 0;
+    std::uint64_t lidar_filter_accepted_count = 0;
+    std::uint64_t lidar_filter_rejected_count = 0;
+    std::uint64_t lidar_filter_stale_count = 0;
+    std::uint64_t imu_filter_accepted_count = 0;
+    std::uint64_t imu_filter_rejected_count = 0;
+    std::uint64_t imu_filter_stale_count = 0;
+    double last_measurement_mps = 0.0;
+    double last_predicted_mps = 0.0;
+    double last_innovation_mps = 0.0;
+    double last_standard_deviation_mps = 0.0;
+    double last_normalized_innovation_squared = 0.0;
+};
 
 /**
  * @brief LIO前端主流程：点云预处理、IMU同步、ESKF更新和局部地图维护。
@@ -76,6 +114,7 @@ class LaserMapping {
     LaserMapping(Options options = Options());
     ~LaserMapping() {
         scan_down_lidar_ = nullptr;
+        scan_undistort_full_ = nullptr;
         scan_undistort_ = nullptr;
         scan_down_world_ = nullptr;
         LOG(INFO) << "laser mapping deconstruct";
@@ -111,6 +150,10 @@ class LaserMapping {
     /// 处理一条IMU消息：写入IMU缓存，并在IMU初始化后维护一份高频kf_imu_状态供UI显示。
     void ProcessIMU(const lightning::IMUPtr &msg_in);
 
+    /// Buffer a signed body-forward speed converted from motor rpm.
+    void ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps, double motor_torque_nm);
+    const WheelSpeedDrConfig& GetWheelSpeedDrConfig() const { return wheel_speed_dr_config_; }
+    WheelSpeedDrStats GetWheelSpeedDrStats() const;
     /// 保存前端的地图
     void SaveMap();
 
@@ -127,6 +170,33 @@ class LaserMapping {
     bool IsMultiLidarEnabled() const { return multi_lidar_config_.enabled; }
     const MultiLidarConfig &GetMultiLidarConfig() const { return multi_lidar_config_; }
     const MultiLidarFrameStats &GetCurrentFrameStats() const { return current_lidar_stats_; }
+    CloudPtr GetPublicationCloud() const { return scan_undistort_full_; }
+    bool CanPublishCurrentCloud() const {
+        return adaptive_lidar_load_controller_.CanPublishCloud(current_lidar_stats_);
+    }
+    void SetLocalizationGood(bool good) { adaptive_lidar_load_controller_.SetLocalizationGood(good); }
+    void SetLatestInputTimestamp(double timestamp) {
+        double current = latest_input_sensor_timestamp_.load(std::memory_order_relaxed);
+        while (timestamp > current &&
+               !latest_input_sensor_timestamp_.compare_exchange_weak(
+                   current, timestamp, std::memory_order_relaxed)) {
+        }
+    }
+    int GetAdaptiveLidarDegradationStep() const {
+        return adaptive_lidar_load_controller_.DegradationStep();
+    }
+    const AdaptiveLidarSelection& GetCurrentLidarSelection() const {
+        return current_lidar_selection_;
+    }
+    double GetLastLidarLatencySec() const {
+        return last_lidar_latency_sec_.load(std::memory_order_relaxed);
+    }
+    double GetLastFrameProcessingMs() const {
+        return last_frame_processing_ms_.load(std::memory_order_relaxed);
+    }
+    std::size_t GetAdaptiveStaleDropCount() const {
+        return adaptive_stale_drop_count_.load(std::memory_order_relaxed);
+    }
     std::size_t GetMultiLidarLateDropCount() const { return multi_lidar_assembler_.LateDropCount(); }
     std::size_t GetMultiLidarDuplicateDropCount() const { return multi_lidar_assembler_.DuplicateDropCount(); }
     std::size_t GetMultiLidarToleranceDropCount() const { return multi_lidar_assembler_.ToleranceDropCount(); }
@@ -215,6 +285,15 @@ class LaserMapping {
     bool EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats = nullptr,
                       double preprocess_ms = 0.0);
     bool DrainAssembledFrames();
+    bool ApplyWheelSpeedObservation(ESKF& filter, double state_timestamp,
+                                    double& last_applied_observation_timestamp,
+                                    bool high_frequency_filter);
+    void ResetWheelSpeedIntegrationBridge(double timestamp);
+    struct WheelSpeedSample {
+        double timestamp = 0.0;
+        double speed_mps = 0.0;
+        double torque_nm = 0.0;
+    };
     double PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
                                  const NavState &state) const;
 
@@ -266,7 +345,8 @@ class LaserMapping {
     int kf_id_ = 0;                             // 关键帧ID计数器（唯一标识每个关键帧）
 
     /// 当前帧点云缓存
-    CloudPtr scan_undistort_{new PointCloudType()};   // 去畸变后的当前帧点云，仍在Lidar坐标系
+    CloudPtr scan_undistort_full_{new PointCloudType()};  // 所有有效雷达的去畸变点云，用于发布
+    CloudPtr scan_undistort_{new PointCloudType()};       // 动态选择后的定位点云
     CloudPtr scan_down_lidar_{new PointCloudType()};  // 当前帧降采样点云，Lidar坐标系
     CloudPtr scan_down_world_{new PointCloudType()};  // 当前帧降采样点云，世界坐标系
     pcl::VoxelGrid<PointType> voxel_scan_;            // 当前帧点云体素滤波器
@@ -314,9 +394,24 @@ class LaserMapping {
     int scan_num_ = 0;                  // 当前扫描序列号
     int effect_feat_surf_ = 0, frame_num_ = 0, effect_feat_icp_ = 0;
     MultiLidarFrameStats current_lidar_stats_;
+    AdaptiveLidarLoadController adaptive_lidar_load_controller_;
+    AdaptiveLidarSelection current_lidar_selection_;
+    std::atomic<double> latest_input_sensor_timestamp_{0.0};
+    std::atomic<double> last_lidar_latency_sec_{0.0};
+    std::atomic<double> last_frame_processing_ms_{0.0};
+    std::atomic<std::size_t> adaptive_stale_drop_count_{0};
     bool last_tracking_healthy_ = false;
     double current_max_imu_gap_ = 0.0;
     std::size_t pre_imu_drop_count_ = 0;
+
+    WheelSpeedDrConfig wheel_speed_dr_config_;
+    mutable std::mutex wheel_speed_mutex_;
+    std::deque<WheelSpeedSample> wheel_speed_buffer_;
+    WheelSpeedDrStats wheel_speed_dr_stats_;
+    double last_raw_wheel_speed_timestamp_ = std::numeric_limits<double>::lowest();
+    double last_raw_wheel_speed_mps_ = 0.0;
+    double last_lidar_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
+    double last_imu_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
 
     double last_lidar_time_ = 0;  // 上一帧激光雷达时间戳（用于时间同步和断流检测）
 

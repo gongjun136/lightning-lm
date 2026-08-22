@@ -8,6 +8,7 @@
 #include <cmath>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -54,6 +55,10 @@ class ImuProcess {
     ImuProcess();
     ~ImuProcess();
 
+    using PostPredictCallback = std::function<void(ESKF&, double)>;
+    void SetPostPredictCallback(PostPredictCallback callback) {
+        post_predict_callback_ = std::move(callback);
+    }
     /// 重置IMU初始化状态和跨帧缓存，通常在重定位或重新开始处理数据时调用。
     void Reset();
     /// 在输入时间不连续后重建跨帧积分起点，保留已初始化的IMU标定和当前ESKF状态。
@@ -111,6 +116,7 @@ class ImuProcess {
 
     bool InitializationReady() const;
 
+    PostPredictCallback post_predict_callback_;
     PointCloudType::Ptr cur_pcl_un_ = nullptr;  // 当前帧去畸变点云缓存，Reset时重新分配
     lightning::IMUPtr last_imu_ = nullptr;      // 上一帧最后一条IMU，用于和当前帧第一条IMU形成连续积分区间
     std::deque<lightning::IMUPtr> imu_queue_;   // IMU队列缓存，当前实现主要在Reset中维护
@@ -375,6 +381,9 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
         Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
         kf_state.Predict(dt, Q_, gyro, acc);
+        if (post_predict_callback_) {
+            post_predict_callback_(kf_state, kf_state.GetX().timestamp_);
+        }
 
         // LOG(INFO) << "gyro: " << gyro.transpose() << ", dt: " << dt;
 
@@ -408,6 +417,9 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
     dt = note * (pcl_end_time - imu_end_time);  // 正向或反向预测到点云结束时刻
     kf_state.Predict(dt, Q_, gyro, acc);
+    if (post_predict_callback_) {
+        post_predict_callback_(kf_state, kf_state.GetX().timestamp_);
+    }
 
     imu_state = kf_state.GetX();  // 获取最终的位姿状态（作为运动补偿的参考帧）
     last_imu_ = meas.imu_.back();

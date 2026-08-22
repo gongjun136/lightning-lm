@@ -8,6 +8,8 @@
 namespace {
 
 using lightning::CloudPtr;
+using lightning::AdaptiveLidarLoadController;
+using lightning::AdaptiveLidarSelection;
 using lightning::FusedLidarFrame;
 using lightning::Mat3d;
 using lightning::MultiLidarConfig;
@@ -201,6 +203,142 @@ map_export:
             "explicit export maximum is padded");
 }
 
+lightning::MultiLidarFrameStats MakeFrameStats(std::vector<int> ids) {
+    lightning::MultiLidarFrameStats stats;
+    stats.present_lidar_ids = std::move(ids);
+    for (const int id : stats.present_lidar_ids) {
+        stats.points_by_lidar[id] = 1000 - static_cast<std::size_t>(id) * 100;
+    }
+    return stats;
+}
+
+void TestAdaptiveLoadOrderAndQualityGate() {
+    MultiLidarConfig config = MakeConfig();
+    auto& load = config.adaptive_load;
+    load.enabled = true;
+    load.tracking_min_lidars = 1;
+    load.relocalization_min_lidars = 3;
+    load.cloud_publish_min_lidars = 3;
+    load.degrade_consecutive_frames = 2;
+    load.recover_consecutive_frames = 3;
+    load.point_strides = {1, 2, 3};
+
+    AdaptiveLidarLoadController controller;
+    controller.Reset(config);
+    controller.SetLocalizationGood(true);
+    const auto full = MakeFrameStats({0, 1, 2, 3});
+    auto selection = controller.Select(full);
+    Require(selection.lidar_ids.size() == 4 && selection.point_stride == 1,
+            "healthy baseline uses every lidar and point");
+
+    controller.Observe(0.17, 0.21, true);
+    controller.Observe(0.17, 0.21, true);
+    selection = controller.Select(full);
+    Require(selection.lidar_ids.size() == 4 && selection.point_stride == 2,
+            "first overload step increases point stride before removing lidar");
+    controller.Observe(0.17, 0.21, true);
+    controller.Observe(0.17, 0.21, true);
+    selection = controller.Select(full);
+    Require(selection.lidar_ids.size() == 4 && selection.point_stride == 3,
+            "second overload step keeps every lidar with stronger sampling");
+    controller.Observe(0.17, 0.21, true);
+    controller.Observe(0.17, 0.21, true);
+    selection = controller.Select(full);
+    Require(selection.lidar_ids.size() == 3 && selection.lidar_ids.front() == 0,
+            "only after point reduction does overload remove a secondary lidar");
+
+    controller.Observe(0.05, 0.05, false);
+    controller.Observe(0.05, 0.05, false);
+    Require(controller.DegradationStep() == 2,
+            "bad tracking restores data instead of degrading further");
+
+    for (int i = 0; i < 8; ++i) {
+        controller.Observe(0.17, 0.21, true);
+    }
+    Require(controller.TargetLidarCount() == 1, "healthy sustained overload can reach primary-only tracking");
+    controller.SetLocalizationGood(false);
+    Require(controller.TargetLidarCount() == 3,
+            "initialization and relocalization clamp the minimum lidar count");
+}
+
+void TestAdaptiveCloudPublicationAndPointSelection() {
+    MultiLidarConfig config = MakeConfig();
+    config.adaptive_load.enabled = true;
+    config.adaptive_load.relocalization_min_lidars = 3;
+    config.adaptive_load.cloud_publish_min_lidars = 3;
+    AdaptiveLidarLoadController controller;
+    controller.Reset(config);
+    Require(controller.CanPublishCloud(MakeFrameStats({0, 1, 2})),
+            "three-lidar cloud containing primary is publishable");
+    Require(!controller.CanPublishCloud(MakeFrameStats({1, 2, 3})),
+            "cloud without primary is suppressed");
+    Require(!controller.CanPublishCloud(MakeFrameStats({0, 1})),
+            "cloud below publication minimum is suppressed");
+    Require(controller.IsHardStale(0.31) && !controller.IsHardStale(0.29),
+            "hard stale deadline is explicit");
+
+    CloudPtr cloud(new PointCloudType);
+    for (int id = 0; id < 3; ++id) {
+        for (int i = 0; i < 4; ++i) {
+            auto point = MakeCloud(static_cast<double>(i))->front();
+            point.lidar_id = static_cast<std::uint8_t>(id);
+            cloud->push_back(point);
+        }
+    }
+    AdaptiveLidarSelection selection;
+    selection.lidar_ids = {0, 2};
+    selection.point_stride = 2;
+    const auto selected = lightning::SelectLidarPoints(cloud, selection);
+    Require(selected->size() == 4, "stride is applied independently to each selected lidar");
+    for (const auto& point : selected->points) {
+        Require(point.lidar_id == 0 || point.lidar_id == 2, "unselected lidar points are excluded");
+    }
+}
+
+void TestFormalSanyAdaptiveConfigs() {
+    const auto check_config = [](const std::string& relative_path,
+                                 int expected_lidar_count,
+                                 int expected_relocalization_min) {
+        const YAML::Node root = YAML::LoadFile(std::string(ROOT_DIR) + relative_path);
+        MultiLidarConfig config;
+        std::string error;
+        Require(lightning::LoadMultiLidarConfig(root, config, &error),
+                "formal SANY multi-lidar config parses");
+        Require(config.enabled && config.adaptive_load.enabled,
+                "formal SANY adaptive load is enabled");
+        Require(static_cast<int>(config.lidars.size()) == expected_lidar_count,
+                "formal SANY lidar count");
+        Require(config.primary_lidar_id == 0 && config.reorder_window == 0.1,
+                "formal SANY primary and bounded reorder window");
+        Require(config.adaptive_load.tracking_min_lidars == 1 &&
+                    config.adaptive_load.relocalization_min_lidars ==
+                        expected_relocalization_min &&
+                    config.adaptive_load.cloud_publish_min_lidars == 3 &&
+                    config.adaptive_load.cloud_publish_require_primary,
+                "formal SANY localization and publication minima");
+        Require(config.adaptive_load.target_latency_sec == 0.2 &&
+                    config.adaptive_load.hard_latency_sec == 0.3 &&
+                    config.adaptive_load.point_strides == std::vector<int>({1, 2, 3}),
+                "formal SANY latency and point-stride policy");
+        const YAML::Node system = root["system"];
+        Require(system && system["pub_tf"] && !system["pub_tf"].as<bool>() &&
+                    system["enable_wheel_speed_dr_observation"].as<bool>() &&
+                    system["localization_output_max_lidar_age_sec"].as<double>() == 0.5 &&
+                    system["wheel_speed_dr_max_age_sec"].as<double>() == 0.25 &&
+                    system["wheel_speed_dr_max_velocity_step_mps"].as<double>() == 0.35,
+                "formal SANY output freshness and wheel-speed DR gates are explicit");
+    };
+
+    check_config(
+        "config/reproduction/multi_lidar/sany_3livox/"
+        "sany_3lidar_localization_solid.yaml",
+        3, 2);
+    check_config(
+        "config/reproduction/multi_lidar/sany_4livox/"
+        "sany_4lidar_localization_solid.yaml",
+        4, 3);
+}
+
 }  // namespace
 
 int main() {
@@ -211,6 +349,9 @@ int main() {
     TestPairwiseToleranceAndCommonPhaseDrift();
     TestDownsampleKeepsRealIds();
     TestBodyAlignedSelfPointFilter();
+    TestAdaptiveLoadOrderAndQualityGate();
+    TestAdaptiveCloudPublicationAndPointSelection();
+    TestFormalSanyAdaptiveConfigs();
     std::cout << "multi_lidar_fusion_test passed" << std::endl;
     return 0;
 }

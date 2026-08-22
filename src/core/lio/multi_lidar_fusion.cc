@@ -91,6 +91,36 @@ bool ValidateConfig(const MultiLidarConfig& config, std::string* error) {
         SetError(error, "multi_lidar.min_lidars is outside the configured lidar count");
         return false;
     }
+    const auto& adaptive = config.adaptive_load;
+    const int lidar_count = static_cast<int>(config.lidars.size());
+    if (adaptive.enabled) {
+        if (adaptive.tracking_min_lidars < 1 || adaptive.tracking_min_lidars > lidar_count ||
+            adaptive.relocalization_min_lidars < adaptive.tracking_min_lidars ||
+            adaptive.relocalization_min_lidars > lidar_count ||
+            adaptive.cloud_publish_min_lidars < 1 || adaptive.cloud_publish_min_lidars > lidar_count) {
+            SetError(error, "invalid multi_lidar.adaptive_load lidar-count thresholds");
+            return false;
+        }
+        if (!std::isfinite(adaptive.target_latency_sec) ||
+            !std::isfinite(adaptive.hard_latency_sec) || adaptive.target_latency_sec <= 0.0 ||
+            adaptive.hard_latency_sec <= adaptive.target_latency_sec ||
+            adaptive.degrade_processing_ratio <= 0.0 || adaptive.degrade_processing_ratio > 1.0 ||
+            adaptive.recover_processing_ratio <= 0.0 ||
+            adaptive.recover_processing_ratio >= adaptive.degrade_processing_ratio ||
+            adaptive.degrade_consecutive_frames <= 0 || adaptive.recover_consecutive_frames <= 0 ||
+            adaptive.point_strides.empty()) {
+            SetError(error, "invalid multi_lidar.adaptive_load timing parameters");
+            return false;
+        }
+        int previous_stride = 0;
+        for (const int stride : adaptive.point_strides) {
+            if (stride <= 0 || stride < previous_stride) {
+                SetError(error, "multi_lidar.adaptive_load.point_strides must be positive and ordered");
+                return false;
+            }
+            previous_stride = stride;
+        }
+    }
     std::set<int> ids;
     bool has_primary = false;
     for (const auto& sensor : config.lidars) {
@@ -136,6 +166,28 @@ bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std:
         if (multi["min_lidars"]) config.min_lidars = multi["min_lidars"].as<int>();
         if (multi["online_extrinsic_estimation"]) {
             config.online_extrinsic_estimation = multi["online_extrinsic_estimation"].as<bool>();
+        }
+        const YAML::Node adaptive = multi["adaptive_load"];
+        if (adaptive) {
+            auto& load = config.adaptive_load;
+            load.enabled = adaptive["enabled"] ? adaptive["enabled"].as<bool>() : true;
+            if (adaptive["tracking_min_lidars"]) {
+                load.tracking_min_lidars = adaptive["tracking_min_lidars"].as<int>();
+            }
+            if (adaptive["relocalization_min_lidars"]) {
+                load.relocalization_min_lidars = adaptive["relocalization_min_lidars"].as<int>();
+            }
+            if (adaptive["cloud_publish_min_lidars"]) {
+                load.cloud_publish_min_lidars = adaptive["cloud_publish_min_lidars"].as<int>();
+            }
+            if (adaptive["cloud_publish_require_primary"]) load.cloud_publish_require_primary = adaptive["cloud_publish_require_primary"].as<bool>();
+            if (adaptive["target_latency_sec"]) load.target_latency_sec = adaptive["target_latency_sec"].as<double>();
+            if (adaptive["hard_latency_sec"]) load.hard_latency_sec = adaptive["hard_latency_sec"].as<double>();
+            if (adaptive["degrade_processing_ratio"]) load.degrade_processing_ratio = adaptive["degrade_processing_ratio"].as<double>();
+            if (adaptive["recover_processing_ratio"]) load.recover_processing_ratio = adaptive["recover_processing_ratio"].as<double>();
+            if (adaptive["degrade_consecutive_frames"]) load.degrade_consecutive_frames = adaptive["degrade_consecutive_frames"].as<int>();
+            if (adaptive["recover_consecutive_frames"]) load.recover_consecutive_frames = adaptive["recover_consecutive_frames"].as<int>();
+            if (adaptive["point_strides"]) load.point_strides = adaptive["point_strides"].as<std::vector<int>>();
         }
 
         const YAML::Node topics = multi["topics"];
@@ -297,6 +349,135 @@ CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size) {
     return filtered;
 }
 
+void AdaptiveLidarLoadController::Reset(const MultiLidarConfig& config) {
+    config_ = config;
+    localization_good_ = false;
+    degradation_step_ = 0;
+    overload_frames_ = 0;
+    recovery_frames_ = 0;
+}
+
+int AdaptiveLidarLoadController::MaximumDegradationStep() const {
+    if (!config_.adaptive_load.enabled) return 0;
+    const int point_steps = std::max(0, static_cast<int>(config_.adaptive_load.point_strides.size()) - 1);
+    const int lidar_steps = std::max(0, static_cast<int>(config_.lidars.size()) -
+                                           config_.adaptive_load.tracking_min_lidars);
+    return point_steps + lidar_steps;
+}
+
+int AdaptiveLidarLoadController::PointStride() const {
+    if (!config_.adaptive_load.enabled || config_.adaptive_load.point_strides.empty()) return 1;
+    const int index = std::min(degradation_step_,
+                               static_cast<int>(config_.adaptive_load.point_strides.size()) - 1);
+    return config_.adaptive_load.point_strides[index];
+}
+
+int AdaptiveLidarLoadController::TargetLidarCount() const {
+    const int total = static_cast<int>(config_.lidars.size());
+    if (!config_.adaptive_load.enabled) return total;
+    const int point_steps = std::max(0, static_cast<int>(config_.adaptive_load.point_strides.size()) - 1);
+    const int lidar_reduction = std::max(0, degradation_step_ - point_steps);
+    const int minimum = localization_good_.load() ? config_.adaptive_load.tracking_min_lidars
+                                           : config_.adaptive_load.relocalization_min_lidars;
+    return std::max(minimum, total - lidar_reduction);
+}
+
+void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_sec,
+                                           bool tracking_healthy) {
+    if (!config_.adaptive_load.enabled) return;
+    const auto& load = config_.adaptive_load;
+    const bool overloaded = latency_sec >= load.target_latency_sec ||
+                            processing_sec >= load.target_latency_sec * load.degrade_processing_ratio;
+    const bool recovered = latency_sec <= load.target_latency_sec * load.recover_processing_ratio &&
+                           processing_sec <= load.target_latency_sec * load.recover_processing_ratio;
+    if (overloaded) {
+        recovery_frames_ = 0;
+        if (!tracking_healthy) {
+            overload_frames_ = 0;
+            return;
+        }
+        if (++overload_frames_ >= load.degrade_consecutive_frames) {
+            degradation_step_ = std::min(MaximumDegradationStep(), degradation_step_ + 1);
+            overload_frames_ = 0;
+        }
+        return;
+    }
+    overload_frames_ = 0;
+    const int required_recovery_frames = tracking_healthy ? load.recover_consecutive_frames
+                                                          : load.degrade_consecutive_frames;
+    if ((!tracking_healthy || recovered) && degradation_step_ > 0) {
+        if (++recovery_frames_ >= required_recovery_frames) {
+            --degradation_step_;
+            recovery_frames_ = 0;
+        }
+    } else {
+        recovery_frames_ = 0;
+    }
+}
+
+AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrameStats& stats) const {
+    AdaptiveLidarSelection selection;
+    selection.point_stride = PointStride();
+    selection.degradation_step = degradation_step_;
+    const auto primary_it = std::find(stats.present_lidar_ids.begin(), stats.present_lidar_ids.end(),
+                                      config_.primary_lidar_id);
+    const int minimum = localization_good_.load() ? config_.adaptive_load.tracking_min_lidars
+                                           : config_.adaptive_load.relocalization_min_lidars;
+    if (primary_it == stats.present_lidar_ids.end() ||
+        static_cast<int>(stats.present_lidar_ids.size()) < minimum) {
+        return selection;
+    }
+    selection.lidar_ids.push_back(config_.primary_lidar_id);
+    std::vector<int> secondary;
+    for (const int id : stats.present_lidar_ids) {
+        if (id != config_.primary_lidar_id) secondary.push_back(id);
+    }
+    std::sort(secondary.begin(), secondary.end(), [&](int lhs, int rhs) {
+        const std::size_t lhs_points = stats.points_by_lidar.count(lhs) ? stats.points_by_lidar.at(lhs) : 0;
+        const std::size_t rhs_points = stats.points_by_lidar.count(rhs) ? stats.points_by_lidar.at(rhs) : 0;
+        return lhs_points != rhs_points ? lhs_points > rhs_points : lhs < rhs;
+    });
+    const int target = std::min(TargetLidarCount(), static_cast<int>(stats.present_lidar_ids.size()));
+    for (const int id : secondary) {
+        if (static_cast<int>(selection.lidar_ids.size()) >= target) break;
+        selection.lidar_ids.push_back(id);
+    }
+    return selection;
+}
+
+bool AdaptiveLidarLoadController::CanPublishCloud(const MultiLidarFrameStats& stats) const {
+    if (!config_.adaptive_load.enabled) return true;
+    const auto& load = config_.adaptive_load;
+    if (static_cast<int>(stats.present_lidar_ids.size()) < load.cloud_publish_min_lidars) return false;
+    return !load.cloud_publish_require_primary ||
+           std::find(stats.present_lidar_ids.begin(), stats.present_lidar_ids.end(),
+                     config_.primary_lidar_id) != stats.present_lidar_ids.end();
+}
+
+bool AdaptiveLidarLoadController::IsHardStale(double latency_sec) const {
+    return config_.adaptive_load.enabled && latency_sec >= config_.adaptive_load.hard_latency_sec;
+}
+
+CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& selection) {
+    CloudPtr selected(new PointCloudType);
+    if (!cloud || selection.lidar_ids.empty()) return selected;
+    const std::set<int> allowed(selection.lidar_ids.begin(), selection.lidar_ids.end());
+    std::map<int, std::size_t> source_counters;
+    const int stride = std::max(1, selection.point_stride);
+    selected->reserve(cloud->size());
+    for (const auto& point : cloud->points) {
+        const int id = static_cast<int>(point.lidar_id);
+        if (allowed.count(id) == 0) continue;
+        const std::size_t index = source_counters[id]++;
+        if (index % static_cast<std::size_t>(stride) == 0) selected->push_back(point);
+    }
+    selected->header = cloud->header;
+    selected->width = selected->size();
+    selected->height = 1;
+    selected->is_dense = false;
+    return selected;
+}
+
 void MultiLidarFrameAssembler::Reset(MultiLidarConfig config) {
     config_ = std::move(config);
     expected_lidar_ids_.clear();
@@ -376,7 +557,10 @@ void MultiLidarFrameAssembler::PromoteReady(bool force) {
         if (!IsComplete(it->second) && !force && !IsExpired(it->first)) {
             break;
         }
-        if (static_cast<int>(it->second.clouds.size()) >= config_.min_lidars) {
+        const int assembly_min_lidars = config_.adaptive_load.enabled
+                                            ? config_.adaptive_load.tracking_min_lidars
+                                            : config_.min_lidars;
+        if (static_cast<int>(it->second.clouds.size()) >= assembly_min_lidars) {
             ready_frames_.push_back(Assemble(it->second));
             ++emitted_frame_count_;
         } else {

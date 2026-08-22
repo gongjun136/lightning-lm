@@ -183,6 +183,7 @@ if [[ "${record_bag}" == "1" ]]; then
     "${record_imu_topics[@]}"
     "${wheel_speed_topic}"
     /PosRes
+    /localization/pose_vel
     /slamPoseRaw_topic
     /localization/fault_status
     /localization/loc_status
@@ -242,10 +243,12 @@ snapshot_incident() {
     echo "reason=PosRes silent for at least ${posres_timeout_seconds}s"
     echo
     echo "[pipeline_diagnostics]"
-    timeout 3 ros2 topic echo --once /localization/pipeline_diagnostics 2>&1 || true
+    timeout 3 ros2 topic echo --once --qos-reliability best_effort \
+      /localization/pipeline_diagnostics 2>&1 || true
     echo
     echo "[fault_status]"
-    timeout 3 ros2 topic echo --once /localization/fault_status 2>&1 || true
+    timeout 3 ros2 topic echo --once --qos-reliability best_effort \
+      /localization/fault_status 2>&1 || true
     echo
     echo "[nodes]"
     ros2 node list 2>&1 || true
@@ -278,25 +281,55 @@ snapshot_incident() {
 }
 
 watch_posres() {
-  local seen=false
-  local lost=false
   local incident=0
-  while true; do
-    if timeout "${posres_timeout_seconds}" ros2 topic echo --once /PosRes >/dev/null 2>&1; then
-      if [[ "${lost}" == true ]]; then
-        echo "$(date --iso-8601=ns),RECOVERED,${incident}" >>"${run_dir}/logs/posres_watchdog.csv"
-      elif [[ "${seen}" == false ]]; then
-        echo "$(date --iso-8601=ns),FIRST_POSE,0" >>"${run_dir}/logs/posres_watchdog.csv"
-      fi
-      seen=true
-      lost=false
-    elif [[ "${seen}" == true && "${lost}" == false ]]; then
-      incident=$((incident + 1))
-      lost=true
-      echo "$(date --iso-8601=ns),LOST,${incident}" >>"${run_dir}/logs/posres_watchdog.csv"
-      snapshot_incident "${incident}"
+  local event silence_sec
+  local monitor_pid=""
+  local event_fifo="${run_dir}/logs/posres_watchdog.events"
+  cleanup_posres_monitor() {
+    if [[ -n "${monitor_pid}" ]]; then
+      kill -TERM "${monitor_pid}" 2>/dev/null || true
+      wait "${monitor_pid}" 2>/dev/null || true
+      monitor_pid=""
     fi
-  done
+    rm -f -- "${event_fifo}"
+  }
+  trap 'cleanup_posres_monitor; exit 0' INT TERM
+  trap cleanup_posres_monitor EXIT
+
+  rm -f -- "${event_fifo}"
+  mkfifo "${event_fifo}"
+  python3 -u "${script_dir}/monitor_posres_silence.py" \
+    --timeout-sec "${posres_timeout_seconds}" \
+    >"${event_fifo}" \
+    2>"${run_dir}/logs/posres_watchdog.stderr.log" &
+  monitor_pid=$!
+  while IFS=, read -r event silence_sec; do
+    case "${event}" in
+      FIRST_POSE)
+        echo "$(date --iso-8601=ns),FIRST_POSE,0,${silence_sec}" \
+          >>"${run_dir}/logs/posres_watchdog.csv"
+        ;;
+      LOST)
+        incident=$((incident + 1))
+        echo "$(date --iso-8601=ns),LOST,${incident},${silence_sec}" \
+          >>"${run_dir}/logs/posres_watchdog.csv"
+        snapshot_incident "${incident}"
+        ;;
+      RECOVERED)
+        echo "$(date --iso-8601=ns),RECOVERED,${incident},${silence_sec}" \
+          >>"${run_dir}/logs/posres_watchdog.csv"
+        ;;
+    esac
+  done <"${event_fifo}"
+  set +e
+  wait "${monitor_pid}"
+  local monitor_status=$?
+  set -e
+  monitor_pid=""
+  if ((monitor_status != 0)); then
+    echo "$(date --iso-8601=ns),MONITOR_EXIT,${monitor_status},0" \
+      >>"${run_dir}/logs/posres_watchdog.csv"
+  fi
 }
 
 child_pids=()
@@ -399,6 +432,9 @@ if [[ "${record_bag}" == "1" ]]; then
 fi
 
 if [[ "${enable_posres_watchdog}" == "1" ]]; then
+  echo "wall_time,event,incident,silence_sec" >"${run_dir}/logs/posres_watchdog.csv"
+  python3 -c 'import rclpy; from geosun_msgs.msg import PosRes'
+  python3 "${script_dir}/monitor_posres_silence.py" --help >/dev/null
   watch_posres &
   watchdog_pid=$!
   child_pids+=("${watchdog_pid}")

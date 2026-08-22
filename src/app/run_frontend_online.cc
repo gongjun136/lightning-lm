@@ -111,11 +111,13 @@ class FrontendNode : public rclcpp::Node {
         rear_axle_ = lightning::RearAxlePoseTransformer(lio_.GetLidarToImuRotation(),
                                                         lio_.GetLidarToImuTranslation(), lidar_position);
 
-        pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", 10);
-        cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/final_points_topic", 10);
-        safety_pub_ = create_publisher<std_msgs::msg::Float64>("/slamSafety_topic", 10);
-        state_pub_ = create_publisher<std_msgs::msg::Float64>("/slamState_topic", 10);
-        system_pub_ = create_publisher<std_msgs::msg::Int32>("/SystemState", 10);
+        const auto output_qos =
+            rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+        pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", output_qos);
+        cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/final_points_topic", output_qos);
+        safety_pub_ = create_publisher<std_msgs::msg::Float64>("/slamSafety_topic", output_qos);
+        state_pub_ = create_publisher<std_msgs::msg::Float64>("/slamState_topic", output_qos);
+        system_pub_ = create_publisher<std_msgs::msg::Int32>("/SystemState", output_qos);
 
         const auto qos = rclcpp::SensorDataQoS();
         if (lio_.IsMultiLidarEnabled()) {

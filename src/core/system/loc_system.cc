@@ -50,6 +50,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     YAML_IO yaml(yaml_path);
 
     const YAML::Node root = YAML::LoadFile(yaml_path);
+    if (root["system"] && root["system"]["pub_tf"]) {
+        options_.pub_tf_ = root["system"]["pub_tf"].as<bool>();
+    }
     std::string map_path = map_path_override;
     if (map_path.empty()) {
         const YAML::Node configured_map = root["system"] ? root["system"]["map_path"] : YAML::Node();
@@ -91,7 +94,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     const double max_lidar_match_age_sec =
         root["system"] && root["system"]["localization_output_max_lidar_age_sec"]
             ? root["system"]["localization_output_max_lidar_age_sec"].as<double>()
-            : 0.6;
+            : 0.5;
     if (max_lidar_match_age_sec <= 0.0) {
         LOG(ERROR) << "system.localization_output_max_lidar_age_sec must be positive";
         return false;
@@ -259,14 +262,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     }
 
     const auto pose_qos =
-        rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
-    const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+        rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
+    const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
     pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
     pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
+    vehicle_pose_pub_ = node_->create_publisher<lightning::msg::VehiclePose>(
+        "/localization/pose_vel", pose_qos);
     inv_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv", cloud_qos);
     map_cloud_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL", cloud_qos);
-    const auto health_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable().durability_volatile();
-    const auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().durability_volatile();
+    const auto health_qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+    const auto path_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
     fault_status_pub_ =
         node_->create_publisher<lightning::msg::FaultStatus>("/localization/fault_status", health_qos);
     loc_status_pub_ =
@@ -279,7 +284,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     path_timer_ = node_->create_wall_timer(std::chrono::seconds(2), [this]() { PublishPath(); });
 
     if (options_.pub_tf_) {
-        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_);
+        auto tf_qos = tf2_ros::DynamicBroadcasterQoS();
+        tf_qos.best_effort();
+        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(node_, tf_qos);
         loc_->SetTFCallback([this](const geometry_msgs::msg::TransformStamped &pose) {
             if (!publication_gate_.MapOutputsEnabled(ToSec(pose.header.stamp))) return;
             tf_broadcaster_->sendTransform(
@@ -293,7 +300,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         CaptureGlobalLocalizationResult(result);
     });
     loc_->SetProcessedCloudCallback(
-        [this](const CloudPtr& cloud, const loc::LocalizationResult& result) { PublishProcessedCloud(cloud, result); });
+        [this](const CloudPtr& cloud, const loc::LocalizationResult& result,
+               const MultiLidarFrameStats& stats, bool eligible) {
+            PublishProcessedCloud(cloud, result, stats, eligible);
+        });
+
 
     LOG(INFO) << "online loc node has been created.";
     return true;
@@ -409,7 +420,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         return;
     }
     last_localization_stamp_ = result.timestamp_;
-    if (!publication_gate_.MapOutputsEnabled(result.timestamp_)) return;
+    if (!publication_gate_.PoseOutputsEnabled()) return;
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -417,7 +428,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             localization_states_.push_back(state);
         }
     }
-    if (!pos_res_pub_ && !pose_pub_) return;
+    if (!pos_res_pub_ && !pose_pub_ && !vehicle_pose_pub_) return;
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
@@ -444,12 +455,25 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         pose_pub_->publish(pose);
         if (telemetry_) telemetry_->ObservePose(pose);
     }
+    if (vehicle_pose_pub_) {
+        vehicle_pose_pub_->publish(sany_output::MakeVehiclePoseMessage(position));
+    }
 }
 
-void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result) {
+void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
+                                      const MultiLidarFrameStats& stats, bool eligible) {
+    (void)stats;
     publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
     if (telemetry_) {
         telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
+    }
+    if (!eligible) {
+        ++cloud_publish_suppressed_count_;
+        LOG_EVERY_N(WARNING, 10)
+            << "suppress fused cloud publication: present_lidars="
+            << stats.present_lidar_ids.size() << ", missing_lidars="
+            << stats.missing_lidar_ids.size();
+        return;
     }
     if (!inv_cloud_pub_ || !map_cloud_pub_ || !cloud || cloud->empty()) return;
     const double begin_time = CloudStampSec(cloud);
@@ -532,6 +556,9 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.localization_queue_pending = runtime.localization_queue_pending;
     diagnostics.localization_queue_dropped = runtime.localization_queue_dropped;
     diagnostics.localization_queue_processed = runtime.localization_queue_processed;
+    diagnostics.high_frequency_queue_pending = runtime.high_frequency_queue_pending;
+    diagnostics.high_frequency_queue_dropped = runtime.high_frequency_queue_dropped;
+    diagnostics.high_frequency_queue_processed = runtime.high_frequency_queue_processed;
     diagnostics.latest_enqueued_sensor_stamp = runtime.latest_enqueued_sensor_stamp;
     diagnostics.latest_processed_sensor_stamp = runtime.latest_processed_sensor_stamp;
     diagnostics.current_sensor_lag_sec = runtime.current_sensor_lag_sec;
@@ -561,11 +588,17 @@ void LocSystem::PublishHealthStatus() {
             LOG(WARNING) << "localization map outputs recovered after a fresh valid lidar match";
         }
     } else if (map_outputs_were_enabled) {
-        LOG(ERROR) << "localization map outputs disabled: lidar_match_stale="
-                   << lidar_match_stale << ", lidar_match_age_sec="
-                   << publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp)
-                   << ", consecutive_lost_frames="
-                   << publication_gate_.ConsecutiveLostFrames();
+        if (lidar_match_stale) {
+            LOG(WARNING) << "localization map outputs paused while following DR: "
+                         << "lidar_match_age_sec="
+                         << publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp)
+                         << ", consecutive_lost_frames="
+                         << publication_gate_.ConsecutiveLostFrames();
+        } else {
+            LOG(ERROR) << "localization map outputs disabled after localization loss: "
+                       << "consecutive_lost_frames="
+                       << publication_gate_.ConsecutiveLostFrames();
+        }
     }
     diagnostics.map_outputs_enabled = map_outputs_enabled;
     diagnostics.lidar_match_stale = lidar_match_stale;
@@ -580,6 +613,50 @@ void LocSystem::PublishHealthStatus() {
         posres_timestamp_gate_.RejectedCount();
     diagnostics.worst_posres_timestamp_rollback_sec =
         posres_timestamp_gate_.WorstRollbackSec();
+    diagnostics.adaptive_lidar_load_enabled = runtime.adaptive_lidar_load_enabled;
+    diagnostics.adaptive_lidar_degradation_step = runtime.adaptive_lidar_degradation_step;
+    diagnostics.selected_lidar_point_stride = runtime.selected_lidar_point_stride;
+    diagnostics.selected_lidar_ids = runtime.selected_lidar_ids;
+    diagnostics.current_frame_lidar_ids = runtime.current_frame_lidar_ids;
+    diagnostics.current_frame_missing_lidar_ids =
+        runtime.current_frame_missing_lidar_ids;
+    diagnostics.lidar_correction_age_sec = runtime.lidar_correction_age_sec;
+    diagnostics.last_lio_processing_ms = runtime.last_lio_processing_ms;
+    diagnostics.adaptive_lidar_stale_drop_count = runtime.adaptive_lidar_stale_drop_count;
+    diagnostics.cloud_publish_min_lidars = runtime.cloud_publish_min_lidars;
+    diagnostics.cloud_publish_eligible = runtime.cloud_publish_eligible;
+    diagnostics.cloud_publish_suppressed_count =
+        cloud_publish_suppressed_count_.load();
+    diagnostics.wheel_speed_dr_enabled = runtime.wheel_speed_dr_enabled;
+    diagnostics.wheel_speed_dr_input_count = runtime.wheel_speed_dr_stats.input_count;
+    diagnostics.wheel_speed_dr_invalid_input_count =
+        runtime.wheel_speed_dr_stats.invalid_input_count;
+    diagnostics.wheel_speed_dr_timestamp_reject_count =
+        runtime.wheel_speed_dr_stats.timestamp_reject_count;
+    diagnostics.wheel_speed_dr_acceleration_reject_count =
+        runtime.wheel_speed_dr_stats.acceleration_reject_count;
+    diagnostics.wheel_speed_dr_lidar_filter_accepted_count =
+        runtime.wheel_speed_dr_stats.lidar_filter_accepted_count;
+    diagnostics.wheel_speed_dr_lidar_filter_rejected_count =
+        runtime.wheel_speed_dr_stats.lidar_filter_rejected_count;
+    diagnostics.wheel_speed_dr_lidar_filter_stale_count =
+        runtime.wheel_speed_dr_stats.lidar_filter_stale_count;
+    diagnostics.wheel_speed_dr_imu_filter_accepted_count =
+        runtime.wheel_speed_dr_stats.imu_filter_accepted_count;
+    diagnostics.wheel_speed_dr_imu_filter_rejected_count =
+        runtime.wheel_speed_dr_stats.imu_filter_rejected_count;
+    diagnostics.wheel_speed_dr_imu_filter_stale_count =
+        runtime.wheel_speed_dr_stats.imu_filter_stale_count;
+    diagnostics.wheel_speed_dr_last_measurement_mps =
+        runtime.wheel_speed_dr_stats.last_measurement_mps;
+    diagnostics.wheel_speed_dr_last_predicted_mps =
+        runtime.wheel_speed_dr_stats.last_predicted_mps;
+    diagnostics.wheel_speed_dr_last_innovation_mps =
+        runtime.wheel_speed_dr_stats.last_innovation_mps;
+    diagnostics.wheel_speed_dr_last_standard_deviation_mps =
+        runtime.wheel_speed_dr_stats.last_standard_deviation_mps;
+    diagnostics.wheel_speed_dr_last_nis =
+        runtime.wheel_speed_dr_stats.last_normalized_innovation_squared;
     pipeline_diagnostics_pub_->publish(diagnostics);
 }
 
@@ -635,7 +712,9 @@ void LocSystem::ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
         last_motor_torque_ = motor_torque;
         last_wheel_speed_mps_ = speed_mps;
     }
-    if (loc_started_ && loc_) loc_->ProcessWheelSpeed(sensor_stamp, speed_mps);
+    if (loc_started_ && loc_) {
+        loc_->ProcessWheelSpeed(sensor_stamp, speed_mps, motor_torque);
+    }
 }
 
 void LocSystem::PublishPath() {

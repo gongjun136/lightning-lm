@@ -2,6 +2,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <limits>
@@ -23,6 +24,21 @@ struct MultiLidarSensorConfig {
     Vec3d t_lidar_to_primary = Vec3d::Zero();
 };
 
+struct AdaptiveLidarLoadConfig {
+    bool enabled = false;
+    int tracking_min_lidars = 1;
+    int relocalization_min_lidars = 2;
+    int cloud_publish_min_lidars = 3;
+    bool cloud_publish_require_primary = true;
+    double target_latency_sec = 0.2;
+    double hard_latency_sec = 0.3;
+    double degrade_processing_ratio = 0.8;
+    double recover_processing_ratio = 0.6;
+    int degrade_consecutive_frames = 3;
+    int recover_consecutive_frames = 20;
+    std::vector<int> point_strides{1, 2, 3};
+};
+
 struct MultiLidarConfig {
     bool enabled = false;
     int primary_lidar_id = 0;
@@ -31,6 +47,7 @@ struct MultiLidarConfig {
     double reorder_window = 0.5;
     int min_lidars = 1;
     bool online_extrinsic_estimation = false;
+    AdaptiveLidarLoadConfig adaptive_load;
     std::vector<MultiLidarSensorConfig> lidars;
 
     const MultiLidarSensorConfig* FindLidar(int id) const;
@@ -70,6 +87,38 @@ std::size_t FilterSelfPoints(PointCloudType& cloud, const SelfPointFilterConfig&
 
 /// Voxel downsampling that keeps a real input point, so lidar_id is never averaged.
 CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size);
+
+struct AdaptiveLidarSelection {
+    std::vector<int> lidar_ids;
+    int point_stride = 1;
+    int degradation_step = 0;
+};
+
+class AdaptiveLidarLoadController {
+   public:
+    void Reset(const MultiLidarConfig& config);
+    void SetLocalizationGood(bool good) { localization_good_ = good; }
+    void Observe(double processing_sec, double latency_sec, bool tracking_healthy);
+
+    AdaptiveLidarSelection Select(const MultiLidarFrameStats& stats) const;
+    bool CanPublishCloud(const MultiLidarFrameStats& stats) const;
+    bool IsHardStale(double latency_sec) const;
+
+    int DegradationStep() const { return degradation_step_; }
+    int TargetLidarCount() const;
+    int PointStride() const;
+
+   private:
+    int MaximumDegradationStep() const;
+
+    MultiLidarConfig config_;
+    std::atomic_bool localization_good_{false};
+    int degradation_step_ = 0;
+    int overload_frames_ = 0;
+    int recovery_frames_ = 0;
+};
+
+CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& selection);
 
 class MultiLidarFrameAssembler {
    public:

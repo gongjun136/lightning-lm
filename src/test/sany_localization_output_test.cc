@@ -117,6 +117,16 @@ int main() {
                               pose_message.pose.orientation.y, pose_message.pose.orientation.z);
     Require(std::abs(std::abs(reconstructed.dot(quaternion)) - 1.0) < 1e-9, "PosRes PRY to pose quaternion");
 
+    const auto vehicle_pose = MakeVehiclePoseMessage(position);
+    Require(vehicle_pose.header == position.header,
+            "VehiclePose and PosRes share frame and timestamp");
+    Require(Near(vehicle_pose.x, 0.3) && Near(vehicle_pose.y, -18.2) &&
+                Near(vehicle_pose.z, 0.9),
+            "VehiclePose rear-axle position");
+    Require(Near(vehicle_pose.roll, -0.4) && Near(vehicle_pose.pitch, -1.8) &&
+                Near(vehicle_pose.yaw, 353.0) && Near(vehicle_pose.speed, -1.25),
+            "VehiclePose attitude and signed speed match PosRes");
+
     CloudPtr cloud(new PointCloudType());
     PointType point;
     point.x = 1.0F;
@@ -197,18 +207,23 @@ int main() {
     Require(decimator.Tick(), "publish every tenth frame");
 
     LocalizationPublicationGate publication_gate(5);
+    Require(!publication_gate.PoseOutputsEnabled(), "pose outputs wait for the first valid match");
     Require(!publication_gate.MapOutputsEnabled(), "map outputs wait for the first valid match");
     publication_gate.ObserveLidarMatch(false);
     Require(!publication_gate.MapOutputsEnabled(), "startup failures do not enable map outputs");
     publication_gate.ObserveLidarMatch(true);
+    Require(publication_gate.PoseOutputsEnabled(), "first valid match enables pose outputs");
     Require(publication_gate.MapOutputsEnabled(), "first valid match enables map outputs");
     for (int lost = 1; lost < 5; ++lost) {
         publication_gate.ObserveLidarMatch(false);
+        Require(publication_gate.PoseOutputsEnabled(), "grace frames keep pose outputs enabled");
         Require(publication_gate.MapOutputsEnabled(), "grace frames keep map outputs enabled");
     }
     publication_gate.ObserveLidarMatch(false);
+    Require(!publication_gate.PoseOutputsEnabled(), "fifth failure disables pose outputs");
     Require(!publication_gate.MapOutputsEnabled(), "fifth consecutive failure disables map outputs");
     publication_gate.ObserveLidarMatch(true);
+    Require(publication_gate.PoseOutputsEnabled(), "one valid match resumes pose outputs");
     Require(publication_gate.MapOutputsEnabled(), "one valid match immediately resumes map outputs");
 
     LocalizationPublicationGate freshness_gate(5);
@@ -216,6 +231,8 @@ int main() {
     freshness_gate.ObserveLidarMatch(true, 10.0);
     Require(freshness_gate.MapOutputsEnabled(10.6), "lidar match remains fresh at the age boundary");
     Require(!freshness_gate.MapOutputsEnabled(10.61), "stale lidar worker disables map outputs");
+    Require(freshness_gate.PoseOutputsEnabled(),
+            "stale lidar worker keeps IMU/CAN DR pose outputs enabled");
     Require(freshness_gate.LidarMatchStale(10.61), "stale lidar worker is diagnosed explicitly");
     Require(Near(freshness_gate.LidarMatchAgeSec(10.7), 0.7), "lidar match age uses sensor time");
     Require(Near(freshness_gate.LastLidarMatchStamp(), 10.0), "last completed lidar match is retained");
@@ -264,10 +281,16 @@ int main() {
             "GOOD clears localization faults");
     telemetry.ObserveLocalizationStale(true);
     fault = telemetry.MakeFaultStatus(telemetry_stamp);
-    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0 &&
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P1 &&
+                fault.fault_type == static_cast<std::int32_t>(
+                    LocalizationFaultType::LOCALIZATION_DEGRADED) &&
                 telemetry.MakeLocalizationStatus(telemetry_stamp).status ==
-                    lightning::msg::LocalizationStatus::STATUS_FAIL,
-            "a stalled lidar worker changes GOOD to localization lost");
+                    lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR,
+            "a stalled lidar worker degrades to DR without reporting P0");
+    telemetry.ObserveLocalization(loc::LocalizationStatus::FAIL, 0);
+    fault = telemetry.MakeFaultStatus(telemetry_stamp);
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0,
+            "an explicit localization failure still reports P0");
     telemetry.ObserveLocalization(loc::LocalizationStatus::GOOD, 0);
     Require(telemetry.MakeFaultStatus(telemetry_stamp).level ==
                 lightning::msg::FaultStatus::LEVEL_NO_FAULT,

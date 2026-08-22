@@ -63,7 +63,7 @@ class PosResRecorder final : public rclcpp::Node {
 
         start_steady_ = SteadyClock::now();
         window_start_steady_ = start_steady_;
-        const auto qos = rclcpp::QoS(rclcpp::KeepLast(1000)).reliable().durability_volatile();
+        const auto qos = rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
         subscription_ = create_subscription<geosun_msgs::msg::PosRes>(
             topic, qos, [this](const geosun_msgs::msg::PosRes::SharedPtr message) { Record(*message); });
         rate_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { CloseRateWindow(false); });

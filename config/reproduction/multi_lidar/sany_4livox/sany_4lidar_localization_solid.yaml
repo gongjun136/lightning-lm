@@ -12,13 +12,25 @@ multi_lidar:
   primary_lidar_id: 0
   frame_period: 0.1
   match_tolerance: 0.002
-  # The fourth LiDAR crosses the Orin boundary and can miss frames. Waiting
-  # 0.5 s for an absent packet head-of-line blocks later complete buckets and
-  # releases them as a burst. Two frame periods bound that jitter instead.
-  reorder_window: 0.2
-  # Continue with the three local/available LiDARs, but never localize from a
-  # single sparse sensor when the inter-Orin path is degraded.
+  # The rear LiDAR crosses the Orin boundary; release an incomplete localization
+  # frame after one nominal period instead of building a stale backlog.
+  reorder_window: 0.1
+  # Legacy/relocalization minimum. GOOD tracking may temporarily use only the
+  # primary front LiDAR after point-stride degradation has been exhausted.
   min_lidars: 3
+  adaptive_load:
+    enabled: true
+    tracking_min_lidars: 1
+    relocalization_min_lidars: 3
+    cloud_publish_min_lidars: 3
+    cloud_publish_require_primary: true
+    target_latency_sec: 0.2
+    hard_latency_sec: 0.3
+    degrade_processing_ratio: 0.8
+    recover_processing_ratio: 0.6
+    degrade_consecutive_frames: 3
+    recover_consecutive_frames: 20
+    point_strides: [1, 2, 3]
   online_extrinsic_estimation: false
   topics:
     lidar_0: /livox/lidar_192_168_3_184
@@ -211,6 +223,8 @@ roi:
 system:
   with_ui: false
   with_loop_closing: true
+  # Broadcast /tf only after its downstream frame contract is explicitly validated.
+  pub_tf: false
   # Keep bounded latency after a transient CPU slowdown. The queue evicts its
   # oldest mixed sensor input; new lidar frames are never permanently gated.
   online_sensor_queue_size: 200
@@ -220,9 +234,10 @@ system:
   # Drop a delayed cross-Orin scan before preprocessing when its sensor time is
   # more than three frame periods behind the newest LiDAR input.
   online_lidar_input_max_timestamp_lag_sec: 0.3
-  # Stop map-frame pose/TF output if the lidar-localization worker stops
-  # completing scans even though IMU prediction continues.
-  localization_output_max_lidar_age_sec: 2.0
+  # Enter FOLLOWING_DR/P1 if the lidar-localization worker stops completing
+  # scans. Pose and signed-speed outputs continue from IMU/CAN DR; map TF,
+  # map cloud and path wait for a fresh valid lidar match.
+  localization_output_max_lidar_age_sec: 0.5
   # No-CAN fallback: entry requires a recent valid map match, reliable low-speed
   # LIO and a stable IMU window; motion exits immediately and lidar keeps matching.
   enable_imu_static_hold: true
@@ -230,6 +245,21 @@ system:
   wheel_speed_topic: /SpeThrCAN4_topic
   # x[rpm] * 2*pi*0.756/(2.895*22.668*60) -> signed vehicle speed [m/s]
   wheel_speed_scale_mps_per_rpm: 0.00120639253574024
+  # Low-confidence scalar body-forward velocity observation. Motor rpm is not
+  # treated as true wheel odometry; freshness, acceleration, innovation, NIS,
+  # torque-dependent covariance and per-update step gates all remain active.
+  enable_wheel_speed_dr_observation: true
+  wheel_speed_dr_base_std_mps: 0.35
+  wheel_speed_dr_stationary_std_mps: 0.08
+  wheel_speed_dr_stationary_threshold_mps: 0.03
+  wheel_speed_dr_max_age_sec: 0.25
+  wheel_speed_dr_future_tolerance_sec: 0.03
+  wheel_speed_dr_max_acceleration_mps2: 4.0
+  wheel_speed_dr_max_abs_innovation_mps: 1.5
+  wheel_speed_dr_nis_gate: 9.0
+  wheel_speed_dr_torque_reference_nm: 1000.0
+  wheel_speed_dr_torque_std_scale: 3.0
+  wheel_speed_dr_max_velocity_step_mps: 0.35
   # Livox PointCloud2 publishers are reliable. Best-effort subscriptions lost
   # 27-72% of frames in the post-kernel-update incident traces.
   lidar_qos:

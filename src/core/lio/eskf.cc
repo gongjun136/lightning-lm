@@ -212,6 +212,72 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     LogCovarianceStats(P_, "predict");
 }
 
+ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
+    double measured_speed_mps,
+    double variance_mps2,
+    double max_abs_innovation_mps,
+    double normalized_innovation_squared_gate,
+    double max_velocity_step_mps) {
+    ForwardSpeedUpdateResult result;
+    if (!std::isfinite(measured_speed_mps) || !std::isfinite(variance_mps2) ||
+        variance_mps2 <= 0.0) {
+        return result;
+    }
+
+    const Vec3d forward_in_world = x_.rot_.matrix().col(0);
+    result.predicted_speed_mps = forward_in_world.dot(x_.vel_);
+    result.innovation_mps = measured_speed_mps - result.predicted_speed_mps;
+    if (!std::isfinite(result.predicted_speed_mps) ||
+        !std::isfinite(result.innovation_mps)) {
+        return result;
+    }
+    if (max_abs_innovation_mps > 0.0 &&
+        std::abs(result.innovation_mps) > max_abs_innovation_mps) {
+        return result;
+    }
+
+    Eigen::Matrix<double, 1, state_dim_> H =
+        Eigen::Matrix<double, 1, state_dim_>::Zero();
+    H.template block<1, NavState::kBlockDim>(0, NavState::kVelIdx) =
+        forward_in_world.transpose();
+    result.innovation_variance = (H * P_ * H.transpose())(0, 0) + variance_mps2;
+    if (!std::isfinite(result.innovation_variance) ||
+        result.innovation_variance <= options_.min_cov_diag_) {
+        return result;
+    }
+
+    result.normalized_innovation_squared =
+        result.innovation_mps * result.innovation_mps / result.innovation_variance;
+    if (normalized_innovation_squared_gate > 0.0 &&
+        result.normalized_innovation_squared > normalized_innovation_squared_gate) {
+        return result;
+    }
+
+    StateVecType kalman_gain = P_ * H.transpose() / result.innovation_variance;
+    // Motor rpm is not a pose, attitude, bias, or gravity observation. Keeping only the
+    // velocity rows prevents uncertain drivetrain behavior from leaking through cross
+    // covariance into those states.
+    kalman_gain.template head<NavState::kVelIdx>().setZero();
+    kalman_gain.template tail<state_dim_ - NavState::kVelIdx - NavState::kBlockDim>().setZero();
+    const StateVecType dx = kalman_gain * result.innovation_mps;
+    const double velocity_step =
+        dx.template segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
+    if (!std::isfinite(velocity_step) ||
+        (max_velocity_step_mps > 0.0 && velocity_step > max_velocity_step_mps)) {
+        return result;
+    }
+
+    x_ = x_.boxplus(dx);
+    const CovType identity = CovType::Identity();
+    const CovType correction = identity - kalman_gain * H;
+    P_ = correction * P_ * correction.transpose() +
+         variance_mps2 * kalman_gain * kalman_gain.transpose();
+    SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
+    LogCovarianceStats(P_, "forward_speed_update");
+    result.accepted = true;
+    return result;
+}
+
 /**
  * @brief 根据指定观测模型迭代修正ESKF状态和协方差。
  *

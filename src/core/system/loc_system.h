@@ -27,9 +27,11 @@
 #include "common/imu.h"
 #include "common/keyframe.h"
 #include "common/timestamp_gate.h"
+#include "core/lio/multi_lidar_fusion.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
 #include "lightning/msg/pipeline_diagnostics.hpp"
+#include "lightning/msg/vehicle_pose.hpp"
 
 namespace lightning {
 
@@ -40,7 +42,7 @@ class Localization;
 class LocSystem {
    public:
     struct Options {
-        bool pub_tf_ = true;  // 是否发布tf
+        bool pub_tf_ = false;  // YAML system.pub_tf may explicitly enable /tf.
     };
 
     explicit LocSystem(Options options);
@@ -74,7 +76,8 @@ class LocSystem {
     void CaptureGlobalLocalizationResult(const loc::LocalizationResult& result);
     bool WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
                             const char* description) const;
-    void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result);
+    void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
+                               const MultiLidarFrameStats& stats, bool eligible);
     void PublishHealthStatus();
     void PublishPath();
     void RegisterLidarInput(int lidar_id, const std::string& topic);
@@ -131,6 +134,7 @@ class LocSystem {
     double last_motor_torque_ = 0.0;
     std::atomic<double> last_localization_stamp_{0.0};
     std::atomic<double> last_posres_stamp_{0.0};
+    std::atomic<std::uint64_t> cloud_publish_suppressed_count_{0};
     std::mutex posres_publish_mutex_;
     MonotonicTimestampGate posres_timestamp_gate_;
     std::atomic_bool map_outputs_ever_enabled_{false};
@@ -143,6 +147,7 @@ class LocSystem {
 
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;
+    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_ = nullptr;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_ = nullptr;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;
     rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;

@@ -169,7 +169,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_proc_cloud_.SetSkipParam(options_.enable_lidar_loc_skip_, options_.lidar_loc_skip_num_);
 
     sensor_proc_.SetProcFunc([this](const SensorInput& input) { ProcessSensorInput(input); });
-    lidar_loc_proc_cloud_.SetProcFunc([this](CloudPtr cloud) { LidarLocProcCloud(cloud); });
+    lidar_loc_proc_cloud_.SetProcFunc([this](const LidarLocInput& input) { LidarLocProcCloud(input); });
 
     if (options_.online_mode_) {
         sensor_proc_.Start();
@@ -355,6 +355,12 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
     if (lio_ == nullptr) {
         return;
     }
+    double latest_input_stamp = 0.0;
+    {
+        std::lock_guard<std::mutex> stats_lock(runtime_stats_mutex_);
+        latest_input_stamp = runtime_stats_.latest_enqueued_sensor_stamp;
+    }
+    lio_->SetLatestInputTimestamp(latest_input_stamp);
 
     /// NOTE: 在NCLT这种数据集中，lio内部是有缓存的，它拿到的点云不一定是最新时刻的点云
     lio_->ProcessPointCloud2(cloud, lidar_id);
@@ -378,6 +384,36 @@ void Localization::DrainLioOutputs() {
 
         /// 获得lio的关键帧
         auto scan = lio_->GetProjCloud();
+        LidarLocInput lidar_loc_input;
+        lidar_loc_input.localization_cloud = scan;
+        lidar_loc_input.publication_cloud = lio_->GetPublicationCloud();
+        lidar_loc_input.frame_stats = lio_->GetCurrentFrameStats();
+        lidar_loc_input.publication_eligible = lio_->CanPublishCurrentCloud();
+        const auto& selection = lio_->GetCurrentLidarSelection();
+        const auto& multi_config = lio_->GetMultiLidarConfig();
+        const auto wheel_stats = lio_->GetWheelSpeedDrStats();
+        {
+            std::lock_guard<std::mutex> stats_lock(runtime_stats_mutex_);
+            runtime_stats_.adaptive_lidar_load_enabled =
+                multi_config.adaptive_load.enabled;
+            runtime_stats_.adaptive_lidar_degradation_step =
+                lio_->GetAdaptiveLidarDegradationStep();
+            runtime_stats_.selected_lidar_point_stride = selection.point_stride;
+            runtime_stats_.selected_lidar_ids = selection.lidar_ids;
+            runtime_stats_.current_frame_lidar_ids =
+                lidar_loc_input.frame_stats.present_lidar_ids;
+            runtime_stats_.current_frame_missing_lidar_ids =
+                lidar_loc_input.frame_stats.missing_lidar_ids;
+            runtime_stats_.lidar_correction_age_sec = lio_->GetLastLidarLatencySec();
+            runtime_stats_.last_lio_processing_ms = lio_->GetLastFrameProcessingMs();
+            runtime_stats_.adaptive_lidar_stale_drop_count =
+                lio_->GetAdaptiveStaleDropCount();
+            runtime_stats_.cloud_publish_min_lidars = static_cast<std::uint32_t>(
+                multi_config.adaptive_load.cloud_publish_min_lidars);
+            runtime_stats_.cloud_publish_eligible = lidar_loc_input.publication_eligible;
+            runtime_stats_.wheel_speed_dr_enabled = lio_->GetWheelSpeedDrConfig().enabled;
+            runtime_stats_.wheel_speed_dr_stats = wheel_stats;
+        }
 
         if (options_.loc_on_kf_) {
             auto kf = lio_->GetKeyframe();
@@ -395,17 +431,17 @@ void Localization::DrainLioOutputs() {
             // auto scan = lio_->GetScanUndist();
 
             if (options_.online_mode_) {
-                lidar_loc_proc_cloud_.AddMessage(scan);
+                lidar_loc_proc_cloud_.AddMessage(lidar_loc_input);
             } else {
-                LidarLocProcCloud(scan);
+                LidarLocProcCloud(lidar_loc_input);
             }
         } else {
             // auto scan = cloud;   // 这个cloud应该差一个外参
 
             if (options_.online_mode_) {
-                lidar_loc_proc_cloud_.AddMessage(scan);
+                lidar_loc_proc_cloud_.AddMessage(lidar_loc_input);
             } else {
-                LidarLocProcCloud(scan);
+                LidarLocProcCloud(lidar_loc_input);
             }
         }
     }
@@ -429,12 +465,26 @@ Localization::RuntimeStats Localization::GetRuntimeStats() const {
         std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
         stats = runtime_stats_;
     }
+    {
+        std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+        if (lio_ != nullptr) {
+            stats.lidar_correction_age_sec = lio_->GetLastLidarLatencySec();
+            stats.last_lio_processing_ms = lio_->GetLastFrameProcessingMs();
+            stats.adaptive_lidar_stale_drop_count =
+                lio_->GetAdaptiveStaleDropCount();
+            stats.wheel_speed_dr_enabled = lio_->GetWheelSpeedDrConfig().enabled;
+            stats.wheel_speed_dr_stats = lio_->GetWheelSpeedDrStats();
+        }
+    }
     stats.sensor_queue_pending = sensor_proc_.PendingCount();
     stats.sensor_queue_dropped = sensor_proc_.DroppedCount();
     stats.sensor_queue_processed = sensor_proc_.ProcessedCount();
     stats.localization_queue_pending = lidar_loc_proc_cloud_.PendingCount();
     stats.localization_queue_dropped = lidar_loc_proc_cloud_.DroppedCount();
     stats.localization_queue_processed = lidar_loc_proc_cloud_.ProcessedCount();
+    stats.high_frequency_queue_pending = high_frequency_output_proc_.PendingCount();
+    stats.high_frequency_queue_dropped = high_frequency_output_proc_.DroppedCount();
+    stats.high_frequency_queue_processed = high_frequency_output_proc_.ProcessedCount();
     stats.live_output_non_monotonic_drop_count =
         live_output_timestamp_gate_.RejectedCount();
     stats.worst_live_output_timestamp_rollback_sec =
@@ -662,19 +712,27 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     return imu_static_hold_active_;
 }
 
-void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps) {
-    if (!imu_static_hold_enabled_ || !std::isfinite(longitudinal_speed_mps)) {
-        return;
+void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps,
+                                     double motor_torque_nm) {
+    if (!std::isfinite(timestamp) || !std::isfinite(longitudinal_speed_mps) ||
+        !std::isfinite(motor_torque_nm)) return;
+    {
+        std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+        if (lio_ != nullptr) {
+            lio_->ProcessWheelSpeed(timestamp, longitudinal_speed_mps, motor_torque_nm);
+        }
     }
+    if (!imu_static_hold_enabled_) return;
     std::lock_guard<std::mutex> lock(static_detector_mutex_);
     last_wheel_speed_stamp_ = timestamp;
     last_wheel_speed_mps_ = longitudinal_speed_mps;
     wheel_speed_observed_ = true;
 }
 
-void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
+void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
+    const CloudPtr& scan_undist = input.localization_cloud;
 
     lidar_loc_->ProcessCloud(scan_undist);
 
@@ -698,8 +756,10 @@ void Localization::LidarLocProcCloud(CloudPtr scan_undist) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
+    lio_->SetLocalizationGood(res.valid_ && res.status_ == LocalizationStatus::GOOD);
     if (processed_cloud_callback_) {
-        processed_cloud_callback_(scan_undist, res);
+        processed_cloud_callback_(input.publication_cloud, res, input.frame_stats,
+                                  input.publication_eligible);
     }
     pgo_->ProcessLidarLoc(res);
 
@@ -746,6 +806,12 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     last_imu_time_ = this_imu_time;
 
     /// 里程计处理IMU
+    double latest_input_stamp = 0.0;
+    {
+        std::lock_guard<std::mutex> stats_lock(runtime_stats_mutex_);
+        latest_input_stamp = runtime_stats_.latest_enqueued_sensor_stamp;
+    }
+    lio_->SetLatestInputTimestamp(latest_input_stamp);
     lio_->ProcessIMU(imu);
 
     // A scan waiting for this IMU has an earlier timestamp than the current

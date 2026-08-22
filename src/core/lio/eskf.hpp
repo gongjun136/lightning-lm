@@ -162,6 +162,24 @@ class ESKF {
      */
     void Predict(const double& dt, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
+    struct ForwardSpeedUpdateResult {
+        bool accepted = false;
+        double predicted_speed_mps = 0.0;
+        double innovation_mps = 0.0;
+        double innovation_variance = 0.0;
+        double normalized_innovation_squared = 0.0;
+    };
+
+    /// Fuse a scalar body-forward speed observation while changing only the velocity state.
+    /// The measurement source may be a low-confidence motor-rpm conversion, so callers must
+    /// provide a realistic variance and conservative innovation gates.
+    ForwardSpeedUpdateResult UpdateBodyForwardSpeed(
+        double measured_speed_mps,
+        double variance_mps2,
+        double max_abs_innovation_mps,
+        double normalized_innovation_squared_gate,
+        double max_velocity_step_mps = 0.5);
+
     /**
      * @brief 使用指定观测类型对状态进行迭代更新。
      *

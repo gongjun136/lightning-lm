@@ -19,6 +19,7 @@
 #include "geosun_msgs/msg/pos_res.hpp"
 #include "lightning/msg/fault_status.hpp"
 #include "lightning/msg/localization_status.hpp"
+#include "lightning/msg/vehicle_pose.hpp"
 
 namespace lightning::sany_output {
 
@@ -45,6 +46,8 @@ geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double
                                            const std::string& frame_id);
 
 geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position);
+lightning::msg::VehiclePose MakeVehiclePoseMessage(
+    const geosun_msgs::msg::PosRes& position);
 
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
                                                const SE3& T_output_lidar, const std::string& frame_id);
@@ -63,6 +66,7 @@ class LocalizationPublicationGate {
     void SetLostFrameThreshold(std::size_t lost_frame_threshold);
     void SetMaxLidarMatchAge(double max_age_sec);
     void ObserveLidarMatch(bool valid, double sensor_stamp = 0.0);
+    bool PoseOutputsEnabled() const;
     bool MapOutputsEnabled(double current_sensor_stamp = 0.0) const;
     bool LidarMatchStale(double current_sensor_stamp) const;
     double LidarMatchAgeSec(double current_sensor_stamp) const;

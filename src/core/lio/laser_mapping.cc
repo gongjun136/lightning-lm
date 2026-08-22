@@ -43,10 +43,18 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
     velocity_propagation_active_ = propagate_velocity_;
+    p_imu_->SetPostPredictCallback([this](ESKF& filter, double timestamp) {
+        ApplyWheelSpeedObservation(filter, timestamp,
+                                   last_lidar_filter_wheel_timestamp_, false);
+    });
 
     LOG(INFO) << "ESKF lidar velocity gate=" << max_update_velocity_step_
               << " m/s, adaptive velocity propagation=" << adaptive_velocity_propagation_
               << ", point covariance model=" << (point_noise_enabled_ ? "enabled" : "disabled");
+    LOG(INFO) << "wheel-speed DR soft observation="
+              << (wheel_speed_dr_config_.enabled ? "enabled" : "disabled")
+              << ", base_std=" << wheel_speed_dr_config_.base_std_mps
+              << " m/s, max_age=" << wheel_speed_dr_config_.max_age_sec << " sec";
 
     return true;
 }
@@ -190,6 +198,50 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             p_imu_->SetInitializationOptions(init_options);
         }
 
+        const YAML::Node system = yaml["system"];
+        if (system) {
+            if (system["enable_wheel_speed_dr_observation"]) {
+                wheel_speed_dr_config_.enabled =
+                    system["enable_wheel_speed_dr_observation"].as<bool>();
+            }
+            if (system["wheel_speed_dr_base_std_mps"])
+                wheel_speed_dr_config_.base_std_mps = system["wheel_speed_dr_base_std_mps"].as<double>();
+            if (system["wheel_speed_dr_stationary_std_mps"])
+                wheel_speed_dr_config_.stationary_std_mps = system["wheel_speed_dr_stationary_std_mps"].as<double>();
+            if (system["wheel_speed_dr_stationary_threshold_mps"])
+                wheel_speed_dr_config_.stationary_speed_threshold_mps = system["wheel_speed_dr_stationary_threshold_mps"].as<double>();
+            if (system["wheel_speed_dr_max_age_sec"])
+                wheel_speed_dr_config_.max_age_sec = system["wheel_speed_dr_max_age_sec"].as<double>();
+            if (system["wheel_speed_dr_future_tolerance_sec"])
+                wheel_speed_dr_config_.future_tolerance_sec = system["wheel_speed_dr_future_tolerance_sec"].as<double>();
+            if (system["wheel_speed_dr_max_acceleration_mps2"])
+                wheel_speed_dr_config_.max_acceleration_mps2 = system["wheel_speed_dr_max_acceleration_mps2"].as<double>();
+            if (system["wheel_speed_dr_max_abs_innovation_mps"])
+                wheel_speed_dr_config_.max_abs_innovation_mps = system["wheel_speed_dr_max_abs_innovation_mps"].as<double>();
+            if (system["wheel_speed_dr_nis_gate"])
+                wheel_speed_dr_config_.normalized_innovation_squared_gate = system["wheel_speed_dr_nis_gate"].as<double>();
+            if (system["wheel_speed_dr_torque_reference_nm"])
+                wheel_speed_dr_config_.torque_reference_nm = system["wheel_speed_dr_torque_reference_nm"].as<double>();
+            if (system["wheel_speed_dr_torque_std_scale"])
+                wheel_speed_dr_config_.torque_std_scale = system["wheel_speed_dr_torque_std_scale"].as<double>();
+            if (system["wheel_speed_dr_max_velocity_step_mps"])
+                wheel_speed_dr_config_.max_velocity_step_mps = system["wheel_speed_dr_max_velocity_step_mps"].as<double>();
+        }
+        if (wheel_speed_dr_config_.base_std_mps <= 0.0 ||
+            wheel_speed_dr_config_.stationary_std_mps <= 0.0 ||
+            wheel_speed_dr_config_.stationary_speed_threshold_mps < 0.0 ||
+            wheel_speed_dr_config_.max_age_sec <= 0.0 ||
+            wheel_speed_dr_config_.future_tolerance_sec < 0.0 ||
+            wheel_speed_dr_config_.max_acceleration_mps2 <= 0.0 ||
+            wheel_speed_dr_config_.max_abs_innovation_mps <= 0.0 ||
+            wheel_speed_dr_config_.normalized_innovation_squared_gate <= 0.0 ||
+            wheel_speed_dr_config_.torque_reference_nm <= 0.0 ||
+            wheel_speed_dr_config_.torque_std_scale < 0.0 ||
+            wheel_speed_dr_config_.max_velocity_step_mps <= 0.0) {
+            LOG(ERROR) << "invalid wheel-speed DR observation configuration";
+            return false;
+        }
+
     } catch (...) {
         LOG(ERROR) << "bad conversion";
         return false;
@@ -250,6 +302,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
                   << " sensors, primary id=" << multi_lidar_config_.primary_lidar_id
                   << ", reorder_window=" << multi_lidar_config_.reorder_window;
     }
+    adaptive_lidar_load_controller_.Reset(multi_lidar_config_);
 
     std::string self_filter_error;
     if (!LoadSelfPointFilterConfig(yaml, self_point_filter_config_, &self_filter_error)) {
@@ -307,6 +360,119 @@ LaserMapping::LaserMapping(Options options) : options_(options) {
     p_imu_.reset(new ImuProcess());
 }
 
+void LaserMapping::ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps,
+                                     double motor_torque_nm) {
+    std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+    ++wheel_speed_dr_stats_.input_count;
+    wheel_speed_dr_stats_.last_measurement_mps = longitudinal_speed_mps;
+    if (!wheel_speed_dr_config_.enabled) return;
+    if (!std::isfinite(timestamp) || timestamp <= 0.0 ||
+        !std::isfinite(longitudinal_speed_mps) || !std::isfinite(motor_torque_nm)) {
+        ++wheel_speed_dr_stats_.invalid_input_count;
+        return;
+    }
+    if (timestamp <= last_raw_wheel_speed_timestamp_) {
+        ++wheel_speed_dr_stats_.timestamp_reject_count;
+        return;
+    }
+
+    bool acceleration_valid = true;
+    if (last_raw_wheel_speed_timestamp_ > std::numeric_limits<double>::lowest()) {
+        const double dt = timestamp - last_raw_wheel_speed_timestamp_;
+        if (dt > 1e-3) {
+            const double acceleration =
+                std::abs(longitudinal_speed_mps - last_raw_wheel_speed_mps_) / dt;
+            acceleration_valid =
+                acceleration <= wheel_speed_dr_config_.max_acceleration_mps2;
+        }
+    }
+    last_raw_wheel_speed_timestamp_ = timestamp;
+    last_raw_wheel_speed_mps_ = longitudinal_speed_mps;
+    if (!acceleration_valid) {
+        ++wheel_speed_dr_stats_.acceleration_reject_count;
+        return;
+    }
+
+    wheel_speed_buffer_.push_back({timestamp, longitudinal_speed_mps, motor_torque_nm});
+    constexpr double kBufferRetentionSec = 2.0;
+    while (!wheel_speed_buffer_.empty() &&
+           timestamp - wheel_speed_buffer_.front().timestamp > kBufferRetentionSec) {
+        wheel_speed_buffer_.pop_front();
+    }
+}
+
+WheelSpeedDrStats LaserMapping::GetWheelSpeedDrStats() const {
+    std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+    return wheel_speed_dr_stats_;
+}
+
+bool LaserMapping::ApplyWheelSpeedObservation(
+    ESKF& filter, double state_timestamp,
+    double& last_applied_observation_timestamp, bool high_frequency_filter) {
+    WheelSpeedSample observation;
+    WheelSpeedDrConfig config;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+        if (!wheel_speed_dr_config_.enabled || !std::isfinite(state_timestamp)) return false;
+        config = wheel_speed_dr_config_;
+        for (const auto& sample : wheel_speed_buffer_) {
+            if (sample.timestamp <= last_applied_observation_timestamp + 1e-9) continue;
+            if (sample.timestamp > state_timestamp + config.future_tolerance_sec) break;
+            observation = sample;
+            found = true;
+        }
+        if (!found) return false;
+        last_applied_observation_timestamp = observation.timestamp;
+        if (state_timestamp - observation.timestamp > config.max_age_sec) {
+            if (high_frequency_filter) {
+                ++wheel_speed_dr_stats_.imu_filter_stale_count;
+            } else {
+                ++wheel_speed_dr_stats_.lidar_filter_stale_count;
+            }
+            return false;
+        }
+    }
+
+    const double base_std =
+        std::abs(observation.speed_mps) <= config.stationary_speed_threshold_mps
+            ? config.stationary_std_mps
+            : config.base_std_mps;
+    const double torque_ratio =
+        std::min(1.0, std::abs(observation.torque_nm) / config.torque_reference_nm);
+    const double standard_deviation =
+        base_std * (1.0 + config.torque_std_scale * torque_ratio);
+    const auto result = filter.UpdateBodyForwardSpeed(
+        observation.speed_mps, standard_deviation * standard_deviation,
+        config.max_abs_innovation_mps,
+        config.normalized_innovation_squared_gate,
+        config.max_velocity_step_mps);
+
+    {
+        std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+        wheel_speed_dr_stats_.last_measurement_mps = observation.speed_mps;
+        wheel_speed_dr_stats_.last_predicted_mps = result.predicted_speed_mps;
+        wheel_speed_dr_stats_.last_innovation_mps = result.innovation_mps;
+        wheel_speed_dr_stats_.last_standard_deviation_mps = standard_deviation;
+        wheel_speed_dr_stats_.last_normalized_innovation_squared =
+            result.normalized_innovation_squared;
+        if (high_frequency_filter) {
+            if (result.accepted) ++wheel_speed_dr_stats_.imu_filter_accepted_count;
+            else ++wheel_speed_dr_stats_.imu_filter_rejected_count;
+        } else {
+            if (result.accepted) ++wheel_speed_dr_stats_.lidar_filter_accepted_count;
+            else ++wheel_speed_dr_stats_.lidar_filter_rejected_count;
+        }
+    }
+    return result.accepted;
+}
+
+void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
+    std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+    last_lidar_filter_wheel_timestamp_ = timestamp;
+    last_imu_filter_wheel_timestamp_ = timestamp;
+}
+
 void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     publish_count_++;
 
@@ -316,12 +482,19 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     if (timestamp < last_timestamp_imu_) {
         LOG(WARNING) << "imu loop back, clear buffer";
         imu_buffer_.clear();
+        std::lock_guard<std::mutex> wheel_lock(wheel_speed_mutex_);
+        wheel_speed_buffer_.clear();
+        last_raw_wheel_speed_timestamp_ = std::numeric_limits<double>::lowest();
+        last_lidar_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
+        last_imu_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
     }
 
     if (p_imu_->IsIMUInited()) {
         /// 更新最新imu状态
         const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
         kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity, acc);
+        ApplyWheelSpeedObservation(kf_imu_, timestamp,
+                                   last_imu_filter_wheel_timestamp_, true);
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
 
@@ -372,6 +545,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         safe_state.timestamp_ = measures_.lidar_end_time_;
         kf_.ChangeX(safe_state);
         kf_imu_ = kf_;
+        ResetWheelSpeedIntegrationBridge(measures_.lidar_end_time_);
         p_imu_->ResetIntegrationBridge(measures_.imu_.back(), measures_.lidar_end_time_, safe_state);
         last_lidar_time_ = measures_.lidar_begin_time_;
         last_tracking_healthy_ = false;
@@ -406,27 +580,59 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                   << " total_ms=" << (current_preprocess_ms_ + core_update_ms)
                   << " input_points=" << input_points
                   << " self_filter_removed=" << self_filter_removed
-                  << " output_points=" << output_points;
+                  << " output_points=" << output_points
+                  << " adaptive_step=" << adaptive_lidar_load_controller_.DegradationStep()
+                  << " selected_lidars=" << current_lidar_selection_.lidar_ids.size()
+                  << " point_stride=" << current_lidar_selection_.point_stride
+                  << " lidar_latency_ms=" << last_lidar_latency_sec_ * 1e3;
+        last_frame_processing_ms_ = current_preprocess_ms_ + core_update_ms;
     };
 
     // IMU处理包含两种情况：
     // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
     // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
     // Keyframes keep the previous cloud pointer, so allocate a new output instead of clearing it in place.
-    scan_undistort_.reset(new PointCloudType());
+    scan_undistort_full_.reset(new PointCloudType());
     const auto imu_start = BenchClock::now();
-    p_imu_->Process(measures_, kf_, scan_undistort_);
+    p_imu_->Process(measures_, kf_, scan_undistort_full_);
     imu_undistort_ms = elapsed_ms(imu_start);
 
-    if (scan_undistort_ && !scan_undistort_->empty() && self_point_filter_config_.enabled) {
+    if (scan_undistort_full_ && !scan_undistort_full_->empty() && self_point_filter_config_.enabled) {
         self_filter_removed = FilterSelfPoints(
-            *scan_undistort_, self_point_filter_config_, GetInitialLidarRotation().matrix());
+            *scan_undistort_full_, self_point_filter_config_, GetInitialLidarRotation().matrix());
     }
 
-    if (!scan_undistort_ || scan_undistort_->empty()) {
+    if (!scan_undistort_full_ || scan_undistort_full_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
         last_tracking_healthy_ = false;
         return RunStatus::kConsumed;
+    }
+    last_lidar_latency_sec_ = latest_input_sensor_timestamp_ > 0.0
+                                  ? std::max(0.0, latest_input_sensor_timestamp_ - measures_.lidar_end_time_)
+                                  : 0.0;
+    if (adaptive_lidar_load_controller_.IsHardStale(last_lidar_latency_sec_)) {
+        ++adaptive_stale_drop_count_;
+        last_frame_processing_ms_ = current_preprocess_ms_ + imu_undistort_ms;
+        last_tracking_healthy_ = false;
+        LOG(WARNING) << "drop stale lidar correction before matching: age="
+                     << last_lidar_latency_sec_ << " sec, hard_deadline="
+                     << multi_lidar_config_.adaptive_load.hard_latency_sec;
+        return RunStatus::kConsumed;
+    }
+    if (multi_lidar_config_.enabled) {
+        current_lidar_selection_ = adaptive_lidar_load_controller_.Select(current_lidar_stats_);
+        scan_undistort_ = SelectLidarPoints(scan_undistort_full_, current_lidar_selection_);
+        if (!scan_undistort_ || scan_undistort_->empty()) {
+            last_tracking_healthy_ = false;
+            LOG_EVERY_N(WARNING, 20)
+                << "skip lidar frame: available sources do not satisfy current localization minimum";
+            return RunStatus::kConsumed;
+        }
+    } else {
+        scan_undistort_ = scan_undistort_full_;
+        current_lidar_selection_.lidar_ids = {0};
+        current_lidar_selection_.point_stride = 1;
+        current_lidar_selection_.degradation_step = 0;
     }
 
     // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
@@ -641,10 +847,24 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     }
     map_update_ms = elapsed_ms(map_update_start);
     emit_benchmark("tracking", scan_down_lidar_->size());
+    const int old_adaptive_step = adaptive_lidar_load_controller_.DegradationStep();
+    adaptive_lidar_load_controller_.Observe(
+        last_frame_processing_ms_ * 1e-3, last_lidar_latency_sec_, last_tracking_healthy_);
+    const int new_adaptive_step = adaptive_lidar_load_controller_.DegradationStep();
+    if (new_adaptive_step != old_adaptive_step) {
+        LOG(WARNING) << "adaptive lidar load step " << old_adaptive_step << " -> "
+                     << new_adaptive_step << ", processing_ms=" << last_frame_processing_ms_
+                     << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
+                     << ", tracking_healthy=" << last_tracking_healthy_;
+    }
 
     // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
     // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
     kf_imu_ = kf_;
+    {
+        std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+        last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
+    }
     if (!measures_.imu_.empty()) {
         double t = measures_.imu_.back()->timestamp;
         for (auto &imu : imu_buffer_) {
@@ -652,6 +872,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
             // 这里做高频显示预测，不参与Lidar帧的去畸变输出。
             const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
             kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, acc);
+            ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
+                                       last_imu_filter_wheel_timestamp_, true);
             t = imu->timestamp;
         }
     }

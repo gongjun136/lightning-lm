@@ -55,29 +55,41 @@
 /PosRes:
   history: keep_last
   depth: 1000
-  reliability: reliable
+  reliability: best_effort
+  durability: volatile
+
+/localization/pose_vel:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
   durability: volatile
 
 /slamPoseRaw_topic:
   history: keep_last
   depth: 1000
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
 
 /localization/fault_status:
   history: keep_last
   depth: 100
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
 
 /localization/loc_status:
   history: keep_last
   depth: 100
-  reliability: reliable
+  reliability: best_effort
   durability: volatile
 
 /localization/pipeline_diagnostics:
   history: keep_last
   depth: 100
-  reliability: reliable
+  reliability: best_effort
+  durability: volatile
+
+/tf:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
   durability: volatile

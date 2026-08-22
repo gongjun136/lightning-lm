@@ -39,6 +39,9 @@ class Localization {
         std::uint64_t localization_queue_pending = 0;
         std::uint64_t localization_queue_dropped = 0;
         std::uint64_t localization_queue_processed = 0;
+        std::uint64_t high_frequency_queue_pending = 0;
+        std::uint64_t high_frequency_queue_dropped = 0;
+        std::uint64_t high_frequency_queue_processed = 0;
         double latest_enqueued_sensor_stamp = 0.0;
         double latest_processed_sensor_stamp = 0.0;
         double current_sensor_lag_sec = 0.0;
@@ -55,6 +58,19 @@ class Localization {
         double last_relocalization_score = 0.0;
         double last_relocalization_search_time_ms = 0.0;
         std::string last_relocalization_reason;
+        bool adaptive_lidar_load_enabled = false;
+        int adaptive_lidar_degradation_step = 0;
+        int selected_lidar_point_stride = 1;
+        std::vector<int> selected_lidar_ids;
+        std::vector<int> current_frame_lidar_ids;
+        std::vector<int> current_frame_missing_lidar_ids;
+        double lidar_correction_age_sec = 0.0;
+        double last_lio_processing_ms = 0.0;
+        std::uint64_t adaptive_lidar_stale_drop_count = 0;
+        std::uint32_t cloud_publish_min_lidars = 0;
+        bool cloud_publish_eligible = true;
+        bool wheel_speed_dr_enabled = false;
+        WheelSpeedDrStats wheel_speed_dr_stats;
     };
 
     struct Options {
@@ -94,7 +110,8 @@ class Localization {
     void ProcessIMUMsg(IMUPtr imu);
 
     /// Observe signed longitudinal vehicle speed converted from CAN motor rpm.
-    void ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps);
+    void ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps,
+                           double motor_torque_nm = 0.0);
 
     // void ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) override;
 
@@ -111,11 +128,18 @@ class Localization {
     /// 异步处理函数
     void LidarOdomProcCloud(CloudPtr, int lidar_id);
     void DrainLioOutputs();
-    void LidarLocProcCloud(CloudPtr);
+    struct LidarLocInput {
+        CloudPtr localization_cloud;
+        CloudPtr publication_cloud;
+        MultiLidarFrameStats frame_stats;
+        bool publication_eligible = true;
+    };
+    void LidarLocProcCloud(const LidarLocInput& input);
 
     using TFCallback = std::function<void(const geometry_msgs::msg::TransformStamped& odom)>;
     using LocalizationResultCallback = std::function<void(const LocalizationResult& result)>;
-    using ProcessedCloudCallback = std::function<void(const CloudPtr& cloud, const LocalizationResult& result)>;
+    using ProcessedCloudCallback = std::function<void(const CloudPtr& cloud, const LocalizationResult& result,
+                                                       const MultiLidarFrameStats& stats, bool eligible)>;
     using LocStateCallback = std::function<void(const std_msgs::msg::Int32& state)>;
     using PointcloudBodyCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
     using PointcloudWorldCallback = std::function<void(const sensor_msgs::msg::PointCloud2& pointcloud)>;
@@ -187,7 +211,7 @@ class Localization {
     void ObserveLidarLocForStaticDetector(const LocalizationResult& result);
     bool UpdateImuStaticState(const IMUPtr& imu);
     sys::AsyncMessageProcess<SensorInput> sensor_proc_;
-    sys::AsyncMessageProcess<CloudPtr> lidar_loc_proc_cloud_;   // lidar loc 处理点云
+    sys::AsyncMessageProcess<LidarLocInput> lidar_loc_proc_cloud_;  // 定位点云和同帧完整发布点云
     // ROS/DDS publication must never hold the ordered sensor/PGO processing
     // path. Capacity one intentionally keeps only the newest live pose.
     sys::AsyncMessageProcess<LocalizationResult> high_frequency_output_proc_;

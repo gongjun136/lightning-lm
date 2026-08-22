@@ -391,6 +391,107 @@ bool ZeroDurationPredictionDoesNotInflateCovariance() {
     return true;
 }
 
+bool ForwardSpeedUpdateChangesOnlyVelocity() {
+    using namespace lightning;
+
+    NavState state;
+    state.pose_is_ok_ = true;
+    state.pos_ = Vec3d(3.0, -2.0, 1.0);
+    state.bg_ = Vec3d(0.01, 0.02, 0.03);
+    state.ba_ = Vec3d(0.1, 0.2, 0.3);
+    ESKF eskf(state, ESKF::CovType::Identity());
+    ESKF::Options options;
+    eskf.Init(options);
+
+    const NavState before = eskf.GetX();
+    const auto result = eskf.UpdateBodyForwardSpeed(1.0, 0.25, 2.0, 9.0, 1.0);
+    const NavState& after = eskf.GetX();
+    if (!result.accepted || std::abs(after.vel_.x() - 0.8) > 1e-12) {
+        std::cerr << "Forward speed update did not produce the expected velocity. velocity="
+                  << after.vel_.transpose() << std::endl;
+        return false;
+    }
+    if ((after.pos_ - before.pos_).norm() > 1e-12 ||
+        (after.rot_.inverse() * before.rot_).log().norm() > 1e-12 ||
+        (after.bg_ - before.bg_).norm() > 1e-12 ||
+        (after.ba_ - before.ba_).norm() > 1e-12 ||
+        (after.grav_ - before.grav_).norm() > 1e-12) {
+        std::cerr << "Forward speed update changed a non-velocity state." << std::endl;
+        return false;
+    }
+    return CovarianceIsPositiveSemidefinite(eskf.GetP());
+}
+
+bool ForwardSpeedUpdateUsesBodyHeading() {
+    using namespace lightning;
+
+    NavState state;
+    state.rot_ = SO3::exp(Vec3d(0.0, 0.0, M_PI_2));
+    ESKF eskf(state, ESKF::CovType::Identity());
+    ESKF::Options options;
+    eskf.Init(options);
+
+    const auto result = eskf.UpdateBodyForwardSpeed(1.0, 0.25, 2.0, 9.0, 1.0);
+    if (!result.accepted || std::abs(eskf.GetX().vel_.y() - 0.8) > 1e-12 ||
+        std::abs(eskf.GetX().vel_.x()) > 1e-12) {
+        std::cerr << "Forward speed update ignored body heading. velocity="
+                  << eskf.GetX().vel_.transpose() << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool ForwardSpeedUpdateRejectsAbsoluteInnovationOutlier() {
+    using namespace lightning;
+
+    ESKF eskf;
+    ESKF::Options options;
+    eskf.Init(options);
+    const NavState before = eskf.GetX();
+    const ESKF::CovType covariance_before = eskf.GetP();
+    const auto result = eskf.UpdateBodyForwardSpeed(3.0, 0.25, 1.0, 100.0, 1.0);
+    if (result.accepted || (eskf.GetX().boxminus(before)).norm() > 1e-12 ||
+        (eskf.GetP() - covariance_before).norm() > 1e-12) {
+        std::cerr << "Absolute innovation outlier changed the filter." << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool ForwardSpeedUpdateRejectsNisOutlier() {
+    using namespace lightning;
+
+    ESKF eskf;
+    ESKF::Options options;
+    eskf.Init(options);
+    ESKF::CovType covariance = ESKF::CovType::Identity() * 1e-6;
+    eskf.ChangeP(covariance);
+    const NavState before = eskf.GetX();
+    const auto result = eskf.UpdateBodyForwardSpeed(0.5, 0.01, 2.0, 9.0, 1.0);
+    if (result.accepted || result.normalized_innovation_squared <= 9.0 ||
+        (eskf.GetX().boxminus(before)).norm() > 1e-12) {
+        std::cerr << "NIS outlier was not rejected. nis="
+                  << result.normalized_innovation_squared << std::endl;
+        return false;
+    }
+    return true;
+}
+
+bool ForwardSpeedUpdateRejectsLargeVelocityStep() {
+    using namespace lightning;
+
+    ESKF eskf;
+    ESKF::Options options;
+    eskf.Init(options);
+    const NavState before = eskf.GetX();
+    const auto result = eskf.UpdateBodyForwardSpeed(1.0, 0.01, 2.0, 100.0, 0.2);
+    if (result.accepted || (eskf.GetX().boxminus(before)).norm() > 1e-12) {
+        std::cerr << "Large velocity step was not rejected." << std::endl;
+        return false;
+    }
+    return true;
+}
+
 bool InvalidLidarUpdateIsNotMarkedAccepted() {
     using namespace lightning;
 
@@ -523,6 +624,26 @@ int main() {
     }
 
     if (!ZeroDurationPredictionDoesNotInflateCovariance()) {
+        return 1;
+    }
+
+    if (!ForwardSpeedUpdateChangesOnlyVelocity()) {
+        return 1;
+    }
+
+    if (!ForwardSpeedUpdateUsesBodyHeading()) {
+        return 1;
+    }
+
+    if (!ForwardSpeedUpdateRejectsAbsoluteInnovationOutlier()) {
+        return 1;
+    }
+
+    if (!ForwardSpeedUpdateRejectsNisOutlier()) {
+        return 1;
+    }
+
+    if (!ForwardSpeedUpdateRejectsLargeVelocityStep()) {
         return 1;
     }
 
