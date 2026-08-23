@@ -433,19 +433,10 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
-    double vehicle_speed = result.vel_b_.x();
-    const char* vehicle_speed_source = "estimator_body_x";
-    {
-        std::lock_guard<std::mutex> lock(input_stats_mutex_);
-        constexpr double kMaxWheelSpeedTimestampDeltaSec = 0.25;
-        if (wheel_speed_input_stats_.has_arrival &&
-            wheel_speed_input_stats_.last_sensor_stamp > 0.0 &&
-            std::abs(result.timestamp_ - wheel_speed_input_stats_.last_sensor_stamp) <=
-                kMaxWheelSpeedTimestampDeltaSec) {
-            vehicle_speed = last_wheel_speed_mps_;
-            vehicle_speed_source = "can_wheel_speed";
-        }
-    }
+    // Publish the high-frequency signed body-forward estimator velocity. CAN
+    // wheel speed remains an internal filter observation, but must not replace
+    // the estimator state at the downstream output boundary.
+    const double vehicle_speed = result.vel_b_.x();
     const auto position = sany_output::MakePosResMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
     if (pos_res_pub_) {
@@ -461,7 +452,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
                   << " y_m=" << position.f8enh[1]
                   << " z_m=" << position.f8enh[2]
                   << " speed_mps=" << position.f8vehiclespeed
-                  << " speed_source=" << vehicle_speed_source;
+                  << " speed_source=estimator_body_x";
     }
     if (pose_pub_) {
         const auto pose = sany_output::MakePoseMessage(position);
