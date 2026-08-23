@@ -434,6 +434,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
     double vehicle_speed = result.vel_b_.x();
+    const char* vehicle_speed_source = "estimator_body_x";
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         constexpr double kMaxWheelSpeedTimestampDeltaSec = 0.25;
@@ -442,6 +443,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             std::abs(result.timestamp_ - wheel_speed_input_stats_.last_sensor_stamp) <=
                 kMaxWheelSpeedTimestampDeltaSec) {
             vehicle_speed = last_wheel_speed_mps_;
+            vehicle_speed_source = "can_wheel_speed";
         }
     }
     const auto position = sany_output::MakePosResMessage(
@@ -449,6 +451,17 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     if (pos_res_pub_) {
         pos_res_pub_->publish(position);
         last_posres_stamp_ = result.timestamp_;
+        // Keep this marker and key=value layout stable: it is intentionally
+        // machine-readable so an exported run log can reproduce the exact
+        // downstream /PosRes X/Y/speed time series without a recorded rosbag.
+        LOG(INFO) << "POSRES_PUBLISH topic=/PosRes"
+                  << " stamp_sec=" << position.header.stamp.sec
+                  << " stamp_nanosec=" << position.header.stamp.nanosec
+                  << " x_m=" << std::setprecision(12) << position.f8enh[0]
+                  << " y_m=" << position.f8enh[1]
+                  << " z_m=" << position.f8enh[2]
+                  << " speed_mps=" << position.f8vehiclespeed
+                  << " speed_source=" << vehicle_speed_source;
     }
     if (pose_pub_) {
         const auto pose = sany_output::MakePoseMessage(position);
