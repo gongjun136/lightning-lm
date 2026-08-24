@@ -33,8 +33,24 @@ enable_posres_watchdog="${SANY_ENABLE_POSRES_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
-compute_profile="${LIGHTNING_LM_COMPUTE_PROFILE:-1}"
-reduce_nonessential_overhead="${LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD:-0}"
+run_mode="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
+case "${run_mode}" in
+  diagnostic)
+    default_compute_profile=1
+    default_reduce_nonessential_overhead=0
+    ;;
+  production)
+    default_compute_profile=0
+    default_reduce_nonessential_overhead=1
+    ;;
+  *)
+    echo "ERROR: LIGHTNING_LM_RUN_MODE must be diagnostic or production." >&2
+    exit 1
+    ;;
+esac
+compute_profile="${LIGHTNING_LM_COMPUTE_PROFILE:-${default_compute_profile}}"
+reduce_nonessential_overhead="${LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD:-${default_reduce_nonessential_overhead}}"
+cpu_affinity="${LIGHTNING_LM_CPU_AFFINITY:-}"
 
 usage() {
   cat <<'EOF'
@@ -62,10 +78,19 @@ Useful environment variables:
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
+  LIGHTNING_LM_RUN_MODE       diagnostic or production (this entry defaults to diagnostic;
+                              run_sany_online_production.sh selects production)
   LIGHTNING_LM_COMPUTE_PROFILE
-                              Emit machine-readable compute timing: 1=yes, 0=no (default: 1)
+                              Emit machine-readable compute timing: 1=yes, 0=no
+                              (mode default: diagnostic=1, production=0)
   LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD
-                              Skip high-rate diagnostic I/O: 1=yes, 0=no (default: 0)
+                              Skip high-rate diagnostic I/O: 1=yes, 0=no
+                              (mode default: diagnostic=0, production=1)
+  LIGHTNING_LM_LIO_THREADS    Override compute_budget.lio_threads
+  LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
+  LIGHTNING_LM_SOLID_ICP_WORKERS
+                              Override compute_budget.solid_icp_workers
+  LIGHTNING_LM_CPU_AFFINITY   Optional taskset CPU list for the algorithm, e.g. 0-9
 
 The run continues until localization exits or Ctrl-C. When the watchdog is
 enabled, a /PosRes loss only records a snapshot; it does not stop or restart
@@ -78,6 +103,14 @@ EOF
 fail() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+validate_optional_thread_count() {
+  local name="$1"
+  local value="${!name:-}"
+  [[ -z "${value}" ]] && return 0
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || fail "${name} must be an integer in [1, 128]."
+  ((value <= 128)) || fail "${name} must be an integer in [1, 128]."
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -97,6 +130,9 @@ fi
   fail "LIGHTNING_LM_COMPUTE_PROFILE must be 0 or 1."
 [[ "${reduce_nonessential_overhead}" == "0" || "${reduce_nonessential_overhead}" == "1" ]] ||
   fail "LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD must be 0 or 1."
+validate_optional_thread_count LIGHTNING_LM_LIO_THREADS
+validate_optional_thread_count LIGHTNING_LM_NDT_THREADS
+validate_optional_thread_count LIGHTNING_LM_SOLID_ICP_WORKERS
 export SANY_ENABLE_CAN_OBSERVATION="${enable_can_observation}"
 export LIGHTNING_LM_COMPUTE_PROFILE="${compute_profile}"
 export LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD="${reduce_nonessential_overhead}"
@@ -129,6 +165,11 @@ set -u
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
 command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
+if [[ -n "${cpu_affinity}" ]]; then
+  command -v taskset >/dev/null 2>&1 || fail "taskset is required by LIGHTNING_LM_CPU_AFFINITY."
+  taskset --cpu-list "${cpu_affinity}" true >/dev/null 2>&1 ||
+    fail "LIGHTNING_LM_CPU_AFFINITY is invalid or unavailable in this cpuset: ${cpu_affinity}"
+fi
 if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
 fi
@@ -425,8 +466,13 @@ fi
   echo "enable_posres_watchdog=${enable_posres_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
   echo "enable_can_observation=${enable_can_observation}"
+  echo "run_mode=${run_mode}"
   echo "compute_profile=${compute_profile}"
   echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
+  echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
+  echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
+  echo "solid_icp_workers_override=${LIGHTNING_LM_SOLID_ICP_WORKERS:-<from-config>}"
+  echo "cpu_affinity=${cpu_affinity:-<unrestricted>}"
   echo "wheel_speed_topic=${wheel_speed_topic}"
   echo "primary_imu_topic=${imu_topic}"
   echo "recorded_imu_topics=${record_imu_topics[*]:-<disabled>}"
@@ -488,12 +534,17 @@ if [[ -n "${map_path}" ]]; then
 fi
 
 if [[ "${record_bag}" == "1" ]]; then
-  echo "Running diagnostics with background bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
+  echo "Running ${run_mode} mode with background bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
 else
-  echo "Running diagnostics without bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
+  echo "Running ${run_mode} mode without bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
 fi
+algorithm_launcher=()
+if [[ -n "${cpu_affinity}" ]]; then
+  algorithm_launcher+=(taskset --cpu-list "${cpu_affinity}")
+fi
+algorithm_launcher+=(stdbuf -oL -eL)
 set +e
-stdbuf -oL -eL "${algorithm_args[@]}" \
+"${algorithm_launcher[@]}" "${algorithm_args[@]}" \
   >"${run_dir}/logs/run_loc_online.stdout.log" \
   2>"${run_dir}/logs/run_loc_online.stderr.log" &
 algorithm_pid=$!
@@ -507,5 +558,5 @@ echo "finished_at=$(date --iso-8601=ns)" >>"${run_dir}/run_metadata.txt"
 extract_compute_profile
 stop_children
 trap - EXIT
-echo "Diagnostics saved to ${run_dir}"
+echo "${run_mode^} run artifacts saved to ${run_dir}"
 exit "${algorithm_status}"

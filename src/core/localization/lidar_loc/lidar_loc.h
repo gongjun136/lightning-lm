@@ -264,6 +264,7 @@ class LidarLoc {
 
     // 成员变量  ==========================================================================
     Options options_;
+    int ndt_threads_ = 4;
 
     std::mutex match_mutex_;  // 锁定pcl_ndt指针
 

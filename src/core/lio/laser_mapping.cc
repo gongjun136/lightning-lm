@@ -14,6 +14,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ui/pangolin_window.h"
+#include "utils/compute_budget.h"
 #include "utils/compute_profiling.h"
 #include "wrapper/ros_utils.h"
 
@@ -67,6 +68,17 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     double filter_size_scan;
 
     auto yaml = YAML::LoadFile(yaml_file);
+    compute::ComputeBudget compute_budget;
+    const unsigned int hardware_threads = std::thread::hardware_concurrency();
+    compute_budget.lio_threads = static_cast<int>(
+        std::min<unsigned int>(hardware_threads == 0 ? 1 : hardware_threads, 128));
+    std::string compute_budget_error;
+    if (!compute::LoadComputeBudget(yaml, compute_budget, &compute_budget_error)) {
+        LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+        return false;
+    }
+    lio_parallel_threads_ = compute_budget.lio_threads;
+    preprocess_->ParallelThreads() = lio_parallel_threads_;
     try {
         fasterlio::NUM_MAX_ITERATIONS = yaml["fasterlio"]["max_iteration"].as<int>();
         fasterlio::ESTI_PLANE_THRESHOLD = yaml["fasterlio"]["esti_plane_threshold"].as<float>();
@@ -360,6 +372,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             return false;
         }
     }
+    LOG(INFO) << "LIO compute budget: parallel_threads=" << lio_parallel_threads_;
     return true;
 }
 
@@ -980,6 +993,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
 }
 
 void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
+    if (!options_.proj_kfs_ || !cloud || size_limit <= 0 || proj_kfs_.empty()) return;
     auto state = kf_.GetX();
     SE3 pose_cur(state.rot_, state.pos_);
     pose_cur = pose_cur.inverse();
@@ -992,6 +1006,7 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
 
         int cnt = 0;
         for (auto &pt : kf->GetCloud()->points) {
+            if (cnt >= size_limit) break;
             Vec3d p = pose * ToVec3d(pt);
             PointType pcl_pt;
 
@@ -1002,10 +1017,6 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
 
             cloud->push_back(pcl_pt);
             cnt++;
-
-            if (cnt > size_limit) {
-                break;
-            }
         }
         // }
     }
@@ -1053,6 +1064,11 @@ void LaserMapping::MakeKF() {
 
     // 有keyframes时更新local map
     Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
+
+    if (!options_.proj_kfs_ || options_.max_proj_kfs_ <= 0) {
+        proj_kfs_.clear();
+        return;
+    }
 
     /// 更新project kfs
     if (proj_kfs_.size() >= options_.max_proj_kfs_) {
@@ -1397,12 +1413,6 @@ double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &
 void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     int cnt_pts = scan_down_lidar_->size();
 
-    // 并行处理当前帧点云时使用的索引数组，避免在lambda里依赖递增变量。
-    std::vector<size_t> index(cnt_pts);
-    for (size_t i = 0; i < index.size(); ++i) {
-        index[i] = i;
-    }
-
     // LOG(INFO) << "obs from state: " << s.pos_.transpose() << ", " << s.rot_.unit_quaternion().coeffs().transpose();
 
     Timer::Evaluate(
@@ -1412,7 +1422,9 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             Mat3f R_wl = (s.rot_.matrix() * offset_R_lidar_fixed_).cast<float>();
             Vec3f t_wl = (s.rot_ * offset_t_lidar_fixed_ + s.pos_).cast<float>();
 
-            std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+            for (std::int64_t raw_index = 0; raw_index < cnt_pts; ++raw_index) {
+                const std::size_t i = static_cast<std::size_t>(raw_index);
                 PointType &point_lidar = scan_down_lidar_->points[i];
                 PointType &point_world = scan_down_world_->points[i];
 
@@ -1454,7 +1466,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                         point_selected_surf_[i] = false;
                     }
                 }
-            });
+            }
         },
         "    ObsModel (Lidar Match)");
 
@@ -1493,7 +1505,6 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         return;
     }
 
-    index.resize(effect_feat_surf_);
     const Mat3f off_R = offset_R_lidar_fixed_.cast<float>();
     const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
     const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
@@ -1506,9 +1517,11 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     std::vector<Mat6d> JTJ(effect_feat_surf_);
     std::vector<Vec6d> JTr(effect_feat_surf_);
 
-    std::vector<double> res_sq(index.size());
+    std::vector<double> res_sq(effect_feat_surf_);
 
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+    for (std::int64_t raw_index = 0; raw_index < effect_feat_surf_; ++raw_index) {
+        const std::size_t i = static_cast<std::size_t>(raw_index);
         Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
         Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
         // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
@@ -1543,10 +1556,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         JTr[i] = J.transpose() * res * w;
 
         res_sq[i] = res * res;
-    });
+    }
 
     // 并行阶段先把每个点的J^T J和J^T r保存下来，串行阶段再累加，避免并发写obs。
-    for (int i = 0; i < index.size(); ++i) {
+    for (int i = 0; i < effect_feat_surf_; ++i) {
         obs.HTH_ += JTJ[i] * options_.plane_icp_weight_;
         obs.HTr_ += JTr[i] * options_.plane_icp_weight_;
     }
@@ -1568,14 +1581,11 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         JTJ.resize(cnt_pts);
         JTr.resize(cnt_pts);
 
-        std::vector<size_t> index(cnt_pts);
-        for (size_t i = 0; i < index.size(); ++i) {
-            index[i] = i;
-        }
-
-        std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const size_t &i) {
+#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+        for (std::int64_t raw_index = 0; raw_index < cnt_pts; ++raw_index) {
+            const std::size_t i = static_cast<std::size_t>(raw_index);
             if (point_selected_icp_[i] == false) {
-                return;
+                continue;
             }
 
             /// q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
@@ -1597,12 +1607,12 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             // 过大的点到点残差通常对应错误最近邻，直接剔除。
             if (e.norm() > 0.5) {
                 point_selected_icp_[i] = false;
-                return;
+                continue;
             }
 
             JTJ[i] = J.transpose() * J;
             JTr[i] = -J.transpose() * e;
-        });
+        }
 
         // 将点到点ICP的信息量累加到同一个6维位姿观测中。
         for (int i = 0; i < cnt_pts; ++i) {
@@ -1730,7 +1740,8 @@ CloudPtr LaserMapping::GetRecentCloud() {
 }
 
 CloudPtr LaserMapping::GetProjCloud() {
-    auto cloud = scan_undistort_;
+    if (!options_.proj_kfs_) return scan_undistort_;
+    CloudPtr cloud(new PointCloudType(*scan_undistort_));
     ProjectKFs(cloud);
     return cloud;
 }

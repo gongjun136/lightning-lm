@@ -193,14 +193,20 @@ bash scripts/run_frontend_offline_batch.sh \
 * `results/trajectory_published_rear_axle.tum`：经过后轴外参和固定地图变换后，实际发布到
   `/PosRes` 的位姿。该文件逐条刷新，可供下游联调时实时读取。
 
-脚本默认设置 `LIGHTNING_LM_COMPUTE_PROFILE=1`，将 LIO、NDT/重定位、PGO、IMU/DR、ROS
+诊断入口 `run_sany_online_diagnostics.sh` 默认使用 `LIGHTNING_LM_RUN_MODE=diagnostic` 和
+`LIGHTNING_LM_COMPUTE_PROFILE=1`，将 LIO、NDT/重定位、PGO、IMU/DR、ROS
 发布和诊断 I/O 等热点的墙钟/线程 CPU/进程 CPU 计时写入算法 stderr，并在退出后提取到
 `results/compute_profile.log`。高频链路按一秒窗口输出 count、mean、P50/P95/P99/max；LiDAR
 帧链路逐帧输出。`run_metadata.txt` 会记录开关值和计时记录条数。
 
-基线采集保持 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。只有在完成基线分析后，才建议
-将它设为 `1` 来跳过高频姿态文本日志、逐姿态 TUM 刷盘等非必要诊断开销；该开关不改变算法
-频率、队列或定位计算。
+基线采集保持 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。正式运行改用
+`run_sany_online_production.sh`：它默认关闭计算计时、关闭 bag，并跳过高频姿态文本日志、逐姿态
+TUM 刷盘等非必要诊断开销；这些开关不改变算法频率、队列或定位计算。
+
+SANY 正式定位 YAML 通过统一的 `compute_budget` 限制 LIO、NDT 和 SOLiD ICP 工作池。域控调参时可
+用 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、
+`LIGHTNING_LM_SOLID_ICP_WORKERS` 临时覆盖，并用 `LIGHTNING_LM_CPU_AFFINITY=0-9` 将算法限制到
+已为定位预留的核心。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写，脚本会在启动前校验。
 
 构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
 

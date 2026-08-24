@@ -427,6 +427,7 @@ class LaserMapping {
     bool propagate_velocity_ = false;  // 是否在ESKF名义状态中传播速度
     bool lidar_update_pose_only_ = false;  // Lidar观测是否只修正位姿
     bool lidar_update_inertial_states_ = true;  // Lidar观测是否间接修正bg/ba/gravity
+    int lio_parallel_threads_ = 1;  // LIO匹配及Livox预处理共享的OpenMP线程上限
     double max_update_velocity_step_ = 2.0;
     double max_update_gyro_bias_step_ = 0.05;
     double max_update_acc_bias_step_ = 0.5;

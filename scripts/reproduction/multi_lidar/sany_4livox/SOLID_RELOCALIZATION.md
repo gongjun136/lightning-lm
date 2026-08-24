@@ -61,7 +61,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/analyze_phase_a_relocalizat
 
 新口径将 SOLiD 检索、多航向 ICP 和接受前处理纳入累计耗时。早期 `P95≈0.2002 s` 只是从播放起点到接受帧的传感器时间延迟，且旧检索计时在 ICP 前结束；它不是端到端 CPU 计算耗时，不能支持“完整重定位亚秒”的结论。
 
-本轮对 `data1` 至 `data5` 各选取 `0、3、5、7、10、15、20、25、30、35 s` 十个启动偏移，每个配置执行 50 次冷启动。最终配置保留四航向种子和 8 个候选，将 ICP 工作线程从 8 提高到 12：
+本轮对 `data1` 至 `data5` 各选取 `0、3、5、7、10、15、20、25、30、35 s` 十个启动偏移，每个配置执行 50 次冷启动。历史时延验收配置保留四航向种子和 8 个候选，并将 ICP 工作线程从 8 提高到 12：
 
 ```yaml
 relocalization:
@@ -70,6 +70,10 @@ relocalization:
     icp_workers: 12
     icp_yaw_hypothesis_offsets_deg: [0.0, 90.0, -90.0, 180.0]
 ```
+
+该 12-worker 数值是独占算力下的历史实验条件。在线部署现由顶层 `compute_budget` 统一控制
+LIO、NDT 和 SOLiD，SANY 正式定位配置默认 `solid_icp_workers: 4`，避免重定位与持续跟踪争抢全部
+域控核心；需要复现实验时可用 `LIGHTNING_LM_SOLID_ICP_WORKERS=12` 显式覆盖。
 
 | 配置 | 成功率 | 累计处理 P95 | 累计检索/ICP P95 | 结论 |
 | --- | ---: | ---: | ---: | --- |

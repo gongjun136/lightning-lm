@@ -41,6 +41,14 @@ def main() -> int:
 
     relocalization["backend"] = args.backend
     solid["compute_backend"] = args.compute_backend
+    # Online deployment owns all hotspot worker limits in one section. Keep
+    # the legacy nested key out of newly frozen configs to avoid two sources
+    # of truth; older configs remain supported by the C++ loader.
+    solid.pop("icp_workers", None)
+    compute_budget = config.setdefault("compute_budget", {})
+    compute_budget.setdefault("lio_threads", 6)
+    compute_budget.setdefault("ndt_threads", 4)
+    compute_budget.setdefault("solid_icp_workers", 4)
     solid["debug_candidate_ids"] = args.debug_candidate_id
     if args.top_k is not None:
         if args.top_k <= 0:

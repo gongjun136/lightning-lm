@@ -19,6 +19,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "core/maps/map_frame.h"
+#include "utils/compute_budget.h"
 
 namespace lightning::loc {
 namespace {
@@ -275,6 +276,14 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             ReadOr<int>(solid, "icp_batch_size", options_.icp_batch_size);
         options_.icp_workers =
             ReadOr<int>(solid, "icp_workers", options_.icp_workers);
+        compute::ComputeBudget compute_budget;
+        compute_budget.solid_icp_workers = options_.icp_workers;
+        std::string compute_budget_error;
+        if (!compute::LoadComputeBudget(root, compute_budget, &compute_budget_error)) {
+            LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+            return false;
+        }
+        options_.icp_workers = compute_budget.solid_icp_workers;
         if (solid && solid["icp_yaw_hypothesis_offsets_deg"]) {
             options_.icp_yaw_hypothesis_offsets_deg =
                 solid["icp_yaw_hypothesis_offsets_deg"].as<std::vector<double>>();

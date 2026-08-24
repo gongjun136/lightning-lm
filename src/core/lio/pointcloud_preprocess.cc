@@ -1,5 +1,5 @@
 #include "pointcloud_preprocess.h"
-#include <execution>
+#include <cstdint>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include "common/constant.h"
 
@@ -124,23 +124,21 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     }
 
     std::vector<char> is_valid_pt(plsize, 0);
-    std::vector<std::size_t> index(plsize - 1);
-    for (std::size_t i = 0; i < plsize - 1; ++i) {
-        index[i] = i + 1;  // 从1开始
-    }
     // 因为Livox需要做重复点检测，而检测需要与前一个点比较，
     // 所以从索引1开始处理，避免访问cloud_full_[-1]造成数组越界。
-
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&](const std::size_t &i) {
+#pragma omp parallel for num_threads(parallel_threads_) schedule(static)
+    for (std::int64_t raw_index = 1; raw_index < static_cast<std::int64_t>(plsize);
+         ++raw_index) {
+        const std::size_t i = static_cast<std::size_t>(raw_index);
         if (i % point_filter_num_ != 0) {
-            return;
+            continue;
         }
 
         const auto &raw = msg->points[i];
         const auto &previous = msg->points[i - 1];
         const std::uint8_t return_type = raw.tag & 0x30;
         if (raw.line >= num_scans_ || (return_type != 0x10 && return_type != 0x00)) {
-            return;
+            continue;
         }
 
         cloud_full_[i].x = raw.x;
@@ -152,7 +150,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
         cloud_full_[i].time = raw.offset_time / double(1000000);
 
         if (cloud_full_[i].z < height_min_ || cloud_full_[i].z > height_max_) {
-            return;
+            continue;
         }
 
         const bool differs_from_previous = std::abs(raw.x - previous.x) > 1e-7 ||
@@ -164,7 +162,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
         if (differs_from_previous && range_squared > blind_ * blind_) {
             is_valid_pt[i] = 1;
         }
-    });
+    }
 
     for (std::size_t i = 1; i < plsize; i++) {
         if (is_valid_pt[i]) {

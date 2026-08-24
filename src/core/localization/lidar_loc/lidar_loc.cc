@@ -29,6 +29,7 @@
 #include "io/file_io.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/compute_budget.h"
 #include "utils/timer.h"
 
 namespace lightning::loc {
@@ -72,14 +73,14 @@ LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
     pcl_ndt_->setStepSize(0.1);
     pcl_ndt_->setTransformationEpsilon(0.01);
     pcl_ndt_->setMaximumIterations(20);
-    pcl_ndt_->setNumThreads(4);
+    pcl_ndt_->setNumThreads(ndt_threads_);
 
     pcl_ndt_rough_.reset(new NDTType());
     pcl_ndt_rough_->setResolution(5.0);
     pcl_ndt_rough_->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     pcl_ndt_rough_->setStepSize(0.1);
     pcl_ndt_rough_->setMaximumIterations(4);
-    pcl_ndt_rough_->setNumThreads(4);
+    pcl_ndt_rough_->setNumThreads(ndt_threads_);
 
     pcl_icp_.reset(new ICPType());
     pcl_icp_->setMaximumIterations(4);
@@ -101,6 +102,17 @@ LidarLoc::~LidarLoc() {
 bool LidarLoc::Init(const std::string& config_path) {
     YAML_IO yaml(config_path);
     const YAML::Node root = YAML::LoadFile(config_path);
+    compute::ComputeBudget compute_budget;
+    compute_budget.ndt_threads = ndt_threads_;
+    std::string compute_budget_error;
+    if (!compute::LoadComputeBudget(root, compute_budget, &compute_budget_error)) {
+        LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+        return false;
+    }
+    ndt_threads_ = compute_budget.ndt_threads;
+    pcl_ndt_->setNumThreads(ndt_threads_);
+    pcl_ndt_rough_->setNumThreads(ndt_threads_);
+    LOG(INFO) << "lidar localization compute budget: ndt_threads=" << ndt_threads_;
     map_frame::ExportOptions export_options;
     std::string map_frame_error;
     if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
@@ -1036,7 +1048,7 @@ bool LidarLoc::UpdateGlobalMap() {
     ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     ndt->setStepSize(0.1);
     ndt->setMaximumIterations(4);
-    ndt->setNumThreads(4);
+    ndt->setNumThreads(ndt_threads_);
 
     map_->SetNewTargetForNDT(ndt);
     ndt->initCompute();
@@ -1050,7 +1062,7 @@ bool LidarLoc::UpdateGlobalMap() {
         ndt_rough->setNeighborhoodSearchMethod(pclomp::DIRECT7);
         ndt_rough->setStepSize(0.1);
         ndt_rough->setMaximumIterations(4);
-        ndt_rough->setNumThreads(4);
+        ndt_rough->setNumThreads(ndt_threads_);
 
         map_->SetNewTargetForNDT(ndt_rough);
         // ndt_rough->initCompute();
