@@ -14,6 +14,7 @@
 #include "core/localization/global_relocalizer.h"
 #include "core/localization/localization_result.h"
 #include "core/maps/tiled_map.h"
+#include "utils/compute_profiling.h"
 
 #include "pclomp/ndt_omp_impl.hpp"
 
@@ -248,6 +249,18 @@ class LidarLoc {
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
                                     const Vec3d& map_min, const Vec3d& map_max,
                                     const MatchStats& stats);
+
+    struct FrameProfiling {
+        profiling::TimingSample assign_pose;
+        profiling::TimingSample map_load;
+        profiling::TimingSample ndt_align;
+        profiling::TimingSample icp_adjust;
+        profiling::TimingSample state_update;
+        profiling::TimingSample dynamic_map;
+        profiling::TimingSample recover_pose_io;
+        profiling::TimingSample relocalization_poll;
+        int ndt_calls = 0;
+    } frame_profiling_;
 
     // 成员变量  ==========================================================================
     Options options_;

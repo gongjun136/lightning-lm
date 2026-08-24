@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <utility>
@@ -216,7 +217,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 sensor.lidar_topic, lidar_qos,
                 [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                    Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar", true);
+                    Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar",
+                                    !profiling::ReduceNonessentialOverhead());
                 }));
         }
         LOG(INFO) << "online localization subscribed to " << cloud_subs_.size()
@@ -231,14 +233,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             RegisterLidarInput(0, cloud_topic_);
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 cloud_topic_, lidar_qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
-                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
+                                    !profiling::ReduceNonessentialOverhead());
                 }));
         }
         if (!livox_topic_.empty()) {
             RegisterLidarInput(0, livox_topic_);
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
                 livox_topic_, lidar_qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
-                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar", true);
+                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
+                                    !profiling::ReduceNonessentialOverhead());
                 });
         }
     }
@@ -357,9 +361,84 @@ void LocSystem::Spin() {
 }
 
 void LocSystem::Finish() {
-    if (!loc_ || finished_) return;
-    loc_->Finish();
+    if (finished_) return;
+    if (loc_) loc_->Finish();
+    ClosePublishedTrajectoryTum();
     finished_ = true;
+}
+
+bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
+    if (path.empty()) {
+        LOG(ERROR) << "published TUM path must not be empty";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(published_tum_mutex_);
+    if (published_tum_stream_.is_open()) {
+        LOG(ERROR) << "published TUM recorder is already open: " << published_tum_path_;
+        return false;
+    }
+
+    const std::filesystem::path output_path(path);
+    std::error_code directory_error;
+    if (output_path.has_parent_path()) {
+        std::filesystem::create_directories(output_path.parent_path(), directory_error);
+    }
+    if (directory_error) {
+        LOG(ERROR) << "failed to create published TUM directory for " << path
+                   << ": " << directory_error.message();
+        return false;
+    }
+
+    published_tum_stream_.open(output_path, std::ios::out | std::ios::trunc);
+    if (!published_tum_stream_) {
+        LOG(ERROR) << "failed to open published rear-axle TUM trajectory: " << path;
+        return false;
+    }
+    published_tum_path_ = path;
+    last_published_tum_timestamp_ = 0.0;
+    published_tum_pose_count_ = 0;
+    published_tum_write_error_count_ = 0;
+    published_tum_stream_ << "# timestamp tx ty tz qx qy qz qw\n";
+    published_tum_stream_.flush();
+    if (!published_tum_stream_) {
+        LOG(ERROR) << "failed to initialize published rear-axle TUM trajectory: " << path;
+        published_tum_stream_.close();
+        return false;
+    }
+    LOG(INFO) << "recording published rear-axle poses to " << path;
+    return true;
+}
+
+void LocSystem::RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& pose) {
+    std::lock_guard<std::mutex> lock(published_tum_mutex_);
+    if (!published_tum_stream_.is_open()) return;
+    if (!sany_output::WriteTumPoseLine(
+            published_tum_stream_, pose, last_published_tum_timestamp_)) {
+        ++published_tum_write_error_count_;
+        LOG_EVERY_N(ERROR, 100)
+            << "failed to append published rear-axle TUM pose: stamp="
+            << std::setprecision(16) << ToSec(pose.header.stamp);
+        return;
+    }
+    // Keep the file usable while localization is still running and after Ctrl-C.
+    published_tum_stream_.flush();
+    if (!published_tum_stream_) {
+        ++published_tum_write_error_count_;
+        LOG(ERROR) << "failed to flush published rear-axle TUM trajectory: "
+                   << published_tum_path_;
+        return;
+    }
+    ++published_tum_pose_count_;
+}
+
+void LocSystem::ClosePublishedTrajectoryTum() {
+    std::lock_guard<std::mutex> lock(published_tum_mutex_);
+    if (!published_tum_stream_.is_open()) return;
+    published_tum_stream_.flush();
+    published_tum_stream_.close();
+    LOG(INFO) << "wrote " << published_tum_pose_count_
+              << " published rear-axle poses to " << published_tum_path_
+              << ", write_errors=" << published_tum_write_error_count_;
 }
 
 bool LocSystem::SaveTrajectoryTum(const std::string& path) const {
@@ -410,7 +489,9 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
-    std::lock_guard<std::mutex> publish_lock(posres_publish_mutex_);
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_timer(profiling_enabled);
+    std::unique_lock<std::mutex> publish_lock(posres_publish_mutex_);
     const auto timestamp_decision = posres_timestamp_gate_.Observe(result.timestamp_);
     if (!timestamp_decision.accepted) {
         LOG(WARNING) << "drop non-monotonic PosRes candidate: timestamp="
@@ -429,19 +510,43 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         }
     }
     if (!pos_res_pub_ && !pose_pub_ && !vehicle_pose_pub_) return;
+
+    profiling::Stopwatch pose_transform_timer(profiling_enabled);
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
+    const auto pose_transform_timing = pose_transform_timer.Stop();
+
     // Publish the high-frequency signed body-forward estimator velocity. CAN
     // wheel speed remains an internal filter observation, but must not replace
     // the estimator state at the downstream output boundary.
+    profiling::Stopwatch message_build_timer(profiling_enabled);
     const double vehicle_speed = result.vel_b_.x();
     const auto position = sany_output::MakePosResMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
+    const auto pose = sany_output::MakePoseMessage(position);
+    const auto vehicle_pose = sany_output::MakeVehiclePoseMessage(position);
+    const auto message_build_timing = message_build_timer.Stop();
+
+    profiling::Stopwatch ros_publish_timer(profiling_enabled);
+    bool position_published = false;
     if (pos_res_pub_) {
         pos_res_pub_->publish(position);
+        position_published = true;
         last_posres_stamp_ = result.timestamp_;
+    }
+    if (pose_pub_) {
+        pose_pub_->publish(pose);
+        if (telemetry_) telemetry_->ObservePose(pose);
+    }
+    if (vehicle_pose_pub_) {
+        vehicle_pose_pub_->publish(vehicle_pose);
+    }
+    const auto ros_publish_timing = ros_publish_timer.Stop();
+
+    profiling::Stopwatch diagnostic_io_timer(profiling_enabled);
+    if (position_published && !profiling::ReduceNonessentialOverhead()) {
         // Keep this marker and key=value layout stable: it is intentionally
         // machine-readable so an exported run log can reproduce the exact
         // downstream /PosRes X/Y/speed time series without a recorded rosbag.
@@ -454,19 +559,33 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
                   << " speed_mps=" << position.f8vehiclespeed
                   << " speed_source=estimator_body_x";
     }
-    if (pose_pub_) {
-        const auto pose = sany_output::MakePoseMessage(position);
-        pose_pub_->publish(pose);
-        if (telemetry_) telemetry_->ObservePose(pose);
+    const auto diagnostic_io_timing = diagnostic_io_timer.Stop();
+
+    profiling::Stopwatch record_tum_timer(profiling_enabled);
+    if (position_published && !profiling::ReduceNonessentialOverhead()) {
+        RecordPublishedPoseTum(pose);
     }
-    if (vehicle_pose_pub_) {
-        vehicle_pose_pub_->publish(sany_output::MakeVehiclePoseMessage(position));
+    const auto record_tum_timing = record_tum_timer.Stop();
+    const auto outer_timing = outer_timer.Stop();
+    publish_lock.unlock();
+
+    if (profiling_enabled) {
+        const auto summary = output_timing_window_.Add(
+            {pose_transform_timing, message_build_timing, ros_publish_timing,
+             diagnostic_io_timing, record_tum_timing, outer_timing});
+        if (summary) {
+            LOG(INFO) << "COMPUTE_BENCH_SUMMARY module=high_frequency_output"
+                      << " timestamp_s=" << std::setprecision(16) << result.timestamp_
+                      << " position_published=" << (position_published ? 1 : 0)
+                      << " reduce_nonessential_overhead="
+                      << (profiling::ReduceNonessentialOverhead() ? 1 : 0)
+                      << " " << profiling::FormatTimingWindow(*summary);
+        }
     }
 }
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
                                       const MultiLidarFrameStats& stats, bool eligible) {
-    (void)stats;
     publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
     if (telemetry_) {
         telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
@@ -483,18 +602,50 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     const double begin_time = CloudStampSec(cloud);
     const double end_time = result.timestamp_ > 0.0 ? result.timestamp_ : begin_time;
     if (begin_time <= 0.0 || end_time <= 0.0) return;
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_timer(profiling_enabled);
     const SO3 initial_lidar_rotation = loc_->GetInitialLidarRotation();
-    inv_cloud_pub_->publish(sany_output::MakeCloudMessage(
+
+    profiling::Stopwatch inv_message_timer(profiling_enabled);
+    const auto inv_cloud_message = sany_output::MakeCloudMessage(
         cloud, begin_time, end_time,
         sany_output::MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body_),
-        rear_axle_frame_));
+        rear_axle_frame_);
+    const auto inv_message_timing = inv_message_timer.Stop();
+    profiling::Stopwatch inv_publish_timer(profiling_enabled);
+    inv_cloud_pub_->publish(inv_cloud_message);
+    const auto inv_publish_timing = inv_publish_timer.Stop();
+
     const bool publish_map_frame = map_cloud_decimator_.Tick();
+    bool map_frame_published = false;
+    profiling::TimingSample map_message_timing;
+    profiling::TimingSample map_publish_timing;
     if (publish_map_frame && publication_gate_.MapOutputsEnabled(end_time)) {
         // LidarLoc registers this exact cloud in the map frame and result.pose_ is T_map_lidar.
+        profiling::Stopwatch map_message_timer(profiling_enabled);
         const SE3 output_lidar_pose =
             sany_output::TransformPoseForOutput(result.pose_, fixed_map_transform_);
-        map_cloud_pub_->publish(
-            sany_output::MakeCloudMessage(cloud, begin_time, end_time, output_lidar_pose, map_frame_));
+        const auto map_cloud_message =
+            sany_output::MakeCloudMessage(cloud, begin_time, end_time, output_lidar_pose, map_frame_);
+        map_message_timing = map_message_timer.Stop();
+        profiling::Stopwatch map_publish_timer(profiling_enabled);
+        map_cloud_pub_->publish(map_cloud_message);
+        map_publish_timing = map_publish_timer.Stop();
+        map_frame_published = true;
+    }
+    const auto outer_timing = outer_timer.Stop();
+    if (profiling_enabled) {
+        LOG(INFO) << "COMPUTE_BENCH_FRAME module=cloud_publish"
+                  << " timestamp_s=" << std::setprecision(16) << end_time
+                  << " points=" << cloud->size()
+                  << " present_lidars=" << stats.present_lidar_ids.size()
+                  << " missing_lidars=" << stats.missing_lidar_ids.size()
+                  << " map_frame_published=" << (map_frame_published ? 1 : 0)
+                  << " " << profiling::FormatTimingSample("inv_message", inv_message_timing)
+                  << " " << profiling::FormatTimingSample("inv_publish", inv_publish_timing)
+                  << " " << profiling::FormatTimingSample("map_message", map_message_timing)
+                  << " " << profiling::FormatTimingSample("map_publish", map_publish_timing)
+                  << " " << profiling::FormatTimingSample("outer", outer_timing);
     }
 }
 

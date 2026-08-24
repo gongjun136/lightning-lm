@@ -7,6 +7,7 @@
 
 #include "common/options.h"
 #include "core/lightning_math.hpp"
+#include "utils/compute_profiling.h"
 
 namespace lightning::loc {
 
@@ -335,8 +336,11 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         }
     }
 
-    LOG(INFO) << std::setprecision(14) << std::fixed << "PGO received LidarLoc ["
-              << new_frame->lidar_loc_pose_.translation().transpose() << "], t=" << new_frame->timestamp_;
+    if (!profiling::ReduceNonessentialOverhead()) {
+        LOG(INFO) << std::setprecision(14) << std::fixed << "PGO received LidarLoc ["
+                  << new_frame->lidar_loc_pose_.translation().transpose()
+                  << "], t=" << new_frame->timestamp_;
+    }
     return ProcessPGOFrame(new_frame);
 }
 

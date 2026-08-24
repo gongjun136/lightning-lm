@@ -30,6 +30,7 @@ DEFINE_double(playback_rate, 1.0, "sensor-time playback rate used with --bag");
 DEFINE_int32(post_wait_seconds, 15, "drain time after embedded bag playback");
 DEFINE_string(output_tum, "", "optional PGO global-correction TUM trajectory");
 DEFINE_string(output_high_frequency_tum, "", "optional live high-frequency TUM trajectory");
+DEFINE_string(output_published_tum, "", "optional live published rear-axle TUM trajectory");
 
 namespace {
 
@@ -81,6 +82,11 @@ int main(int argc, char** argv) {
 
     if (!loc.Init(FLAGS_config, FLAGS_map)) {
         LOG(ERROR) << "failed to init loc";
+        return -1;
+    }
+    if (!FLAGS_output_published_tum.empty() &&
+        !loc.StartPublishedTrajectoryTum(FLAGS_output_published_tum)) {
+        LOG(ERROR) << "failed to start published rear-axle TUM recorder";
         return -1;
     }
 

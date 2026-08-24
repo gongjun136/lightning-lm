@@ -184,6 +184,24 @@ bash scripts/run_frontend_offline_batch.sh \
 
 ### 记录并可视化在线 `/PosRes`
 
+`run_sany_online_diagnostics.sh` 会在运行期间实时写入三份定位轨迹：
+
+* `results/trajectory_global.tum`：PGO 全局校正轨迹。
+
+* `results/trajectory_high_frequency.tum`：定位器内部的高频原始位姿。
+
+* `results/trajectory_published_rear_axle.tum`：经过后轴外参和固定地图变换后，实际发布到
+  `/PosRes` 的位姿。该文件逐条刷新，可供下游联调时实时读取。
+
+脚本默认设置 `LIGHTNING_LM_COMPUTE_PROFILE=1`，将 LIO、NDT/重定位、PGO、IMU/DR、ROS
+发布和诊断 I/O 等热点的墙钟/线程 CPU/进程 CPU 计时写入算法 stderr，并在退出后提取到
+`results/compute_profile.log`。高频链路按一秒窗口输出 count、mean、P50/P95/P99/max；LiDAR
+帧链路逐帧输出。`run_metadata.txt` 会记录开关值和计时记录条数。
+
+基线采集保持 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。只有在完成基线分析后，才建议
+将它设为 `1` 来跳过高频姿态文本日志、逐姿态 TUM 刷盘等非必要诊断开销；该开关不改变算法
+频率、队列或定位计算。
+
 构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
 
 ```bash

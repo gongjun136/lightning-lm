@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -116,6 +117,28 @@ int main() {
     const Quatd reconstructed(pose_message.pose.orientation.w, pose_message.pose.orientation.x,
                               pose_message.pose.orientation.y, pose_message.pose.orientation.z);
     Require(std::abs(std::abs(reconstructed.dot(quaternion)) - 1.0) < 1e-9, "PosRes PRY to pose quaternion");
+
+    std::ostringstream published_tum;
+    double last_published_tum_timestamp = 0.0;
+    Require(WriteTumPoseLine(published_tum, pose_message, last_published_tum_timestamp),
+            "published PoseStamped is written to TUM");
+    Require(Near(last_published_tum_timestamp, 123.5),
+            "published TUM tracks the last timestamp");
+    Require(!WriteTumPoseLine(published_tum, pose_message, last_published_tum_timestamp),
+            "published TUM rejects duplicate timestamps");
+    std::istringstream published_tum_input(published_tum.str());
+    double tum_stamp = 0.0;
+    double tum_x = 0.0, tum_y = 0.0, tum_z = 0.0;
+    double tum_qx = 0.0, tum_qy = 0.0, tum_qz = 0.0, tum_qw = 0.0;
+    published_tum_input >> tum_stamp >> tum_x >> tum_y >> tum_z >> tum_qx >> tum_qy >> tum_qz >> tum_qw;
+    Require(Near(tum_stamp, 123.5) && Near(tum_x, position.f8enh[0]) &&
+                Near(tum_y, position.f8enh[1]) && Near(tum_z, position.f8enh[2]),
+            "published TUM preserves the downstream timestamp and rear-axle position");
+    Require(Near(tum_qx, pose_message.pose.orientation.x) &&
+                Near(tum_qy, pose_message.pose.orientation.y) &&
+                Near(tum_qz, pose_message.pose.orientation.z) &&
+                Near(tum_qw, pose_message.pose.orientation.w),
+            "published TUM preserves the downstream quaternion");
 
     const auto vehicle_pose = MakeVehiclePoseMessage(position);
     Require(vehicle_pose.header == position.header,

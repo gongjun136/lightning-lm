@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <iosfwd>
 #include <mutex>
 #include <string>
 
@@ -48,6 +49,12 @@ geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double
 geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position);
 lightning::msg::VehiclePose MakeVehiclePoseMessage(
     const geosun_msgs::msg::PosRes& position);
+
+/// Append one strictly monotonic PoseStamped sample in TUM format. The caller
+/// owns stream lifetime and flushing.
+bool WriteTumPoseLine(std::ostream& stream,
+                      const geometry_msgs::msg::PoseStamped& pose,
+                      double& last_timestamp);
 
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
                                                const SE3& T_output_lidar, const std::string& frame_id);

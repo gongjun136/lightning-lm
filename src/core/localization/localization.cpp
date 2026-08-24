@@ -264,6 +264,8 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 }
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud, int lidar_id) {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     const double timestamp = cloud
                                  ? static_cast<double>(cloud->header.stamp.sec) +
@@ -277,7 +279,9 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
+    profiling::Stopwatch preprocess_profile_timer(profiling_enabled);
     preprocess_->Process(cloud, laser_cloud);
+    const profiling::TimingSample preprocess_timing = preprocess_profile_timer.Stop();
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
 
     bool process_lidar_odom = true;
@@ -287,17 +291,36 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
         lidar_odom_skip_cnt_ = (lidar_odom_skip_cnt_ + 1) % skip_num;
     }
     if (!process_lidar_odom) return;
+    profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
-        return;
+        input_lock.unlock();
+        lifecycle_lock.unlock();
+    } else {
+        input_lock.unlock();
+        lifecycle_lock.unlock();
+        LidarOdomProcCloud(laser_cloud, lidar_id);
     }
-    input_lock.unlock();
-    lifecycle_lock.unlock();
-    LidarOdomProcCloud(laser_cloud, lidar_id);
+    const profiling::TimingSample dispatch_timing = dispatch_profile_timer.Stop();
+    const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+    if (profiling_enabled) {
+        const auto summary =
+            lidar_input_timing_window_.Add({preprocess_timing, dispatch_timing, outer_timing});
+        if (summary) {
+            LOG(INFO) << "COMPUTE_BENCH_SUMMARY module=lidar_input source=pointcloud2"
+                      << " timestamp_s=" << timestamp << " lidar_id=" << lidar_id
+                      << " last_output_points=" << laser_cloud->size()
+                      << ' ' << profiling::FormatTimingWindow(*summary)
+                      << " sensor_queue_pending=" << sensor_proc_.PendingCount()
+                      << " sensor_queue_dropped_total=" << sensor_proc_.DroppedCount();
+        }
+    }
 }
 
 void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     const double timestamp = cloud
                                  ? static_cast<double>(cloud->header.stamp.sec) +
@@ -311,7 +334,9 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
 
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
+    profiling::Stopwatch preprocess_profile_timer(profiling_enabled);
     preprocess_->Process(cloud, laser_cloud);
+    const profiling::TimingSample preprocess_timing = preprocess_profile_timer.Stop();
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
 
     const int lidar_id = lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
@@ -322,14 +347,31 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
         lidar_odom_skip_cnt_ = (lidar_odom_skip_cnt_ + 1) % skip_num;
     }
     if (!process_lidar_odom) return;
+    profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
-        return;
+        input_lock.unlock();
+        lifecycle_lock.unlock();
+    } else {
+        input_lock.unlock();
+        lifecycle_lock.unlock();
+        LidarOdomProcCloud(laser_cloud, lidar_id);
     }
-    input_lock.unlock();
-    lifecycle_lock.unlock();
-    LidarOdomProcCloud(laser_cloud, lidar_id);
+    const profiling::TimingSample dispatch_timing = dispatch_profile_timer.Stop();
+    const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+    if (profiling_enabled) {
+        const auto summary =
+            lidar_input_timing_window_.Add({preprocess_timing, dispatch_timing, outer_timing});
+        if (summary) {
+            LOG(INFO) << "COMPUTE_BENCH_SUMMARY module=lidar_input source=livox_custom"
+                      << " timestamp_s=" << timestamp << " lidar_id=" << lidar_id
+                      << " last_output_points=" << laser_cloud->size()
+                      << ' ' << profiling::FormatTimingWindow(*summary)
+                      << " sensor_queue_pending=" << sensor_proc_.PendingCount()
+                      << " sensor_queue_dropped_total=" << sensor_proc_.DroppedCount();
+        }
+    }
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
@@ -730,12 +772,17 @@ void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed
 }
 
 void Localization::LidarLocProcCloud(const LidarLocInput& input) {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
     const CloudPtr& scan_undist = input.localization_cloud;
 
+    profiling::Stopwatch process_cloud_profile_timer(profiling_enabled);
     lidar_loc_->ProcessCloud(scan_undist);
+    const profiling::TimingSample process_cloud_timing = process_cloud_profile_timer.Stop();
 
+    profiling::Stopwatch result_profile_timer(profiling_enabled);
     auto res = lidar_loc_->GetLocalizationResult();
     ObserveLidarLocForStaticDetector(res);
     const auto match_stats = lidar_loc_->GetLastMatchStats();
@@ -757,11 +804,16 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
     lio_->SetLocalizationGood(res.valid_ && res.status_ == LocalizationStatus::GOOD);
+    const profiling::TimingSample result_timing = result_profile_timer.Stop();
+    profiling::Stopwatch cloud_callback_profile_timer(profiling_enabled);
     if (processed_cloud_callback_) {
         processed_cloud_callback_(input.publication_cloud, res, input.frame_stats,
                                   input.publication_eligible);
     }
+    const profiling::TimingSample cloud_callback_timing = cloud_callback_profile_timer.Stop();
+    profiling::Stopwatch pgo_profile_timer(profiling_enabled);
     pgo_->ProcessLidarLoc(res);
+    const profiling::TimingSample pgo_timing = pgo_profile_timer.Stop();
 
     if (ui_) {
         // Twi with Til, here pose means Twl, thus Til=I
@@ -771,8 +823,33 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     if (loc_state_callback_) {
         auto loc_state = std::make_shared<std_msgs::msg::Int32>();
         loc_state->data = static_cast<int>(res.status_);
-        LOG(INFO) << "loc_state: " << loc_state->data;
+        if (!profiling::ReduceNonessentialOverhead()) {
+            LOG(INFO) << "loc_state: " << loc_state->data;
+        }
         loc_state_callback_(*loc_state);
+    }
+    lifecycle_lock.unlock();
+
+    if (profiling_enabled) {
+        const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+        LOG(INFO) << "COMPUTE_BENCH_FRAME module=lidar_loc_pipeline"
+                  << " timestamp_s=" << res.timestamp_
+                  << " localization_points=" << (scan_undist ? scan_undist->size() : 0)
+                  << " publication_points="
+                  << (input.publication_cloud ? input.publication_cloud->size() : 0)
+                  << " status=" << static_cast<int>(res.status_)
+                  << " valid=" << res.valid_
+                  << " confidence=" << res.confidence_
+                  << " relocalization_attempted=" << match_stats.relocalization_attempted
+                  << " relocalization_accepted=" << match_stats.relocalization_accepted
+                  << ' ' << profiling::FormatTimingSample("process_cloud", process_cloud_timing)
+                  << ' ' << profiling::FormatTimingSample("result_bookkeeping", result_timing)
+                  << ' ' << profiling::FormatTimingSample("cloud_callback", cloud_callback_timing)
+                  << ' ' << profiling::FormatTimingSample("pgo", pgo_timing)
+                  << ' ' << profiling::FormatTimingSample("outer", outer_timing)
+                  << " queue_pending=" << lidar_loc_proc_cloud_.PendingCount()
+                  << " queue_dropped_total=" << lidar_loc_proc_cloud_.DroppedCount()
+                  << " queue_processed_total=" << lidar_loc_proc_cloud_.ProcessedCount();
     }
 
     // cv::Mat img(100, 100, CV_8UC3, cv::Scalar(255, 255, 255));
@@ -792,6 +869,8 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
 }
 
 void Localization::ProcessIMUData(IMUPtr imu) {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     UL lock(processing_mutex_);
 
@@ -812,17 +891,50 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         latest_input_stamp = runtime_stats_.latest_enqueued_sensor_stamp;
     }
     lio_->SetLatestInputTimestamp(latest_input_stamp);
+    profiling::Stopwatch lio_imu_profile_timer(profiling_enabled);
     lio_->ProcessIMU(imu);
+    const profiling::TimingSample lio_imu_timing = lio_imu_profile_timer.Stop();
 
     // A scan waiting for this IMU has an earlier timestamp than the current
     // IMU prediction. Publish the completed LIO output first so PGO observes
     // relative poses in sensor-time order.
+    profiling::Stopwatch drain_lio_profile_timer(profiling_enabled);
     DrainLioOutputs();
+    const profiling::TimingSample drain_lio_timing = drain_lio_profile_timer.Stop();
 
     /// 这里需要 IMU predict，否则没法process DR了
+    profiling::Stopwatch state_profile_timer(profiling_enabled);
     auto dr_state = lio_->GetIMUState();
 
+    profiling::TimingSample state_timing;
+    profiling::TimingSample lidar_loc_dr_timing;
+    profiling::TimingSample pgo_dr_timing;
+    const auto emit_imu_profile = [&](const char* phase) {
+        const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+        lock.unlock();
+        lifecycle_lock.unlock();
+        if (!profiling_enabled) return;
+        const auto summary = imu_dr_timing_window_.Add(
+            {lio_imu_timing, drain_lio_timing, state_timing, lidar_loc_dr_timing,
+             pgo_dr_timing, outer_timing});
+        if (summary) {
+            LOG(INFO) << "COMPUTE_BENCH_SUMMARY module=imu_dr_pipeline"
+                      << " phase=" << phase
+                      << " timestamp_s=" << (imu ? imu->timestamp : 0.0)
+                      << ' ' << profiling::FormatTimingWindow(*summary)
+                      << " sensor_queue_pending=" << sensor_proc_.PendingCount()
+                      << " sensor_queue_dropped_total=" << sensor_proc_.DroppedCount()
+                      << " lidar_loc_queue_pending=" << lidar_loc_proc_cloud_.PendingCount()
+                      << " lidar_loc_queue_dropped_total=" << lidar_loc_proc_cloud_.DroppedCount()
+                      << " output_queue_pending=" << high_frequency_output_proc_.PendingCount()
+                      << " output_queue_dropped_total=" << high_frequency_output_proc_.DroppedCount()
+                      << " output_queue_processed_total=" << high_frequency_output_proc_.ProcessedCount();
+        }
+    };
+
     if (!dr_state.pose_is_ok_) {
+        state_timing = state_profile_timer.Stop();
+        emit_imu_profile("waiting_for_pose");
         return;
     }
 
@@ -833,6 +945,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         // stationary bias into unbounded velocity and position drift.
         lio_->SetIMUVelocity(Vec3d::Zero());
     }
+    state_timing = state_profile_timer.Stop();
 
     /// 如果没有odm, 用lio替代DR
 
@@ -844,8 +957,13 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     // relocalization are based on real scans, not on a synthetic parking flag.
     auto lidar_loc_dr_state = dr_state;
     lidar_loc_dr_state.is_parking_ = false;
+    profiling::Stopwatch lidar_loc_dr_profile_timer(profiling_enabled);
     lidar_loc_->ProcessDR(lidar_loc_dr_state);
+    lidar_loc_dr_timing = lidar_loc_dr_profile_timer.Stop();
+    profiling::Stopwatch pgo_dr_profile_timer(profiling_enabled);
     pgo_->ProcessDR(dr_state);
+    pgo_dr_timing = pgo_dr_profile_timer.Stop();
+    emit_imu_profile("tracking");
 }
 
 // void Localization::ProcessOdomMsg(const nav_msgs::msg::Odometry::SharedPtr odom_msg) {

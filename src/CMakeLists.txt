@@ -41,6 +41,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/localization/localization.cpp
 
         utils/timer.cc
+        utils/compute_profiling.cc
         utils/pointcloud_utils.cc
 
         ui/pangolin_window.cc
@@ -135,6 +136,9 @@ if(BUILD_TESTING)
     add_executable(localization_input_locking_test test/localization_input_locking_test.cc)
     target_link_libraries(localization_input_locking_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(compute_profiling_test test/compute_profiling_test.cc)
+    target_link_libraries(compute_profiling_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_test(NAME eskf_update_velocity_gate_test COMMAND $<TARGET_FILE:eskf_update_velocity_gate_test>)
     add_test(NAME nav_state_eskf_model_test COMMAND $<TARGET_FILE:nav_state_eskf_model_test>)
     add_test(NAME multi_lidar_fusion_test COMMAND $<TARGET_FILE:multi_lidar_fusion_test>)
@@ -149,6 +153,7 @@ if(BUILD_TESTING)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
     add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)
     add_test(NAME localization_input_locking_test COMMAND $<TARGET_FILE:localization_input_locking_test>)
+    add_test(NAME compute_profiling_test COMMAND $<TARGET_FILE:compute_profiling_test>)
 endif()
 
 add_subdirectory(app)

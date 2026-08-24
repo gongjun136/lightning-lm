@@ -1,5 +1,7 @@
 #include "core/localization/solid_relocalizer.h"
 
+#include "utils/compute_profiling.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -525,6 +527,8 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     RelocalizationResult result;
     result.attempted = true;
     result.timestamp = query_frames_.back().timestamp;
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch search_profile_timer(profiling_enabled);
     const auto begin = std::chrono::steady_clock::now();
     std::vector<RelocalizationCandidate> hypotheses;
     std::vector<std::pair<int, pcl::PointCloud<pcl::PointXYZI>::Ptr>> query_clouds;
@@ -769,10 +773,22 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     result.search_time_ms = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - begin)
                                 .count();
+    const profiling::TimingSample search_timing = search_profile_timer.Stop();
+    const auto emit_profile = [&]() {
+        if (!profiling_enabled) return;
+        LOG(INFO) << "COMPUTE_BENCH_EVENT module=global_relocalization backend=solid"
+                  << " timestamp_s=" << result.timestamp
+                  << " query_frames=" << query_frames_.size()
+                  << " query_points=" << result.point_count
+                  << " candidates=" << result.candidates.size()
+                  << " accepted=" << result.accepted
+                  << ' ' << profiling::FormatTimingSample("search", search_timing);
+    };
     result.candidate_found = score_candidate_found;
     if (result.candidates.empty()) {
         result.reason = descriptor_generated ? "score_below_threshold"
                                              : "no_query_descriptor";
+        emit_profile();
         return result;
     }
     const auto& best = result.candidates.front();
@@ -784,6 +800,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     result.descriptor_count = best.descriptor_count;
     result.T_world_imu = best.T_world_imu;
     result.reason = "accepted";
+    emit_profile();
     return result;
 }
 

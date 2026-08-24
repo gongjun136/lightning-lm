@@ -6,6 +6,10 @@
 #include <tuple>
 #include <utility>
 
+#include <glog/logging.h>
+
+#include "utils/compute_profiling.h"
+
 namespace lightning {
 namespace {
 
@@ -581,6 +585,9 @@ bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
 void MultiLidarFrameAssembler::Flush() { PromoteReady(true); }
 
 FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) const {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_timer(profiling_enabled);
+    profiling::Stopwatch metadata_timer(profiling_enabled);
     FusedLidarFrame fused;
     fused.cloud.reset(new PointCloudType);
     auto& stats = fused.stats;
@@ -600,6 +607,8 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
     }
     stats.partial = !stats.missing_lidar_ids.empty();
     fused.cloud->reserve(total_points);
+    const profiling::TimingSample metadata_timing = metadata_timer.Stop();
+    profiling::Stopwatch transform_timer(profiling_enabled);
     double max_relative_ms = 0.0;
     for (const auto& [id, cloud] : frame.clouds) {
         if (!cloud) continue;
@@ -618,14 +627,30 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
             fused.cloud->push_back(transformed);
         }
     }
+    const profiling::TimingSample transform_timing = transform_timer.Stop();
+    profiling::Stopwatch sort_timer(profiling_enabled);
     std::sort(fused.cloud->points.begin(), fused.cloud->points.end(),
               [](const PointType& lhs, const PointType& rhs) { return lhs.time < rhs.time; });
+    const profiling::TimingSample sort_timing = sort_timer.Stop();
     fused.cloud->width = fused.cloud->size();
     fused.cloud->height = 1;
     fused.cloud->is_dense = false;
     fused.cloud->header.stamp = static_cast<std::uint64_t>(std::llround(stats.begin_time * 1e9));
     stats.merged_points = fused.cloud->size();
     stats.end_time = stats.begin_time + max_relative_ms * 1e-3;
+    if (profiling_enabled) {
+        const profiling::TimingSample outer_timing = outer_timer.Stop();
+        LOG(INFO) << "COMPUTE_BENCH_FRAME module=multi_lidar_assemble"
+                  << " timestamp_s=" << stats.begin_time
+                  << " lidar_count=" << stats.present_lidar_ids.size()
+                  << " missing_lidars=" << stats.missing_lidar_ids.size()
+                  << " input_points=" << total_points
+                  << " output_points=" << stats.merged_points
+                  << ' ' << profiling::FormatTimingSample("metadata_reserve", metadata_timing)
+                  << ' ' << profiling::FormatTimingSample("transform_merge", transform_timing)
+                  << ' ' << profiling::FormatTimingSample("time_sort", sort_timing)
+                  << ' ' << profiling::FormatTimingSample("outer", outer_timing);
+    }
     return fused;
 }
 

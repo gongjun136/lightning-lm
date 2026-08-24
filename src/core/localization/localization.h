@@ -15,6 +15,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/localization/localization_result.h"
 #include "core/system/async_message_process.h"
+#include "utils/compute_profiling.h"
 
 /// 预声明
 namespace lightning {
@@ -215,6 +216,10 @@ class Localization {
     // ROS/DDS publication must never hold the ordered sensor/PGO processing
     // path. Capacity one intentionally keeps only the newest live pose.
     sys::AsyncMessageProcess<LocalizationResult> high_frequency_output_proc_;
+    profiling::MultiStageTimingWindow lidar_input_timing_window_{
+        {"preprocess", "dispatch", "outer"}};
+    profiling::MultiStageTimingWindow imu_dr_timing_window_{
+        {"lio_imu", "drain_lio", "state_static", "lidar_loc_dr", "pgo_dr", "outer"}};
     int lidar_odom_skip_cnt_ = 0;
     double online_sensor_max_lag_sec_ = 0.0;
     double online_sensor_resume_lag_sec_ = 0.0;

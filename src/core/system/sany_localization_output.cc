@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
+#include <ostream>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <yaml-cpp/yaml.h>
@@ -165,6 +167,27 @@ lightning::msg::VehiclePose MakeVehiclePoseMessage(
     message.yaw = position.f8pry[2];
     message.speed = position.f8vehiclespeed;
     return message;
+}
+
+bool WriteTumPoseLine(std::ostream& stream,
+                      const geometry_msgs::msg::PoseStamped& pose,
+                      double& last_timestamp) {
+    const double timestamp = ToSec(pose.header.stamp);
+    const auto& position = pose.pose.position;
+    const auto& orientation = pose.pose.orientation;
+    const bool finite_pose = std::isfinite(position.x) && std::isfinite(position.y) &&
+                             std::isfinite(position.z) && std::isfinite(orientation.x) &&
+                             std::isfinite(orientation.y) && std::isfinite(orientation.z) &&
+                             std::isfinite(orientation.w);
+    if (!(timestamp > 0.0) || timestamp <= last_timestamp || !finite_pose) return false;
+
+    stream << std::fixed << std::setprecision(9) << timestamp << ' '
+           << std::setprecision(12) << position.x << ' ' << position.y << ' '
+           << position.z << ' ' << orientation.x << ' ' << orientation.y << ' '
+           << orientation.z << ' ' << orientation.w << '\n';
+    if (!stream.good()) return false;
+    last_timestamp = timestamp;
+    return true;
 }
 
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,

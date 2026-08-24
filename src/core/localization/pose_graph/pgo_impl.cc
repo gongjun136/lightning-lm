@@ -2,6 +2,7 @@
 #include "core/opti_algo/algo_select.h"
 #include "core/robust_kernel/robust_kernel_all.h"
 #include "core/lightning_math.hpp"
+#include "utils/compute_profiling.h"
 
 #include <boost/format.hpp>
 #include <algorithm>
@@ -102,6 +103,8 @@ bool PGOImpl::Reset() {
 
 bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     assert(pgo_frame != nullptr);
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
     if (last_frame_ != nullptr) {
         const double adjacent_dalta_t = pgo_frame->timestamp_ - last_frame_->timestamp_;
         if (adjacent_dalta_t < 0.) {
@@ -117,8 +120,10 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
 
     // 这里尝试设置相对位姿观测，如果上游（通常是激光定位）给了就跳过；
     // 如果 LidarOdom 和 DR 都设置失败，结束本函数。
+    profiling::Stopwatch assign_profile_timer(profiling_enabled);
     bool interp_lio_success = AssignLidarOdomPoseIfNeeded(pgo_frame);
     bool interp_dr_success = AssignDRPoseIfNeeded(pgo_frame);
+    const profiling::TimingSample assign_timing = assign_profile_timer.Stop();
     if (!interp_lio_success && !interp_dr_success) {
         LOG(ERROR) << "PGO received pgo frame, but assign relative pose failed!";
         return false;
@@ -140,19 +145,25 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     frames_.emplace_back(pgo_frame);
 
     /// 触发一次优化
+    profiling::Stopwatch optimize_profile_timer(profiling_enabled);
     RunOptimization();
+    const profiling::TimingSample optimize_timing = optimize_profile_timer.Stop();
 
     // // 根据优化更新一些状态量
     // UpdatePoseGraphState();
 
     // 输出结果信息
+    profiling::Stopwatch collect_profile_timer(profiling_enabled);
     CollectOptimizationStatistics();
+    const profiling::TimingSample collect_timing = collect_profile_timer.Stop();
 
     // 清空
     // CleanProblem();
 
     /// 需要时，删除一部分
+    profiling::Stopwatch slide_profile_timer(profiling_enabled);
     SlideWindowAdaptively();
+    const profiling::TimingSample slide_timing = slide_profile_timer.Stop();
 
     // Incremental replacement can reuse the evicted optimizer vertex id.
     // Rebuild the auxiliary lookup after the matching old frame is removed.
@@ -160,6 +171,18 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     for (const auto& frame : frames_) frames_by_id_[frame->frame_id_] = frame;
 
     last_frame_ = current_frame_;
+    if (profiling_enabled) {
+        const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+        LOG(INFO) << "COMPUTE_BENCH_EVENT module=pgo_optimization"
+                  << " timestamp_s=" << pgo_frame->timestamp_
+                  << " frame_id=" << pgo_frame->frame_id_
+                  << " window_frames=" << frames_.size()
+                  << ' ' << profiling::FormatTimingSample("assign_relative", assign_timing)
+                  << ' ' << profiling::FormatTimingSample("optimize", optimize_timing)
+                  << ' ' << profiling::FormatTimingSample("collect", collect_timing)
+                  << ' ' << profiling::FormatTimingSample("slide", slide_timing)
+                  << ' ' << profiling::FormatTimingSample("outer", outer_timing);
+    }
     return true;
 }
 

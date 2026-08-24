@@ -33,6 +33,8 @@ enable_posres_watchdog="${SANY_ENABLE_POSRES_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
+compute_profile="${LIGHTNING_LM_COMPUTE_PROFILE:-1}"
+reduce_nonessential_overhead="${LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD:-0}"
 
 usage() {
   cat <<'EOF'
@@ -60,6 +62,10 @@ Useful environment variables:
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
+  LIGHTNING_LM_COMPUTE_PROFILE
+                              Emit machine-readable compute timing: 1=yes, 0=no (default: 1)
+  LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD
+                              Skip high-rate diagnostic I/O: 1=yes, 0=no (default: 0)
 
 The run continues until localization exits or Ctrl-C. When the watchdog is
 enabled, a /PosRes loss only records a snapshot; it does not stop or restart
@@ -87,7 +93,13 @@ fi
   fail "SANY_ENABLE_POSRES_WATCHDOG must be 0 or 1."
 [[ "${enable_can_observation}" == "0" || "${enable_can_observation}" == "1" ]] ||
   fail "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1."
+[[ "${compute_profile}" == "0" || "${compute_profile}" == "1" ]] ||
+  fail "LIGHTNING_LM_COMPUTE_PROFILE must be 0 or 1."
+[[ "${reduce_nonessential_overhead}" == "0" || "${reduce_nonessential_overhead}" == "1" ]] ||
+  fail "LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD must be 0 or 1."
 export SANY_ENABLE_CAN_OBSERVATION="${enable_can_observation}"
+export LIGHTNING_LM_COMPUTE_PROFILE="${compute_profile}"
+export LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD="${reduce_nonessential_overhead}"
 if [[ "${record_bag}" == "1" ]]; then
   [[ -r "${qos_file}" ]] || fail "QoS file not found: ${qos_file}"
 fi
@@ -338,6 +350,21 @@ watchdog_pid=""
 tegrastats_pid=""
 algorithm_pid=""
 stopping=false
+profile_extracted=false
+extract_compute_profile() {
+  [[ "${profile_extracted}" == false ]] || return 0
+  local algorithm_log="${run_dir}/logs/run_loc_online.stderr.log"
+  [[ -f "${algorithm_log}" ]] || return 0
+  grep -F "COMPUTE_BENCH_" "${algorithm_log}" \
+    >"${run_dir}/results/compute_profile.log" || true
+  local profile_record_count
+  profile_record_count="$(wc -l <"${run_dir}/results/compute_profile.log")"
+  if [[ -f "${run_dir}/run_metadata.txt" ]]; then
+    echo "compute_profile_record_count=${profile_record_count}" \
+      >>"${run_dir}/run_metadata.txt"
+  fi
+  profile_extracted=true
+}
 stop_children() {
   [[ "${stopping}" == false ]] || return 0
   stopping=true
@@ -353,6 +380,7 @@ stop_children() {
   for pid in "${child_pids[@]}"; do
     wait "${pid}" 2>/dev/null || true
   done
+  extract_compute_profile
 }
 trap 'stop_children; exit 130' INT TERM
 trap stop_children EXIT
@@ -397,6 +425,8 @@ fi
   echo "enable_posres_watchdog=${enable_posres_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
   echo "enable_can_observation=${enable_can_observation}"
+  echo "compute_profile=${compute_profile}"
+  echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
   echo "wheel_speed_topic=${wheel_speed_topic}"
   echo "primary_imu_topic=${imu_topic}"
   echo "recorded_imu_topics=${record_imu_topics[*]:-<disabled>}"
@@ -451,6 +481,7 @@ algorithm_args=(
   --config="${config_path}"
   --output_tum="${run_dir}/results/trajectory_global.tum"
   --output_high_frequency_tum="${run_dir}/results/trajectory_high_frequency.tum"
+  --output_published_tum="${run_dir}/results/trajectory_published_rear_axle.tum"
 )
 if [[ -n "${map_path}" ]]; then
   algorithm_args+=(--map="${map_path}")
@@ -473,6 +504,7 @@ set -e
 
 echo "algorithm_exit_code=${algorithm_status}" >>"${run_dir}/run_metadata.txt"
 echo "finished_at=$(date --iso-8601=ns)" >>"${run_dir}/run_metadata.txt"
+extract_compute_profile
 stop_children
 trap - EXIT
 echo "Diagnostics saved to ${run_dir}"

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <map>
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -32,6 +33,7 @@
 #include "core/system/sany_localization_output.h"
 #include "lightning/msg/pipeline_diagnostics.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
+#include "utils/compute_profiling.h"
 
 namespace lightning {
 
@@ -70,12 +72,16 @@ class LocSystem {
     bool SaveTrajectoryTum(const std::string& path) const;
     /// Live high-frequency extrapolated output published to ROS.
     bool SaveHighFrequencyTrajectoryTum(const std::string& path) const;
+    /// Open a live TUM stream containing the final rear-axle pose sent on /PosRes.
+    bool StartPublishedTrajectoryTum(const std::string& path);
 
    private:
     void PublishLocalizationResult(const loc::LocalizationResult& result);
     void CaptureGlobalLocalizationResult(const loc::LocalizationResult& result);
     bool WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
                             const char* description) const;
+    void RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& pose);
+    void ClosePublishedTrajectoryTum();
     void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
                                const MultiLidarFrameStats& stats, bool eligible);
     void PublishHealthStatus();
@@ -123,6 +129,12 @@ class LocSystem {
     mutable std::mutex trajectory_mutex_;
     std::vector<NavState> localization_states_;
     std::vector<NavState> global_localization_states_;
+    mutable std::mutex published_tum_mutex_;
+    std::ofstream published_tum_stream_;
+    std::string published_tum_path_;
+    double last_published_tum_timestamp_ = 0.0;
+    std::uint64_t published_tum_pose_count_ = 0;
+    std::uint64_t published_tum_write_error_count_ = 0;
     bool finished_ = false;
     mutable std::mutex input_stats_mutex_;
     MaximumLagTimestampGate lidar_input_timestamp_gate_;
@@ -139,6 +151,9 @@ class LocSystem {
     MonotonicTimestampGate posres_timestamp_gate_;
     std::atomic_bool map_outputs_ever_enabled_{false};
     std::atomic_bool map_outputs_enabled_last_{false};
+    profiling::MultiStageTimingWindow output_timing_window_{
+        {"pose_transform", "message_build", "ros_publish", "diagnostic_io",
+         "record_tum", "outer"}};
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;

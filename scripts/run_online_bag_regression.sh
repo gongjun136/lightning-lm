@@ -92,6 +92,7 @@ if [[ "$embedded_playback" == "1" ]]; then
       "$exe_prefix/run_loc_online" --config "$config_path" --map "$map_path" --bag "$bag_path" \
       --playback_rate 1.0 --post_wait_seconds "$post_wait" --output_tum ./trajectory_loc_online.tum \
       --output_high_frequency_tum ./trajectory_loc_online_high_frequency.tum \
+      --output_published_tum ./trajectory_loc_online_published_rear_axle.tum \
       > logs/node.stdout.log 2> logs/node.stderr.log
   fi
   trap - EXIT INT TERM

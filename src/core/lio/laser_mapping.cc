@@ -14,6 +14,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ui/pangolin_window.h"
+#include "utils/compute_profiling.h"
 #include "wrapper/ros_utils.h"
 
 namespace lightning {
@@ -531,11 +532,15 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
 bool LaserMapping::Run() { return RunDetailed() == RunStatus::kOutput; }
 
 LaserMapping::RunStatus LaserMapping::RunDetailed() {
+    const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    profiling::Stopwatch outer_profile_timer(profiling_enabled);
+    profiling::Stopwatch sync_profile_timer(profiling_enabled);
     // SyncPackages()只在IMU已经覆盖当前Lidar扫描结束时间时才会成功。
     // 因此这里处理的可能不是最新进入缓存的点云，而是第一帧已经等到足够IMU的点云。
     if (!SyncPackages()) {
         return RunStatus::kNoData;
     }
+    const profiling::TimingSample sync_timing = sync_profile_timer.Stop();
 
     if (measures_.imu_.empty()) {
         ++pre_imu_drop_count_;
@@ -571,27 +576,63 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     double match_setup_ms = 0.0;
     double scan_match_ms = 0.0;
     double map_update_ms = 0.0;
+    profiling::TimingSample allocation_timing;
+    profiling::TimingSample imu_timing;
+    profiling::TimingSample self_filter_timing;
+    profiling::TimingSample selection_timing;
+    profiling::TimingSample downsample_timing;
+    profiling::TimingSample match_setup_timing;
+    profiling::TimingSample scan_match_timing;
+    profiling::TimingSample map_update_timing;
+    profiling::TimingSample adaptive_timing;
+    profiling::TimingSample post_imu_timing;
+    const auto emit_pipeline_benchmark = [&](const char* phase, std::size_t output_points) {
+        if (!profiling_enabled) return;
+        const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
+        LOG(INFO) << std::fixed << std::setprecision(6)
+                  << "COMPUTE_BENCH_FRAME module=lio_pipeline phase=" << phase
+                  << " timestamp_s=" << measures_.lidar_end_time_
+                  << " input_points=" << input_points
+                  << " output_points=" << output_points
+                  << " imu_samples=" << measures_.imu_.size()
+                  << " buffered_imu_samples=" << imu_buffer_.size()
+                  << " self_filter_removed=" << self_filter_removed
+                  << ' ' << profiling::FormatTimingSample("sync", sync_timing)
+                  << ' ' << profiling::FormatTimingSample("allocation", allocation_timing)
+                  << ' ' << profiling::FormatTimingSample("imu_undistort", imu_timing)
+                  << ' ' << profiling::FormatTimingSample("self_filter", self_filter_timing)
+                  << ' ' << profiling::FormatTimingSample("lidar_selection", selection_timing)
+                  << ' ' << profiling::FormatTimingSample("downsample", downsample_timing)
+                  << ' ' << profiling::FormatTimingSample("match_setup", match_setup_timing)
+                  << ' ' << profiling::FormatTimingSample("scan_match", scan_match_timing)
+                  << ' ' << profiling::FormatTimingSample("map_update", map_update_timing)
+                  << ' ' << profiling::FormatTimingSample("adaptive_control", adaptive_timing)
+                  << ' ' << profiling::FormatTimingSample("post_imu_catchup", post_imu_timing)
+                  << ' ' << profiling::FormatTimingSample("outer", outer_timing);
+    };
     const auto emit_benchmark = [&](const char *phase, std::size_t output_points) {
         const double core_update_ms =
             imu_undistort_ms + downsample_ms + match_setup_ms + scan_match_ms + map_update_ms;
-        LOG(INFO) << std::fixed << std::setprecision(6)
-                  << "LIO_BENCH_FRAME method=lightning_lm phase=" << phase
-                  << " timestamp_s=" << measures_.lidar_end_time_
-                  << " preprocess_ms=" << current_preprocess_ms_
-                  << " imu_undistort_ms=" << imu_undistort_ms
-                  << " downsample_ms=" << downsample_ms
-                  << " match_setup_ms=" << match_setup_ms
-                  << " scan_match_ms=" << scan_match_ms
-                  << " map_update_ms=" << map_update_ms
-                  << " core_update_ms=" << core_update_ms
-                  << " total_ms=" << (current_preprocess_ms_ + core_update_ms)
-                  << " input_points=" << input_points
-                  << " self_filter_removed=" << self_filter_removed
-                  << " output_points=" << output_points
-                  << " adaptive_step=" << adaptive_lidar_load_controller_.DegradationStep()
-                  << " selected_lidars=" << current_lidar_selection_.lidar_ids.size()
-                  << " point_stride=" << current_lidar_selection_.point_stride
-                  << " lidar_latency_ms=" << last_lidar_latency_sec_ * 1e3;
+        if (profiling_enabled) {
+            LOG(INFO) << std::fixed << std::setprecision(6)
+                      << "LIO_BENCH_FRAME method=lightning_lm phase=" << phase
+                      << " timestamp_s=" << measures_.lidar_end_time_
+                      << " preprocess_ms=" << current_preprocess_ms_
+                      << " imu_undistort_ms=" << imu_undistort_ms
+                      << " downsample_ms=" << downsample_ms
+                      << " match_setup_ms=" << match_setup_ms
+                      << " scan_match_ms=" << scan_match_ms
+                      << " map_update_ms=" << map_update_ms
+                      << " core_update_ms=" << core_update_ms
+                      << " total_ms=" << (current_preprocess_ms_ + core_update_ms)
+                      << " input_points=" << input_points
+                      << " self_filter_removed=" << self_filter_removed
+                      << " output_points=" << output_points
+                      << " adaptive_step=" << adaptive_lidar_load_controller_.DegradationStep()
+                      << " selected_lidars=" << current_lidar_selection_.lidar_ids.size()
+                      << " point_stride=" << current_lidar_selection_.point_stride
+                      << " lidar_latency_ms=" << last_lidar_latency_sec_ * 1e3;
+        }
         last_frame_processing_ms_ = current_preprocess_ms_ + core_update_ms;
     };
 
@@ -599,19 +640,26 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
     // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
     // Keyframes keep the previous cloud pointer, so allocate a new output instead of clearing it in place.
+    profiling::Stopwatch allocation_profile_timer(profiling_enabled);
     scan_undistort_full_.reset(new PointCloudType());
+    allocation_timing = allocation_profile_timer.Stop();
+    profiling::Stopwatch imu_profile_timer(profiling_enabled);
     const auto imu_start = BenchClock::now();
     p_imu_->Process(measures_, kf_, scan_undistort_full_);
     imu_undistort_ms = elapsed_ms(imu_start);
+    imu_timing = imu_profile_timer.Stop();
 
+    profiling::Stopwatch self_filter_profile_timer(profiling_enabled);
     if (scan_undistort_full_ && !scan_undistort_full_->empty() && self_point_filter_config_.enabled) {
         self_filter_removed = FilterSelfPoints(
             *scan_undistort_full_, self_point_filter_config_, GetInitialLidarRotation().matrix());
     }
+    self_filter_timing = self_filter_profile_timer.Stop();
 
     if (!scan_undistort_full_ || scan_undistort_full_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
         last_tracking_healthy_ = false;
+        emit_pipeline_benchmark("empty_scan", 0);
         return RunStatus::kConsumed;
     }
     last_lidar_latency_sec_ = latest_input_sensor_timestamp_ > 0.0
@@ -624,8 +672,10 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         LOG(WARNING) << "drop stale lidar correction before matching: age="
                      << last_lidar_latency_sec_ << " sec, hard_deadline="
                      << multi_lidar_config_.adaptive_load.hard_latency_sec;
+        emit_pipeline_benchmark("hard_stale", 0);
         return RunStatus::kConsumed;
     }
+    profiling::Stopwatch selection_profile_timer(profiling_enabled);
     if (multi_lidar_config_.enabled) {
         current_lidar_selection_ = adaptive_lidar_load_controller_.Select(current_lidar_stats_);
         scan_undistort_ = SelectLidarPoints(scan_undistort_full_, current_lidar_selection_);
@@ -633,6 +683,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
             last_tracking_healthy_ = false;
             LOG_EVERY_N(WARNING, 20)
                 << "skip lidar frame: available sources do not satisfy current localization minimum";
+            selection_timing = selection_profile_timer.Stop();
+            emit_pipeline_benchmark("empty_selection", 0);
             return RunStatus::kConsumed;
         }
     } else {
@@ -641,9 +693,11 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         current_lidar_selection_.point_stride = 1;
         current_lidar_selection_.degradation_step = 0;
     }
+    selection_timing = selection_profile_timer.Stop();
 
     // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
     if (flg_first_scan_) {
+        profiling::Stopwatch initial_map_profile_timer(profiling_enabled);
         const auto initial_map_start = BenchClock::now();
         LOG(INFO) << "first scan pts: " << scan_undistort_->size();
 
@@ -660,7 +714,9 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         flg_first_scan_ = false;
         last_tracking_healthy_ = true;
         map_update_ms = elapsed_ms(initial_map_start);
+        map_update_timing = initial_map_profile_timer.Stop();
         emit_benchmark("initialization", scan_undistort_->size());
+        emit_pipeline_benchmark("initialization", scan_undistort_->size());
         return RunStatus::kOutput;
     }
 
@@ -677,18 +733,22 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                 ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
             }
 
+            emit_pipeline_benchmark("fixed_skip", scan_undistort_->size());
             return RunStatus::kConsumed;
         }
     }
 
-    LOG(INFO) << "=============================";
-    LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14) << measures_.lidar_begin_time_
-              << ", end: " << measures_.lidar_end_time_;
+    if (!profiling::ReduceNonessentialOverhead()) {
+        LOG(INFO) << "=============================";
+        LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14)
+                  << measures_.lidar_begin_time_ << ", end: " << measures_.lidar_end_time_;
+    }
 
     // 初始若干秒内地图还很稀疏，ObsModel和MapIncremental会根据这个标志放宽部分逻辑。
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
 
     // 对当前去畸变点云降采样，后续匹配和建图都使用scan_down_lidar_，避免逐点处理原始大点云。
+    profiling::Stopwatch downsample_profile_timer(profiling_enabled);
     const auto downsample_start = BenchClock::now();
     if (multi_lidar_config_.enabled) {
         scan_down_lidar_ = DownsamplePreservingSource(scan_undistort_, filter_size_scan_);
@@ -721,15 +781,18 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         cur_pts = scan_down_lidar_->size();
     }
     downsample_ms = elapsed_ms(downsample_start);
+    downsample_timing = downsample_profile_timer.Stop();
 
     // 极端情况下仍然点数不足，继续匹配会让最近邻和平面拟合没有意义，直接跳过。
     if (cur_pts < 5) {
         LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", "
                      << scan_down_lidar_->size();
         last_tracking_healthy_ = false;
+        emit_pipeline_benchmark("too_few_downsampled", scan_down_lidar_->size());
         return RunStatus::kConsumed;
     }
 
+    profiling::Stopwatch match_setup_profile_timer(profiling_enabled);
     const auto match_setup_start = BenchClock::now();
     scan_down_world_->resize(cur_pts);
     nearest_points_.resize(cur_pts);
@@ -743,10 +806,12 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // 保存预测状态，后面用来统计Lidar观测更新带来的位姿修正量。
     auto pred_state = kf_.GetX();
     match_setup_ms = elapsed_ms(match_setup_start);
+    match_setup_timing = match_setup_profile_timer.Stop();
     // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
     // kf_.ChangeX(pred_state);
 
     // Lidar观测更新：ESKF内部会多次调用ObsModel()，构造点面/点点残差的HTH和HTr。
+    profiling::Stopwatch scan_match_profile_timer(profiling_enabled);
     const auto scan_match_start = BenchClock::now();
     kf_.Update(ESKF::ObsType::LIDAR, 1.0);
 
@@ -813,12 +878,15 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     }
 
     scan_match_ms = elapsed_ms(scan_match_start);
+    scan_match_timing = scan_match_profile_timer.Stop();
 
-    LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size() << " down " << cur_pts
-              << " Map grid num: " << ivox_->NumValidGrids() << " effect num : " << effect_feat_surf_ << ", "
-              << effect_feat_icp_;
-    LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
-              << ", ang: " << delta_rotation_deg;
+    if (!profiling::ReduceNonessentialOverhead()) {
+        LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size()
+                  << " down " << cur_pts << " Map grid num: " << ivox_->NumValidGrids()
+                  << " effect num : " << effect_feat_surf_ << ", " << effect_feat_icp_;
+        LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
+                  << ", ang: " << delta_rotation_deg;
+    }
     // LOG(INFO) << "P diag: " << kf_.GetP().diagonal().transpose();
 
     // Vec3d v_from_last = (state_point_.pos_ - last_state.pos_) / (state_point_.timestamp_ - last_state.timestamp_);
@@ -833,6 +901,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     /// keyframes - 智能关键帧创建决策
     // 只有创建关键帧时才会调用MakeKF()，而MakeKF()内部会把当前帧点云增量加入IVox地图。
     // 因此关键帧阈值也间接控制了局部地图更新频率。
+    profiling::Stopwatch map_update_profile_timer(profiling_enabled);
     const auto map_update_start = BenchClock::now();
     if (last_kf_ == nullptr) {
         MakeKF();  // 第一个关键帧：直接创建
@@ -853,7 +922,9 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         }
     }
     map_update_ms = elapsed_ms(map_update_start);
+    map_update_timing = map_update_profile_timer.Stop();
     emit_benchmark("tracking", scan_down_lidar_->size());
+    profiling::Stopwatch adaptive_profile_timer(profiling_enabled);
     const int old_adaptive_step = adaptive_lidar_load_controller_.DegradationStep();
     adaptive_lidar_load_controller_.Observe(
         last_frame_processing_ms_ * 1e-3, last_lidar_latency_sec_, last_tracking_healthy_);
@@ -864,9 +935,11 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                      << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
                      << ", tracking_healthy=" << last_tracking_healthy_;
     }
+    adaptive_timing = adaptive_profile_timer.Stop();
 
     // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
     // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
+    profiling::Stopwatch post_imu_profile_timer(profiling_enabled);
     kf_imu_ = kf_;
     {
         std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
@@ -884,16 +957,24 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
             t = imu->timestamp;
         }
     }
+    post_imu_timing = post_imu_profile_timer.Stop();
 
     if (ui_) {
         // 显示当前帧降采样点云和Lidar更新后的位姿。
         ui_->UpdateScan(scan_down_lidar_, state_point_.GetPose());
     }
 
-    LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
-              << state_point_.rot_.angleZ<double>() * 180 / M_PI << ", vel: " << state_point_.vel_.transpose()
-              << ", bg: " << state_point_.bg_.transpose() << ", ba: " << state_point_.ba_.transpose()
-              << ", grav: " << state_point_.grav_.transpose() << ", grav norm: " << state_point_.grav_.norm();
+    if (!profiling::ReduceNonessentialOverhead()) {
+        LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
+                  << state_point_.rot_.angleZ<double>() * 180 / M_PI
+                  << ", vel: " << state_point_.vel_.transpose()
+                  << ", bg: " << state_point_.bg_.transpose()
+                  << ", ba: " << state_point_.ba_.transpose()
+                  << ", grav: " << state_point_.grav_.transpose()
+                  << ", grav norm: " << state_point_.grav_.norm();
+    }
+
+    emit_pipeline_benchmark("tracking", scan_down_lidar_->size());
 
     return RunStatus::kOutput;
 }
@@ -954,10 +1035,13 @@ void LaserMapping::MakeKF() {
     kf->SetState(state_point_);
 
     // 记录关键帧创建信息
-    LOG(INFO) << "LIO: create kf " << kf->GetID() << ", state: " << state_point_.pos_.transpose()
-              << ", kf opt pose: " << kf->GetOptPose().translation().transpose()
-              << ", lio pose: " << kf->GetLIOPose().translation().transpose() << ", time: " << std::setprecision(14)
-              << state_point_.timestamp_;
+    if (!profiling::ReduceNonessentialOverhead()) {
+        LOG(INFO) << "LIO: create kf " << kf->GetID()
+                  << ", state: " << state_point_.pos_.transpose()
+                  << ", kf opt pose: " << kf->GetOptPose().translation().transpose()
+                  << ", lio pose: " << kf->GetLIOPose().translation().transpose()
+                  << ", time: " << std::setprecision(14) << state_point_.timestamp_;
+    }
 
     // 只在SLAM模式下保存关键帧到列表
     if (options_.is_in_slam_mode_) {
