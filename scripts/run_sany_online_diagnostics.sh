@@ -90,7 +90,8 @@ Useful environment variables:
   LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
   LIGHTNING_LM_SOLID_ICP_WORKERS
                               Override compute_budget.solid_icp_workers
-  LIGHTNING_LM_CPU_AFFINITY   Optional taskset CPU list for the algorithm, e.g. 0-9
+  LIGHTNING_LM_CPU_AFFINITY   Optional process-wide taskset CPU list, e.g. 0-9;
+                              it does not isolate LIO/NDT/SOLiD within the process
 
 The run continues until localization exits or Ctrl-C. When the watchdog is
 enabled, a /PosRes loss only records a snapshot; it does not stop or restart

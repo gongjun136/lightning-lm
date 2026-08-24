@@ -71,9 +71,11 @@ relocalization:
     icp_yaw_hypothesis_offsets_deg: [0.0, 90.0, -90.0, 180.0]
 ```
 
-该 12-worker 数值是独占算力下的历史实验条件。在线部署现由顶层 `compute_budget` 统一控制
-LIO、NDT 和 SOLiD，SANY 正式定位配置默认 `solid_icp_workers: 4`，避免重定位与持续跟踪争抢全部
-域控核心；需要复现实验时可用 `LIGHTNING_LM_SOLID_ICP_WORKERS=12` 显式覆盖。
+在线部署由顶层 `compute_budget` 统一控制 LIO、NDT 和 SOLiD。考虑到启动阶段允许短时高负载，
+且 12 workers 已通过 50 次回放验证，SANY 正式定位配置保持 `solid_icp_workers: 12`；需要做
+降载对照时可用 `LIGHTNING_LM_SOLID_ICP_WORKERS=8` 或 `4` 显式覆盖。进程级
+`LIGHTNING_LM_CPU_AFFINITY` 只限制整个定位进程可使用的 CPU，不会在同一进程内隔离 LIO、
+NDT 与 SOLiD；模块级隔离需要在线程创建处分别设置亲和性或调度优先级。
 
 | 配置 | 成功率 | 累计处理 P95 | 累计检索/ICP P95 | 结论 |
 | --- | ---: | ---: | ---: | --- |

@@ -7,13 +7,13 @@ common:
   livox_lidar_topic: ''
   imu_topic: /livox/imu_192_168_3_184
   benchmark_variant: relocalization_solid_cpu
-# Bounded pools prevent LIO, NDT and startup/loss relocalization from each
-# independently occupying every Orin CPU core. Environment overrides are
-# available for controlled 4/6-thread deployment comparisons.
+# Bounded pools prevent LIO and NDT from independently occupying every Orin
+# CPU core. Startup/loss relocalization keeps the validated 12-worker budget;
+# environment overrides remain available for controlled deployment comparisons.
 compute_budget:
   lio_threads: 6
   ndt_threads: 4
-  solid_icp_workers: 4
+  solid_icp_workers: 12
 multi_lidar:
   enabled: true
   primary_lidar_id: 0
