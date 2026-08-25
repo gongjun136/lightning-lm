@@ -12,8 +12,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <vector>
 
+#include "common/debug_event.h"
 #include "common/eigen_types.h"
 #include "common/measure_group.h"
 #include "common/options.h"
@@ -373,6 +375,11 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         if (dt > warn_dt) {
             LOG(WARNING) << "propagate over long imu interval: " << dt << ", lidar: " << pcl_beg_time << " -> "
                          << pcl_end_time;
+            std::ostringstream message;
+            message << "IMU propagation interval is too long: interval_sec=" << dt
+                    << ", warning_threshold_sec=" << warn_dt;
+            debug_event::EmitThrottled("long_imu_propagation_interval", message.str(),
+                                       std::chrono::seconds(1));
         }
         // Q_是ESKF预测用的过程噪声。这里把初始化阶段估计出的陀螺仪、加速度计和零偏噪声写进去。
         // TODO.在IMU初始化完成后，其实这个方差就不会变

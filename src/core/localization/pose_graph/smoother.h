@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <deque>
+#include <sstream>
 
+#include "common/debug_event.h"
 #include "common/eigen_types.h"
 #include "common/std_types.h"
 
@@ -32,6 +34,10 @@ class PoseSmoother {
         if (!std::isfinite(timestamp) || timestamp <= 0.0 || !std::isfinite(speed_mps)) {
             LOG(WARNING) << "smoother rejects invalid DR metadata: timestamp="
                          << timestamp << ", speed_mps=" << speed_mps;
+            debug_event::EmitThrottled(
+                "smoother_invalid_dr_metadata",
+                "Pose smoother rejected invalid DR metadata",
+                std::chrono::seconds(1));
             motion_effective_ = false;
             return false;
         }
@@ -52,6 +58,10 @@ class PoseSmoother {
                 }
                 LOG(WARNING) << "smoother rejects non-increasing DR timestamp: "
                              << timestamp << " <= " << dr_queue_.back().timestamp;
+                debug_event::EmitThrottled(
+                    "smoother_dr_timestamp_rollback",
+                    "Pose smoother rejected a non-increasing DR timestamp",
+                    std::chrono::seconds(1));
                 motion_effective_ = false;
                 return false;
             }
@@ -68,6 +78,11 @@ class PoseSmoother {
                 LOG(WARNING) << "smoother motion is too large: distance=" << distance
                              << ", dt=" << dt << ", speed_mps=" << reference_speed
                              << ", allowed_distance=" << allowed_distance;
+                std::ostringstream message;
+                message << "Pose smoother rejected a motion jump: distance_m="
+                        << distance << ", allowed_distance_m=" << allowed_distance;
+                debug_event::EmitThrottled("smoother_motion_jump", message.str(),
+                                           std::chrono::seconds(1));
                 dr_queue_.clear();
                 motion_effective_ = false;
                 return false;
@@ -117,6 +132,10 @@ class PoseSmoother {
                          << (output_pose_.translation() - pose.translation()).transpose()
                          << ", given: " << pose.translation().transpose()
                          << ", output:" << output_pose_.translation().transpose();
+            debug_event::EmitThrottled(
+                "smoother_output_jump",
+                "Pose smoother diverged from its target and was reset",
+                std::chrono::seconds(1));
             output_pose_ = pose;
             pose_queue_.clear();
             return;

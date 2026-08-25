@@ -4,7 +4,10 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 
+#include "common/debug_event.h"
 #include "common/options.h"
 #include "core/lightning_math.hpp"
 #include "laser_mapping.h"
@@ -558,14 +561,27 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     if (measures_.imu_.empty()) {
         ++pre_imu_drop_count_;
         last_tracking_healthy_ = false;
+        debug_event::ReportState("lio_missing_imu", true,
+                                 "LIO lidar frame has no covering IMU data",
+                                 "LIO IMU coverage recovered",
+                                 std::chrono::milliseconds(500));
         return RunStatus::kConsumed;
     }
+    debug_event::ReportState("lio_missing_imu", false,
+                             "LIO lidar frame has no covering IMU data",
+                             "LIO IMU coverage recovered",
+                             std::chrono::milliseconds(500));
 
     const double lidar_gap =
         last_lidar_time_ > 0.0 ? measures_.lidar_begin_time_ - last_lidar_time_ : 0.0;
     if (lidar_gap > 0.5) {
         LOG(ERROR) << "检测到雷达断流，时长：" << lidar_gap
                    << "; skip discontinuous frame and reset IMU integration bridge";
+        std::ostringstream message;
+        message << "Lidar stream interrupted for " << lidar_gap
+                << " sec; skipped frame and reset IMU integration";
+        debug_event::EmitThrottled("lidar_stream_interruption", message.str(),
+                                   std::chrono::seconds(1));
         auto safe_state = kf_.GetX();
         safe_state.timestamp_ = measures_.lidar_end_time_;
         kf_.ChangeX(safe_state);
@@ -672,9 +688,19 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     if (!scan_undistort_full_ || scan_undistort_full_->empty()) {
         LOG(WARNING) << "No point, skip this scan!";
         last_tracking_healthy_ = false;
+        if (!flg_first_scan_) {
+            debug_event::ReportState("lio_empty_scan", true,
+                                     "LIO produced an empty undistorted scan",
+                                     "LIO scan output recovered",
+                                     std::chrono::milliseconds(500));
+        }
         emit_pipeline_benchmark("empty_scan", 0);
         return RunStatus::kConsumed;
     }
+    debug_event::ReportState("lio_empty_scan", false,
+                             "LIO produced an empty undistorted scan",
+                             "LIO scan output recovered",
+                             std::chrono::milliseconds(500));
     last_lidar_latency_sec_ = latest_input_sensor_timestamp_ > 0.0
                                   ? std::max(0.0, latest_input_sensor_timestamp_ - measures_.lidar_end_time_)
                                   : 0.0;
@@ -685,9 +711,20 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         LOG(WARNING) << "drop stale lidar correction before matching: age="
                      << last_lidar_latency_sec_ << " sec, hard_deadline="
                      << multi_lidar_config_.adaptive_load.hard_latency_sec;
+        std::ostringstream message;
+        message << "Dropped stale lidar correction: age_sec="
+                << last_lidar_latency_sec_ << ", hard_deadline_sec="
+                << multi_lidar_config_.adaptive_load.hard_latency_sec;
+        debug_event::ReportState("stale_lidar_correction", true, message.str(),
+                                 "Lidar correction latency recovered",
+                                 std::chrono::milliseconds(500));
         emit_pipeline_benchmark("hard_stale", 0);
         return RunStatus::kConsumed;
     }
+    debug_event::ReportState("stale_lidar_correction", false,
+                             "Dropped stale lidar correction",
+                             "Lidar correction latency recovered",
+                             std::chrono::milliseconds(500));
     profiling::Stopwatch selection_profile_timer(profiling_enabled);
     if (multi_lidar_config_.enabled) {
         current_lidar_selection_ = adaptive_lidar_load_controller_.Select(current_lidar_stats_);
@@ -696,10 +733,20 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
             last_tracking_healthy_ = false;
             LOG_EVERY_N(WARNING, 20)
                 << "skip lidar frame: available sources do not satisfy current localization minimum";
+            debug_event::ReportState(
+                "insufficient_lidar_sources", true,
+                "Available lidar sources do not satisfy the localization minimum",
+                "Available lidar sources recovered",
+                std::chrono::milliseconds(500));
             selection_timing = selection_profile_timer.Stop();
             emit_pipeline_benchmark("empty_selection", 0);
             return RunStatus::kConsumed;
         }
+        debug_event::ReportState(
+            "insufficient_lidar_sources", false,
+            "Available lidar sources do not satisfy the localization minimum",
+            "Available lidar sources recovered",
+            std::chrono::milliseconds(500));
     } else {
         scan_undistort_ = scan_undistort_full_;
         current_lidar_selection_.lidar_ids = {0};
@@ -947,6 +994,14 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                      << new_adaptive_step << ", processing_ms=" << last_frame_processing_ms_
                      << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
                      << ", tracking_healthy=" << last_tracking_healthy_;
+        std::ostringstream message;
+        message << "Adaptive lidar load step changed: " << old_adaptive_step
+                << " -> " << new_adaptive_step
+                << ", processing_ms=" << last_frame_processing_ms_
+                << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
+                << ", tracking_healthy=" << last_tracking_healthy_;
+        debug_event::EmitThrottled("adaptive_lidar_load_step", message.str(),
+                                   std::chrono::seconds(1));
     }
     adaptive_timing = adaptive_profile_timer.Stop();
 
@@ -1099,6 +1154,12 @@ bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLid
     if (timestamp < last_timestamp_lidar_) {
         LOG(ERROR) << "fused lidar timestamp loop back, drop frame: " << std::setprecision(14) << timestamp
                    << " < " << last_timestamp_lidar_;
+        std::ostringstream message;
+        message << "Dropped fused lidar frame with timestamp rollback: timestamp="
+                << std::setprecision(14) << timestamp
+                << ", last_timestamp=" << last_timestamp_lidar_;
+        debug_event::EmitThrottled("fused_lidar_timestamp_rollback", message.str(),
+                                   std::chrono::seconds(1));
         return false;
     }
     lidar_buffer_.push_back(std::move(cloud));

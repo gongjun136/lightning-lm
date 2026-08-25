@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <sstream>
 
+#include "common/debug_event.h"
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/localization/localization.h"
 
@@ -181,10 +183,14 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         std::lock_guard<std::mutex> dispatch_lock(live_output_dispatch_mutex_);
         const auto timestamp_decision = live_output_timestamp_gate_.Observe(res.timestamp_);
         if (!timestamp_decision.accepted) {
-            LOG(WARNING) << "drop non-monotonic live localization output: timestamp="
-                         << std::setprecision(16) << res.timestamp_
-                         << ", last_accepted=" << timestamp_decision.reference_timestamp
-                         << ", rollback_sec=" << timestamp_decision.lag_sec;
+            std::ostringstream message;
+            message << "Dropped non-monotonic live localization output: timestamp="
+                    << std::setprecision(16) << res.timestamp_
+                    << ", last_accepted=" << timestamp_decision.reference_timestamp
+                    << ", rollback_sec=" << timestamp_decision.lag_sec;
+            LOG(WARNING) << message.str();
+            debug_event::EmitThrottled("live_output_timestamp_rollback", message.str(),
+                                       std::chrono::seconds(1));
             return;
         }
         // if (loc_result_.timestamp_ > 0) {
@@ -573,6 +579,13 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
         LOG(INFO) << "sensor queue lag recovered to " << lag_sec
                   << " sec; resuming lidar input";
     }
+    std::ostringstream overload_message;
+    overload_message << "Sensor queue overloaded: lag_sec=" << lag_sec
+                     << ", queue_pending=" << sensor_proc_.PendingCount();
+    debug_event::ReportState("sensor_queue_overload", throttled,
+                             overload_message.str(),
+                             "Sensor queue recovered from overload",
+                             std::chrono::seconds(2));
 
     if (throttled) {
         LOG_EVERY_N(WARNING, 100) << "sensor overload at lidar " << std::setprecision(14)
@@ -587,25 +600,39 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
 
 void Localization::ObserveSensorProcessed(double timestamp) {
     if (timestamp <= 0.0) return;
-    std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
-    constexpr double kSevereRollbackSec = 1.0;
-    const double rollback = runtime_stats_.latest_processed_sensor_stamp - timestamp;
-    if (runtime_stats_.latest_processed_sensor_stamp > 0.0 && rollback > kSevereRollbackSec) {
-        ++runtime_stats_.severe_timestamp_rollback_count;
-        runtime_stats_.worst_timestamp_rollback_sec =
-            std::max(runtime_stats_.worst_timestamp_rollback_sec, rollback);
+    bool severe_rollback = false;
+    double rollback = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
+        constexpr double kSevereRollbackSec = 1.0;
+        rollback = runtime_stats_.latest_processed_sensor_stamp - timestamp;
+        if (runtime_stats_.latest_processed_sensor_stamp > 0.0 &&
+            rollback > kSevereRollbackSec) {
+            severe_rollback = true;
+            ++runtime_stats_.severe_timestamp_rollback_count;
+            runtime_stats_.worst_timestamp_rollback_sec =
+                std::max(runtime_stats_.worst_timestamp_rollback_sec, rollback);
+        }
+        // ROS callbacks from multiple lidar topics may arrive out of timestamp
+        // order. Keep the processed frontier monotonic so a late stale message is
+        // still diagnosed as a rollback without manufacturing queue lag or
+        // retriggering overload admission control.
+        runtime_stats_.latest_processed_sensor_stamp =
+            std::max(runtime_stats_.latest_processed_sensor_stamp, timestamp);
+        runtime_stats_.current_sensor_lag_sec =
+            std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp -
+                              runtime_stats_.latest_processed_sensor_stamp);
+        runtime_stats_.max_sensor_lag_sec =
+            std::max(runtime_stats_.max_sensor_lag_sec,
+                     runtime_stats_.current_sensor_lag_sec);
     }
-    // ROS callbacks from multiple lidar topics may arrive out of timestamp
-    // order. Keep the processed frontier monotonic so a late stale message is
-    // still diagnosed as a rollback without manufacturing queue lag or
-    // retriggering overload admission control.
-    runtime_stats_.latest_processed_sensor_stamp =
-        std::max(runtime_stats_.latest_processed_sensor_stamp, timestamp);
-    runtime_stats_.current_sensor_lag_sec =
-        std::max(0.0, runtime_stats_.latest_enqueued_sensor_stamp -
-                          runtime_stats_.latest_processed_sensor_stamp);
-    runtime_stats_.max_sensor_lag_sec =
-        std::max(runtime_stats_.max_sensor_lag_sec, runtime_stats_.current_sensor_lag_sec);
+    if (severe_rollback) {
+        std::ostringstream message;
+        message << "Processed sensor timestamp rolled back severely: rollback_sec="
+                << rollback << ", timestamp=" << std::setprecision(16) << timestamp;
+        debug_event::EmitThrottled("processed_sensor_timestamp_rollback", message.str(),
+                                   std::chrono::seconds(1));
+    }
 }
 
 void Localization::ObserveLioForStaticDetector(const NavState& state) {
@@ -698,6 +725,15 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         LOG(INFO) << "CAN wheel-speed Header alignment recovered: CAN-IMU delta="
                   << std::setprecision(14) << wheel_imu_timestamp_delta << " sec";
     }
+    std::ostringstream wheel_message;
+    wheel_message << "CAN and IMU timestamps are misaligned: delta_sec="
+                  << std::setprecision(14) << wheel_imu_timestamp_delta
+                  << "; using IMU/LIO fallback";
+    debug_event::ReportState("can_imu_timestamp_mismatch",
+                             wheel_speed_observed_ && !fresh_wheel_speed,
+                             wheel_message.str(),
+                             "CAN and IMU timestamp alignment recovered",
+                             std::chrono::seconds(1));
     const bool wheel_reports_stationary =
         fresh_wheel_speed && std::abs(last_wheel_speed_mps_) < kEnterWheelSpeed;
 
@@ -881,6 +917,11 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     double this_imu_time = imu->timestamp;
     if (last_imu_time_ > 0 && this_imu_time < last_imu_time_) {
         LOG(WARNING) << "IMU 时间异常：" << this_imu_time << ", last: " << last_imu_time_;
+        std::ostringstream message;
+        message << "Rejected IMU timestamp rollback: rollback_sec="
+                << last_imu_time_ - this_imu_time;
+        debug_event::EmitThrottled("imu_timestamp_rollback", message.str(),
+                                   std::chrono::seconds(1));
     }
     last_imu_time_ = this_imu_time;
 
@@ -938,7 +979,13 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         return;
     }
 
-    if (UpdateImuStaticState(imu)) {
+    const bool static_hold_active = UpdateImuStaticState(imu);
+    debug_event::ReportState(
+        "imu_static_hold", static_hold_active,
+        "Entered conservative IMU static hold",
+        "Exited conservative IMU static hold",
+        std::chrono::seconds(1));
+    if (static_hold_active) {
         dr_state.is_parking_ = true;
         dr_state.SetVel(Vec3d::Zero());
         // Prevent the high-frequency ESKF prediction from integrating a

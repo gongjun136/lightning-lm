@@ -2,6 +2,7 @@
 #include "core/opti_algo/algo_select.h"
 #include "core/robust_kernel/robust_kernel_all.h"
 #include "core/lightning_math.hpp"
+#include "common/debug_event.h"
 #include "utils/compute_profiling.h"
 
 #include <boost/format.hpp>
@@ -126,6 +127,10 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     const profiling::TimingSample assign_timing = assign_profile_timer.Stop();
     if (!interp_lio_success && !interp_dr_success) {
         LOG(ERROR) << "PGO received pgo frame, but assign relative pose failed!";
+        debug_event::EmitThrottled(
+            "pgo_relative_pose_assignment_failed",
+            "PGO could not assign a relative pose to an optimization frame",
+            std::chrono::seconds(1));
         return false;
     }
 

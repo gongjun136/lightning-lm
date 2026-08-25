@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <string>
 
+#include "common/debug_event.h"
+
 namespace {
 
 using CovType = lightning::ESKF::CovType;
@@ -37,6 +39,10 @@ void LogCovarianceStats(const CovType& P, const char* stage) {
     Eigen::SelfAdjointEigenSolver<CovType> solver(sym, Eigen::EigenvaluesOnly);
     if (solver.info() != Eigen::Success) {
         LOG(WARNING) << "ESKF covariance eigensolver failed at " << stage;
+        lightning::debug_event::EmitThrottled(
+            "eskf_covariance_eigensolver_failed",
+            "ESKF covariance eigensolver failed",
+            std::chrono::seconds(1));
         return;
     }
 
@@ -84,6 +90,10 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
         for (int j = 0; j < P.cols(); ++j) {
             if (std::isnan(P(i, j)) || std::isinf(P(i, j))) {
                 LOG(WARNING) << "find nan or inf in P: " << P(i, j);
+                lightning::debug_event::EmitThrottled(
+                    "eskf_covariance_non_finite",
+                    "ESKF covariance contained a non-finite value and was repaired",
+                    std::chrono::seconds(1));
                 P(i, j) = (i == j) ? min_cov_diag : 0.0;
             }
         }
@@ -97,6 +107,10 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
     Eigen::SelfAdjointEigenSolver<CovType> solver(P);
     if (solver.info() != Eigen::Success) {
         LOG(WARNING) << "Failed to project ESKF covariance to PSD; reset to diagonal floor.";
+        lightning::debug_event::EmitThrottled(
+            "eskf_covariance_reset",
+            "ESKF covariance could not be projected to PSD and was reset",
+            std::chrono::seconds(1));
         P = CovType::Identity() * min_cov_diag;
         return;
     }
@@ -411,6 +425,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         Eigen::SelfAdjointEigenSolver<Mat6d> eigen_solver(HTH_sym);
         if (eigen_solver.info() != Eigen::Success) {
             LOG(WARNING) << "Failed to decompose ESKF observation information matrix.";
+            debug_event::EmitThrottled(
+                "eskf_observation_decomposition_failed",
+                "ESKF rejected an observation because information decomposition failed",
+                std::chrono::seconds(1));
             continue;
         }
 
@@ -442,6 +460,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         // results once the covariance became ill-conditioned on ARM.
         if (!std::isfinite(R) || R <= 0.0) {
             LOG(ERROR) << "Reject ESKF update with invalid observation variance: " << R;
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because observation variance was invalid",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -455,6 +477,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         Eigen::LDLT<CovType> prior_solver(P_sym);
         if (prior_solver.info() != Eigen::Success || !prior_solver.isPositive()) {
             LOG(ERROR) << "Reject ESKF update because prior covariance is not positive definite.";
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because prior covariance was not positive definite",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -465,6 +491,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         information = 0.5 * (information + information.transpose()).eval();
         if (!information.allFinite()) {
             LOG(ERROR) << "Reject ESKF update because information matrix is non-finite.";
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because the information matrix was non-finite",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -473,6 +503,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         Eigen::LDLT<CovType> posterior_solver(information);
         if (posterior_solver.info() != Eigen::Success || !posterior_solver.isPositive()) {
             LOG(ERROR) << "Reject ESKF update because posterior information is not positive definite.";
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because posterior information was not positive definite",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -489,6 +523,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         K_H.template leftCols<pose_obs_dim_>() = posterior_solver.solve(information_jacobian);
         if (!K_r.allFinite() || !K_H.allFinite()) {
             LOG(ERROR) << "Reject ESKF update because solved increment is non-finite.";
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because the solved increment was non-finite",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;
@@ -519,6 +557,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             if (bg_too_large || ba_too_large || grav_too_large) {
                 LOG(WARNING) << "Fallback lidar ESKF iter update to preserve inertial states, dbg: " << dbg
                              << ", dba: " << dba << ", dgrav: " << dgrav;
+                debug_event::EmitThrottled(
+                    "eskf_update_degraded",
+                    "ESKF degraded a lidar update to preserve inertial states",
+                    std::chrono::seconds(1));
                 return true;
             }
             return false;
@@ -568,6 +610,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             if (allow_lidar_pose_only_fallback && full_dx_velocity > options_.max_update_velocity_step_) {
                 LOG(WARNING) << "Fallback lidar ESKF iter update to pose-only, dvel: " << full_dx_velocity
                              << ", limit: " << options_.max_update_velocity_step_;
+                debug_event::EmitThrottled(
+                    "eskf_update_degraded",
+                    "ESKF degraded a lidar update to pose-only because the velocity step was too large",
+                    std::chrono::seconds(1));
                 apply_lidar_limited_update(true, true);
             }
         }
@@ -600,6 +646,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             (check_velocity_step && dx_velocity > options_.max_update_velocity_step_)) {
             LOG(ERROR) << "Reject ESKF iter update, dtrans: " << dx_translation << ", drot_deg: " << dx_rotation_deg
                        << ", dvel: " << dx_velocity;
+            debug_event::EmitThrottled(
+                "eskf_update_rejected",
+                "ESKF rejected an update because the state increment was too large",
+                std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
             return;

@@ -31,6 +31,7 @@
 #include "core/lio/multi_lidar_fusion.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
+#include "lightning/msg/debug_message.hpp"
 #include "lightning/msg/pipeline_diagnostics.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
 #include "utils/compute_profiling.h"
@@ -151,6 +152,7 @@ class LocSystem {
     MonotonicTimestampGate posres_timestamp_gate_;
     std::atomic_bool map_outputs_ever_enabled_{false};
     std::atomic_bool map_outputs_enabled_last_{false};
+    std::atomic_bool localization_ever_good_{false};
     profiling::MultiStageTimingWindow output_timing_window_{
         {"pose_transform", "message_build", "ros_publish", "diagnostic_io",
          "record_tum", "outer"}};
@@ -168,6 +170,7 @@ class LocSystem {
     rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;
     rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr loc_status_pub_ = nullptr;
     rclcpp::Publisher<lightning::msg::PipelineDiagnostics>::SharedPtr pipeline_diagnostics_pub_ = nullptr;
+    rclcpp::Publisher<lightning::msg::DebugMessage>::SharedPtr debug_message_pub_ = nullptr;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_ = nullptr;
     rclcpp::TimerBase::SharedPtr health_timer_ = nullptr;
     rclcpp::TimerBase::SharedPtr path_timer_ = nullptr;

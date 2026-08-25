@@ -3,6 +3,7 @@
 #include <execution>
 #include <filesystem>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 #include <pcl/common/transforms.h>
@@ -17,6 +18,7 @@
 #include "pclomp/voxel_grid_covariance_omp_impl.hpp"
 
 #include "core/localization/lidar_loc/lidar_loc.h"
+#include "common/debug_event.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -624,6 +626,11 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     }
     if (!result) return false;
 
+    if (!relocalization_event_active_) {
+        relocalization_event_active_ = true;
+        debug_event::Emit("Global relocalization started");
+    }
+
     MatchStats summary;
     summary.relocalization_attempted = result->attempted;
     summary.relocalization_candidate_found = result->candidate_found;
@@ -640,6 +647,13 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                      << ", points=" << result->point_count
                      << ", descriptors=" << result->descriptor_count
                      << ", search_ms=" << result->search_time_ms;
+        std::ostringstream message;
+        message << "Global relocalization search failed: reason=" << result->reason
+                << ", candidate=" << result->candidate_id
+                << ", score=" << result->score
+                << ", search_ms=" << result->search_time_ms;
+        debug_event::Emit(message.str());
+        relocalization_event_active_ = false;
         return false;
     }
 
@@ -797,6 +811,15 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                   << ", overlap=" << summary.map_overlap_ratio
                   << ", interval=" << confirmation_interval
                   << ", pose=" << current_abs_pose_.translation().transpose();
+        std::ostringstream message;
+        message << "Global relocalization accepted; PGO reset requested: candidate="
+                << candidate.candidate_id
+                << ", confirmations=" << accepted_confirmation_count
+                << ", retrieval_score=" << candidate.score
+                << ", ndt_confidence=" << ndt_confidence
+                << ", overlap=" << summary.map_overlap_ratio;
+        debug_event::Emit(message.str());
+        relocalization_event_active_ = false;
         return true;
     }
 
@@ -806,6 +829,12 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                  << "] all Top-K candidates rejected: count="
                  << result->candidates.size() << ", search_ms=" << result->search_time_ms;
+    std::ostringstream message;
+    message << "Global relocalization failed: all candidates were rejected; count="
+            << result->candidates.size()
+            << ", search_ms=" << result->search_time_ms;
+    debug_event::Emit(message.str());
+    relocalization_event_active_ = false;
     return false;
 }
 
@@ -1128,9 +1157,11 @@ void LidarLoc::RequestGlobalRelocalization() {
     match_fail_count_ = 0;
     last_match_stats_ = MatchStats{};
     pending_relocalization_ = PendingRelocalization{};
+    relocalization_event_active_ = true;
     if (global_relocalizer_) global_relocalizer_->ResetQuery();
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                  << "] requested";
+    debug_event::Emit("Global relocalization started");
 }
 
 void LidarLoc::Align(const CloudPtr& input) {
@@ -1148,13 +1179,23 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     /// 设置当前帧对应的rel_pose
     profiling::Stopwatch assign_pose_profile_timer(profiling::ComputeProfilingEnabled());
-    if (!AssignLOPose(current_time)) {
+    const bool lo_pose_assigned = AssignLOPose(current_time);
+    if (!lo_pose_assigned) {
         LOG(WARNING) << "assign LO pose failed";
     }
+    debug_event::ReportState("lidar_loc_lo_pose_assignment", !lo_pose_assigned,
+                             "Lidar localization could not assign an LO pose",
+                             "Lidar localization LO pose assignment recovered",
+                             std::chrono::milliseconds(500));
 
-    if (!AssignDRPose(current_time)) {
+    const bool dr_pose_assigned = AssignDRPose(current_time);
+    if (!dr_pose_assigned) {
         LOG(WARNING) << "assign DR pose failed";
     }
+    debug_event::ReportState("lidar_loc_dr_pose_assignment", !dr_pose_assigned,
+                             "Lidar localization could not assign a DR pose",
+                             "Lidar localization DR pose assignment recovered",
+                             std::chrono::milliseconds(500));
     frame_profiling_.assign_pose = assign_pose_profile_timer.Stop();
 
     /// 1. 车辆静止处理
@@ -1429,6 +1470,11 @@ void LidarLoc::Align(const CloudPtr& input) {
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] tracking lost after " << match_fail_count_
                          << " consecutive rejected NDT matches";
+            std::ostringstream message;
+            message << "Localization tracking lost after " << match_fail_count_
+                    << " consecutive rejected NDT matches; global relocalization started";
+            debug_event::Emit(message.str());
+            relocalization_event_active_ = true;
         }
     }
 

@@ -11,10 +11,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <sstream>
 #include <utility>
 #include <vector>
 
 #include "core/localization/localization.h"
+#include "common/debug_event.h"
 #include "io/yaml_io.h"
 #include "wrapper/ros_utils.h"
 #include "yaml-cpp/yaml.h"
@@ -44,6 +46,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     posres_timestamp_gate_.Reset();
     last_localization_stamp_ = 0.0;
     last_posres_stamp_ = 0.0;
+    localization_ever_good_ = false;
     loc::Localization::Options opt;
     opt.online_mode_ = true;
     loc_ = std::make_shared<loc::Localization>(opt);
@@ -282,6 +285,23 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         node_->create_publisher<lightning::msg::LocalizationStatus>("/localization/loc_status", health_qos);
     pipeline_diagnostics_pub_ = node_->create_publisher<lightning::msg::PipelineDiagnostics>(
         "/localization/pipeline_diagnostics", health_qos);
+    const auto debug_qos =
+        rclcpp::QoS(rclcpp::KeepLast(100)).reliable().durability_volatile();
+    debug_message_pub_ = node_->create_publisher<lightning::msg::DebugMessage>(
+        "/localization/debug_message", debug_qos);
+    const std::weak_ptr<rclcpp::Node> weak_node = node_;
+    const std::weak_ptr<rclcpp::Publisher<lightning::msg::DebugMessage>> weak_publisher =
+        debug_message_pub_;
+    debug_event::SetSink([weak_node, weak_publisher](const std::string& description) {
+        const auto node = weak_node.lock();
+        const auto publisher = weak_publisher.lock();
+        if (!node || !publisher) return;
+        lightning::msg::DebugMessage message;
+        message.header.stamp = node->now();
+        message.node_name = node->get_fully_qualified_name();
+        message.message = description;
+        publisher->publish(message);
+    });
     path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("/localization/path", path_qos);
     health_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100),
                                              [this]() { PublishHealthStatus(); });
@@ -307,10 +327,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         [this](const CloudPtr& cloud, const loc::LocalizationResult& result,
                const MultiLidarFrameStats& stats, bool eligible) {
             PublishProcessedCloud(cloud, result, stats, eligible);
-        });
-
+    });
 
     LOG(INFO) << "online loc node has been created.";
+    debug_event::Emit("Online localization node is ready");
     return true;
 }
 
@@ -362,6 +382,7 @@ void LocSystem::Spin() {
 
 void LocSystem::Finish() {
     if (finished_) return;
+    debug_event::ClearSink();
     if (loc_) loc_->Finish();
     ClosePublishedTrajectoryTum();
     finished_ = true;
@@ -494,10 +515,14 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     std::unique_lock<std::mutex> publish_lock(posres_publish_mutex_);
     const auto timestamp_decision = posres_timestamp_gate_.Observe(result.timestamp_);
     if (!timestamp_decision.accepted) {
-        LOG(WARNING) << "drop non-monotonic PosRes candidate: timestamp="
-                     << std::setprecision(16) << result.timestamp_
-                     << ", last_accepted=" << timestamp_decision.reference_timestamp
-                     << ", rollback_sec=" << timestamp_decision.lag_sec;
+        std::ostringstream message;
+        message << "Dropped non-monotonic PosRes output: timestamp="
+                << std::setprecision(16) << result.timestamp_
+                << ", last_accepted=" << timestamp_decision.reference_timestamp
+                << ", rollback_sec=" << timestamp_decision.lag_sec;
+        LOG(WARNING) << message.str();
+        debug_event::EmitThrottled("posres_timestamp_rollback", message.str(),
+                                   std::chrono::seconds(1));
         return;
     }
     last_localization_stamp_ = result.timestamp_;
@@ -590,6 +615,24 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     if (telemetry_) {
         telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
     }
+    if (result.status_ == loc::LocalizationStatus::GOOD) {
+        if (!localization_ever_good_.exchange(true)) {
+            debug_event::Emit("Localization is available for the first time");
+        }
+    }
+    if (localization_ever_good_.load()) {
+        debug_event::ReportState(
+            "localization_following_dr",
+            result.status_ == loc::LocalizationStatus::FOLLOWING_DR,
+            "Localization degraded; following dead reckoning",
+            "Localization recovered from dead reckoning",
+            std::chrono::milliseconds(300));
+    }
+    debug_event::ReportState(
+        "fused_cloud_suppressed", !eligible,
+        "Fused cloud publication suppressed because too few lidars are available",
+        "Fused cloud publication recovered",
+        std::chrono::milliseconds(500));
     if (!eligible) {
         ++cloud_publish_suppressed_count_;
         LOG_EVERY_N(WARNING, 10)
@@ -702,8 +745,10 @@ void LocSystem::PublishHealthStatus() {
     }
     const bool lidar_match_stale = publication_gate_.LidarMatchStale(latest_input_sensor_stamp);
     telemetry_->ObserveLocalizationStale(lidar_match_stale);
-    fault_status_pub_->publish(telemetry_->MakeFaultStatus(stamp));
-    loc_status_pub_->publish(telemetry_->MakeLocalizationStatus(stamp));
+    const auto fault_status = telemetry_->MakeFaultStatus(stamp);
+    const auto localization_status = telemetry_->MakeLocalizationStatus(stamp);
+    fault_status_pub_->publish(fault_status);
+    loc_status_pub_->publish(localization_status);
     const auto runtime = loc_->GetRuntimeStats();
     diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
     diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;
@@ -735,6 +780,18 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.consecutive_lost_frames = publication_gate_.ConsecutiveLostFrames();
     const bool map_outputs_enabled =
         publication_gate_.MapOutputsEnabled(latest_input_sensor_stamp);
+    const bool localization_lost =
+        fault_status.level == lightning::msg::FaultStatus::LEVEL_P0;
+    debug_event::ReportState(
+        "localization_lost", localization_lost,
+        "Localization lost; pose and map-frame outputs are disabled",
+        "Localization recovered after loss",
+        std::chrono::milliseconds(0));
+    debug_event::ReportState(
+        "lidar_match_stale", !localization_lost && lidar_match_stale,
+        "Localization map outputs paused because the lidar match is stale",
+        "Localization map outputs recovered after a fresh lidar match",
+        std::chrono::milliseconds(500));
     const bool map_outputs_were_enabled =
         map_outputs_enabled_last_.exchange(map_outputs_enabled);
     if (map_outputs_enabled) {
@@ -835,13 +892,17 @@ bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
         }
     }
     if (!timestamp_decision.accepted) {
-        LOG_EVERY_N(WARNING, 10)
-            << "drop stale/invalid lidar input before preprocessing: lidar_id="
-            << lidar_id << ", timestamp=" << std::setprecision(16) << sensor_stamp
-            << ", newest_timestamp=" << timestamp_decision.reference_timestamp
-            << ", lag_sec=" << timestamp_decision.lag_sec
-            << ", configured_max_lag_sec="
-            << online_lidar_input_max_timestamp_lag_sec_;
+        std::ostringstream message;
+        message << "Dropped stale or invalid lidar input: lidar_id="
+                << lidar_id << ", timestamp=" << std::setprecision(16) << sensor_stamp
+                << ", newest_timestamp=" << timestamp_decision.reference_timestamp
+                << ", lag_sec=" << timestamp_decision.lag_sec
+                << ", configured_max_lag_sec="
+                << online_lidar_input_max_timestamp_lag_sec_;
+        LOG_EVERY_N(WARNING, 10) << message.str();
+        debug_event::EmitThrottled(
+            "stale_lidar_input_" + std::to_string(lidar_id), message.str(),
+            std::chrono::seconds(1));
     }
     return timestamp_decision.accepted;
 }

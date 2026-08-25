@@ -358,6 +358,7 @@ class LidarLoc {
         double timestamp = 0.0;
         int confirmation_count = 0;
     } pending_relocalization_;
+    bool relocalization_event_active_ = false;
     double map_height_ = 0;
     int relocalization_debug_index_ = 0;
 
