@@ -210,6 +210,7 @@ set -u
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
 command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
 command -v python3 >/dev/null 2>&1 || fail "python3 is unavailable."
+command -v setsid >/dev/null 2>&1 || fail "setsid is unavailable."
 if [[ -n "${cpu_affinity}" ]]; then
   command -v taskset >/dev/null 2>&1 || fail "taskset is required by LIGHTNING_LM_CPU_AFFINITY."
   taskset --cpu-list "${cpu_affinity}" true >/dev/null 2>&1 ||
@@ -471,10 +472,11 @@ stop_children() {
   trap - INT TERM
   local pid
   # SIGINT lets rosbag2 and localization flush MCAP/trajectories. The shell
-  # watchdog and tegrastats do not own buffered artifacts, so TERM is safer
-  # and avoids background shells ignoring SIGINT.
-  [[ -z "${recorder_pid}" ]] || kill -INT "${recorder_pid}" 2>/dev/null || true
-  [[ -z "${algorithm_pid}" ]] || kill -INT "${algorithm_pid}" 2>/dev/null || true
+  # starts them in dedicated process groups so the Python ros2 launcher and
+  # its child both receive the signal. The watchdog and tegrastats do not own
+  # buffered artifacts, so TERM is safer for those helpers.
+  [[ -z "${recorder_pid}" ]] || kill -INT -- "-${recorder_pid}" 2>/dev/null || true
+  [[ -z "${algorithm_pid}" ]] || kill -INT -- "-${algorithm_pid}" 2>/dev/null || true
   [[ -z "${watchdog_pid}" ]] || kill -TERM "${watchdog_pid}" 2>/dev/null || true
   [[ -z "${tegrastats_pid}" ]] || kill -TERM "${tegrastats_pid}" 2>/dev/null || true
   for pid in "${child_pids[@]}"; do
@@ -546,7 +548,7 @@ git -C "${repo_dir}" status --short >"${run_dir}/git_status.txt" 2>&1 || true
 ros2 topic list -t >"${run_dir}/topics_at_start.txt" 2>&1 || true
 
 if [[ "${record_bag}" == "1" ]]; then
-  ros2 bag record \
+  setsid ros2 bag record \
     --storage mcap \
     --storage-preset-profile fastwrite \
     --max-cache-size 1073741824 \
@@ -605,7 +607,7 @@ if [[ -n "${cpu_affinity}" ]]; then
 fi
 algorithm_launcher+=(stdbuf -oL -eL)
 set +e
-"${algorithm_launcher[@]}" "${algorithm_args[@]}" \
+setsid "${algorithm_launcher[@]}" "${algorithm_args[@]}" \
   >"${run_dir}/logs/run_loc_online.stdout.log" \
   2>"${run_dir}/logs/run_loc_online.stderr.log" &
 algorithm_pid=$!
