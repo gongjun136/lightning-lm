@@ -79,7 +79,7 @@ Useful environment variables:
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
   LIGHTNING_LM_RUN_MODE       diagnostic or production (this entry defaults to diagnostic;
-                              run_sany_online_production.sh selects production)
+                              scripts/run.sh fixes the normal field preset)
   LIGHTNING_LM_COMPUTE_PROFILE
                               Emit machine-readable compute timing: 1=yes, 0=no
                               (mode default: diagnostic=1, production=0)
@@ -125,6 +125,36 @@ validate_optional_nice() {
   [[ -z "${value}" ]] && return 0
   [[ "${value}" =~ ^[0-9]+$ ]] || fail "${name} must be an integer in [0, 19]."
   ((value <= 19)) || fail "${name} must be an integer in [0, 19]."
+}
+
+cpu_list_is_subset() {
+  local subset="$1"
+  local superset="$2"
+  python3 - "${subset}" "${superset}" <<'PY'
+import sys
+
+
+def expand_cpu_list(text):
+    cpus = set()
+    for item in text.split(","):
+        bounds = [part.strip() for part in item.strip().split("-", 1)]
+        if not bounds[0] or len(bounds) > 2 or (len(bounds) == 2 and not bounds[1]):
+            raise ValueError("invalid CPU list")
+        first = int(bounds[0])
+        last = int(bounds[-1])
+        if first < 0 or last < first:
+            raise ValueError("invalid CPU range")
+        cpus.update(range(first, last + 1))
+    return cpus
+
+
+try:
+    requested = expand_cpu_list(sys.argv[1])
+    allowed = expand_cpu_list(sys.argv[2])
+except ValueError:
+    raise SystemExit(2)
+raise SystemExit(0 if requested.issubset(allowed) else 1)
+PY
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -190,6 +220,14 @@ if [[ -n "${LIGHTNING_LM_SOLID_CPU_AFFINITY:-}" ]]; then
     fail "taskset is required to validate LIGHTNING_LM_SOLID_CPU_AFFINITY."
   taskset --cpu-list "${LIGHTNING_LM_SOLID_CPU_AFFINITY}" true >/dev/null 2>&1 ||
     fail "LIGHTNING_LM_SOLID_CPU_AFFINITY is invalid or unavailable in this cpuset: ${LIGHTNING_LM_SOLID_CPU_AFFINITY}"
+  effective_process_affinity="${cpu_affinity}"
+  if [[ -z "${effective_process_affinity}" ]]; then
+    effective_process_affinity="$(taskset --cpu-list --pid $$ 2>/dev/null)" ||
+      fail "unable to read the launcher's effective CPU affinity."
+    effective_process_affinity="${effective_process_affinity##*: }"
+  fi
+  cpu_list_is_subset "${LIGHTNING_LM_SOLID_CPU_AFFINITY}" "${effective_process_affinity}" ||
+    fail "LIGHTNING_LM_SOLID_CPU_AFFINITY (${LIGHTNING_LM_SOLID_CPU_AFFINITY}) must be a subset of the effective process CPU affinity (${effective_process_affinity})."
 fi
 if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."

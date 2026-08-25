@@ -1526,15 +1526,13 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     /// 9. save for recover pose
     profiling::Stopwatch recover_pose_profile_timer(profiling::ComputeProfilingEnabled());
-    if (!profiling::ReduceNonessentialOverhead()) {
-        recover_pose_out_.open(options_.recover_pose_path_);
-        if (recover_pose_out_) {
-            Vec3d t = current_pose_esti.translation();
-            Quatd q = current_pose_esti.unit_quaternion();
-            recover_pose_out_ << t[0] << " " << t[1] << " " << t[2] << " " << q.x()
-                              << " " << q.y() << " " << q.z() << " " << q.w();
-            recover_pose_out_.close();
-        }
+    recover_pose_out_.open(options_.recover_pose_path_);
+    if (recover_pose_out_) {
+        Vec3d t = current_pose_esti.translation();
+        Quatd q = current_pose_esti.unit_quaternion();
+        recover_pose_out_ << t[0] << " " << t[1] << " " << t[2] << " " << q.x()
+                          << " " << q.y() << " " << q.z() << " " << q.w();
+        recover_pose_out_.close();
     }
     frame_profiling_.recover_pose_io = recover_pose_profile_timer.Stop();
 }

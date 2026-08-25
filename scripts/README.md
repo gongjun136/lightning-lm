@@ -199,14 +199,20 @@ bash scripts/run_frontend_offline_batch.sh \
 `results/compute_profile.log`。高频链路按一秒窗口输出 count、mean、P50/P95/P99/max；LiDAR
 帧链路逐帧输出。`run_metadata.txt` 会记录开关值和计时记录条数。
 
-基线采集保持 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。正式运行改用
-`run_sany_online_production.sh`：它默认关闭计算计时、关闭 bag，并跳过高频姿态文本日志、逐姿态
-TUM 刷盘等非必要诊断开销；这些开关不改变算法频率、队列或定位计算。
+现场统一从 `scripts/run.sh` 启动；地图、雷达布局、CAN、bag、诊断计时和减负模式都固定在这一个
+入口中，新增运行选项时直接更新该文件，不再增加模式包装脚本。当前现场基线关闭 bag，保持
+`LIGHTNING_LM_RUN_MODE=diagnostic`、`LIGHTNING_LM_COMPUTE_PROFILE=1` 和
+`LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。需要生产减负时也只修改该入口，将运行模式设为
+`production`，并按现场验证结果关闭计时、开启非必要开销裁剪。
+
+`LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` 只裁剪诊断输出；用于下次启动恢复的
+`recover_pose` 始终更新，不受该开关影响。
 
 SANY 正式定位 YAML 通过统一的 `compute_budget` 限制 LIO、NDT 和 SOLiD ICP 工作池。域控调参时可
 用 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、
 `LIGHTNING_LM_SOLID_ICP_WORKERS` 临时覆盖，并用 `LIGHTNING_LM_CPU_AFFINITY=0-9` 将算法限制到
-已为定位预留的核心。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写，脚本会在启动前校验。
+已为定位预留的核心。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写；脚本会在启动前
+校验 SOLiD worker 核心集合是定位进程有效核心集合的子集，不满足时拒绝启动。
 
 构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
 
