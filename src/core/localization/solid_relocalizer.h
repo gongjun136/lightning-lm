@@ -46,6 +46,8 @@ class SolidRelocalizer : public GlobalRelocalizer {
         double icp_max_translation_correction = 10.0;
         int icp_batch_size = 8;
         int icp_workers = 8;
+        int icp_worker_nice = 0;
+        std::vector<int> icp_cpu_affinity;
         std::vector<double> icp_yaw_hypothesis_offsets_deg = {0.0};
         std::string database_subdirectory = "solid_relocalization";
         std::string source_database_subdirectory = "btc_relocalization";

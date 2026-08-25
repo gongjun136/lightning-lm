@@ -44,6 +44,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/compute_budget.cc
         utils/compute_profiling.cc
         utils/pointcloud_utils.cc
+        utils/thread_scheduling.cc
 
         ui/pangolin_window.cc
         ui/pangolin_window_impl.cc
@@ -143,6 +144,9 @@ if(BUILD_TESTING)
     add_executable(compute_budget_test test/compute_budget_test.cc)
     target_link_libraries(compute_budget_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(thread_scheduling_test test/thread_scheduling_test.cc)
+    target_link_libraries(thread_scheduling_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(laser_mapping_projection_test test/laser_mapping_projection_test.cc)
     target_link_libraries(laser_mapping_projection_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -162,6 +166,7 @@ if(BUILD_TESTING)
     add_test(NAME localization_input_locking_test COMMAND $<TARGET_FILE:localization_input_locking_test>)
     add_test(NAME compute_profiling_test COMMAND $<TARGET_FILE:compute_profiling_test>)
     add_test(NAME compute_budget_test COMMAND $<TARGET_FILE:compute_budget_test>)
+    add_test(NAME thread_scheduling_test COMMAND $<TARGET_FILE:thread_scheduling_test>)
     add_test(NAME laser_mapping_projection_test COMMAND $<TARGET_FILE:laser_mapping_projection_test>)
 endif()
 

@@ -1,8 +1,10 @@
 #include "core/localization/solid_relocalizer.h"
 
 #include "utils/compute_profiling.h"
+#include "utils/thread_scheduling.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -284,6 +286,14 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             return false;
         }
         options_.icp_workers = compute_budget.solid_icp_workers;
+        options_.icp_worker_nice = compute_budget.solid_worker_nice;
+        std::string affinity_error;
+        if (!threading::ParseCpuList(compute_budget.solid_cpu_affinity,
+                                     options_.icp_cpu_affinity,
+                                     &affinity_error)) {
+            LOG(ERROR) << "invalid SOLiD worker CPU affinity: " << affinity_error;
+            return false;
+        }
         if (solid && solid["icp_yaw_hypothesis_offsets_deg"]) {
             options_.icp_yaw_hypothesis_offsets_deg =
                 solid["icp_yaw_hypothesis_offsets_deg"].as<std::vector<double>>();
@@ -385,6 +395,9 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                   << ", refine_with_icp=" << options_.refine_with_icp
                   << ", icp_batch_size=" << options_.icp_batch_size
                   << ", icp_workers=" << options_.icp_workers
+                  << ", icp_worker_nice=" << options_.icp_worker_nice
+                  << ", icp_cpu_affinity="
+                  << threading::FormatCpuList(options_.icp_cpu_affinity)
                   << ", icp_yaw_hypotheses="
                   << options_.icp_yaw_hypothesis_offsets_deg.size()
                   << ", compute_backend=cpu, path=" << manifest_path;
@@ -718,8 +731,18 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             icp_tasks.size(), static_cast<std::size_t>(options_.icp_workers));
         std::vector<std::future<void>> workers;
         workers.reserve(worker_count);
+        std::atomic<bool> scheduling_warning_logged{false};
         for (std::size_t worker = 0; worker < worker_count; ++worker) {
             workers.emplace_back(std::async(std::launch::async, [&, worker]() {
+                std::string scheduling_error;
+                if (!threading::ConfigureCurrentThread(
+                        "solid_icp_" + std::to_string(worker),
+                        options_.icp_worker_nice, options_.icp_cpu_affinity,
+                        &scheduling_error) &&
+                    !scheduling_warning_logged.exchange(true)) {
+                    LOG(WARNING) << "failed to apply SOLiD worker scheduling policy: "
+                                 << scheduling_error;
+                }
                 for (std::size_t index = worker; index < icp_tasks.size();
                      index += worker_count) {
                     auto candidate = icp_tasks[index].candidate;

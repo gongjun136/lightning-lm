@@ -14,6 +14,9 @@ compute_budget:
   lio_threads: 6
   ndt_threads: 4
   solid_icp_workers: 12
+  # SOLiD still uses every idle core, but yields to normal-priority LIO/NDT
+  # threads when startup/loss relocalization overlaps continuous tracking.
+  solid_worker_nice: 5
 multi_lidar:
   enabled: true
   primary_lidar_id: 0

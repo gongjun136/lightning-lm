@@ -90,6 +90,11 @@ Useful environment variables:
   LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
   LIGHTNING_LM_SOLID_ICP_WORKERS
                               Override compute_budget.solid_icp_workers
+  LIGHTNING_LM_SOLID_WORKER_NICE
+                              Override SOLiD worker nice floor: 0=unchanged, 1-19=yield
+  LIGHTNING_LM_SOLID_CPU_AFFINITY
+                              Optional per-SOLiD-worker CPU list, e.g. 1-5,7;
+                              must be a subset of the process-wide CPU affinity
   LIGHTNING_LM_CPU_AFFINITY   Optional process-wide taskset CPU list, e.g. 0-9;
                               it does not isolate LIO/NDT/SOLiD within the process
 
@@ -114,6 +119,14 @@ validate_optional_thread_count() {
   ((value <= 128)) || fail "${name} must be an integer in [1, 128]."
 }
 
+validate_optional_nice() {
+  local name="$1"
+  local value="${!name:-}"
+  [[ -z "${value}" ]] && return 0
+  [[ "${value}" =~ ^[0-9]+$ ]] || fail "${name} must be an integer in [0, 19]."
+  ((value <= 19)) || fail "${name} must be an integer in [0, 19]."
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
@@ -134,6 +147,7 @@ fi
 validate_optional_thread_count LIGHTNING_LM_LIO_THREADS
 validate_optional_thread_count LIGHTNING_LM_NDT_THREADS
 validate_optional_thread_count LIGHTNING_LM_SOLID_ICP_WORKERS
+validate_optional_nice LIGHTNING_LM_SOLID_WORKER_NICE
 export SANY_ENABLE_CAN_OBSERVATION="${enable_can_observation}"
 export LIGHTNING_LM_COMPUTE_PROFILE="${compute_profile}"
 export LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD="${reduce_nonessential_overhead}"
@@ -170,6 +184,12 @@ if [[ -n "${cpu_affinity}" ]]; then
   command -v taskset >/dev/null 2>&1 || fail "taskset is required by LIGHTNING_LM_CPU_AFFINITY."
   taskset --cpu-list "${cpu_affinity}" true >/dev/null 2>&1 ||
     fail "LIGHTNING_LM_CPU_AFFINITY is invalid or unavailable in this cpuset: ${cpu_affinity}"
+fi
+if [[ -n "${LIGHTNING_LM_SOLID_CPU_AFFINITY:-}" ]]; then
+  command -v taskset >/dev/null 2>&1 ||
+    fail "taskset is required to validate LIGHTNING_LM_SOLID_CPU_AFFINITY."
+  taskset --cpu-list "${LIGHTNING_LM_SOLID_CPU_AFFINITY}" true >/dev/null 2>&1 ||
+    fail "LIGHTNING_LM_SOLID_CPU_AFFINITY is invalid or unavailable in this cpuset: ${LIGHTNING_LM_SOLID_CPU_AFFINITY}"
 fi
 if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
@@ -473,6 +493,8 @@ fi
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
   echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
   echo "solid_icp_workers_override=${LIGHTNING_LM_SOLID_ICP_WORKERS:-<from-config>}"
+  echo "solid_worker_nice_override=${LIGHTNING_LM_SOLID_WORKER_NICE:-<from-config>}"
+  echo "solid_cpu_affinity_override=${LIGHTNING_LM_SOLID_CPU_AFFINITY:-<from-config>}"
   echo "cpu_affinity=${cpu_affinity:-<unrestricted>}"
   echo "wheel_speed_topic=${wheel_speed_topic}"
   echo "primary_imu_topic=${imu_topic}"

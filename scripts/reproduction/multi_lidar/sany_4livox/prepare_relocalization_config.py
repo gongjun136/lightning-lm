@@ -49,6 +49,7 @@ def main() -> int:
     compute_budget.setdefault("lio_threads", 6)
     compute_budget.setdefault("ndt_threads", 4)
     compute_budget.setdefault("solid_icp_workers", 12)
+    compute_budget.setdefault("solid_worker_nice", 5)
     solid["debug_candidate_ids"] = args.debug_candidate_id
     if args.top_k is not None:
         if args.top_k <= 0:

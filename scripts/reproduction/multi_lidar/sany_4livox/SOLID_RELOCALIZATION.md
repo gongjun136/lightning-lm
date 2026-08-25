@@ -73,9 +73,14 @@ relocalization:
 
 在线部署由顶层 `compute_budget` 统一控制 LIO、NDT 和 SOLiD。考虑到启动阶段允许短时高负载，
 且 12 workers 已通过 50 次回放验证，SANY 正式定位配置保持 `solid_icp_workers: 12`；需要做
-降载对照时可用 `LIGHTNING_LM_SOLID_ICP_WORKERS=8` 或 `4` 显式覆盖。进程级
+降载对照时可用 `LIGHTNING_LM_SOLID_ICP_WORKERS=8` 或 `4` 显式覆盖。正式配置同时设置
+`solid_worker_nice: 5`：SOLiD worker 空闲时仍可占用全部可用核心，但在与默认优先级的 LIO、
+NDT 竞争时主动让行。可用 `LIGHTNING_LM_SOLID_WORKER_NICE=0` 关闭该策略，或通过
+`LIGHTNING_LM_SOLID_CPU_AFFINITY=1-7` 做可控的 worker 级硬绑核实验；CPU 列表必须是进程
+级 affinity 的子集。进程级
 `LIGHTNING_LM_CPU_AFFINITY` 只限制整个定位进程可使用的 CPU，不会在同一进程内隔离 LIO、
-NDT 与 SOLiD；模块级隔离需要在线程创建处分别设置亲和性或调度优先级。
+NDT 与 SOLiD。当前已为 SOLiD worker 提供单独的亲和性与调度优先级；若要把 LIO、NDT 也
+分别硬绑到不同核心，还需要在各自的线程池创建处继续设置策略。
 
 | 配置 | 成功率 | 累计处理 P95 | 累计检索/ICP P95 | 结论 |
 | --- | ---: | ---: | ---: | --- |
