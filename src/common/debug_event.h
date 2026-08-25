@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace lightning::debug_event {
@@ -93,8 +94,8 @@ inline void EmitThrottled(const std::string& key, const std::string& message,
 /// Publish only after an active/recovered state remains stable for debounce.
 /// The first normal observation establishes the baseline without publishing.
 inline void ReportState(const std::string& key, bool active,
-                        const std::string& active_message,
-                        const std::string& recovery_message,
+                        std::string_view active_message,
+                        std::string_view recovery_message,
                         std::chrono::milliseconds debounce) {
     Sink sink;
     std::string message;
@@ -103,15 +104,17 @@ inline void ReportState(const std::string& key, bool active,
         const auto now = detail::Clock::now();
         std::lock_guard<std::mutex> lock(dispatcher.mutex);
         auto& state = dispatcher.transitions[key];
-        state.active_message = active_message;
-        state.recovery_message = recovery_message;
 
         if (!state.initialized) {
+            state.active_message.assign(active_message.begin(), active_message.end());
+            state.recovery_message.assign(recovery_message.begin(), recovery_message.end());
             state.initialized = true;
             state.pending = active;
             state.pending_since = now;
             if (!active) return;
         } else if (state.pending != active) {
+            state.active_message.assign(active_message.begin(), active_message.end());
+            state.recovery_message.assign(recovery_message.begin(), recovery_message.end());
             state.pending = active;
             state.pending_since = now;
         }

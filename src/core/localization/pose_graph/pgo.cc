@@ -462,13 +462,8 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     } else {
         imu_interruption_tag_ = false;
     }
-    std::ostringstream interruption_message;
-    interruption_message << "DR input is stale; possible IMU interruption, age_sec="
-                         << (dr_pose_queue.empty()
-                                 ? -1.0
-                                 : latest_time - dr_pose_queue.back().timestamp_);
     debug_event::ReportState("pgo_dr_interruption", imu_interruption_tag_,
-                             interruption_message.str(),
+                             "DR input is stale; possible IMU interruption",
                              "DR input recovered after possible IMU interruption",
                              std::chrono::milliseconds(500));
 

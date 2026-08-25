@@ -579,11 +579,8 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
         LOG(INFO) << "sensor queue lag recovered to " << lag_sec
                   << " sec; resuming lidar input";
     }
-    std::ostringstream overload_message;
-    overload_message << "Sensor queue overloaded: lag_sec=" << lag_sec
-                     << ", queue_pending=" << sensor_proc_.PendingCount();
     debug_event::ReportState("sensor_queue_overload", throttled,
-                             overload_message.str(),
+                             "Sensor queue overloaded",
                              "Sensor queue recovered from overload",
                              std::chrono::seconds(2));
 
@@ -725,13 +722,9 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         LOG(INFO) << "CAN wheel-speed Header alignment recovered: CAN-IMU delta="
                   << std::setprecision(14) << wheel_imu_timestamp_delta << " sec";
     }
-    std::ostringstream wheel_message;
-    wheel_message << "CAN and IMU timestamps are misaligned: delta_sec="
-                  << std::setprecision(14) << wheel_imu_timestamp_delta
-                  << "; using IMU/LIO fallback";
     debug_event::ReportState("can_imu_timestamp_mismatch",
                              wheel_speed_observed_ && !fresh_wheel_speed,
-                             wheel_message.str(),
+                             "CAN and IMU timestamps are misaligned; using IMU/LIO fallback",
                              "CAN and IMU timestamp alignment recovered",
                              std::chrono::seconds(1));
     const bool wheel_reports_stationary =
