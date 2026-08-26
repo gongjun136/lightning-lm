@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit FIRST_POSE/LOST/RECOVERED from one persistent /PosRes subscription."""
+"""Emit FIRST_POSE/LOST/RECOVERED from one persistent pose_vel subscription."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 
-class PosResSilenceMonitor(Node):
+class PoseVelSilenceMonitor(Node):
     def __init__(self, timeout_sec: float, confirmation_sec: float, message_type: Any) -> None:
-        super().__init__("lightning_posres_silence_monitor")
+        super().__init__("lightning_pose_vel_silence_monitor")
         self.timeout_sec = timeout_sec
         self.confirmation_sec = confirmation_sec
         self.last_arrival: float | None = None
@@ -27,14 +27,16 @@ class PosResSilenceMonitor(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(message_type, "/PosRes", self.on_posres, qos)
+        self.create_subscription(
+            message_type, "/localization/pose_vel", self.on_pose_vel, qos
+        )
         self.create_timer(min(0.1, timeout_sec / 10.0), self.check_silence)
 
     @staticmethod
     def emit(event: str, silence_sec: float) -> None:
         print(f"{event},{silence_sec:.6f}", flush=True)
 
-    def on_posres(self, _: Any) -> None:
+    def on_pose_vel(self, _: Any) -> None:
         now = time.monotonic()
         if self.last_arrival is None:
             self.emit("FIRST_POSE", 0.0)
@@ -73,12 +75,12 @@ def main() -> int:
         parser.error("--confirmation-sec must be finite and non-negative")
 
     try:
-        from geosun_msgs.msg import PosRes
+        from lightning.msg import VehiclePose
     except ModuleNotFoundError as exc:
-        parser.error(f"geosun_msgs is required to monitor /PosRes: {exc}")
+        parser.error(f"lightning.msg is required to monitor /localization/pose_vel: {exc}")
 
     rclpy.init()
-    node = PosResSilenceMonitor(args.timeout_sec, args.confirmation_sec, PosRes)
+    node = PoseVelSilenceMonitor(args.timeout_sec, args.confirmation_sec, VehiclePose)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):

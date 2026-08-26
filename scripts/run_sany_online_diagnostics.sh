@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run SANY multi-LiDAR localization with an optional raw-sensor MCAP
-# recorder and optional /PosRes watchdog incident snapshots. Localization is
-# never restarted by this script; the in-process global relocalizer owns recovery.
+# recorder and optional /localization/pose_vel watchdog incident snapshots.
+# Localization is never restarted by this script; the in-process global
+# relocalizer owns recovery.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,8 +29,13 @@ run_name="${1:-sany_loc_diag_$(date +%Y%m%d_%H%M%S)}"
 qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_qos.yaml}"
 record_bag="${SANY_RECORD_BAG:-1}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
-posres_timeout_seconds="${SANY_POSRES_TIMEOUT_SECONDS:-2}"
-enable_posres_watchdog="${SANY_ENABLE_POSRES_WATCHDOG:-0}"
+if [[ -n "${SANY_ENABLE_POSRES_WATCHDOG+x}" || -n "${SANY_POSRES_TIMEOUT_SECONDS+x}" ]]; then
+  echo "ERROR: SANY_ENABLE_POSRES_WATCHDOG and SANY_POSRES_TIMEOUT_SECONDS are unsupported; use" \
+    "SANY_ENABLE_POSE_VEL_WATCHDOG and SANY_POSE_VEL_TIMEOUT_SECONDS." >&2
+  exit 1
+fi
+pose_vel_timeout_seconds="${SANY_POSE_VEL_TIMEOUT_SECONDS:-2}"
+enable_pose_vel_watchdog="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
@@ -71,8 +77,11 @@ Useful environment variables:
   LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
   SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
-  SANY_ENABLE_POSRES_WATCHDOG Watch /PosRes and capture loss snapshots: 1=yes, 0=no (default: 0)
-  SANY_POSRES_TIMEOUT_SECONDS Declare loss after this silence (default: 2)
+  SANY_ENABLE_POSE_VEL_WATCHDOG
+                              Watch /localization/pose_vel and capture loss snapshots:
+                              1=yes, 0=no (default: 0)
+  SANY_POSE_VEL_TIMEOUT_SECONDS
+                              Declare loss after this silence (default: 2)
   SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
@@ -99,8 +108,8 @@ Useful environment variables:
                               it does not isolate LIO/NDT/SOLiD within the process
 
 The run continues until localization exits or Ctrl-C. When the watchdog is
-enabled, a /PosRes loss only records a snapshot; it does not stop or restart
-localization.
+enabled, a /localization/pose_vel loss only records a snapshot; it does not
+stop or restart localization.
 When recording, every raw PointCloud2, every configured IMU, and the CAN topic
 are added to the bag even when CAN observation is disabled.
 EOF
@@ -166,8 +175,8 @@ fi
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
 [[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
-[[ "${enable_posres_watchdog}" == "0" || "${enable_posres_watchdog}" == "1" ]] ||
-  fail "SANY_ENABLE_POSRES_WATCHDOG must be 0 or 1."
+[[ "${enable_pose_vel_watchdog}" == "0" || "${enable_pose_vel_watchdog}" == "1" ]] ||
+  fail "SANY_ENABLE_POSE_VEL_WATCHDOG must be 0 or 1."
 [[ "${enable_can_observation}" == "0" || "${enable_can_observation}" == "1" ]] ||
   fail "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1."
 [[ "${compute_profile}" == "0" || "${compute_profile}" == "1" ]] ||
@@ -194,9 +203,9 @@ if [[ -n "${map_path}" && ! -e "${map_path}" ]]; then
   fail "SANY_MAP_PATH does not exist: ${map_path}"
 fi
 [[ "${topic_wait_seconds}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_TOPIC_WAIT_SECONDS must be positive."
-if [[ "${enable_posres_watchdog}" == "1" ]]; then
-  [[ "${posres_timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
-    fail "SANY_POSRES_TIMEOUT_SECONDS must be positive."
+if [[ "${enable_pose_vel_watchdog}" == "1" ]]; then
+  [[ "${pose_vel_timeout_seconds}" =~ ^[1-9][0-9]*$ ]] ||
+    fail "SANY_POSE_VEL_TIMEOUT_SECONDS must be positive."
 fi
 if [[ "${record_bag}" == "1" ]]; then
   [[ "${min_free_gb}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_MIN_FREE_GB must be positive."
@@ -295,7 +304,6 @@ if [[ "${record_bag}" == "1" ]]; then
     "${lidar_topics[@]}"
     "${record_imu_topics[@]}"
     "${wheel_speed_topic}"
-    /PosRes
     /localization/pose_vel
     /slamPoseRaw_topic
     /localization/fault_status
@@ -353,7 +361,7 @@ snapshot_incident() {
   local snapshot="${run_dir}/snapshots/loss_$(printf '%03d' "${index}")_$(date +%Y%m%d_%H%M%S).txt"
   {
     echo "captured_at=$(date --iso-8601=ns)"
-    echo "reason=PosRes silent for at least ${posres_timeout_seconds}s"
+    echo "reason=/localization/pose_vel silent for at least ${pose_vel_timeout_seconds}s"
     echo
     echo "[pipeline_diagnostics]"
     timeout 3 ros2 topic echo --once --qos-reliability best_effort \
@@ -393,12 +401,12 @@ snapshot_incident() {
   } >"${snapshot}"
 }
 
-watch_posres() {
+watch_pose_vel() {
   local incident=0
   local event silence_sec
   local monitor_pid=""
-  local event_fifo="${run_dir}/logs/posres_watchdog.events"
-  cleanup_posres_monitor() {
+  local event_fifo="${run_dir}/logs/pose_vel_watchdog.events"
+  cleanup_pose_vel_monitor() {
     if [[ -n "${monitor_pid}" ]]; then
       kill -TERM "${monitor_pid}" 2>/dev/null || true
       wait "${monitor_pid}" 2>/dev/null || true
@@ -406,31 +414,31 @@ watch_posres() {
     fi
     rm -f -- "${event_fifo}"
   }
-  trap 'cleanup_posres_monitor; exit 0' INT TERM
-  trap cleanup_posres_monitor EXIT
+  trap 'cleanup_pose_vel_monitor; exit 0' INT TERM
+  trap cleanup_pose_vel_monitor EXIT
 
   rm -f -- "${event_fifo}"
   mkfifo "${event_fifo}"
-  python3 -u "${script_dir}/monitor_posres_silence.py" \
-    --timeout-sec "${posres_timeout_seconds}" \
+  python3 -u "${script_dir}/monitor_pose_vel_silence.py" \
+    --timeout-sec "${pose_vel_timeout_seconds}" \
     >"${event_fifo}" \
-    2>"${run_dir}/logs/posres_watchdog.stderr.log" &
+    2>"${run_dir}/logs/pose_vel_watchdog.stderr.log" &
   monitor_pid=$!
   while IFS=, read -r event silence_sec; do
     case "${event}" in
       FIRST_POSE)
         echo "$(date --iso-8601=ns),FIRST_POSE,0,${silence_sec}" \
-          >>"${run_dir}/logs/posres_watchdog.csv"
+          >>"${run_dir}/logs/pose_vel_watchdog.csv"
         ;;
       LOST)
         incident=$((incident + 1))
         echo "$(date --iso-8601=ns),LOST,${incident},${silence_sec}" \
-          >>"${run_dir}/logs/posres_watchdog.csv"
+          >>"${run_dir}/logs/pose_vel_watchdog.csv"
         snapshot_incident "${incident}"
         ;;
       RECOVERED)
         echo "$(date --iso-8601=ns),RECOVERED,${incident},${silence_sec}" \
-          >>"${run_dir}/logs/posres_watchdog.csv"
+          >>"${run_dir}/logs/pose_vel_watchdog.csv"
         ;;
     esac
   done <"${event_fifo}"
@@ -441,7 +449,7 @@ watch_posres() {
   monitor_pid=""
   if ((monitor_status != 0)); then
     echo "$(date --iso-8601=ns),MONITOR_EXIT,${monitor_status},0" \
-      >>"${run_dir}/logs/posres_watchdog.csv"
+      >>"${run_dir}/logs/pose_vel_watchdog.csv"
   fi
 }
 
@@ -524,7 +532,7 @@ fi
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
   echo "record_bag=${record_bag}"
-  echo "enable_posres_watchdog=${enable_posres_watchdog}"
+  echo "enable_pose_vel_watchdog=${enable_pose_vel_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
   echo "enable_can_observation=${enable_can_observation}"
   echo "run_mode=${run_mode}"
@@ -570,11 +578,11 @@ if [[ "${record_bag}" == "1" ]]; then
   fi
 fi
 
-if [[ "${enable_posres_watchdog}" == "1" ]]; then
-  echo "wall_time,event,incident,silence_sec" >"${run_dir}/logs/posres_watchdog.csv"
-  python3 -c 'import rclpy; from geosun_msgs.msg import PosRes'
-  python3 "${script_dir}/monitor_posres_silence.py" --help >/dev/null
-  watch_posres &
+if [[ "${enable_pose_vel_watchdog}" == "1" ]]; then
+  echo "wall_time,event,incident,silence_sec" >"${run_dir}/logs/pose_vel_watchdog.csv"
+  python3 -c 'import rclpy; from lightning.msg import VehiclePose'
+  python3 "${script_dir}/monitor_pose_vel_silence.py" --help >/dev/null
+  watch_pose_vel &
   watchdog_pid=$!
   child_pids+=("${watchdog_pid}")
 fi

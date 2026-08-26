@@ -52,12 +52,6 @@
   reliability: reliable
   durability: volatile
 
-/PosRes:
-  history: keep_last
-  depth: 1000
-  reliability: best_effort
-  durability: volatile
-
 /localization/pose_vel:
   history: keep_last
   depth: 1000
