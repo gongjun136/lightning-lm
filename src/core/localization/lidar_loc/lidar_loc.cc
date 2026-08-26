@@ -166,6 +166,12 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_min_overlap_ratio_ =
             relocalization["map_min_overlap_ratio"].as<double>();
     }
+    options_.relocalization_precheck_min_overlap_ratio_ =
+        options_.relocalization_min_overlap_ratio_;
+    if (relocalization && relocalization["map_precheck_min_overlap_ratio"]) {
+        options_.relocalization_precheck_min_overlap_ratio_ =
+            relocalization["map_precheck_min_overlap_ratio"].as<double>();
+    }
     if (relocalization && relocalization["map_min_gravity_alignment_cos"]) {
         options_.relocalization_min_gravity_alignment_cos_ =
             relocalization["map_min_gravity_alignment_cos"].as<double>();
@@ -194,12 +200,102 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_confirmation_max_interval_ =
             relocalization["confirmation_max_interval"].as<double>();
     }
+    if (relocalization && relocalization["refinement_backend"]) {
+        options_.relocalization_refinement_backend_ =
+            relocalization["refinement_backend"].as<std::string>();
+    }
+    if (options_.relocalization_refinement_backend_ != "ndt" &&
+        options_.relocalization_refinement_backend_ != "plane_icp") {
+        LOG(ERROR) << "unsupported relocalization refinement backend: "
+                   << options_.relocalization_refinement_backend_;
+        return false;
+    }
+    const YAML::Node plane_icp =
+        relocalization ? relocalization["plane_icp"] : YAML::Node();
+    auto& plane_options = options_.relocalization_plane_icp_options_;
+    if (plane_icp && plane_icp["target_voxel_size"]) {
+        plane_options.target_voxel_size =
+            plane_icp["target_voxel_size"].as<double>();
+    }
+    if (plane_icp && plane_icp["source_voxel_size"]) {
+        plane_options.source_voxel_size =
+            plane_icp["source_voxel_size"].as<double>();
+    }
+    if (plane_icp && plane_icp["plane_fit_threshold"]) {
+        plane_options.plane_fit_threshold =
+            plane_icp["plane_fit_threshold"].as<double>();
+    }
+    if (plane_icp && plane_icp["coarse_max_correspondence_distance"]) {
+        plane_options.coarse_max_correspondence_distance =
+            plane_icp["coarse_max_correspondence_distance"].as<double>();
+    }
+    if (plane_icp && plane_icp["fine_max_correspondence_distance"]) {
+        plane_options.fine_max_correspondence_distance =
+            plane_icp["fine_max_correspondence_distance"].as<double>();
+    }
+    if (plane_icp && plane_icp["huber_delta"]) {
+        plane_options.huber_delta = plane_icp["huber_delta"].as<double>();
+    }
+    if (plane_icp && plane_icp["max_rmse"]) {
+        plane_options.max_rmse = plane_icp["max_rmse"].as<double>();
+    }
+    if (plane_icp && plane_icp["coarse_max_iterations"]) {
+        plane_options.coarse_max_iterations =
+            plane_icp["coarse_max_iterations"].as<int>();
+    }
+    if (plane_icp && plane_icp["fine_max_iterations"]) {
+        plane_options.fine_max_iterations =
+            plane_icp["fine_max_iterations"].as<int>();
+    }
+    if (plane_icp && plane_icp["min_matches"]) {
+        plane_options.min_matches = plane_icp["min_matches"].as<int>();
+    }
+    if (plane_icp && plane_icp["min_inlier_ratio"]) {
+        plane_options.min_inlier_ratio =
+            plane_icp["min_inlier_ratio"].as<double>();
+    }
+    if (plane_icp && plane_icp["translation_convergence"]) {
+        plane_options.translation_convergence =
+            plane_icp["translation_convergence"].as<double>();
+    }
+    if (plane_icp && plane_icp["rotation_convergence_deg"]) {
+        plane_options.rotation_convergence_deg =
+            plane_icp["rotation_convergence_deg"].as<double>();
+    }
+    if (plane_icp && plane_icp["min_normalized_hessian_eigenvalue"]) {
+        plane_options.min_normalized_hessian_eigenvalue =
+            plane_icp["min_normalized_hessian_eigenvalue"].as<double>();
+    }
+    if (plane_icp && plane_icp["max_hessian_condition_number"]) {
+        plane_options.max_hessian_condition_number =
+            plane_icp["max_hessian_condition_number"].as<double>();
+    }
+    if (plane_icp && plane_icp["max_translation_correction"]) {
+        plane_options.max_translation_correction =
+            plane_icp["max_translation_correction"].as<double>();
+    }
+    if (plane_icp && plane_icp["max_rotation_correction_deg"]) {
+        plane_options.max_rotation_correction_deg =
+            plane_icp["max_rotation_correction_deg"].as<double>();
+    }
+    std::string plane_options_error;
+    if (!PointToPlaneRegistration::ValidateOptions(
+            plane_options, &plane_options_error)) {
+        LOG(ERROR) << plane_options_error;
+        return false;
+    }
     if (options_.relocalization_bounds_margin_ < 0.0 ||
         options_.relocalization_nearest_neighbor_distance_ <= 0.0 ||
         options_.relocalization_min_inside_xy_ratio_ < 0.0 ||
         options_.relocalization_min_inside_xy_ratio_ > 1.0 ||
+        !std::isfinite(options_.relocalization_min_overlap_ratio_) ||
         options_.relocalization_min_overlap_ratio_ < 0.0 ||
         options_.relocalization_min_overlap_ratio_ > 1.0 ||
+        !std::isfinite(options_.relocalization_precheck_min_overlap_ratio_) ||
+        options_.relocalization_precheck_min_overlap_ratio_ < 0.0 ||
+        options_.relocalization_precheck_min_overlap_ratio_ > 1.0 ||
+        options_.relocalization_precheck_min_overlap_ratio_ >
+            options_.relocalization_min_overlap_ratio_ ||
         options_.relocalization_min_gravity_alignment_cos_ < -1.0 ||
         options_.relocalization_min_gravity_alignment_cos_ > 1.0 ||
         options_.relocalization_map_consistency_max_points_ <= 0 ||
@@ -670,7 +766,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                 for (std::size_t index = worker; index < result->candidates.size();
                      index += worker_count) {
                     prechecks[index] = EvaluateRelocalizationMapConsistency(
-                        input, result->candidates[index].T_world_imu, worker);
+                        input, result->candidates[index].T_world_imu, worker,
+                        options_.relocalization_precheck_min_overlap_ratio_);
                 }
             }));
         }
@@ -688,24 +785,98 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                          << ", pose=" << candidate.T_world_imu.translation().transpose()
                          << ", inside_xy=" << prechecks[index].inside_xy_ratio
                          << ", overlap=" << prechecks[index].overlap_ratio
+                         << ", overlap_threshold="
+                         << options_.relocalization_precheck_min_overlap_ratio_
                          << ", gravity_alignment_cos="
                          << prechecks[index].gravity_alignment_cos;
             continue;
         }
 
         map_->LoadOnPose(candidate.T_world_imu);
-        UpdateGlobalMap();
-        SE3 refined_pose = candidate.T_world_imu;
-        double ndt_confidence = 0.0;
-        CloudPtr output(new PointCloudType);
-        const bool ndt_accepted = Localize(
-            refined_pose, ndt_confidence, input, output);
-        if (!ndt_accepted ||
-            !ValidateRelocalizationMapConsistency(input, refined_pose)) {
+        if (!UpdateGlobalMap()) {
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] candidate rejected by NDT/map: candidate="
+                         << "] candidate refinement target unavailable: candidate="
+                         << candidate.candidate_id << ", refinement_backend="
+                         << options_.relocalization_refinement_backend_;
+            continue;
+        }
+        SE3 refined_pose = candidate.T_world_imu;
+        double refinement_score = 0.0;
+        bool refinement_accepted = false;
+        PointToPlaneRegistration::Result plane_result;
+        if (options_.relocalization_refinement_backend_ == "ndt") {
+            CloudPtr output(new PointCloudType);
+            refinement_accepted = Localize(
+                refined_pose, refinement_score, input, output);
+        } else {
+            std::shared_ptr<PointToPlaneRegistration> plane_registration;
+            {
+                UL lock(match_mutex_);
+                plane_registration = relocalization_plane_registration_;
+            }
+            last_match_stats_ = MatchStats{};
+            last_match_stats_.active_map_chunks =
+                map_ ? map_->NumActiveChunks() : 0;
+            if (plane_registration) {
+                plane_result = plane_registration->Refine(input, refined_pose);
+            }
+            refinement_accepted = plane_result.success;
+            refinement_score = std::isfinite(plane_result.rmse)
+                                   ? 1.0 / (1.0 + plane_result.rmse)
+                                   : 0.0;
+            last_match_stats_.confidence = refinement_score;
+            last_match_stats_.iterations = plane_result.iterations;
+            last_match_stats_.success = refinement_accepted;
+            LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                      << "] plane-ICP refinement: candidate="
+                      << candidate.candidate_id
+                      << ", iterations=" << plane_result.iterations
+                      << ", matches=" << plane_result.matches
+                      << ", inlier_ratio=" << plane_result.inlier_ratio
+                      << ", rmse=" << plane_result.rmse
+                      << ", translation_correction="
+                      << plane_result.translation_correction
+                      << ", rotation_correction_deg="
+                      << plane_result.rotation_correction_deg
+                      << ", condition_number="
+                      << plane_result.hessian_condition_number
+                      << ", converged=" << plane_result.converged
+                      << ", success=" << plane_result.success;
+        }
+        if (!refinement_accepted) {
+            if (options_.relocalization_refinement_backend_ == "plane_icp" &&
+                !options_.relocalization_debug_dir_.empty() &&
+                plane_result.attempted_pose_valid) {
+                const bool attempted_pose_map_passed =
+                    ValidateRelocalizationMapConsistency(
+                        input, plane_result.attempted_pose);
+                LOG(INFO) << "GLOBAL_RELOCALIZATION["
+                          << relocalization_backend_name_
+                          << "] rejected plane-ICP attempted-pose diagnostic: candidate="
+                          << candidate.candidate_id << ", pose="
+                          << plane_result.attempted_pose.translation().transpose()
+                          << ", overlap="
+                          << last_match_stats_.map_overlap_ratio
+                          << ", map_consistency_passed="
+                          << attempted_pose_map_passed;
+            }
+            LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                         << "] candidate rejected by refinement/map: candidate="
                          << candidate.candidate_id << ", retrieval score=" << candidate.score
-                         << ", NDT confidence=" << ndt_confidence
+                         << ", refinement_backend="
+                         << options_.relocalization_refinement_backend_
+                         << ", refinement_score=" << refinement_score
+                         << ", refined_pose=" << refined_pose.translation().transpose()
+                         << ", overlap=" << last_match_stats_.map_overlap_ratio;
+            continue;
+        }
+        if (!ValidateRelocalizationMapConsistency(input, refined_pose)) {
+            LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
+                         << "] candidate rejected by refinement/map: candidate="
+                         << candidate.candidate_id << ", retrieval score=" << candidate.score
+                         << ", refinement_backend="
+                         << options_.relocalization_refinement_backend_
+                         << ", refinement_score=" << refinement_score
                          << ", refined_pose=" << refined_pose.translation().transpose()
                          << ", overlap=" << last_match_stats_.map_overlap_ratio;
             continue;
@@ -751,7 +922,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         pending_relocalization_.candidate_id = candidate.candidate_id;
         pending_relocalization_.query_submap_size = candidate.query_submap_size;
         pending_relocalization_.score = candidate.score;
-        pending_relocalization_.ndt_confidence = ndt_confidence;
+        pending_relocalization_.ndt_confidence = refinement_score;
         pending_relocalization_.timestamp = current_timestamp_;
         pending_relocalization_.confirmation_count = confirmation_count;
         summary.relocalization_confirmation_count = confirmation_count;
@@ -765,7 +936,9 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                       << "/" << options_.relocalization_confirmation_count_
                       << ", retrieval score=" << candidate.score
                       << ", search_ms=" << result->search_time_ms
-                      << ", NDT confidence=" << ndt_confidence
+                      << ", refinement_backend="
+                      << options_.relocalization_refinement_backend_
+                      << ", refinement_score=" << refinement_score
                       << ", overlap=" << summary.map_overlap_ratio
                       << ", interval=" << confirmation_interval
                       << ", pose=" << refined_pose.translation().transpose();
@@ -776,10 +949,10 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         current_abs_pose_ = refined_pose;
         last_abs_pose_ = refined_pose;
         last_abs_pose_set_ = true;
-        current_score_ = ndt_confidence;
+        current_score_ = refinement_score;
         map_height_ = refined_pose.translation().z();
         localization_result_.timestamp_ = current_timestamp_;
-        localization_result_.confidence_ = ndt_confidence;
+        localization_result_.confidence_ = refinement_score;
         localization_result_.pose_ = refined_pose;
         localization_result_.lidar_loc_valid_ = true;
         localization_result_.status_ = LocalizationStatus::GOOD;
@@ -807,7 +980,9 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                   << ", query_frames=" << candidate.query_submap_size
                   << ", confirmations=" << accepted_confirmation_count
                   << ", retrieval score=" << candidate.score
-                  << ", NDT confidence=" << ndt_confidence
+                  << ", refinement_backend="
+                  << options_.relocalization_refinement_backend_
+                  << ", refinement_score=" << refinement_score
                   << ", overlap=" << summary.map_overlap_ratio
                   << ", interval=" << confirmation_interval
                   << ", pose=" << current_abs_pose_.translation().transpose();
@@ -816,7 +991,9 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                 << candidate.candidate_id
                 << ", confirmations=" << accepted_confirmation_count
                 << ", retrieval_score=" << candidate.score
-                << ", ndt_confidence=" << ndt_confidence
+                << ", refinement_backend="
+                << options_.relocalization_refinement_backend_
+                << ", refinement_score=" << refinement_score
                 << ", overlap=" << summary.map_overlap_ratio;
         debug_event::Emit(message.str());
         relocalization_event_active_ = false;
@@ -839,7 +1016,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
 }
 
 LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
-    const CloudPtr& input, const SE3& pose, std::size_t worker_index) const {
+    const CloudPtr& input, const SE3& pose, std::size_t worker_index,
+    double min_overlap_ratio) const {
     MapConsistencyResult result;
     result.evaluated = true;
     if (!input || input->empty() || !current_lo_pose_set_ ||
@@ -900,7 +1078,7 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     result.gravity_alignment_cos = T_map_odom.rotationMatrix()(2, 2);
     result.passed =
         result.inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
-        result.overlap_ratio >= options_.relocalization_min_overlap_ratio_ &&
+        result.overlap_ratio >= min_overlap_ratio &&
         result.gravity_alignment_cos >= options_.relocalization_min_gravity_alignment_cos_;
     return result;
 }
@@ -918,7 +1096,8 @@ void LidarLoc::ApplyMapConsistencyResult(const MapConsistencyResult& result) {
 bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose) {
     if (!options_.enable_relocalization_map_consistency_) return true;
     const MapConsistencyResult result =
-        EvaluateRelocalizationMapConsistency(input, pose, 0);
+        EvaluateRelocalizationMapConsistency(
+            input, pose, 0, options_.relocalization_min_overlap_ratio_);
     ApplyMapConsistencyResult(result);
 
     if (!options_.relocalization_debug_dir_.empty() && input && !input->empty()) {
@@ -1072,6 +1251,17 @@ bool LidarLoc::TryOtherSolution(CloudPtr input, SE3& pose) {
 bool LidarLoc::UpdateGlobalMap() {
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
+    std::shared_ptr<PointToPlaneRegistration> plane_registration;
+    bool plane_target_ready = true;
+    if (options_.relocalization_refinement_backend_ == "plane_icp") {
+        plane_registration = std::make_shared<PointToPlaneRegistration>(
+            options_.relocalization_plane_icp_options_);
+        plane_target_ready = plane_registration->SetTarget(map_->GetAllMap());
+        if (!plane_target_ready) {
+            LOG(ERROR) << "failed to build plane-ICP target from the loaded local map";
+        }
+    }
+
     NDTType::Ptr ndt(new NDTType());
     ndt->setResolution(1.0);
     ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
@@ -1084,6 +1274,10 @@ bool LidarLoc::UpdateGlobalMap() {
 
     UL lock(match_mutex_);
     pcl_ndt_ = ndt;
+    if (options_.relocalization_refinement_backend_ == "plane_icp") {
+        relocalization_plane_registration_ =
+            plane_target_ready ? std::move(plane_registration) : nullptr;
+    }
 
     if (!loc_inited_) {
         NDTType::Ptr ndt_rough(new NDTType());
@@ -1120,7 +1314,7 @@ bool LidarLoc::UpdateGlobalMap() {
                   << ' ' << profiling::FormatTimingSample("outer", outer_timing);
     }
 
-    return true;
+    return plane_target_ready;
 }
 
 void LidarLoc::UpdateMapThread() {

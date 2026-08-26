@@ -57,11 +57,25 @@ bool SlamSystem::Init(const std::string& yaml_path) {
 
     // 从配置文件加载系统选项
     auto yaml = YAML::LoadFile(yaml_path);
-    options_.with_loop_closing_ = yaml["system"]["with_loop_closing"].as<bool>();
-    options_.with_visualization_ = yaml["system"]["with_ui"].as<bool>();
-    options_.with_2dvisualization_ = yaml["system"]["with_2dui"].as<bool>();
-    options_.with_gridmap_ = yaml["system"]["with_g2p5"].as<bool>();
-    options_.step_on_kf_ = yaml["system"]["step_on_kf"].as<bool>();
+    const auto system = yaml["system"];
+    auto read_optional_bool = [&system](const char* key, bool& value) {
+        try {
+            const auto node = system ? system[key] : YAML::Node();
+            if (!node) return true;
+            value = node.as<bool>();
+            return true;
+        } catch (const YAML::Exception& e) {
+            LOG(ERROR) << "invalid boolean value for system." << key << ": " << e.what();
+            return false;
+        }
+    };
+    if (!read_optional_bool("with_loop_closing", options_.with_loop_closing_) ||
+        !read_optional_bool("with_ui", options_.with_visualization_) ||
+        !read_optional_bool("with_2dui", options_.with_2dvisualization_) ||
+        !read_optional_bool("with_g2p5", options_.with_gridmap_) ||
+        !read_optional_bool("step_on_kf", options_.step_on_kf_)) {
+        return false;
+    }
     std::string map_frame_error;
     if (!map_frame::ReadExportOptions(yaml, map_export_options_, map_frame_error)) {
         LOG(ERROR) << map_frame_error;

@@ -357,6 +357,26 @@ lidar_loc:
 relocalization:
   enabled: true
   backend: solid
+  refinement_backend: plane_icp
+  plane_icp:
+    target_voxel_size: 0.5
+    source_voxel_size: 0.5
+    plane_fit_threshold: 0.15
+    coarse_max_correspondence_distance: 2.0
+    fine_max_correspondence_distance: 0.75
+    huber_delta: 0.2
+    # Accepted validation runs support this final-fit residual guardrail.
+    max_rmse: 0.12
+    coarse_max_iterations: 10
+    fine_max_iterations: 15
+    min_matches: 500
+    min_inlier_ratio: 0.3
+    translation_convergence: 0.005
+    rotation_convergence_deg: 0.05
+    min_normalized_hessian_eigenvalue: 0.0001
+    max_hessian_condition_number: 100000.0
+    max_translation_correction: 2.0
+    max_rotation_correction_deg: 10.0
   database_subdirectory: btc_relocalization
   lost_frame_threshold: 5
   query_submap_sizes:
@@ -376,7 +396,9 @@ relocalization:
   map_bounds_margin: 0.5
   map_nearest_neighbor_distance: 0.5
   map_min_inside_xy_ratio: 0.9
-  map_min_overlap_ratio: 0.95
+  # Preserve precheck recall while requiring stronger post-refinement overlap.
+  map_precheck_min_overlap_ratio: 0.85
+  map_min_overlap_ratio: 0.92
   map_min_gravity_alignment_cos: 0.95
   map_consistency_max_points: 50000
   confirmation_count: 2
@@ -393,7 +415,8 @@ relocalization:
     - 5
     - 10
     query_stride: 1
-    top_k: 20
+    # Validation favors a wider shortlist; the pool and ICP batches bound work.
+    top_k: 128
     retrieval_pool_size: 200
     min_similarity: 0.55
     candidate_dedup_radius: 2.0

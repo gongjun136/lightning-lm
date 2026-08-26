@@ -13,6 +13,7 @@
 #include "common/timed_pose.h"
 #include "core/localization/global_relocalizer.h"
 #include "core/localization/localization_result.h"
+#include "core/localization/point_to_plane_registration.h"
 #include "core/maps/tiled_map.h"
 #include "utils/compute_profiling.h"
 
@@ -74,6 +75,7 @@ class LidarLoc {
         double relocalization_nearest_neighbor_distance_ = 0.5;
         double relocalization_min_inside_xy_ratio_ = 0.90;
         double relocalization_min_overlap_ratio_ = 0.20;
+        double relocalization_precheck_min_overlap_ratio_ = 0.20;
         double relocalization_min_gravity_alignment_cos_ = 0.95;
         int relocalization_map_consistency_max_points_ = 50000;
         int relocalization_validation_workers_ = 2;
@@ -81,6 +83,8 @@ class LidarLoc {
         double relocalization_confirmation_max_translation_ = 1.0;
         double relocalization_confirmation_max_rotation_deg_ = 5.0;
         double relocalization_confirmation_max_interval_ = 1.0;
+        std::string relocalization_refinement_backend_ = "ndt";
+        PointToPlaneRegistration::Options relocalization_plane_icp_options_;
         std::string relocalization_debug_dir_;
     };
 
@@ -243,7 +247,8 @@ class LidarLoc {
     };
     bool BuildRelocalizationMapCache();
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
-        const CloudPtr& input, const SE3& pose, std::size_t worker_index) const;
+        const CloudPtr& input, const SE3& pose, std::size_t worker_index,
+        double min_overlap_ratio) const;
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
     bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
@@ -343,6 +348,7 @@ class LidarLoc {
     std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
     std::unique_ptr<GlobalRelocalizer> global_relocalizer_;
     std::string relocalization_backend_name_ = "btc";
+    std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;
     CloudPtr relocalization_static_map_;
     Vec3d relocalization_map_min_ = Vec3d::Zero();
     Vec3d relocalization_map_max_ = Vec3d::Zero();

@@ -16,6 +16,16 @@ EXPECTED_OFFSETS_S = (0, 3, 5, 7, 10, 15, 20, 25, 30, 35)
 SUCCESS_RATE_MINIMUM = 1.0
 
 
+def unit_interval_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"expected a float, got {value!r}") from error
+    if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("expected a finite float in [0, 1]")
+    return parsed
+
+
 def percentile(values: list[float], q: float) -> float | None:
     if not values:
         return None
@@ -120,7 +130,7 @@ def add_reference_error(
 
 
 def summarize(
-    trials: list[dict[str, object]]
+    trials: list[dict[str, object]], map_overlap_minimum: float
 ) -> dict[str, object]:
     accepted = [trial for trial in trials if trial["success"]]
     delays = [float(trial["delay_s"]) for trial in accepted]
@@ -179,7 +189,7 @@ def summarize(
             (int(trial["confirmations"]) for trial in accepted), default=None
         ),
         "unsafe_overlap_accepts": sum(
-            float(trial["overlap"]) < 0.95 for trial in accepted
+            float(trial["overlap"]) < map_overlap_minimum for trial in accepted
         ),
         "reference_comparisons": len(reference_trials),
         "reference_position_error_p95_m": percentile(
@@ -221,7 +231,7 @@ def summarize(
         and summary["minimum_confirmations"] is not None
         and int(summary["minimum_confirmations"]) >= 2
         and summary["minimum_overlap"] is not None
-        and float(summary["minimum_overlap"]) >= 0.95
+        and float(summary["minimum_overlap"]) >= map_overlap_minimum
         and reference_safe
     )
     return summary
@@ -232,6 +242,12 @@ def main() -> None:
     parser.add_argument("--runs-root", required=True, type=Path)
     parser.add_argument("--output-json", required=True, type=Path)
     parser.add_argument("--output-csv", required=True, type=Path)
+    parser.add_argument(
+        "--map-overlap-minimum",
+        type=unit_interval_float,
+        default=0.95,
+        help="Minimum accepted map overlap ratio (default: 0.95)",
+    )
     parser.add_argument(
         "--reference-runs-root",
         type=Path,
@@ -253,10 +269,13 @@ def main() -> None:
             trials.append(trial)
 
     datasets = {
-        dataset: summarize([trial for trial in trials if trial["dataset"] == dataset])
+        dataset: summarize(
+            [trial for trial in trials if trial["dataset"] == dataset],
+            args.map_overlap_minimum,
+        )
         for dataset in EXPECTED_DATASETS
     }
-    overall = summarize(trials)
+    overall = summarize(trials, args.map_overlap_minimum)
     overall["datasets_passed"] = sum(bool(summary["passed"]) for summary in datasets.values())
     overall["all_datasets_passed"] = all(bool(summary["passed"]) for summary in datasets.values())
     overall["passed"] = bool(overall["passed"] and overall["all_datasets_passed"])
@@ -267,7 +286,7 @@ def main() -> None:
             "success_rate_minimum": SUCCESS_RATE_MINIMUM,
             "delay_p95_maximum_s": 5.0,
             "confirmation_minimum": 2,
-            "map_overlap_minimum": 0.95,
+            "map_overlap_minimum": args.map_overlap_minimum,
             "reference_position_error_maximum_m": 1.0,
             "reference_yaw_error_maximum_deg": 5.0,
             "reference_scope": "only trials accepted by the optional reference runs",

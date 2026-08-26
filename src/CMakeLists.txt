@@ -31,6 +31,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/localization/btc_relocalizer.cc
         core/localization/solid_descriptor.cc
         core/localization/solid_relocalizer.cc
+        core/localization/point_to_plane_registration.cc
         core/localization/lidar_loc/lidar_loc.cc
         core/localization/lidar_loc/pclomp/ndt_omp.cpp
         core/localization/lidar_loc/pclomp/voxel_grid_covariance_omp.cpp
@@ -126,6 +127,9 @@ if(BUILD_TESTING)
     add_executable(solid_descriptor_test test/solid_descriptor_test.cc)
     target_link_libraries(solid_descriptor_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(point_to_plane_registration_test test/point_to_plane_registration_test.cc)
+    target_link_libraries(point_to_plane_registration_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(async_message_process_test test/async_message_process_test.cc)
     target_link_libraries(async_message_process_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -163,6 +167,7 @@ if(BUILD_TESTING)
     add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)
     add_test(NAME localization_pgo_test COMMAND $<TARGET_FILE:localization_pgo_test>)
     add_test(NAME solid_descriptor_test COMMAND $<TARGET_FILE:solid_descriptor_test>)
+    add_test(NAME point_to_plane_registration_test COMMAND $<TARGET_FILE:point_to_plane_registration_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
     add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)
