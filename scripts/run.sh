@@ -39,4 +39,4 @@ unset LIGHTNING_LM_CONFIG
 cd "${REPO}" || exit 1
 
 exec bash scripts/run_sany_online_diagnostics.sh \
-  "sany_4lidar_can_on_$(date +%Y%m%d_%H%M%S)"
+  "sany_${SANY_LIDAR_LAYOUT}lidar_$(date +%Y%m%d_%H%M%S)"
