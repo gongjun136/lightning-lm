@@ -3,6 +3,8 @@
 set +e
 set +u
 
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+
 WS=/home/nvidia/project/gj_ws
 REPO="${WS}/lightning-lm"
 MAP_DIR="${WS}/maps/sany_4lidar_20260811_a4defa3_solid"
@@ -11,7 +13,7 @@ export LIGHTNING_LM_INSTALL_SETUP="${REPO}/install/setup.bash"
 export SANY_MAP_PATH="${MAP_DIR}"
 export LIGHTNING_LM_OUT_ROOT="${WS}/runs"
 export SANY_LIDAR_LAYOUT=3
-export SANY_ENABLE_CAN_OBSERVATION=1
+export SANY_ENABLE_CAN_OBSERVATION="${SANY_ENABLE_CAN_OBSERVATION:-1}"
 export SANY_WHEEL_SPEED_TOPIC=/SpeThrCAN4_topic
 export SANY_RECORD_BAG=0
 export SANY_POSRES_TIMEOUT_SECONDS=5
