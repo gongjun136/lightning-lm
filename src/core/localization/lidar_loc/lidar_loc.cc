@@ -147,6 +147,9 @@ bool LidarLoc::Init(const std::string& config_path) {
             std::max(1, root["relocalization"]["lost_frame_threshold"].as<int>());
     }
     const YAML::Node relocalization = root["relocalization"];
+    relocalization_backend_name_ = relocalization && relocalization["backend"]
+                                        ? relocalization["backend"].as<std::string>()
+                                        : "btc";
     if (relocalization && relocalization["enable_map_consistency"]) {
         options_.enable_relocalization_map_consistency_ =
             relocalization["enable_map_consistency"].as<bool>();
@@ -172,6 +175,29 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_precheck_min_overlap_ratio_ =
             relocalization["map_precheck_min_overlap_ratio"].as<double>();
     }
+    // A global feature matcher has already passed descriptor, compatibility-
+    // graph and robust-estimation gates before reaching map validation.  Let a
+    // selected backend tune only its own changed-scene overlap thresholds;
+    // legacy SOLiD/BTC behavior remains byte-for-byte configurable as before.
+    const YAML::Node backend_relocalization =
+        relocalization ? relocalization[relocalization_backend_name_]
+                       : YAML::Node();
+    if (backend_relocalization &&
+        backend_relocalization["map_min_overlap_ratio"]) {
+        options_.relocalization_min_overlap_ratio_ =
+            backend_relocalization["map_min_overlap_ratio"].as<double>();
+    }
+    if (backend_relocalization &&
+        backend_relocalization["map_precheck_min_overlap_ratio"]) {
+        options_.relocalization_precheck_min_overlap_ratio_ =
+            backend_relocalization["map_precheck_min_overlap_ratio"]
+                .as<double>();
+    }
+    if (backend_relocalization &&
+        backend_relocalization["max_refinement_candidates"]) {
+        options_.relocalization_max_refinement_candidates_ =
+            backend_relocalization["max_refinement_candidates"].as<int>();
+    }
     if (relocalization && relocalization["map_min_gravity_alignment_cos"]) {
         options_.relocalization_min_gravity_alignment_cos_ =
             relocalization["map_min_gravity_alignment_cos"].as<double>();
@@ -179,6 +205,13 @@ bool LidarLoc::Init(const std::string& config_path) {
     if (relocalization && relocalization["map_consistency_max_points"]) {
         options_.relocalization_map_consistency_max_points_ =
             relocalization["map_consistency_max_points"].as<int>();
+    }
+    options_.relocalization_precheck_max_points_ =
+        options_.relocalization_map_consistency_max_points_;
+    if (backend_relocalization &&
+        backend_relocalization["map_precheck_max_points"]) {
+        options_.relocalization_precheck_max_points_ =
+            backend_relocalization["map_precheck_max_points"].as<int>();
     }
     if (relocalization && relocalization["validation_workers"]) {
         options_.relocalization_validation_workers_ =
@@ -278,6 +311,35 @@ bool LidarLoc::Init(const std::string& config_path) {
         plane_options.max_rotation_correction_deg =
             plane_icp["max_rotation_correction_deg"].as<double>();
     }
+    // The selected coarse backend may have a different capture error and
+    // changed-scene residual distribution.  Keep these overrides local to the
+    // backend so the validated SOLiD+ICP baseline is unchanged.
+    const YAML::Node backend_plane_icp =
+        backend_relocalization ? backend_relocalization["plane_icp"]
+                               : YAML::Node();
+    if (backend_plane_icp &&
+        backend_plane_icp["coarse_max_correspondence_distance"]) {
+        plane_options.coarse_max_correspondence_distance =
+            backend_plane_icp["coarse_max_correspondence_distance"]
+                .as<double>();
+    }
+    if (backend_plane_icp && backend_plane_icp["max_rmse"]) {
+        plane_options.max_rmse =
+            backend_plane_icp["max_rmse"].as<double>();
+    }
+    if (backend_plane_icp && backend_plane_icp["coarse_max_iterations"]) {
+        plane_options.coarse_max_iterations =
+            backend_plane_icp["coarse_max_iterations"].as<int>();
+    }
+    if (backend_plane_icp && backend_plane_icp["fine_max_iterations"]) {
+        plane_options.fine_max_iterations =
+            backend_plane_icp["fine_max_iterations"].as<int>();
+    }
+    if (backend_plane_icp &&
+        backend_plane_icp["max_translation_correction"]) {
+        plane_options.max_translation_correction =
+            backend_plane_icp["max_translation_correction"].as<double>();
+    }
     std::string plane_options_error;
     if (!PointToPlaneRegistration::ValidateOptions(
             plane_options, &plane_options_error)) {
@@ -299,7 +361,9 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_min_gravity_alignment_cos_ < -1.0 ||
         options_.relocalization_min_gravity_alignment_cos_ > 1.0 ||
         options_.relocalization_map_consistency_max_points_ <= 0 ||
+        options_.relocalization_precheck_max_points_ <= 0 ||
         options_.relocalization_validation_workers_ <= 0 ||
+        options_.relocalization_max_refinement_candidates_ < 0 ||
         options_.relocalization_confirmation_count_ <= 0 ||
         options_.relocalization_confirmation_max_translation_ < 0.0 ||
         options_.relocalization_confirmation_max_rotation_deg_ < 0.0 ||
@@ -353,12 +417,11 @@ bool LidarLoc::Init(const std::string& config_path) {
         UpdateGlobalMap();
     }
 
-    relocalization_backend_name_ = relocalization && relocalization["backend"]
-                                        ? relocalization["backend"].as<std::string>()
-                                        : "btc";
     if (relocalization_backend_name_ == "btc") {
         global_relocalizer_ = std::make_unique<BtcRelocalizer>();
     } else if (relocalization_backend_name_ == "solid") {
+        global_relocalizer_ = std::make_unique<SolidRelocalizer>();
+    } else if (relocalization_backend_name_ == "solid_kiss") {
         global_relocalizer_ = std::make_unique<SolidRelocalizer>();
     } else {
         LOG(ERROR) << "unsupported global relocalization backend: "
@@ -767,7 +830,9 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                      index += worker_count) {
                     prechecks[index] = EvaluateRelocalizationMapConsistency(
                         input, result->candidates[index].T_world_imu, worker,
-                        options_.relocalization_precheck_min_overlap_ratio_);
+                        options_.relocalization_precheck_min_overlap_ratio_,
+                        static_cast<std::size_t>(
+                            options_.relocalization_precheck_max_points_));
                 }
             }));
         }
@@ -775,6 +840,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     }
     summary.relocalization_candidates_prechecked = static_cast<int>(prechecks.size());
 
+    std::vector<std::size_t> refinement_indices;
+    refinement_indices.reserve(result->candidates.size());
     for (std::size_t index = 0; index < result->candidates.size(); ++index) {
         const auto& candidate = result->candidates[index];
         if (!prechecks[index].passed) {
@@ -783,6 +850,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                          << candidate.candidate_id << ", query_frames="
                          << candidate.query_submap_size << ", retrieval score=" << candidate.score
                          << ", pose=" << candidate.T_world_imu.translation().transpose()
+                         << ", points=" << prechecks[index].points
                          << ", inside_xy=" << prechecks[index].inside_xy_ratio
                          << ", overlap=" << prechecks[index].overlap_ratio
                          << ", overlap_threshold="
@@ -791,7 +859,37 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                          << prechecks[index].gravity_alignment_cos;
             continue;
         }
+        refinement_indices.push_back(index);
+    }
 
+    const int refinement_limit =
+        options_.relocalization_max_refinement_candidates_;
+    if (refinement_limit > 0) {
+        std::stable_sort(
+            refinement_indices.begin(), refinement_indices.end(),
+            [&](std::size_t lhs, std::size_t rhs) {
+                if (prechecks[lhs].overlap_ratio !=
+                    prechecks[rhs].overlap_ratio) {
+                    return prechecks[lhs].overlap_ratio >
+                           prechecks[rhs].overlap_ratio;
+                }
+                return result->candidates[lhs].score >
+                       result->candidates[rhs].score;
+            });
+        if (refinement_indices.size() >
+            static_cast<std::size_t>(refinement_limit)) {
+            LOG(INFO) << "GLOBAL_RELOCALIZATION["
+                      << relocalization_backend_name_
+                      << "] limiting expensive refinements: map_precheck_passed="
+                      << refinement_indices.size()
+                      << ", limit=" << refinement_limit;
+            refinement_indices.resize(
+                static_cast<std::size_t>(refinement_limit));
+        }
+    }
+
+    for (const std::size_t index : refinement_indices) {
+        const auto& candidate = result->candidates[index];
         map_->LoadOnPose(candidate.T_world_imu);
         if (!UpdateGlobalMap()) {
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
@@ -1017,7 +1115,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
 
 LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     const CloudPtr& input, const SE3& pose, std::size_t worker_index,
-    double min_overlap_ratio) const {
+    double min_overlap_ratio, std::size_t maximum_points) const {
     MapConsistencyResult result;
     result.evaluated = true;
     if (!input || input->empty() || !current_lo_pose_set_ ||
@@ -1027,9 +1125,9 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
         return result;
     }
 
-    const std::size_t maximum =
-        static_cast<std::size_t>(options_.relocalization_map_consistency_max_points_);
-    const std::size_t stride = std::max<std::size_t>(1, (input->size() + maximum - 1) / maximum);
+    const std::size_t maximum = std::max<std::size_t>(1, maximum_points);
+    const std::size_t stride = std::max<std::size_t>(
+        1, (input->size() + maximum - 1) / maximum);
     std::size_t finite_index = 0;
     std::size_t evaluated_points = 0;
     std::size_t inside_xy = 0;
@@ -1061,7 +1159,21 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
                             position.z() <= relocalization_map_max_.z() + margin;
         if (xy_ok) ++inside_xy;
         if (xyz_ok) ++inside_xyz;
-        if (relocalization_kdtrees_[worker_index]->nearestKSearch(
+        // A point outside the map AABB expanded by the accepted neighbour
+        // distance cannot contribute to overlap. Avoiding a global-tree query
+        // here is especially important for bad height hypotheses, for which a
+        // nearest-neighbour traversal can otherwise dominate the whole frame.
+        const double search_margin =
+            options_.relocalization_nearest_neighbor_distance_;
+        const bool can_have_neighbor =
+            position.x() >= relocalization_map_min_.x() - search_margin &&
+            position.x() <= relocalization_map_max_.x() + search_margin &&
+            position.y() >= relocalization_map_min_.y() - search_margin &&
+            position.y() <= relocalization_map_max_.y() + search_margin &&
+            position.z() >= relocalization_map_min_.z() - search_margin &&
+            position.z() <= relocalization_map_max_.z() + search_margin;
+        if (can_have_neighbor &&
+            relocalization_kdtrees_[worker_index]->nearestKSearch(
                 transformed, 1, nearest_index, nearest_distance_sq) > 0 &&
             nearest_distance_sq[0] <= maximum_distance_sq) {
             ++overlap;
@@ -1097,7 +1209,9 @@ bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const
     if (!options_.enable_relocalization_map_consistency_) return true;
     const MapConsistencyResult result =
         EvaluateRelocalizationMapConsistency(
-            input, pose, 0, options_.relocalization_min_overlap_ratio_);
+            input, pose, 0, options_.relocalization_min_overlap_ratio_,
+            static_cast<std::size_t>(
+                options_.relocalization_map_consistency_max_points_));
     ApplyMapConsistencyResult(result);
 
     if (!options_.relocalization_debug_dir_.empty() && input && !input->empty()) {

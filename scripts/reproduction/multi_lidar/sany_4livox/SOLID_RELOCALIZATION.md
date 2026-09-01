@@ -1,4 +1,47 @@
-# SANY 四雷达 SOLiD 重定位
+# SANY 多雷达 SOLiD / SOLiD-KISS 重定位
+
+## 当前三雷达发布边界（2026-09-01）
+
+- 当前在线拓扑只使用主 Orin 的前 184、左 108、右 133 三台雷达；后 143 雷达不进入定位。
+- 现场唯一入口是 `bash scripts/run.sh`。`run_sany_online_diagnostics.sh` 仅为下层执行器，不是第二个操作入口。
+- 正式配置是 `config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml`，默认 `relocalization.backend: solid_kiss`。
+- `solid_kiss` 没有替换 SOLiD：SOLiD 负责地点召回，KISS-Matcher 风格模块用 FPFH、距离兼容图、maximum k-core 和 GNC-TLS 估计候选子图相对位姿，随后仍执行地图预检、点到面精配准、最终地图一致性和两帧确认。
+- 当前生效预算为 Top-K 8、检索池 64、候选批次 8、每帧最多精配准一个候选。纯 `solid` Top-128 段保留为回退，不是默认参数。
+
+用生成器冻结三雷达 `solid_kiss` 变体时必须显式指定三雷达定位 YAML 为 base：
+
+```bash
+python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_config.py \
+  --base config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
+  --backend solid_kiss \
+  --compute-backend cpu \
+  --top-k 8 \
+  --retrieval-pool-size 64 \
+  --output /tmp/sany_3lidar_localization_solid_kiss.yaml
+```
+
+地图导出后生成 SOLiD 数据库：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+./install/lightning/lib/lightning/build_solid_database \
+  --config=config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
+  --map_path=/absolute/path/to/new_map
+```
+
+当前后端同时需要：
+
+```text
+new_map/
+├── index.txt、分块 PCD、global.pcd、map_frame.yaml
+├── solid_relocalization/database.yaml
+└── btc_relocalization/database.yaml、submap_*.pcd
+```
+
+离线基准如果只统计算法时间，应在 `run_loc_offline.sh` 的 `--` 后传入 `--relocalization_debug=false`，关闭拒绝候选 PCD/俯视图 I/O。诊断问题时保留默认 `true`。
+
+## 历史四雷达纯 SOLiD 复现
 
 ## 数据与坐标约定
 
@@ -7,7 +50,7 @@
 - 四个 Mid-360 点云先按主配置中的外参变换到前雷达 `lidar_0` 坐标系，再生成一个融合 SOLiD 描述子。不要为每个雷达独立检索后再投票，否则雷达遮挡和不同视场会产生互相冲突的候选。
 - 单个 Mid-360 的标称视场为水平 360°、垂直 -7° 至 52°。外参变换后的四雷达融合云覆盖范围更宽，因此描述子的垂直角范围配置为 -90° 至 90°，并对分箱索引做边界保护。
 
-## 重定位链路
+## 历史重定位链路
 
 1. 从优化后的地图子图生成 SOLiD range/angle 描述子数据库。
 2. 查询端维护 1、3、5、10 帧滚动子图，允许车辆静止或运动后完成初始化。
@@ -20,7 +63,7 @@
 - 建图：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`；
 - SOLiD 定位：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml`。
 
-`runs/` 只保存地图、轨迹、日志、分析结果和临时变体，不是域控正式配置的来源。需要从建图配置重新冻结定位配置时，执行：
+`runs/` 只保存地图、轨迹、日志、分析结果和临时变体，不是域控正式配置的来源。需要复现四雷达纯 SOLiD 配置时，执行：
 
 ```bash
 python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_config.py \
@@ -57,7 +100,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/analyze_phase_a_relocalizat
   --output-csv runs/sany_4lidar_relocalization_latency_matrix_20260812/analysis/worker12.csv
 ```
 
-## 2026-08-12 耗时优化结论
+## 2026-08-12 四雷达纯 SOLiD 耗时结论（历史）
 
 新口径将 SOLiD 检索、多航向 ICP 和接受前处理纳入累计耗时。早期 `P95≈0.2002 s` 只是从播放起点到接受帧的传感器时间延迟，且旧检索计时在 ICP 前结束；它不是端到端 CPU 计算耗时，不能支持“完整重定位亚秒”的结论。
 

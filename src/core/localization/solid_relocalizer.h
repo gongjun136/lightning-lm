@@ -1,10 +1,12 @@
 #pragma once
 
 #include <deque>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "core/localization/global_relocalizer.h"
+#include "core/localization/kiss_matcher_registration.h"
 #include "core/localization/solid_descriptor.h"
 
 namespace lightning::loc {
@@ -18,7 +20,11 @@ class SolidRelocalizer : public GlobalRelocalizer {
     void ResetQuery() override;
     bool IsReady() const override { return ready_; }
     std::size_t DatabaseSize() const override { return entries_.size(); }
-    const char* Name() const override { return "solid"; }
+    const char* Name() const override {
+        return options_.coarse_registration_backend == "kiss_matcher"
+                   ? "solid_kiss"
+                   : "solid";
+    }
     std::optional<RelocalizationResult> AddFrame(
         const CloudPtr& cloud, const SE3& T_odom_imu, double timestamp) override;
 
@@ -40,6 +46,8 @@ class SolidRelocalizer : public GlobalRelocalizer {
         int min_points_per_submap = 100;
         double downsample_leaf_size = 0.20;
         bool refine_with_icp = true;
+        std::string coarse_registration_backend = "icp";
+        KissMatcherRegistration::Options kiss_registration;
         int icp_max_iterations = 30;
         double icp_max_correspondence_distance = 5.0;
         double icp_max_fitness_score = 2.0;
@@ -61,6 +69,7 @@ class SolidRelocalizer : public GlobalRelocalizer {
         SolidDescriptor descriptor;
         std::string cloud_path;
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+        std::unique_ptr<KissMatcherRegistration> kiss_registration;
     };
 
     struct QueryFrame {
@@ -73,6 +82,10 @@ class SolidRelocalizer : public GlobalRelocalizer {
         std::size_t frame_count) const;
     bool RefineCandidateWithIcp(
         const pcl::PointCloud<pcl::PointXYZI>::ConstPtr& query,
+        DatabaseEntry& entry, RelocalizationCandidate& candidate,
+        double& fitness_score);
+    bool RefineCandidateWithKissMatcher(
+        const KissMatcherRegistration::PreparedCloud& query,
         DatabaseEntry& entry, RelocalizationCandidate& candidate,
         double& fitness_score);
 

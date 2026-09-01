@@ -38,6 +38,8 @@ DEFINE_string(output_tum, "", "output fused localization TUM trajectory; disable
 DEFINE_string(output_lidar_loc_tum, "", "output raw lidar-map localization TUM trajectory; disabled when empty");
 DEFINE_string(output_csv, "", "output per-localization-frame CSV; disabled when empty");
 DEFINE_string(output_frame_stats_csv, "", "output per-fused-frame multi-lidar statistics; disabled when empty");
+DEFINE_bool(relocalization_debug, true,
+            "write rejected relocalization point clouds and bird's-eye images beside output_csv");
 DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline processing");
 DEFINE_bool(publish_topics, true,
             "publish SANY localization outputs on /PosRes, /localization/pose_vel, "
@@ -476,7 +478,7 @@ int main(int argc, char** argv) {
     loc_options.force_2d_ = yaml.GetValue<bool>("lidar_loc", "force_2d");
     loc_options.map_option_.enable_dynamic_polygon_ = false;
     loc_options.map_option_.map_path_ = FLAGS_map_path;
-    if (!FLAGS_output_csv.empty()) {
+    if (FLAGS_relocalization_debug && !FLAGS_output_csv.empty()) {
         loc_options.relocalization_debug_dir_ =
             (std::filesystem::path(FLAGS_output_csv).parent_path() / "relocalization_debug").string();
     }

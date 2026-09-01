@@ -356,7 +356,9 @@ lidar_loc:
   try_self_extrap: false
 relocalization:
   enabled: true
-  backend: solid
+  # Validated on both changed-scene SANY bags and the independent Baoma
+  # three-LiDAR map/relocalization set. Use `solid` here for instant rollback.
+  backend: solid_kiss
   refinement_backend: plane_icp
   plane_icp:
     target_voxel_size: 0.5
@@ -405,6 +407,57 @@ relocalization:
   confirmation_max_translation: 1.0
   confirmation_max_rotation_deg: 5.0
   confirmation_max_interval: 1.0
+  # Initial-guess-free robust registration settings consumed by solid_kiss.
+  # SOLiD still performs place retrieval; this matcher estimates the relative
+  # pose against each shortlisted local submap.
+  kiss_matcher:
+    # These backend-local gates admit coarse feature hypotheses to plane ICP;
+    # robust feature geometry, strict final overlap and two-frame confirmation
+    # remain mandatory.
+    map_precheck_min_overlap_ratio: 0.55
+    map_min_overlap_ratio: 0.75
+    query_submap_sizes:
+    - 1
+    - 3
+    query_stride: 3
+    max_points_per_submap: 50000
+    min_points_per_submap: 500
+    voxel_size: 0.5
+    normal_radius: 1.75
+    feature_radius: 2.5
+    descriptor_ratio: 0.9
+    max_feature_points: 60000
+    max_correspondences: 800
+    compatibility_tolerance: 1.0
+    minimum_pair_distance: 1.0
+    minimum_core_degree: 4
+    minimum_inliers: 12
+    inlier_threshold: 0.75
+    maximum_rmse: 0.5
+    gnc_max_iterations: 50
+    gnc_factor: 1.4
+    spatial_cell_size: 5.0
+    minimum_spatial_cells: 4
+    feature_threads: 8
+  # Opt-in changed-scene hybrid: SOLiD performs place retrieval only, then the
+  # initial-guess-free matcher replaces multi-yaw point-to-point ICP.
+  solid_kiss:
+    map_precheck_min_overlap_ratio: 0.55
+    map_min_overlap_ratio: 0.75
+    map_precheck_max_points: 5000
+    # The fused scan covers most of this compact site, so whole-map overlap is
+    # a stronger selector than descriptor rank. Retry on the next 10 Hz frame
+    # instead of blocking one frame on several expensive local refinements.
+    max_refinement_candidates: 1
+    top_k: 8
+    retrieval_pool_size: 64
+    candidate_batch_size: 8
+    plane_icp:
+      coarse_max_correspondence_distance: 2.5
+      coarse_max_iterations: 25
+      fine_max_iterations: 20
+      max_translation_correction: 3.0
+      max_rmse: 0.25
   solid:
     database_subdirectory: solid_relocalization
     source_database_subdirectory: btc_relocalization

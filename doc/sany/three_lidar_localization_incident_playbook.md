@@ -1,5 +1,7 @@
 # SANY 三/四雷达域控定位丢失排查与取证方案
 
+> 当前现场拓扑为主 Orin 三雷达，唯一操作入口为 `bash scripts/run.sh`。本文中的四雷达、双 Orin、Zstd 和旧故障目录只用于历史取证；不得直接复制历史启动命令。三雷达默认重定位后端为 `solid_kiss`，纯 `solid` 为回退。
+
 ## 结论
 
 三次故障不是 `/PosRes` 发布器自身退出，而是同一条故障链在不同阶段的表现：输入处理产生大幅时间倒退，LIO 随后发散，连续 5 帧激光定位无效后发布门控主动停止 `/PosRes`。算法仍在运行并继续尝试全局重定位。
@@ -45,7 +47,7 @@
 
 `PublishProcessedCloud()` 每帧观察 `lidar_loc_valid_`。连续失败达到 YAML 中的 `relocalization.lost_frame_threshold`（当前为 5）后，地图坐标输出门控关闭，因此 `/PosRes`、`/slamPoseRaw_topic` 和地图点云停止；进程、LIO 和激光定位线程仍继续运行。
 
-`LidarLoc` 在进入 LOST 后会继续逐帧尝试全局重定位。候选通过地图一致性、重力方向、NDT 和连续确认后，门控在新的有效匹配到达时自动重新打开。外层脚本只记录和告警，不重启算法，也不触发车辆安全停机。
+`LidarLoc` 在进入 LOST 后会继续逐帧尝试全局重定位。当前三雷达链路由 SOLiD 召回地点，KISS-Matcher 风格模块执行鲁棒无初值粗配准，候选再通过地图预检、点到面精配准、最终地图一致性和连续两帧确认。新的有效匹配到达后门控自动重新打开。外层脚本只记录和告警，不重启算法，也不触发车辆安全停机。
 
 ## 新增在线诊断
 
@@ -72,47 +74,25 @@
 
 ## 域控部署与运行
 
-在 `feature/gj_change_2025.11.19` 构建并部署后，先启动三路 Livox；不录包时只要求主 IMU，录包时要求 YAML 中配置的全部 IMU。仅在需要录包时启动无损 Zstd 压缩器：
+在 `feature/gj_change_2025.11.19` 完成 Release 构建并部署后，先启动主 Orin 上的前 184、左 108、右 133 三路 Livox；开启 CAN 观测时同时启动 `/SpeThrCAN4_topic`。新终端只执行统一入口：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /home/nvidia/project/gj_ws/sdk/livox_sdk/install/setup.bash
-ros2 run livox_ros_driver2 pointcloud_zstd_compressor
-```
-
-另一个终端启动定位与取证外层脚本：
-
-```bash
+set +e
+set +u
 cd /home/nvidia/project/gj_ws/lightning-lm
-export LIGHTNING_LM_INSTALL_SETUP=/home/nvidia/project/gj_ws/lightning-lm/install/setup.bash
-export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml
-export SANY_MAP_PATH=/absolute/path/to/map
-export LIGHTNING_LM_OUT_ROOT=/home/nvidia/project/gj_ws/runs
-bash scripts/run_sany_online_diagnostics.sh
+bash scripts/run.sh
 ```
 
-开启录包时默认至少要求 20 GiB 可用空间；运行时间不设上限，直到定位进程退出或 Ctrl-C。脚本按配置录制全部 Zstd 点云、YAML 中配置的全部 IMU、定位输出和诊断话题，使用 MCAP fastwrite 与 1 GiB cache。定位算法仍只使用主 IMU。Zstd 点云是无损数据，未录制相机。
+当前 `run.sh` 固定 `SANY_LIDAR_LAYOUT=3`、`SANY_RECORD_BAG=0`、`SANY_ENABLE_POSE_VEL_WATCHDOG=0`，并清除外部 `LIGHTNING_LM_CONFIG`。因此：
 
-不需要录包时设置 `SANY_RECORD_BAG=0`。此模式只等待定位 YAML 中的原始 `sensor_msgs/msg/PointCloud2` 雷达话题和主 IMU，不要求 `/zstd` 话题、压缩节点、完整 Livox 压缩消息环境、MCAP 插件、录包 QoS 文件或最低录包磁盘空间：
+- 操作员不得直接调用 `run_sany_online_diagnostics.sh`；它只是执行器；
+- 当前运行不要求 Zstd 压缩器或 `/zstd` Topic；
+- 当前地图目录必须同时包含 `solid_relocalization/database.yaml` 和 `btc_relocalization/submap_*.pcd`；
+- 启动日志必须显示 `coarse_registration_backend=kiss_matcher`、`validation_top_k=8`、`retrieval_pool_size=64`；
+- CAN 隔离只允许在同一入口下执行 `SANY_ENABLE_CAN_OBSERVATION=0 bash scripts/run.sh`；
+- 若要启用 MCAP 或 `/localization/pose_vel` watchdog，必须先修改统一入口、形成新的代码提交并重新验收，不能绕过入口临时启动。
 
-```bash
-export SANY_RECORD_BAG=0
-bash scripts/run_sany_online_diagnostics.sh sany_4lidar_no_bag
-```
-
-脚本会从 `LIGHTNING_LM_CONFIG` 的 `multi_lidar.topics` 自动读取雷达数量、主 IMU 和全部 IMU 录制话题，并把每个原始雷达 topic 映射到对应的 `/zstd` 录制 topic。因此切换为当前域控四雷达配置时无需修改脚本：
-
-```bash
-export LIGHTNING_LM_CONFIG=/home/nvidia/project/gj_ws/lightning-lm/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml
-export SANY_MAP_PATH=/absolute/path/to/four_lidar_map
-bash scripts/run_sany_online_diagnostics.sh sany_4lidar_diag
-```
-
-四雷达建图配置为 `config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`，不应用它代替在线定位 YAML。两个正式配置均纳入 `config/`；每次运行拷贝到 `runs/<run>/config.yaml` 的文件只是快照，不是下一次部署的配置源。
-
-该定位配置对应当前域控的 184/108/133/143 四台 MID-360，主雷达和主 IMU 为 184。运行前必须确认第四路 143 的外参仍对应当前车辆，并且地图目录包含与该配置匹配的 `index.txt`、分块点云、`map_frame.yaml` 和 `solid_relocalization/database.yaml`。若使用其他雷达编号，可通过 `SANY_COMPRESSED_LIDAR_TOPICS` 覆盖压缩点云录制话题；`SANY_IMU_TOPIC` 只覆盖定位使用的主 IMU，并会确保该话题也被录制。其余 IMU 录制话题来自 YAML，算法订阅话题与外参仍以 YAML 为准。
-
-当 `/PosRes` 在首次正常发布后静默 2 s，脚本在 `snapshots/` 保存一次诊断、topic/publisher、进程、内存、磁盘、网卡和时钟快照；恢复后写入 `logs/posres_watchdog.csv`，后续再次丢失会生成新的快照。它不会自动重启定位。
+每次运行的事实源是 `runs/sany_3lidar_<timestamp>/run_metadata.txt`、冻结的 `config.yaml` 和 `logs/run_loc_online.stderr.log`。正常重定位日志应从 `GLOBAL_RELOCALIZATION[solid_kiss] ... count=1/2` 进入 `accepted ... confirmations=2`。
 
 ## 故障包回放
 

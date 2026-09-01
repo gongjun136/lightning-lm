@@ -78,7 +78,9 @@ class LidarLoc {
         double relocalization_precheck_min_overlap_ratio_ = 0.20;
         double relocalization_min_gravity_alignment_cos_ = 0.95;
         int relocalization_map_consistency_max_points_ = 50000;
+        int relocalization_precheck_max_points_ = 50000;
         int relocalization_validation_workers_ = 2;
+        int relocalization_max_refinement_candidates_ = 0;
         int relocalization_confirmation_count_ = 2;
         double relocalization_confirmation_max_translation_ = 1.0;
         double relocalization_confirmation_max_rotation_deg_ = 5.0;
@@ -248,7 +250,7 @@ class LidarLoc {
     bool BuildRelocalizationMapCache();
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
         const CloudPtr& input, const SE3& pose, std::size_t worker_index,
-        double min_overlap_ratio) const;
+        double min_overlap_ratio, std::size_t maximum_points) const;
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
     bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,

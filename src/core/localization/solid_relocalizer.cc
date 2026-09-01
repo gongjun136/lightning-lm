@@ -46,6 +46,44 @@ SolidDescriptorOptions ReadDescriptorOptions(
     return options;
 }
 
+KissMatcherRegistration::Options ReadKissRegistrationOptions(
+    const YAML::Node& node, KissMatcherRegistration::Options options = {}) {
+    options.voxel_size = ReadOr<double>(node, "voxel_size", options.voxel_size);
+    options.normal_radius =
+        ReadOr<double>(node, "normal_radius", options.normal_radius);
+    options.feature_radius =
+        ReadOr<double>(node, "feature_radius", options.feature_radius);
+    options.descriptor_ratio =
+        ReadOr<double>(node, "descriptor_ratio", options.descriptor_ratio);
+    options.max_feature_points = ReadOr<int>(
+        node, "max_feature_points", options.max_feature_points);
+    options.max_correspondences = ReadOr<int>(
+        node, "max_correspondences", options.max_correspondences);
+    options.compatibility_tolerance = ReadOr<double>(
+        node, "compatibility_tolerance", options.compatibility_tolerance);
+    options.minimum_pair_distance = ReadOr<double>(
+        node, "minimum_pair_distance", options.minimum_pair_distance);
+    options.minimum_core_degree = ReadOr<int>(
+        node, "minimum_core_degree", options.minimum_core_degree);
+    options.minimum_inliers =
+        ReadOr<int>(node, "minimum_inliers", options.minimum_inliers);
+    options.inlier_threshold =
+        ReadOr<double>(node, "inlier_threshold", options.inlier_threshold);
+    options.maximum_rmse =
+        ReadOr<double>(node, "maximum_rmse", options.maximum_rmse);
+    options.gnc_max_iterations = ReadOr<int>(
+        node, "gnc_max_iterations", options.gnc_max_iterations);
+    options.gnc_factor =
+        ReadOr<double>(node, "gnc_factor", options.gnc_factor);
+    options.spatial_cell_size = ReadOr<double>(
+        node, "spatial_cell_size", options.spatial_cell_size);
+    options.minimum_spatial_cells = ReadOr<int>(
+        node, "minimum_spatial_cells", options.minimum_spatial_cells);
+    options.feature_threads =
+        ReadOr<int>(node, "feature_threads", options.feature_threads);
+    return options;
+}
+
 YAML::Node WriteDescriptorOptions(const SolidDescriptorOptions& options) {
     YAML::Node node;
     node["range_bins"] = options.range_bins;
@@ -227,6 +265,11 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         const YAML::Node root = YAML::LoadFile(config_path);
         const YAML::Node config = root["relocalization"];
         const YAML::Node solid = config["solid"];
+        const std::string selected_backend =
+            ReadOr<std::string>(config, "backend", "solid");
+        const YAML::Node solid_kiss = config["solid_kiss"];
+        options_.coarse_registration_backend =
+            selected_backend == "solid_kiss" ? "kiss_matcher" : "icp";
         options_.database_subdirectory = ReadOr<std::string>(
             solid, "database_subdirectory", options_.database_subdirectory);
         options_.source_database_subdirectory = ReadOr<std::string>(
@@ -250,6 +293,12 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         options_.top_k = ReadOr<int>(solid, "top_k", options_.top_k);
         options_.retrieval_pool_size = ReadOr<int>(
             solid, "retrieval_pool_size", options_.retrieval_pool_size);
+        if (selected_backend == "solid_kiss") {
+            options_.top_k =
+                ReadOr<int>(solid_kiss, "top_k", options_.top_k);
+            options_.retrieval_pool_size = ReadOr<int>(
+                solid_kiss, "retrieval_pool_size", options_.retrieval_pool_size);
+        }
         options_.min_similarity =
             ReadOr<double>(solid, "min_similarity", options_.min_similarity);
         options_.candidate_dedup_radius = ReadOr<double>(
@@ -264,6 +313,8 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             solid, "downsample_leaf_size", options_.downsample_leaf_size);
         options_.refine_with_icp =
             ReadOr<bool>(solid, "refine_with_icp", options_.refine_with_icp);
+        options_.kiss_registration = ReadKissRegistrationOptions(
+            config["kiss_matcher"], options_.kiss_registration);
         options_.icp_max_iterations = ReadOr<int>(
             solid, "icp_max_iterations", options_.icp_max_iterations);
         options_.icp_max_correspondence_distance = ReadOr<double>(
@@ -276,6 +327,10 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             options_.icp_max_translation_correction);
         options_.icp_batch_size =
             ReadOr<int>(solid, "icp_batch_size", options_.icp_batch_size);
+        if (selected_backend == "solid_kiss") {
+            options_.icp_batch_size = ReadOr<int>(
+                solid_kiss, "candidate_batch_size", options_.icp_batch_size);
+        }
         options_.icp_workers =
             ReadOr<int>(solid, "icp_workers", options_.icp_workers);
         compute::ComputeBudget compute_budget;
@@ -323,6 +378,14 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                         options_.query_submap_sizes.end(),
                         [](int size) { return size <= 0; })) {
             LOG(ERROR) << "invalid SOLiD relocalization configuration";
+            return false;
+        }
+        std::string kiss_options_error;
+        if (options_.coarse_registration_backend == "kiss_matcher" &&
+            !KissMatcherRegistration::ValidateOptions(
+                options_.kiss_registration, &kiss_options_error)) {
+            LOG(ERROR) << "invalid SOLiD+KISS registration configuration: "
+                       << kiss_options_error;
             return false;
         }
 
@@ -383,7 +446,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                 static_cast<int>(index), ReadPose(yaml_entry), std::move(descriptor),
                 (std::filesystem::path(map_path) /
                  options_.source_database_subdirectory / cloud_name).string(),
-                nullptr});
+                nullptr, nullptr});
         }
         ready_ = !entries_.empty();
         LOG(INFO) << "loaded SOLiD relocalization database: entries=" << entries_.size()
@@ -393,6 +456,8 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                   << ", validation_top_k=" << options_.top_k
                   << ", min_similarity=" << options_.min_similarity
                   << ", refine_with_icp=" << options_.refine_with_icp
+                  << ", coarse_registration_backend="
+                  << options_.coarse_registration_backend
                   << ", icp_batch_size=" << options_.icp_batch_size
                   << ", icp_workers=" << options_.icp_workers
                   << ", icp_worker_nice=" << options_.icp_worker_nice
@@ -518,6 +583,48 @@ bool SolidRelocalizer::RefineCandidateWithIcp(
     candidate.T_world_imu =
         T_map_odom_planar * query_frames_.back().T_odom_lidar *
         T_imu_lidar_.inverse();
+    return true;
+}
+
+bool SolidRelocalizer::RefineCandidateWithKissMatcher(
+    const KissMatcherRegistration::PreparedCloud& query,
+    DatabaseEntry& entry, RelocalizationCandidate& candidate,
+    double& fitness_score) {
+    fitness_score = std::numeric_limits<double>::infinity();
+    if (!query.points || query.points->empty() || !entry.kiss_registration) {
+        return false;
+    }
+    const auto match = entry.kiss_registration->Align(query);
+    if (!match.success) {
+        LOG(INFO) << "SOLID_KISS_REJECT candidate=" << candidate.candidate_id
+                  << ", query_frames=" << candidate.query_submap_size
+                  << ", rough_matches=" << match.rough_correspondences
+                  << ", core_matches=" << match.core_correspondences
+                  << ", inliers=" << match.inliers
+                  << ", reason=" << match.reason;
+        return false;
+    }
+
+    fitness_score = match.rmse;
+    candidate.rough_match_count = match.rough_correspondences;
+    candidate.spatial_coverage = match.spatial_coverage;
+    const SE3 T_map_current_lidar =
+        entry.T_world_lidar * match.T_target_source;
+    const SE3 T_map_odom_raw =
+        T_map_current_lidar * query_frames_.back().T_odom_lidar.inverse();
+    const SE3 T_map_odom_planar(
+        Quatd(AngAxisd(Yaw(T_map_odom_raw), Vec3d::UnitZ())),
+        T_map_odom_raw.translation());
+    candidate.T_world_imu =
+        T_map_odom_planar * query_frames_.back().T_odom_lidar *
+        T_imu_lidar_.inverse();
+    LOG(INFO) << "SOLID_KISS_ACCEPT candidate=" << candidate.candidate_id
+              << ", query_frames=" << candidate.query_submap_size
+              << ", retrieval_score=" << candidate.score
+              << ", rough_matches=" << match.rough_correspondences
+              << ", core_matches=" << match.core_correspondences
+              << ", inliers=" << match.inliers << ", rmse=" << match.rmse
+              << ", pose=" << candidate.T_world_imu.translation().transpose();
     return true;
 }
 
@@ -689,6 +796,59 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
                 LOG(ERROR) << "failed to load SOLiD ICP cloud: " << entry.cloud_path;
                 entry.cloud.reset();
             }
+            if (options_.coarse_registration_backend != "kiss_matcher" ||
+                !entry.cloud || entry.kiss_registration) {
+                continue;
+            }
+            entry.kiss_registration = std::make_unique<KissMatcherRegistration>(
+                options_.kiss_registration);
+            const CloudPtr target(new PointCloudType(ConvertCloud(*entry.cloud)));
+            std::string target_error;
+            if (!entry.kiss_registration->SetTarget(target, &target_error)) {
+                LOG(ERROR) << "failed to build SOLiD+KISS target: candidate="
+                           << candidate.candidate_id
+                           << ", error=" << target_error;
+                entry.kiss_registration.reset();
+            }
+        }
+
+        // All shortlist entries with the same query window see exactly the
+        // same source cloud. Compute its normals/FPFH once, then share the
+        // immutable prepared data across target-matching workers.
+        std::vector<std::pair<
+            int, KissMatcherRegistration::PreparedCloud>> prepared_queries;
+        if (options_.coarse_registration_backend == "kiss_matcher") {
+            KissMatcherRegistration* preparer = nullptr;
+            for (const auto& candidate : batch) {
+                auto& entry = entries_[static_cast<std::size_t>(
+                    candidate.candidate_id)];
+                if (entry.kiss_registration) {
+                    preparer = entry.kiss_registration.get();
+                    break;
+                }
+            }
+            if (preparer) {
+                for (const auto& query : query_clouds) {
+                    const bool required = std::any_of(
+                        batch.begin(), batch.end(), [&](const auto& candidate) {
+                            return candidate.query_submap_size == query.first;
+                        });
+                    if (!required) continue;
+                    KissMatcherRegistration::PreparedCloud prepared;
+                    std::string prepare_error;
+                    const CloudPtr converted_query(
+                        new PointCloudType(ConvertCloud(*query.second)));
+                    if (!preparer->PrepareSource(
+                            converted_query, prepared, &prepare_error)) {
+                        LOG(WARNING) << "failed to prepare SOLiD+KISS query: "
+                                     << "query_frames=" << query.first
+                                     << ", error=" << prepare_error;
+                        continue;
+                    }
+                    prepared_queries.emplace_back(
+                        query.first, std::move(prepared));
+                }
+            }
         }
 
         struct IcpResult {
@@ -704,12 +864,15 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             std::size_t yaw_index = 0;
         };
         std::vector<IcpTask> icp_tasks;
-        icp_tasks.reserve(batch.size() *
-                          options_.icp_yaw_hypothesis_offsets_deg.size());
+        const std::size_t yaw_hypothesis_count =
+            options_.coarse_registration_backend == "kiss_matcher"
+                ? 1
+                : options_.icp_yaw_hypothesis_offsets_deg.size();
+        icp_tasks.reserve(batch.size() * yaw_hypothesis_count);
         for (std::size_t batch_index = 0; batch_index < batch.size();
              ++batch_index) {
             for (std::size_t yaw_index = 0;
-                 yaw_index < options_.icp_yaw_hypothesis_offsets_deg.size();
+                 yaw_index < yaw_hypothesis_count;
                  ++yaw_index) {
                 auto candidate = batch[batch_index];
                 const double radians =
@@ -746,18 +909,34 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
                 for (std::size_t index = worker; index < icp_tasks.size();
                      index += worker_count) {
                     auto candidate = icp_tasks[index].candidate;
-                    const auto query = std::find_if(
-                        query_clouds.begin(), query_clouds.end(),
-                        [&](const auto& value) {
-                            return value.first == candidate.query_submap_size;
-                        });
-                    if (query == query_clouds.end()) continue;
                     auto& entry = entries_[static_cast<std::size_t>(
                         candidate.candidate_id)];
                     if (!entry.cloud) continue;
                     double fitness_score = std::numeric_limits<double>::infinity();
-                    if (!RefineCandidateWithIcp(
-                            query->second, entry, candidate, fitness_score)) {
+                    bool refined = false;
+                    if (options_.coarse_registration_backend ==
+                        "kiss_matcher") {
+                        const auto query = std::find_if(
+                            prepared_queries.begin(), prepared_queries.end(),
+                            [&](const auto& value) {
+                                return value.first ==
+                                       candidate.query_submap_size;
+                            });
+                        if (query == prepared_queries.end()) continue;
+                        refined = RefineCandidateWithKissMatcher(
+                            query->second, entry, candidate, fitness_score);
+                    } else {
+                        const auto query = std::find_if(
+                            query_clouds.begin(), query_clouds.end(),
+                            [&](const auto& value) {
+                                return value.first ==
+                                       candidate.query_submap_size;
+                            });
+                        if (query == query_clouds.end()) continue;
+                        refined = RefineCandidateWithIcp(
+                            query->second, entry, candidate, fitness_score);
+                    }
+                    if (!refined) {
                         continue;
                     }
                     icp_results[index] =
@@ -808,7 +987,8 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     const profiling::TimingSample search_timing = search_profile_timer.Stop();
     const auto emit_profile = [&]() {
         if (!profiling_enabled) return;
-        LOG(INFO) << "COMPUTE_BENCH_EVENT module=global_relocalization backend=solid"
+        LOG(INFO) << "COMPUTE_BENCH_EVENT module=global_relocalization backend="
+                  << Name()
                   << " timestamp_s=" << result.timestamp
                   << " query_frames=" << query_frames_.size()
                   << " query_points=" << result.point_count
@@ -818,8 +998,13 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     };
     result.candidate_found = score_candidate_found;
     if (result.candidates.empty()) {
-        result.reason = descriptor_generated ? "score_below_threshold"
-                                             : "no_query_descriptor";
+        if (!descriptor_generated) {
+            result.reason = "no_query_descriptor";
+        } else if (options_.refine_with_icp && score_candidate_found) {
+            result.reason = "geometric_registration_failed";
+        } else {
+            result.reason = "score_below_threshold";
+        }
         emit_profile();
         return result;
     }

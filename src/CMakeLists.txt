@@ -29,6 +29,7 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/localization/localization_result.cc
         core/localization/btc_relocalizer.cc
+        core/localization/kiss_matcher_registration.cc
         core/localization/solid_descriptor.cc
         core/localization/solid_relocalizer.cc
         core/localization/point_to_plane_registration.cc
@@ -130,6 +131,9 @@ if(BUILD_TESTING)
     add_executable(point_to_plane_registration_test test/point_to_plane_registration_test.cc)
     target_link_libraries(point_to_plane_registration_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(kiss_matcher_registration_test test/kiss_matcher_registration_test.cc)
+    target_link_libraries(kiss_matcher_registration_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(async_message_process_test test/async_message_process_test.cc)
     target_link_libraries(async_message_process_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -168,6 +172,7 @@ if(BUILD_TESTING)
     add_test(NAME localization_pgo_test COMMAND $<TARGET_FILE:localization_pgo_test>)
     add_test(NAME solid_descriptor_test COMMAND $<TARGET_FILE:solid_descriptor_test>)
     add_test(NAME point_to_plane_registration_test COMMAND $<TARGET_FILE:point_to_plane_registration_test>)
+    add_test(NAME kiss_matcher_registration_test COMMAND $<TARGET_FILE:kiss_matcher_registration_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
     add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)
