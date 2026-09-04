@@ -299,6 +299,25 @@ bool BlockSolver<Traits>::BuildStructureInc(bool zero_blocks) {
         }
     }
 
+    int indexed_pose_count = 0;
+    int indexed_pose_dim = 0;
+    for (const auto& v : optimizer_->IndexMapping()) {
+        if (!v->Marginalized()) {
+            ++indexed_pose_count;
+            indexed_pose_dim += v->Dimension();
+        }
+    }
+    if (num_poses_ != indexed_pose_count || size_poses_ != indexed_pose_dim) {
+        LOG_EVERY_N(ERROR, 10) << "BLOCK_SOLVER_STATE_MISMATCH"
+                               << " solver_pose_count=" << num_poses_
+                               << " solver_pose_dim=" << size_poses_
+                               << " indexed_pose_count=" << indexed_pose_count
+                               << " indexed_pose_dim=" << indexed_pose_dim
+                               << " new_vertices=" << optimizer_->NewVertices().size()
+                               << " active_edges=" << optimizer_->ActiveEdges().size()
+                               << " hpp_rows=" << Hpp_->Rows() << " hpp_cols=" << Hpp_->Cols();
+    }
+
     // allocate the diagonal on Hpp and Hll
     int poseIdx = last_num_poses;
     for (const auto& v : optimizer_->NewVertices()) {

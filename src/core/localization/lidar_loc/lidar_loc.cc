@@ -1825,6 +1825,19 @@ void LidarLoc::Align(const CloudPtr& input) {
         localization_result_.pose_ = current_pose_esti;
     }
 
+    LOG_EVERY_N(INFO, 10) << "LIDAR_LOC_AUDIT"
+                          << " timestamp=" << current_timestamp_
+                          << " guess_xyz=[" << guess_from_lo.translation().transpose() << "]"
+                          << " ndt_xyz=[" << res_of_lo.translation().transpose() << "]"
+                          << " balanced_xyz=[" << current_pose_esti.translation().transpose() << "]"
+                          << " confidence=" << fitness_score
+                          << " loc_success_lo=" << loc_success_lo
+                          << " loc_success=" << loc_success
+                          << " odom_valid=" << lidar_loc_odom_valid
+                          << " odom_delta=" << delta_rel_abs_pose
+                          << " smooth=" << localization_result_.lidar_loc_smooth_flag_
+                          << " published_valid=" << localization_result_.lidar_loc_valid_;
+
     profiling::Stopwatch state_update_profile_timer(profiling::ComputeProfilingEnabled());
     UpdateState(input);
     frame_profiling_.state_update = state_update_profile_timer.Stop();

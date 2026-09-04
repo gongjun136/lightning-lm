@@ -70,6 +70,12 @@ PGOImpl::PGOImpl(Options options) {
 }
 
 bool PGOImpl::Reset() {
+    LOG(WARNING) << "PGO_RESET_AUDIT phase=before"
+                 << " frames=" << frames_.size()
+                 << " indexed_vertices=" << optimizer_->IndexMapping().size()
+                 << " active_vertices=" << optimizer_->ActiveVertices().size()
+                 << " active_edges=" << optimizer_->ActiveEdges().size()
+                 << " accumulated_frame_id=" << accumulated_frame_id_;
     LOG(WARNING) << "PGO is reset";
     relative_pose_reset_watermark_ = -1.0;
     if (!dr_pose_queue_.empty()) {
@@ -99,6 +105,12 @@ bool PGOImpl::Reset() {
     lidar_odom_valid_cnt_ = 0;
     lidar_odom_conflict_with_dr_ = false;
     lidar_odom_conflict_with_dr_cnt_ = 0;
+    LOG(WARNING) << "PGO_RESET_AUDIT phase=after"
+                 << " frames=" << frames_.size()
+                 << " indexed_vertices=" << optimizer_->IndexMapping().size()
+                 << " active_vertices=" << optimizer_->ActiveVertices().size()
+                 << " active_edges=" << optimizer_->ActiveEdges().size()
+                 << " accumulated_frame_id=" << accumulated_frame_id_;
     return true;
 }
 

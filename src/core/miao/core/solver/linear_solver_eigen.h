@@ -8,6 +8,10 @@
 #include <glog/logging.h>
 #include <Eigen/Sparse>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 #include "linear_solver_ccs.h"
 
 #include "utils/timer.h"
@@ -100,7 +104,29 @@ class LinearSolverEigen : public LinearSolverCCS<MatrixType> {
         cholesky_.factorize(sparse_matrix_);
 
         if (cholesky_.info() != Eigen::Success) {  // the matrix is not positive definite
-            LOG(ERROR) << "error : Cholesky failure, solve failed---------------";
+            double min_diagonal = std::numeric_limits<double>::infinity();
+            double max_diagonal = -std::numeric_limits<double>::infinity();
+            int nonpositive_diagonal_count = 0;
+            int nonfinite_entry_count = 0;
+            for (int index = 0; index < sparse_matrix_.rows(); ++index) {
+                const double value = sparse_matrix_.coeff(index, index);
+                min_diagonal = std::min(min_diagonal, value);
+                max_diagonal = std::max(max_diagonal, value);
+                if (value <= 0.0) ++nonpositive_diagonal_count;
+            }
+            for (int outer = 0; outer < sparse_matrix_.outerSize(); ++outer) {
+                for (typename SparseMatrix::InnerIterator it(sparse_matrix_, outer); it; ++it) {
+                    if (!std::isfinite(it.value())) ++nonfinite_entry_count;
+                }
+            }
+            LOG(ERROR) << "CHOLESKY_FAILURE_AUDIT"
+                       << " rows=" << sparse_matrix_.rows()
+                       << " cols=" << sparse_matrix_.cols()
+                       << " nonzeros=" << sparse_matrix_.nonZeros()
+                       << " min_diagonal=" << min_diagonal
+                       << " max_diagonal=" << max_diagonal
+                       << " nonpositive_diagonal_count=" << nonpositive_diagonal_count
+                       << " nonfinite_entry_count=" << nonfinite_entry_count;
             return false;
         }
         return true;

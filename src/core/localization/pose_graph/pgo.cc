@@ -52,11 +52,29 @@ void PGO::PubResult() {
         }
 
         auto result = impl_->result_;
+        const double base_timestamp = result.timestamp_;
+        const SE3 base_pose = result.pose_;
         if (!impl_->dr_pose_queue_.empty()) {
             const NavState& latest_dr = impl_->dr_pose_queue_.back();
             result.vel_b_ = latest_dr.GetRot().inverse() * latest_dr.GetVel();
         }
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(result);
+        if (!impl_->lidar_loc_pose_queue_.empty()) {
+            const TimedPose& latest_lidar_loc = impl_->lidar_loc_pose_queue_.back();
+            LOG_EVERY_N(INFO, 100) << "PGO_OUTPUT_AUDIT"
+                                   << " timestamp=" << result.timestamp_
+                                   << " base_timestamp=" << base_timestamp
+                                   << " lidar_timestamp=" << latest_lidar_loc.timestamp_
+                                   << " base_xy=[" << base_pose.translation().head<2>().transpose() << "]"
+                                   << " output_xy=[" << result.pose_.translation().head<2>().transpose() << "]"
+                                   << " lidar_xy=[" << latest_lidar_loc.pose_.translation().head<2>().transpose() << "]"
+                                   << " output_base_delta_xy="
+                                   << (result.pose_.translation() - base_pose.translation()).head<2>().norm()
+                                   << " output_lidar_delta_xy="
+                                   << (result.pose_.translation() - latest_lidar_loc.pose_.translation()).head<2>().norm()
+                                   << " lidar_age=" << result.timestamp_ - latest_lidar_loc.timestamp_
+                                   << " valid=" << result.valid_;
+        }
         double dt = result.timestamp_ - impl_->result_.timestamp_;
 
         bool extrap_success = true;
