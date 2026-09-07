@@ -133,7 +133,7 @@ struct PGOImpl {
     void UpdateLidarOdomStatusInFrame(NavState& lio_result, std::shared_ptr<PGOFrame> frame);
 
     /// 执行优化的逻辑
-    void RunOptimization();
+    bool RunOptimization();
 
     // 建立g2o优化问题
     void BuildProblem();

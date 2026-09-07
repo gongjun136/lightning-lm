@@ -79,6 +79,14 @@ class LinearSolverEigen : public LinearSolverCCS<MatrixType> {
 
         xx = cholesky_.solve(bb);
 
+        if (cholesky_.info() != Eigen::Success || !xx.allFinite()) {
+            LOG(ERROR) << "LINEAR_SOLVE_INVALID_RESULT"
+                       << " rows=" << sparse_matrix_.rows()
+                       << " cols=" << sparse_matrix_.cols()
+                       << " solution_finite=" << xx.allFinite();
+            return false;
+        }
+
         return true;
     }
 
@@ -100,6 +108,21 @@ class LinearSolverEigen : public LinearSolverCCS<MatrixType> {
             ComputeSymbolicDecomposition(A);
         }
         init_ = false;
+
+        int input_nonfinite_entry_count = 0;
+        for (int outer = 0; outer < sparse_matrix_.outerSize(); ++outer) {
+            for (typename SparseMatrix::InnerIterator it(sparse_matrix_, outer); it; ++it) {
+                if (!std::isfinite(it.value())) ++input_nonfinite_entry_count;
+            }
+        }
+        if (input_nonfinite_entry_count > 0) {
+            LOG(ERROR) << "CHOLESKY_FAILURE_AUDIT"
+                       << " rows=" << sparse_matrix_.rows()
+                       << " cols=" << sparse_matrix_.cols()
+                       << " nonzeros=" << sparse_matrix_.nonZeros()
+                       << " nonfinite_entry_count=" << input_nonfinite_entry_count;
+            return false;
+        }
 
         cholesky_.factorize(sparse_matrix_);
 

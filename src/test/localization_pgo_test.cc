@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 namespace {
 
@@ -91,6 +92,113 @@ int main() {
         Require((high_frequency_output.pose_.translation() - lidar_loc.pose_.translation()).norm() < 1e-3,
                 "disabled DR extrapolation preserves scan-time map translation");
     }
+
+    const int output_count_before_reset = output_count;
+    Require(pgo.Reset(), "reset a populated incremental PGO graph");
+    const SE3 T_relocalized_world_odom(
+        SO3::exp(Vec3d(-0.07, 0.04, -0.8)), Vec3d(31.0, 17.0, 1.5));
+    NavState relocalized_seed;
+    relocalized_seed.timestamp_ = 1499.9;
+    relocalized_seed.confidence_ = 1.0;
+    relocalized_seed.pose_is_ok_ = true;
+    relocalized_seed.lidar_odom_reliable_ = true;
+    relocalized_seed.SetPose(SE3());
+    Require(pgo.ProcessLidarOdom(relocalized_seed),
+            "accept seed lidar odometry after populated-graph reset");
+
+    for (int index = 0; index < 10; ++index) {
+        const double timestamp = 1500.0 + 0.1 * index;
+        const SE3 T_odom_imu(
+            SO3::exp(Vec3d(-0.0005 * index, 0.0003 * index, -0.001 * index)),
+            Vec3d(0.08 * index, -0.01 * index, 0.002 * index));
+
+        NavState lidar_odom;
+        lidar_odom.timestamp_ = timestamp;
+        lidar_odom.confidence_ = 1.0;
+        lidar_odom.pose_is_ok_ = true;
+        lidar_odom.lidar_odom_reliable_ = true;
+        lidar_odom.SetPose(T_odom_imu);
+        Require(pgo.ProcessLidarOdom(lidar_odom),
+                "accept lidar odometry after populated-graph reset");
+        Require(pgo.ProcessDR(lidar_odom),
+                "accept DR after populated-graph reset");
+
+        LocalizationResult lidar_loc;
+        lidar_loc.timestamp_ = timestamp;
+        lidar_loc.pose_ = T_relocalized_world_odom * T_odom_imu;
+        lidar_loc.valid_ = true;
+        lidar_loc.lidar_loc_valid_ = true;
+        lidar_loc.lidar_loc_odom_error_normal_ = true;
+        lidar_loc.lidar_loc_smooth_flag_ = true;
+        lidar_loc.confidence_ = 1.0;
+        lidar_loc.status_ = LocalizationStatus::GOOD;
+        Require(pgo.ProcessLidarLoc(lidar_loc),
+                "resume PGO after populated-graph reset");
+        Require(output_count == output_count_before_reset + index + 1,
+                "publish one result per relocalized frame after reset");
+        Require(output.valid_, "relocalized PGO output remains valid after reset");
+        Require((output.pose_.translation() - lidar_loc.pose_.translation()).norm() < 1e-3,
+                "relocalized translation remains stable after solver reset");
+        Require((output.pose_.so3().inverse() * lidar_loc.pose_.so3()).log().norm() < 1e-3,
+                "relocalized rotation remains stable after solver reset");
+    }
+
+    PGO solver_failure_pgo;
+    solver_failure_pgo.SetDebug(false);
+    solver_failure_pgo.SetDrSmoothingEnabled(false);
+    solver_failure_pgo.SetDrExtrapolationEnabled(false);
+    int solver_failure_global_output_count = 0;
+    int solver_failure_high_frequency_output_count = 0;
+    solver_failure_pgo.SetGlobalOutputHandleFunction(
+        [&](const LocalizationResult&) { ++solver_failure_global_output_count; });
+    solver_failure_pgo.SetHighFrequencyGlobalOutputHandleFunction(
+        [&](const LocalizationResult&) { ++solver_failure_high_frequency_output_count; });
+
+    NavState solver_failure_seed;
+    solver_failure_seed.timestamp_ = 3999.9;
+    solver_failure_seed.confidence_ = 1.0;
+    solver_failure_seed.pose_is_ok_ = true;
+    solver_failure_seed.lidar_odom_reliable_ = true;
+    solver_failure_seed.SetPose(SE3());
+    Require(solver_failure_pgo.ProcessLidarOdom(solver_failure_seed),
+            "accept solver-failure seed lidar odometry");
+    Require(solver_failure_pgo.ProcessDR(solver_failure_seed),
+            "accept solver-failure seed DR");
+    NavState solver_failure_next = solver_failure_seed;
+    solver_failure_next.timestamp_ = 4000.2;
+    Require(solver_failure_pgo.ProcessLidarOdom(solver_failure_next),
+            "accept solver-failure bracketing lidar odometry");
+    Require(solver_failure_pgo.ProcessDR(solver_failure_next),
+            "accept solver-failure bracketing DR");
+
+    LocalizationResult invalid_information_loc;
+    invalid_information_loc.timestamp_ = 4000.0;
+    invalid_information_loc.pose_ = SE3();
+    invalid_information_loc.valid_ = true;
+    invalid_information_loc.lidar_loc_valid_ = true;
+    invalid_information_loc.lidar_loc_odom_error_normal_ = true;
+    invalid_information_loc.lidar_loc_smooth_flag_ = true;
+    invalid_information_loc.confidence_ = std::numeric_limits<double>::quiet_NaN();
+    invalid_information_loc.status_ = LocalizationStatus::GOOD;
+    Require(!solver_failure_pgo.ProcessLidarLoc(invalid_information_loc),
+            "reject a frame when every linear solve fails");
+    Require(solver_failure_global_output_count == 0,
+            "failed optimization does not publish a global pose");
+
+    NavState solver_failure_live = solver_failure_next;
+    solver_failure_live.timestamp_ = 4000.3;
+    Require(solver_failure_pgo.ProcessDR(solver_failure_live),
+            "continue accepting DR after solver failure");
+    Require(solver_failure_high_frequency_output_count == 0,
+            "failed optimization invalidates high-frequency output");
+
+    LocalizationResult recovered_loc = invalid_information_loc;
+    recovered_loc.timestamp_ = 4000.1;
+    recovered_loc.confidence_ = 1.0;
+    Require(solver_failure_pgo.ProcessLidarLoc(recovered_loc),
+            "recover on the next well-conditioned localization frame");
+    Require(solver_failure_global_output_count == 1,
+            "publish again after solver recovery");
 
     PGO velocity_pgo;
     velocity_pgo.SetDebug(false);

@@ -45,8 +45,8 @@ new_map/
 
 ## 数据与坐标约定
 
-- 地图输入：`F:\datasets\SANY\4lidar_lm\mapping\data1`。
-- 冷启动验证：`F:\datasets\SANY\4lidar_lm\relocalization\data1` 至 `data5`。
+- 地图输入：`F:\datasets\SANY\sites\zhugong_mixing_plant\raw\rig_4lidar\mapping\data1`。
+- 冷启动验证：`F:\datasets\SANY\sites\zhugong_mixing_plant\raw\rig_4lidar\relocalization\data1` 至 `data5`。
 - 四个 Mid-360 点云先按主配置中的外参变换到前雷达 `lidar_0` 坐标系，再生成一个融合 SOLiD 描述子。不要为每个雷达独立检索后再投票，否则雷达遮挡和不同视场会产生互相冲突的候选。
 - 单个 Mid-360 的标称视场为水平 360°、垂直 -7° 至 52°。外参变换后的四雷达融合云覆盖范围更宽，因此描述子的垂直角范围配置为 -90° 至 90°，并对分箱索引做边界保护。
 
@@ -88,7 +88,7 @@ source install/setup.bash
 
 ```bash
 bash scripts/reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_matrix.sh \
-  /mnt/f/datasets/SANY/4lidar_lm/relocalization \
+  /mnt/f/datasets/SANY/sites/zhugong_mixing_plant/raw/rig_4lidar/relocalization \
   config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
   runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
   runs/sany_4lidar_relocalization_latency_matrix_20260812/worker12

@@ -163,7 +163,30 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
 
     /// 触发一次优化
     profiling::Stopwatch optimize_profile_timer(profiling_enabled);
-    RunOptimization();
+    if (!RunOptimization()) {
+        LOG(ERROR) << "PGO_OPTIMIZATION_FAILURE"
+                   << " timestamp=" << std::setprecision(18) << pgo_frame->timestamp_
+                   << " frame_id=" << pgo_frame->frame_id_
+                   << " frames=" << frames_.size();
+        debug_event::EmitThrottled(
+            "pgo_optimization_failed",
+            "PGO optimization failed; invalidating output and rebuilding the graph",
+            std::chrono::seconds(1));
+
+        result_ = LocalizationResult{};
+        result_.timestamp_ = pgo_frame->timestamp_;
+        result_.status_ = LocalizationStatus::FAIL;
+        CleanProblem();
+        frames_.clear();
+        frames_by_id_.clear();
+        current_frame_ = nullptr;
+        last_frame_ = nullptr;
+        lidar_loc_pose_queue_.clear();
+        output_pose_queue_.clear();
+        accumulated_frame_id_ = 0;
+        is_in_map_ = false;
+        return false;
+    }
     const profiling::TimingSample optimize_timing = optimize_profile_timer.Stop();
 
     // // 根据优化更新一些状态量
@@ -298,7 +321,7 @@ void PGOImpl::UpdateLidarOdomStatusInFrame(NavState& lio_result, std::shared_ptr
     }
 }
 
-void PGOImpl::RunOptimization() {
+bool PGOImpl::RunOptimization() {
     // if (frames_.size() < kMinNumRequiredForOptimization) {
     //     LOG(INFO) << "Skip optimization because frame size is " << frames_.size();
     //     return;
@@ -312,9 +335,14 @@ void PGOImpl::RunOptimization() {
     BuildProblem();
 
     // solve problems
-    optimizer_->InitializeOptimization();
+    if (!optimizer_->InitializeOptimization()) {
+        return false;
+    }
     optimizer_->SetVerbose(options_.verbose_);
-    optimizer_->Optimize(5);
+    const int completed_iterations = optimizer_->Optimize(5);
+    if (completed_iterations <= 0) {
+        return false;
+    }
 
     // 确定inlier和outliers
     // RemoveOutliers();
@@ -323,17 +351,22 @@ void PGOImpl::RunOptimization() {
     // optimizer_->InitializeOptimization();
     // optimizer_->Optimize(5);
 
+    // Validate every estimate before committing any optimized pose to a frame.
+    for (const auto& frame : frames_) {
+        auto v = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer_->GetVertex(frame->frame_id_));
+        if (v == nullptr || !v->Estimate().matrix().allFinite()) {
+            return false;
+        }
+    }
+
     // get results
     for (const auto& frame : frames_) {
         auto v = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer_->GetVertex(frame->frame_id_));
-        if (v == nullptr) {
-            continue;
-        }
-
         ++frame->opti_times_;
         frame->last_opti_pose_ = frame->opti_pose_;
         frame->opti_pose_ = SE3(v->Estimate().matrix());
     }
+    return true;
 }
 
 void PGOImpl::BuildProblem() {

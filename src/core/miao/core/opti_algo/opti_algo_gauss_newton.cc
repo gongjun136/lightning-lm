@@ -29,15 +29,16 @@ OptimizationAlgorithm::SolverResult OptimizationAlgorithmGaussNewton::Solve(int 
         }
     }
 
-    solver_->BuildSystem();
-    ok = solver_->Solve();
-    optimizer_->Update(solver_->GetX());
-
-    if (ok) {
-        return SolverResult::OK;
-    } else {
+    if (!solver_->BuildSystem()) {
         return SolverResult::Fail;
     }
+    ok = solver_->Solve();
+    if (!ok) {
+        return SolverResult::Fail;
+    }
+    optimizer_->Update(solver_->GetX());
+
+    return SolverResult::OK;
 }
 
 }  // namespace lightning::miao

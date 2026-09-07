@@ -37,7 +37,9 @@ OptimizationAlgorithm::SolverResult OptimizationAlgorithmLevenberg::Solve(int it
     optimizer_->ComputeActiveErrors();
     double currentChi = optimizer_->ActiveRobustChi2();
 
-    solver_->BuildSystem();
+    if (!solver_->BuildSystem()) {
+        return SolverResult::Fail;
+    }
 
     // core part of the Levenbarg algorithm
     if (iteration == 0) {
@@ -46,6 +48,7 @@ OptimizationAlgorithm::SolverResult OptimizationAlgorithmLevenberg::Solve(int it
     }
 
     double rho = 0;
+    bool linear_solve_succeeded = false;
     int &qmax = lm_iter_;
     qmax = 0;
     do {
@@ -57,7 +60,10 @@ OptimizationAlgorithm::SolverResult OptimizationAlgorithmLevenberg::Solve(int it
         bool should_break = false;
         ok2 = solver_->Solve();
 
-        optimizer_->Update(solver_->GetX());
+        if (ok2) {
+            linear_solve_succeeded = true;
+            optimizer_->Update(solver_->GetX());
+        }
 
         // restore the diagonal
         solver_->RestoreDiagonal();
@@ -100,6 +106,10 @@ OptimizationAlgorithm::SolverResult OptimizationAlgorithmLevenberg::Solve(int it
         }
 
     } while (rho < 0 && qmax < max_trails_after_failure_ && !optimizer_->Terminate());
+
+    if (!linear_solve_succeeded) {
+        return SolverResult::Fail;
+    }
 
     if (qmax == max_trails_after_failure_ || rho == 0 || !std::isfinite(current_lambda_)) {
         // LOG(WARNING) << "solver terminated, rho: " << rho << ", qmax: " << qmax << ", " << current_lambda_;

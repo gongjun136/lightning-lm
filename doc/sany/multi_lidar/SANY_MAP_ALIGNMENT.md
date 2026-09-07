@@ -26,7 +26,7 @@ source install/setup.bash
 bash scripts/align_maps_offline.sh \
   --old_map=runs/sany_3lidar_mapping_blind5_ground_z0_btc_20260725/data/new_map \
   --new_map=runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
-  --input_bag=/mnt/f/datasets/SANY/4lidar_lm/mapping/data1 \
+  --input_bag=/mnt/f/datasets/SANY/sites/zhugong_mixing_plant/raw/rig_4lidar/mapping/data1 \
   --config=config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
   --output_dir=runs/sany_map_alignment_3lidar_old_4lidar_new_20260813
 ```

@@ -75,11 +75,40 @@ bool BlockSolver<Traits>::BuildStructure(bool zeroBlocks) {
 
     if (config_.incremental_mode_) {
         do_schur_ = false;
-        BuildStructureInc(zeroBlocks);
-    } else {
-        BuildStructureFromRaw(zeroBlocks);
+        int indexed_pose_count = 0;
+        int indexed_pose_dim = 0;
+        for (const auto& v : optimizer_->IndexMapping()) {
+            if (!v->Marginalized()) {
+                ++indexed_pose_count;
+                indexed_pose_dim += v->Dimension();
+            }
+        }
+
+        int new_pose_count = 0;
+        int new_pose_dim = 0;
+        for (const auto& v : optimizer_->NewVertices()) {
+            if (!v->Fixed()) {
+                ++new_pose_count;
+                new_pose_dim += v->Dimension();
+            }
+        }
+
+        const int retained_pose_count = indexed_pose_count - new_pose_count;
+        const int retained_pose_dim = indexed_pose_dim - new_pose_dim;
+        if (retained_pose_count < 0 || retained_pose_dim < 0 ||
+            num_poses_ != retained_pose_count || size_poses_ != retained_pose_dim) {
+            LOG(WARNING) << "BLOCK_SOLVER_INCREMENTAL_REBUILD"
+                         << " solver_pose_count=" << num_poses_
+                         << " solver_pose_dim=" << size_poses_
+                         << " retained_pose_count=" << retained_pose_count
+                         << " retained_pose_dim=" << retained_pose_dim
+                         << " indexed_pose_count=" << indexed_pose_count
+                         << " indexed_pose_dim=" << indexed_pose_dim;
+            return BuildStructureFromRaw(zeroBlocks);
+        }
+        return BuildStructureInc(zeroBlocks);
     }
-    return true;
+    return BuildStructureFromRaw(zeroBlocks);
 }
 
 template <typename Traits>
@@ -308,14 +337,15 @@ bool BlockSolver<Traits>::BuildStructureInc(bool zero_blocks) {
         }
     }
     if (num_poses_ != indexed_pose_count || size_poses_ != indexed_pose_dim) {
-        LOG_EVERY_N(ERROR, 10) << "BLOCK_SOLVER_STATE_MISMATCH"
-                               << " solver_pose_count=" << num_poses_
-                               << " solver_pose_dim=" << size_poses_
-                               << " indexed_pose_count=" << indexed_pose_count
-                               << " indexed_pose_dim=" << indexed_pose_dim
-                               << " new_vertices=" << optimizer_->NewVertices().size()
-                               << " active_edges=" << optimizer_->ActiveEdges().size()
-                               << " hpp_rows=" << Hpp_->Rows() << " hpp_cols=" << Hpp_->Cols();
+        LOG(ERROR) << "BLOCK_SOLVER_STATE_MISMATCH"
+                   << " solver_pose_count=" << num_poses_
+                   << " solver_pose_dim=" << size_poses_
+                   << " indexed_pose_count=" << indexed_pose_count
+                   << " indexed_pose_dim=" << indexed_pose_dim
+                   << " new_vertices=" << optimizer_->NewVertices().size()
+                   << " active_edges=" << optimizer_->ActiveEdges().size()
+                   << " hpp_rows=" << Hpp_->Rows() << " hpp_cols=" << Hpp_->Cols();
+        return false;
     }
 
     // allocate the diagonal on Hpp and Hll
