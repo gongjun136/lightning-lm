@@ -200,7 +200,19 @@ bash scripts/run_frontend_offline_batch.sh \
 帧链路逐帧输出。`run_metadata.txt` 会记录开关值和计时记录条数。
 
 现场统一从 `scripts/run.sh` 启动；地图、雷达布局、CAN、bag、诊断计时和减负模式都固定在这一个
-入口中，新增运行选项时直接更新该文件，不再增加模式包装脚本。当前现场基线关闭 bag，保持
+入口中。该脚本中的现场值是默认值；上层部署脚本可在调用前通过环境变量覆盖地图、雷达布局、
+自定义 YAML、输出目录、CAN、bag、看门狗、运行模式、计算线程和 CPU 亲和性，不需要修改仓库内
+脚本。例如：
+
+```bash
+export SANY_MAP_PATH=/home/nvidia/project/gj_ws/maps/current
+export LIGHTNING_LM_RUN_MODE=diagnostic
+export SANY_LIDAR_LAYOUT=3
+# 可选：export LIGHTNING_LM_CONFIG=/absolute/path/to/localization.yaml
+bash lightning-lm/scripts/run.sh
+```
+
+当前现场基线关闭 bag，保持
 `LIGHTNING_LM_RUN_MODE=diagnostic`、`LIGHTNING_LM_COMPUTE_PROFILE=1` 和
 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。需要生产减负时也只修改该入口，将运行模式设为
 `production`，并按现场验证结果关闭计时、开启非必要开销裁剪。
