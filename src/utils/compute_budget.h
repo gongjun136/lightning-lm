@@ -10,6 +10,7 @@ namespace lightning::compute {
 
 constexpr const char* kLioThreadsEnv = "LIGHTNING_LM_LIO_THREADS";
 constexpr const char* kNdtThreadsEnv = "LIGHTNING_LM_NDT_THREADS";
+constexpr const char* kNdtMaxPointsEnv = "LIGHTNING_LM_NDT_MAX_POINTS";
 constexpr const char* kSolidIcpWorkersEnv = "LIGHTNING_LM_SOLID_ICP_WORKERS";
 constexpr const char* kSolidWorkerNiceEnv = "LIGHTNING_LM_SOLID_WORKER_NICE";
 constexpr const char* kSolidCpuAffinityEnv = "LIGHTNING_LM_SOLID_CPU_AFFINITY";
@@ -22,6 +23,7 @@ struct ComputeBudget {
     int solid_icp_workers = 8;
     int solid_worker_nice = 0;
     std::string solid_cpu_affinity;
+    int ndt_max_points = 0;  // 0: uncapped; tracking only, never global initialization
 };
 
 // Read optional compute_budget.* values and then apply environment overrides.

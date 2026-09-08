@@ -267,11 +267,13 @@ class LidarLoc {
         profiling::TimingSample recover_pose_io;
         profiling::TimingSample relocalization_poll;
         int ndt_calls = 0;
+        std::size_t ndt_input_points = 0;
     } frame_profiling_;
 
     // 成员变量  ==========================================================================
     Options options_;
     int ndt_threads_ = 4;
+    std::size_t ndt_max_points_ = 0;
 
     std::mutex match_mutex_;  // 锁定pcl_ndt指针
 

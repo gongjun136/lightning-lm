@@ -99,6 +99,7 @@ bool LoadComputeBudget(const YAML::Node& root, ComputeBudget& budget,
     const YAML::Node config = root["compute_budget"];
     if (!ReadYamlValue(config, "lio_threads", candidate.lio_threads, error) ||
         !ReadYamlValue(config, "ndt_threads", candidate.ndt_threads, error) ||
+        !ReadYamlValue(config, "ndt_max_points", candidate.ndt_max_points, error) ||
         !ReadYamlValue(config, "solid_icp_workers", candidate.solid_icp_workers, error) ||
         !ReadYamlValue(config, "solid_worker_nice", candidate.solid_worker_nice,
                        error) ||
@@ -106,12 +107,18 @@ bool LoadComputeBudget(const YAML::Node& root, ComputeBudget& budget,
                         error) ||
         !ReadEnvironmentValue(kLioThreadsEnv, candidate.lio_threads, error) ||
         !ReadEnvironmentValue(kNdtThreadsEnv, candidate.ndt_threads, error) ||
+        !ReadEnvironmentValue(kNdtMaxPointsEnv, candidate.ndt_max_points, error) ||
         !ReadEnvironmentValue(kSolidIcpWorkersEnv, candidate.solid_icp_workers, error) ||
         !ReadEnvironmentValue(kSolidWorkerNiceEnv, candidate.solid_worker_nice,
                               error)) {
         return false;
     }
     ReadEnvironmentString(kSolidCpuAffinityEnv, candidate.solid_cpu_affinity);
+    if (candidate.ndt_max_points != 0 &&
+        (candidate.ndt_max_points < 100 || candidate.ndt_max_points > 1000000)) {
+        if (error) *error = "compute_budget.ndt_max_points must be 0 or in [100, 1000000]";
+        return false;
+    }
     if (!ValidateValue("compute_budget.lio_threads", candidate.lio_threads, error) ||
         !ValidateValue("compute_budget.ndt_threads", candidate.ndt_threads, error) ||
         !ValidateValue("compute_budget.solid_icp_workers",

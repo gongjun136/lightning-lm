@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 
 #include "common/debug_event.h"
@@ -174,6 +175,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_proc_cloud_.SetProcFunc([this](const LidarLocInput& input) { LidarLocProcCloud(input); });
 
     if (options_.online_mode_) {
+        {
+            std::lock_guard<std::mutex> arrival_lock(arrival_mutex_);
+            primary_arrivals_.clear();
+        }
         sensor_proc_.Start();
         lidar_loc_proc_cloud_.Start();
     }
@@ -270,6 +275,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 }
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud, int lidar_id) {
+    const auto received_at = std::chrono::steady_clock::now();
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
@@ -283,6 +289,8 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
         return;
     }
 
+    RememberPrimaryArrival(lidar_id, static_cast<std::uint64_t>(cloud->header.stamp.sec) * 1000000000ULL +
+                               cloud->header.stamp.nanosec, received_at);
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
     profiling::Stopwatch preprocess_profile_timer(profiling_enabled);
@@ -325,6 +333,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 }
 
 void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+    const auto received_at = std::chrono::steady_clock::now();
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
@@ -346,6 +355,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
 
     const int lidar_id = lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
+    RememberPrimaryArrival(lidar_id, laser_cloud->header.stamp, received_at);
     bool process_lidar_odom = true;
     if (options_.enable_lidar_odom_skip_) {
         const int skip_num = options_.lidar_odom_skip_num_ > 0 ? options_.lidar_odom_skip_num_ : 1;
@@ -378,6 +388,17 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
                       << " sensor_queue_dropped_total=" << sensor_proc_.DroppedCount();
         }
     }
+}
+
+void Localization::RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,
+                                         std::chrono::steady_clock::time_point received_at) {
+    const int primary = lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
+    if (lidar_id != primary) return;
+    std::lock_guard<std::mutex> lock(arrival_mutex_);
+    // Keep the first arrival for duplicate timestamps. At 10 Hz the bound
+    // covers 25.6 seconds; drops never turn this into an unbounded ledger.
+    primary_arrivals_.emplace(stamp, received_at);
+    while (primary_arrivals_.size() > 256) primary_arrivals_.erase(primary_arrivals_.begin());
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
@@ -436,6 +457,19 @@ void Localization::DrainLioOutputs() {
         lidar_loc_input.localization_cloud = scan;
         lidar_loc_input.publication_cloud = lio_->GetPublicationCloud();
         lidar_loc_input.frame_stats = lio_->GetCurrentFrameStats();
+        {
+            std::lock_guard<std::mutex> lock(arrival_mutex_);
+            const auto stamp = scan->header.stamp;
+            // The fused header is the earliest source, up to match_tolerance
+            // before the primary header. Half a microsecond covers double conversion.
+            auto arrival = primary_arrivals_.lower_bound(stamp > 500 ? stamp - 500 : 0);
+            const auto tolerance = static_cast<std::uint64_t>(
+                lio_->GetMultiLidarConfig().match_tolerance * 1e9) + 500;
+            if (arrival != primary_arrivals_.end() && arrival->first <= stamp + tolerance) {
+                lidar_loc_input.primary_received_at = arrival->second;
+                primary_arrivals_.erase(primary_arrivals_.begin(), std::next(arrival));
+            }
+        }
         lidar_loc_input.publication_eligible = lio_->CanPublishCurrentCloud();
         const auto& selection = lio_->GetCurrentLidarSelection();
         const auto& multi_config = lio_->GetMultiLidarConfig();
@@ -832,7 +866,8 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
-    lio_->SetLocalizationGood(res.valid_ && res.status_ == LocalizationStatus::GOOD);
+    // LidarLoc owns lidar_loc_valid_; valid_ belongs to fused/DR outputs.
+    lio_->SetLocalizationGood(res.lidar_loc_valid_ && res.status_ == LocalizationStatus::GOOD);
     const profiling::TimingSample result_timing = result_profile_timer.Stop();
     profiling::Stopwatch cloud_callback_profile_timer(profiling_enabled);
     if (processed_cloud_callback_) {
@@ -843,6 +878,33 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     profiling::Stopwatch pgo_profile_timer(profiling_enabled);
     pgo_->ProcessLidarLoc(res);
     const profiling::TimingSample pgo_timing = pgo_profile_timer.Stop();
+
+    double primary_to_pgo_ms = -1.0;
+    if (input.primary_received_at != std::chrono::steady_clock::time_point{}) {
+        const auto completed_at = std::chrono::steady_clock::now();
+        primary_to_pgo_ms = std::chrono::duration<double, std::milli>(
+            completed_at - input.primary_received_at).count();
+        if (res.lidar_loc_valid_ && res.status_ == LocalizationStatus::GOOD && !match_stats.relocalization_accepted) {
+            if (primary_to_pgo_ms >= 100.0) ++lidar_deadline_misses_;
+            profiling::TimingSample sample;
+            sample.valid = true;
+            sample.wall_ms = primary_to_pgo_ms;
+            const auto summary = lidar_end_to_end_window_.Add({sample}, completed_at);
+            if (summary) {
+                const auto& wall = summary->stages.front().wall_ms;
+                // Low-rate production telemetry; CPU is not measured by this wall-clock ledger.
+                LOG(INFO) << std::fixed << std::setprecision(6)
+                          << "COMPUTE_BENCH_SUMMARY module=lidar_end_to_end phase=tracking"
+                          << " window_s=" << summary->window_s << " samples=" << wall.count
+                          << " mean_ms=" << wall.mean << " p95_ms=" << wall.p95
+                          << " p99_ms=" << wall.p99 << " max_ms=" << wall.max
+                          << " healthy_observation_rate_hz=" << wall.count / summary->window_s
+                          << " deadline_misses_total=" << lidar_deadline_misses_
+                          << " sensor_queue_dropped_total=" << sensor_proc_.DroppedCount()
+                          << " lidar_queue_dropped_total=" << lidar_loc_proc_cloud_.DroppedCount();
+            }
+        }
+    }
 
     if (ui_) {
         // Twi with Til, here pose means Twl, thus Til=I
@@ -861,9 +923,12 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
 
     if (profiling_enabled) {
         const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
-        LOG(INFO) << "COMPUTE_BENCH_FRAME module=lidar_loc_pipeline"
+        LOG(INFO) << std::fixed << std::setprecision(6) << "COMPUTE_BENCH_FRAME module=lidar_loc_pipeline"
+                  << " frame_id=" << scan_undist->header.stamp
+                  << " primary_to_pgo_ms=" << primary_to_pgo_ms
                   << " timestamp_s=" << res.timestamp_
                   << " localization_points=" << (scan_undist ? scan_undist->size() : 0)
+                  << " lidar_valid=" << res.lidar_loc_valid_
                   << " publication_points="
                   << (input.publication_cloud ? input.publication_cloud->size() : 0)
                   << " status=" << static_cast<int>(res.status_)

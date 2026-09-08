@@ -357,6 +357,11 @@ class LaserMapping {
     std::vector<std::uint8_t> corr_lidar_ids_;
     std::vector<Vec4f> corr_norm_;             // 点面内点对应平面：[nx,ny,nz,d]，平面在世界系
     std::vector<float> residuals_;             // 点到平面有符号残差
+    // Fixed blocks reduce allocation and keep summation independent of worker count.
+    std::vector<Mat6d> observation_hessian_blocks_;
+    std::vector<Vec6d> observation_gradient_blocks_;
+    std::vector<double> observation_residual_squared_;
+    int observation_evaluations_ = 0;
     std::vector<char> point_selected_surf_;    // 点面约束是否有效
     std::vector<Vec4f> plane_coef_;            // 每个点局部拟合出的平面参数
 

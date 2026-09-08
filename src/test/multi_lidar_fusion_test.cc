@@ -2,6 +2,8 @@
 #include "core/lightning_math.hpp"
 
 #include <cmath>
+#include <array>
+#include <limits>
 #include <cstdlib>
 #include <iostream>
 
@@ -296,6 +298,96 @@ void TestAdaptiveCloudPublicationAndPointSelection() {
     }
 }
 
+void TestSpatialBudgetAndRecovery() {
+    CloudPtr cloud(new PointCloudType);
+    cloud->header.stamp = 123456789;
+    for (int id = 0; id < 3; ++id) {
+        for (int i = 0; i < 800; ++i) {
+            auto point = MakeCloud(1.0)->front();
+            const double angle = (i % 8 + 0.5) * M_PI / 4.0 - M_PI;
+            const double radius = i % 2 == 0 ? 5.0 : 20.0;
+            point.x = radius * std::cos(angle);
+            point.y = radius * std::sin(angle);
+            point.z = i % 3 == 0 ? 1.0 : -1.0;
+            point.lidar_id = id;
+            point.time = cloud->size();
+            cloud->push_back(point);
+        }
+    }
+    auto invalid = cloud->front();
+    invalid.x = std::numeric_limits<float>::quiet_NaN();
+    cloud->push_back(invalid);
+    const auto capped = lightning::SampleSpatiallyBalanced(cloud, 300);
+    const auto repeat = lightning::SampleSpatiallyBalanced(cloud, 300);
+    Require(capped->size() == 300 && cloud->size() == 2401, "hard cap without input mutation");
+    Require(capped->header.stamp == cloud->header.stamp, "frame identity retained");
+    std::array<int, 3> sources{};
+    double last_time = -1;
+    for (std::size_t i = 0; i < capped->size(); ++i) {
+        const auto& p = capped->points[i];
+        Require(std::isfinite(p.x) && p.time > last_time, "finite real points in input order");
+        Require(p.time == repeat->points[i].time, "repeatable spatial sample");
+        last_time = p.time;
+        ++sources[p.lidar_id];
+    }
+    Require(sources[0] >= 90 && sources[1] >= 90 && sources[2] >= 90,
+            "all sources retain coverage despite ordering by source");
+    Require(lightning::SampleSpatiallyBalanced(cloud, 0) == cloud,
+            "zero cap has no allocation or behavior change");
+    Require(lightning::SampleSpatiallyBalanced(cloud, 5000) == cloud,
+            "small clouds are preserved");
+    CloudPtr unequal(new PointCloudType);
+    for (int i = 0; i < 1000; ++i) {
+        auto p = MakeCloud(5.0)->front();
+        p.lidar_id = i < 900 ? 0 : 1;
+        p.time = i;
+        unequal->push_back(p);
+    }
+    const auto proportional = lightning::SampleSpatiallyBalanced(unequal, 100, true);
+    int primary_count = 0;
+    for (const auto& p : proportional->points) primary_count += p.lidar_id == 0;
+    Require(proportional->size() == 100 && primary_count == 90,
+            "NDT sampling preserves source density instead of reweighting the objective");
+
+    MultiLidarConfig config = MakeConfig();
+    config.lidars.resize(3);
+    auto& load = config.adaptive_load;
+    load.enabled = true;
+    load.tracking_min_lidars = 2;
+    load.relocalization_min_lidars = 3;
+    load.tracking_lidar_count = 2;
+    load.rotate_secondary_lidars = true;
+    load.point_strides = {1, 1, 1};
+    load.lio_point_budgets = {2200, 1800, 1500};
+    load.predictive = true;
+    load.target_latency_sec = 0.09;
+    load.recover_consecutive_frames = 50;
+    AdaptiveLidarLoadController controller;
+    controller.Reset(config);
+    const auto stats = MakeFrameStats({0, 1, 2});
+    auto selection = controller.Select(stats);
+    Require(selection.lidar_ids.size() == 3 && selection.max_points == 0,
+            "initialization retains all sources and points");
+    controller.SetLocalizationGood(true);
+    controller.Observe(0.04, 0.0, true);
+    auto first = controller.Select(stats);
+    auto second = controller.Select(stats);
+    Require(first.lidar_ids == std::vector<int>({0, 1}) &&
+                second.lidar_ids == std::vector<int>({0, 2}), "front stays, sides alternate fairly");
+    Require(first.max_points == 2200 && first.point_stride == 1, "budget replaces striding");
+    selection = controller.Select(stats, 0.06);
+    Require(selection.max_points == 1800, "predicted completion degrades before matching");
+    controller.Observe(0.2, 0.1, false);
+    selection = controller.Select(stats);
+    Require(selection.lidar_ids.size() == 3 && selection.max_points == 0,
+            "poor LIO quality restores full data immediately even during overload");
+    controller.Observe(0.04, 0.0, true);
+    controller.SetLocalizationGood(false);
+    selection = controller.Select(stats);
+    Require(selection.lidar_ids.size() == 3 && selection.max_points == 0,
+            "map localization loss restores full observations");
+}
+
 void TestFormalSanyAdaptiveConfigs() {
     const auto check_config = [](const std::string& relative_path,
                                  int expected_lidar_count,
@@ -357,6 +449,7 @@ int main() {
     TestAdaptiveLoadOrderAndQualityGate();
     TestAdaptiveCloudPublicationAndPointSelection();
     TestFormalSanyAdaptiveConfigs();
+    TestSpatialBudgetAndRecovery();
     std::cout << "multi_lidar_fusion_test passed" << std::endl;
     return 0;
 }

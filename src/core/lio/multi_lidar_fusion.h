@@ -37,6 +37,12 @@ struct AdaptiveLidarLoadConfig {
     int degrade_consecutive_frames = 3;
     int recover_consecutive_frames = 20;
     std::vector<int> point_strides{1, 2, 3};
+    // Empty keeps legacy stride-only behavior. Caps apply after voxel filtering,
+    // and only while both map localization and LIO tracking are healthy.
+    std::vector<int> lio_point_budgets;
+    int tracking_lidar_count = 0;  // 0: legacy adaptive source count
+    bool rotate_secondary_lidars = false;
+    bool predictive = false;
 };
 
 struct MultiLidarConfig {
@@ -88,10 +94,18 @@ std::size_t FilterSelfPoints(PointCloudType& cloud, const SelfPointFilterConfig&
 /// Voxel downsampling that keeps a real input point, so lidar_id is never averaged.
 CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size);
 
+/// Deterministic hard cap with equal source/azimuth/elevation/range-bin quotas.
+/// Keeps real points and their original order, timestamps and source IDs.
+/// A zero cap disables sampling. Never mutates the input cloud.
+/// preserve_density allocates proportional quotas (NDT score preservation).
+CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
+                                bool preserve_density = false);
+
 struct AdaptiveLidarSelection {
     std::vector<int> lidar_ids;
     int point_stride = 1;
     int degradation_step = 0;
+    std::size_t max_points = 0;
 };
 
 class AdaptiveLidarLoadController {
@@ -100,7 +114,7 @@ class AdaptiveLidarLoadController {
     void SetLocalizationGood(bool good) { localization_good_ = good; }
     void Observe(double processing_sec, double latency_sec, bool tracking_healthy);
 
-    AdaptiveLidarSelection Select(const MultiLidarFrameStats& stats) const;
+    AdaptiveLidarSelection Select(const MultiLidarFrameStats& stats, double latency_sec = 0.0);
     bool CanPublishCloud(const MultiLidarFrameStats& stats) const;
     bool IsHardStale(double latency_sec) const;
 
@@ -116,6 +130,9 @@ class AdaptiveLidarLoadController {
     int degradation_step_ = 0;
     int overload_frames_ = 0;
     int recovery_frames_ = 0;
+    bool tracking_healthy_ = false;
+    double predicted_processing_sec_ = 0.0;
+    int last_secondary_id_ = -1;
 };
 
 CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& selection);

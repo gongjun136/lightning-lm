@@ -1,9 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <map>
 #include <shared_mutex>
 #include <string>
 
@@ -134,6 +136,7 @@ class Localization {
         CloudPtr publication_cloud;
         MultiLidarFrameStats frame_stats;
         bool publication_eligible = true;
+        std::chrono::steady_clock::time_point primary_received_at{};
     };
     void LidarLocProcCloud(const LidarLocInput& input);
 
@@ -220,6 +223,14 @@ class Localization {
         {"preprocess", "dispatch", "outer"}};
     profiling::MultiStageTimingWindow imu_dr_timing_window_{
         {"lio_imu", "drain_lio", "state_static", "lidar_loc_dr", "pgo_dr", "outer"}};
+    // Bounded primary-frame arrival ledger bridges preprocessing, sensor queue,
+    // LIO and the asynchronous map matcher. Its clock never uses ROS wall time.
+    void RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,
+                                std::chrono::steady_clock::time_point received_at);
+    std::mutex arrival_mutex_;
+    std::map<std::uint64_t, std::chrono::steady_clock::time_point> primary_arrivals_;
+    profiling::MultiStageTimingWindow lidar_end_to_end_window_{{"primary_to_pgo"}, 10.0};
+    std::size_t lidar_deadline_misses_ = 0;
     int lidar_odom_skip_cnt_ = 0;
     double online_sensor_max_lag_sec_ = 0.0;
     double online_sensor_resume_lag_sec_ = 0.0;

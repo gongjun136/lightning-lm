@@ -624,6 +624,8 @@ int main(int argc, char** argv) {
                     std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - start).count();
 
                 const loc::LocalizationResult loc_result = lidar_loc->GetLocalizationResult();
+                lio.SetLocalizationGood(loc_result.lidar_loc_valid_ &&
+                                        loc_result.status_ == loc::LocalizationStatus::GOOD);
                 const auto match_stats = lidar_loc->GetLastMatchStats();
                 if (topic_publisher) topic_publisher->ObserveLocalization(loc_result);
                 if (match_stats.relocalization_accepted) {

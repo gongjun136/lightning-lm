@@ -615,11 +615,13 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     profiling::TimingSample map_update_timing;
     profiling::TimingSample adaptive_timing;
     profiling::TimingSample post_imu_timing;
+    observation_evaluations_ = 0;
     const auto emit_pipeline_benchmark = [&](const char* phase, std::size_t output_points) {
         if (!profiling_enabled) return;
         const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
         LOG(INFO) << std::fixed << std::setprecision(6)
                   << "COMPUTE_BENCH_FRAME module=lio_pipeline phase=" << phase
+                  << " frame_id=" << measures_.scan_->header.stamp
                   << " timestamp_s=" << measures_.lidar_end_time_
                   << " input_points=" << input_points
                   << " output_points=" << output_points
@@ -645,6 +647,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         if (profiling_enabled) {
             LOG(INFO) << std::fixed << std::setprecision(6)
                       << "LIO_BENCH_FRAME method=lightning_lm phase=" << phase
+                      << " frame_id=" << measures_.scan_->header.stamp
                       << " timestamp_s=" << measures_.lidar_end_time_
                       << " preprocess_ms=" << current_preprocess_ms_
                       << " imu_undistort_ms=" << imu_undistort_ms
@@ -660,6 +663,10 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                       << " adaptive_step=" << adaptive_lidar_load_controller_.DegradationStep()
                       << " selected_lidars=" << current_lidar_selection_.lidar_ids.size()
                       << " point_stride=" << current_lidar_selection_.point_stride
+                      << " point_budget=" << current_lidar_selection_.max_points
+                      << " obs_evaluations=" << observation_evaluations_
+                      << " effective_features=" << effect_feat_surf_
+                      << " tracking_healthy=" << last_tracking_healthy_
                       << " lidar_latency_ms=" << last_lidar_latency_sec_ * 1e3;
         }
         last_frame_processing_ms_ = current_preprocess_ms_ + core_update_ms;
@@ -727,7 +734,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                              std::chrono::milliseconds(500));
     profiling::Stopwatch selection_profile_timer(profiling_enabled);
     if (multi_lidar_config_.enabled) {
-        current_lidar_selection_ = adaptive_lidar_load_controller_.Select(current_lidar_stats_);
+        current_lidar_selection_ = adaptive_lidar_load_controller_.Select(
+            current_lidar_stats_, last_lidar_latency_sec_.load());
         scan_undistort_ = SelectLidarPoints(scan_undistort_full_, current_lidar_selection_);
         if (!scan_undistort_ || scan_undistort_->empty()) {
             last_tracking_healthy_ = false;
@@ -752,6 +760,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         current_lidar_selection_.lidar_ids = {0};
         current_lidar_selection_.point_stride = 1;
         current_lidar_selection_.degradation_step = 0;
+        current_lidar_selection_.max_points = 0;
     }
     selection_timing = selection_profile_timer.Stop();
 
@@ -840,6 +849,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         // LOG(INFO) << "Now pts: " << scan_down_lidar_->size() << ", before: " << cur_pts;
         cur_pts = scan_down_lidar_->size();
     }
+    scan_down_lidar_ = SampleSpatiallyBalanced(scan_down_lidar_, current_lidar_selection_.max_points);
+    cur_pts = scan_down_lidar_->size();
     downsample_ms = elapsed_ms(downsample_start);
     downsample_timing = downsample_profile_timer.Stop();
 
@@ -1472,6 +1483,7 @@ double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &
 }
 
 void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
+    ++observation_evaluations_;
     int cnt_pts = scan_down_lidar_->size();
 
     // LOG(INFO) << "obs from state: " << s.pos_.transpose() << ", " << s.rot_.unit_quaternion().coeffs().transpose();
@@ -1575,61 +1587,69 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     obs.HTH_.setZero();
     obs.HTr_.setZero();
 
-    std::vector<Mat6d> JTJ(effect_feat_surf_);
-    std::vector<Vec6d> JTr(effect_feat_surf_);
-
-    std::vector<double> res_sq(effect_feat_surf_);
+    constexpr int kReductionBlockSize = 64;
+    const int plane_blocks = (effect_feat_surf_ + kReductionBlockSize - 1) / kReductionBlockSize;
+    observation_hessian_blocks_.resize(plane_blocks);
+    observation_gradient_blocks_.resize(plane_blocks);
+    observation_residual_squared_.resize(effect_feat_surf_);
 
 #pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
-    for (std::int64_t raw_index = 0; raw_index < effect_feat_surf_; ++raw_index) {
-        const std::size_t i = static_cast<std::size_t>(raw_index);
-        Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
-        Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
-        // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
-        Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
+    for (int block = 0; block < plane_blocks; ++block) {
+        Mat6d hessian = Mat6d::Zero();
+        Vec6d gradient = Vec6d::Zero();
+        const int end = std::min(effect_feat_surf_, (block + 1) * kReductionBlockSize);
+        for (int i = block * kReductionBlockSize; i < end; ++i) {
+            Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
+            Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
+            // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
+            Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
 
-        /*** get the normal vector of closest surface/corner ***/
-        Vec3f norm_vec = corr_norm_[i].head<3>();
+            /*** get the normal vector of closest surface/corner ***/
+            Vec3f norm_vec = corr_norm_[i].head<3>();
 
-        /*** calculate the Measurement Jacobian matrix H ***/
-        // 残差是世界系点到世界系平面的距离。平移雅可比就是平面法向量；
-        // 姿态雅可比需要把世界系法向量转回IMU切空间，再与Lidar点在IMU系下的位置叉乘。
-        Vec3f C(Rt * norm_vec);
-        Vec3f A(point_crossmat * C);
+            /*** calculate the Measurement Jacobian matrix H ***/
+            // 残差是世界系点到世界系平面的距离。平移雅可比就是平面法向量；
+            // 姿态雅可比需要把世界系法向量转回IMU切空间，再与Lidar点在IMU系下的位置叉乘。
+            Vec3f C(Rt * norm_vec);
+            Vec3f A(point_crossmat * C);
 
-        Eigen::Matrix<double, 1, ESKF::pose_obs_dim_> J;
-        J.setZero();
-        J << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2];
+            Eigen::Matrix<double, 1, ESKF::pose_obs_dim_> J;
+            J.setZero();
+            J << norm_vec[0], norm_vec[1], norm_vec[2], A[0], A[1], A[2];
 
-        // corr_pts_[i][3]里保存的是点到平面的有符号距离pd2。
-        // 这里取负号，是为了让后续求解的dx沿着减小残差的方向更新。
-        float res = -corr_pts_[i][3];
+            // corr_pts_[i][3]里保存的是点到平面的有符号距离pd2。
+            // 这里取负号，是为了让后续求解的dx沿着减小残差的方向更新。
+            float res = -corr_pts_[i][3];
 
-        // double w = huber_weight(res);
-        PointType weighted_point;
-        weighted_point.x = point_this_be.x();
-        weighted_point.y = point_this_be.y();
-        weighted_point.z = point_this_be.z();
-        weighted_point.lidar_id = corr_lidar_ids_[i];
-        double w = PointInformationScale(weighted_point, norm_vec.cast<double>(), s);
+            // double w = huber_weight(res);
+            PointType weighted_point;
+            weighted_point.x = point_this_be.x();
+            weighted_point.y = point_this_be.y();
+            weighted_point.z = point_this_be.z();
+            weighted_point.lidar_id = corr_lidar_ids_[i];
+            double w = PointInformationScale(weighted_point, norm_vec.cast<double>(), s);
 
-        JTJ[i] = (J.transpose() * J).eval() * w;
-        JTr[i] = J.transpose() * res * w;
-
-        res_sq[i] = res * res;
+            hessian.noalias() += ((J.transpose() * J).eval() * w) * options_.plane_icp_weight_;
+            gradient.noalias() += (J.transpose() * res * w) * options_.plane_icp_weight_;
+            observation_residual_squared_[i] = res * res;
+        }
+        observation_hessian_blocks_[block] = hessian;
+        observation_gradient_blocks_[block] = gradient;
     }
 
-    // 并行阶段先把每个点的J^T J和J^T r保存下来，串行阶段再累加，避免并发写obs。
-    for (int i = 0; i < effect_feat_surf_; ++i) {
-        obs.HTH_ += JTJ[i] * options_.plane_icp_weight_;
-        obs.HTr_ += JTr[i] * options_.plane_icp_weight_;
+    // Fixed block order, including when OpenMP uses fewer workers than requested.
+    for (int block = 0; block < plane_blocks; ++block) {
+        obs.HTH_ += observation_hessian_blocks_[block];
+        obs.HTr_ += observation_gradient_blocks_[block];
     }
 
     // 残差统计用于ESKF迭代过程中的收敛判断和AA回退判断。
+    auto& res_sq = observation_residual_squared_;
     if (!res_sq.empty()) {
-        std::sort(res_sq.begin(), res_sq.end());
-        obs.lidar_residual_mean_ = res_sq[res_sq.size() / 2];
-        obs.lidar_residual_max_ = res_sq[res_sq.size() - 1];
+        obs.lidar_residual_max_ = *std::max_element(res_sq.begin(), res_sq.end());
+        auto median = res_sq.begin() + res_sq.size() / 2;
+        std::nth_element(res_sq.begin(), median, res_sq.end());
+        obs.lidar_residual_mean_ = *median;
         // LOG(INFO) << "residual mean: " << obs.lidar_residual_mean_ << ", max: " << obs.lidar_residual_max_
         //           << ", 85%: " << res_sq[res_sq.size() * 0.85];
     }
@@ -1639,49 +1659,54 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     if (options_.enable_icp_part_) {
         // 点到点ICP为每个有效点贡献3维残差：当前点世界坐标 - 最近地图点世界坐标。
         // 它是点面约束的补充，权重由options_.icp_weight_控制。
-        JTJ.resize(cnt_pts);
-        JTr.resize(cnt_pts);
+        const int icp_blocks = (cnt_pts + kReductionBlockSize - 1) / kReductionBlockSize;
+        observation_hessian_blocks_.resize(icp_blocks);
+        observation_gradient_blocks_.resize(icp_blocks);
+        const Mat3d rotation = s.rot_.matrix() * offset_R_lidar_fixed_;
 
 #pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
-        for (std::int64_t raw_index = 0; raw_index < cnt_pts; ++raw_index) {
-            const std::size_t i = static_cast<std::size_t>(raw_index);
-            if (point_selected_icp_[i] == false) {
-                continue;
+        for (int block = 0; block < icp_blocks; ++block) {
+            Mat6d hessian = Mat6d::Zero();
+            Vec6d gradient = Vec6d::Zero();
+            const int end = std::min(cnt_pts, (block + 1) * kReductionBlockSize);
+            for (int i = block * kReductionBlockSize; i < end; ++i) {
+                if (point_selected_icp_[i] == false) {
+                    continue;
+                }
+
+                /// q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
+                Vec3d q = scan_down_lidar_->points[i].getVector3fMap().cast<double>();
+                Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
+
+                Eigen::Matrix<double, 3, ESKF::pose_obs_dim_> J;
+                J.setZero();
+
+                /// translation 部分
+                J.block<3, 3>(0, 0) = Mat3d::Identity();
+
+                /// rotation 部分
+                J.block<3, 3>(0, 3) = -rotation * SO3::hat(q);
+
+                // 点到点残差：当前点世界坐标和最近地图点世界坐标之差。
+                Vec3d e = qs - nearest_points_[i][0].getVector3fMap().cast<double>();
+
+                // 过大的点到点残差通常对应错误最近邻，直接剔除。
+                if (e.norm() > 0.5) {
+                    point_selected_icp_[i] = false;
+                    continue;
+                }
+
+                hessian.noalias() += (J.transpose() * J) * options_.icp_weight_;
+                gradient.noalias() += (-J.transpose() * e) * options_.icp_weight_;
             }
-
-            /// q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
-            Vec3d q = scan_down_lidar_->points[i].getVector3fMap().cast<double>();
-            Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
-
-            Eigen::Matrix<double, 3, ESKF::pose_obs_dim_> J;
-            J.setZero();
-
-            /// translation 部分
-            J.block<3, 3>(0, 0) = Mat3d::Identity();
-
-            /// rotation 部分
-            J.block<3, 3>(0, 3) = -(s.rot_.matrix() * offset_R_lidar_fixed_) * SO3::hat(q);
-
-            // 点到点残差：当前点世界坐标和最近地图点世界坐标之差。
-            Vec3d e = qs - nearest_points_[i][0].getVector3fMap().cast<double>();
-
-            // 过大的点到点残差通常对应错误最近邻，直接剔除。
-            if (e.norm() > 0.5) {
-                point_selected_icp_[i] = false;
-                continue;
-            }
-
-            JTJ[i] = J.transpose() * J;
-            JTr[i] = -J.transpose() * e;
+            observation_hessian_blocks_[block] = hessian;
+            observation_gradient_blocks_[block] = gradient;
         }
 
         // 将点到点ICP的信息量累加到同一个6维位姿观测中。
-        for (int i = 0; i < cnt_pts; ++i) {
-            if (point_selected_icp_[i] == false) {
-                continue;
-            }
-            obs.HTH_ += JTJ[i] * options_.icp_weight_;
-            obs.HTr_ += JTr[i] * options_.icp_weight_;
+        for (int block = 0; block < icp_blocks; ++block) {
+            obs.HTH_ += observation_hessian_blocks_[block];
+            obs.HTr_ += observation_gradient_blocks_[block];
         }
     }
 }

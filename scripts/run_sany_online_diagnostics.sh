@@ -464,7 +464,7 @@ extract_compute_profile() {
   [[ "${profile_extracted}" == false ]] || return 0
   local algorithm_log="${run_dir}/logs/run_loc_online.stderr.log"
   [[ -f "${algorithm_log}" ]] || return 0
-  grep -F "COMPUTE_BENCH_" "${algorithm_log}" \
+  grep -E "COMPUTE_BENCH_|LIO_BENCH_FRAME" "${algorithm_log}" \
     >"${run_dir}/results/compute_profile.log" || true
   local profile_record_count
   profile_record_count="$(wc -l <"${run_dir}/results/compute_profile.log")"
@@ -540,6 +540,7 @@ fi
   echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
   echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
+  echo "ndt_max_points_override=${LIGHTNING_LM_NDT_MAX_POINTS:-<from-config>}"
   echo "solid_icp_workers_override=${LIGHTNING_LM_SOLID_ICP_WORKERS:-<from-config>}"
   echo "solid_worker_nice_override=${LIGHTNING_LM_SOLID_WORKER_NICE:-<from-config>}"
   echo "solid_cpu_affinity_override=${LIGHTNING_LM_SOLID_CPU_AFFINITY:-<from-config>}"

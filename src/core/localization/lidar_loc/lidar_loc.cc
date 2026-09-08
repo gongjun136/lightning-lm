@@ -3,6 +3,7 @@
 #include <execution>
 #include <filesystem>
 #include <limits>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
@@ -18,6 +19,7 @@
 #include "pclomp/voxel_grid_covariance_omp_impl.hpp"
 
 #include "core/localization/lidar_loc/lidar_loc.h"
+#include "core/lio/multi_lidar_fusion.h"
 #include "common/debug_event.h"
 
 #include <opencv2/highgui.hpp>
@@ -112,6 +114,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         return false;
     }
     ndt_threads_ = compute_budget.ndt_threads;
+    ndt_max_points_ = compute_budget.ndt_max_points;
     pcl_ndt_->setNumThreads(ndt_threads_);
     pcl_ndt_rough_->setNumThreads(ndt_threads_);
     LOG(INFO) << "lidar localization compute budget: ndt_threads=" << ndt_threads_;
@@ -484,11 +487,13 @@ bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
     if (profiling_enabled) {
         const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
         const MatchStats match_stats = GetLastMatchStats();
-        LOG(INFO) << "COMPUTE_BENCH_FRAME module=lidar_loc"
+        LOG(INFO) << std::fixed << std::setprecision(6) << "COMPUTE_BENCH_FRAME module=lidar_loc"
                   << " phase=" << (was_initialized ? "tracking" : "initialization")
+                  << " frame_id=" << cloud_input->header.stamp
                   << " timestamp_s=" << current_timestamp_
                   << " input_points=" << cloud_input->size()
                   << " ndt_calls=" << frame_profiling_.ndt_calls
+                  << " ndt_input_points=" << frame_profiling_.ndt_input_points
                   << " ndt_iterations=" << match_stats.iterations
                   << " confidence=" << match_stats.confidence
                   << " success=" << match_stats.success
@@ -1935,6 +1940,7 @@ bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_p
 }
 
 bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res) {
+    const bool budget_allowed = loc_inited_ && last_match_stats_.success && !use_rough_res;
     Eigen::Matrix4f trans;
     bool loc_success = false;
     Eigen::Matrix4f guess_pose = pose.matrix().cast<float>();
@@ -1959,7 +1965,9 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         ndt = pcl_ndt_;
     }
 
-    ndt->setInputSource(input);
+    const auto ndt_input = budget_allowed ? SampleSpatiallyBalanced(input, ndt_max_points_, true) : input;
+    frame_profiling_.ndt_input_points = ndt_input->size();
+    ndt->setInputSource(ndt_input);
     profiling::Stopwatch ndt_profile_timer(profiling::ComputeProfilingEnabled());
     ndt->align(*output, guess_pose);
     AccumulateTiming(frame_profiling_.ndt_align, ndt_profile_timer.Stop());

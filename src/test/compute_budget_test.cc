@@ -50,6 +50,7 @@ int main() {
 
     ScopedEnvironment clear_lio(lightning::compute::kLioThreadsEnv, nullptr);
     ScopedEnvironment clear_ndt(lightning::compute::kNdtThreadsEnv, nullptr);
+    ScopedEnvironment clear_ndt_points(lightning::compute::kNdtMaxPointsEnv, nullptr);
     ScopedEnvironment clear_solid(lightning::compute::kSolidIcpWorkersEnv, nullptr);
     ScopedEnvironment clear_solid_nice(lightning::compute::kSolidWorkerNiceEnv,
                                        nullptr);
@@ -124,6 +125,18 @@ compute_budget:
                 "invalid affinity leaves budget unchanged");
     }
 
+    {
+        ScopedEnvironment points(lightning::compute::kNdtMaxPointsEnv, "3000");
+        ComputeBudget capped;
+        Require(LoadComputeBudget(root, capped, &error) && capped.ndt_max_points == 3000,
+                "external NDT point budget overrides YAML");
+    }
+    {
+        ScopedEnvironment points(lightning::compute::kNdtMaxPointsEnv, "-1");
+        ComputeBudget unchanged;
+        Require(!LoadComputeBudget(root, unchanged, &error) && unchanged.ndt_max_points == 0,
+                "negative NDT cap is rejected without mutation");
+    }
     std::cout << "compute budget tests passed\n";
     return 0;
 }
