@@ -51,7 +51,7 @@ void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-void TestScanEpoch(double tail) {
+void TestScanEpoch(double tail, double epoch = 10.205) {
     using namespace lightning;
     ImuProcess imu;
     ImuProcess::InitializationOptions options;
@@ -71,16 +71,27 @@ void TestScanEpoch(double tail) {
     imu.Process(init, filter, output);
     Require(imu.IsIMUInited(), "test IMU initialization failed");
     auto state = filter.GetX();
-    state.timestamp_ = 10.205;
+    state.timestamp_ = epoch;
+    state.SetVel(Vec3d(1.0, 0.0, 0.0));
     filter.ChangeX(state);
     MeasureGroup scan;
     scan.lidar_begin_time_ = 10.2;
     scan.lidar_end_time_ = 10.3;
     scan.scan_.reset(new PointCloudType());
+    PointType point;
+    point.x = 1.0;
+    point.y = point.z = 0.0;
+    point.time = 6.0;
+    scan.scan_->push_back(point);
+    point.time = 7.0;
+    scan.scan_->push_back(point);
     scan.imu_ = {LaserMappingTimingTestPeer::Imu(10.210), LaserMappingTimingTestPeer::Imu(tail)};
+    for (auto& sample : scan.imu_) sample->linear_acceleration = Vec3d(0.0, 0.0, 9.81);
     imu.Process(scan, filter, output);
     Require(std::abs(filter.GetX().timestamp_ - 10.3) < 1e-12,
             "scan prediction must integrate from state epoch and stop at scan end");
+    Require(std::abs(output->back().x - 0.907) < 1e-6,
+            "undistortion seed pose must retain its real epoch, not be relabeled as scan begin");
 }
 
 int main() {
@@ -103,6 +114,8 @@ int main() {
     Require(empty.timestamp_ == 3.000, "empty replay must preserve copied state epoch");
     TestScanEpoch(10.295);
     TestScanEpoch(10.305);
+    TestScanEpoch(10.295, 10.195);
+    TestScanEpoch(10.305, 10.195);
 
     LaserMappingTimingTestPeer::InitializeImu(mapping);
     LaserMappingTimingTestPeer::Rebuild(mapping, 4.000, 3.995, {4.020});

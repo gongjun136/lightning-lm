@@ -318,10 +318,11 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 
     /*** Initialize IMU pose ***/
     // imu_pose_保存一串按时间排列的IMU状态，后面会用它把点云按时间分段补偿。
-    // 第一项是扫描开始处的参考状态：offset_time=0，状态来自当前ESKF。
+    // Preserve the seed state's epoch, including a partial initialization interval.
     auto imu_state = kf_state.GetX();
     imu_pose_.clear();
-    imu_pose_.emplace_back(0.0, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
+    imu_pose_.emplace_back(imu_state.timestamp_ - pcl_beg_time, acc_s_last_, angvel_last_,
+                           imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix());
 
     /*** forward propagation at each imu_ point ***/
     Vec3d angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
