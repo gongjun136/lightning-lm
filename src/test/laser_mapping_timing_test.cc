@@ -16,9 +16,10 @@ class LaserMappingTimingTestPeer {
         return imu;
     }
     static NavState Rebuild(LaserMapping& mapping, double epoch, double tail,
-                            std::initializer_list<double> buffered) {
+                            std::initializer_list<double> buffered, const Vec3d& velocity = Vec3d::Zero()) {
         NavState state;
         state.timestamp_ = epoch;
+        state.SetVel(velocity);
         mapping.kf_.ChangeX(state);
         mapping.kf_.SetPropagateVelocity(true);
         mapping.measures_.imu_ = {Imu(tail)};
@@ -42,6 +43,7 @@ class LaserMappingTimingTestPeer {
         mapping.p_imu_->Process(init, mapping.kf_, cloud);
     }
     static std::size_t BufferedImus(const LaserMapping& mapping) { return mapping.imu_buffer_.size(); }
+    static Vec3d LioVelocity(const LaserMapping& mapping) { return mapping.kf_.GetX().vel_; }
 };
 }  // namespace lightning
 
@@ -125,5 +127,27 @@ int main() {
                                    Vec3d::Zero(), Vec3d::Zero()) &&
                 (filter.GetP() - covariance).norm() == 0.0,
             "rejected prediction must preserve covariance as well as state time");
+    mapping.SetIMUStaticHold(true);
+    const auto held = LaserMappingTimingTestPeer::Rebuild(mapping, 6.0, 5.995, {6.01, 6.02},
+                                                         Vec3d(0.3, 0.0, 0.0));
+    Require(held.vel_.norm() == 0.0 && held.pos_.norm() == 0.0,
+            "static hold must survive LIO state replacement and buffered IMU replay");
+    Require(held.timestamp_ == 6.02 && LaserMappingTimingTestPeer::LioVelocity(mapping).x() == 0.3,
+            "hold must not freeze time or suppress the main LIO motion evidence");
+    auto rotating_imu = LaserMappingTimingTestPeer::Imu(6.03);
+    rotating_imu->angular_velocity = Vec3d(0.0, 0.0, 0.1);
+    mapping.ProcessIMU(rotating_imu);
+    const auto incremental_hold = mapping.GetIMUState();
+    Require(incremental_hold.vel_.norm() == 0.0 && incremental_hold.pos_.norm() == 0.0 &&
+                incremental_hold.timestamp_ == 6.03 && incremental_hold.rot_.log().norm() > 0.0009,
+            "hold must constrain incremental translation without disabling gyro propagation");
+    mapping.SetIMUStaticHold(false);
+    mapping.ProcessIMU(LaserMappingTimingTestPeer::Imu(6.04));
+    Require(mapping.GetIMUState().vel_.norm() > 0.009,
+            "release must resume ordinary high-frequency velocity propagation");
+    const auto moving = LaserMappingTimingTestPeer::Rebuild(mapping, 7.0, 6.995, {7.01},
+                                                           Vec3d(0.4, 0.0, 0.0));
+    Require(moving.vel_.x() > 0.409 && moving.pos_.x() > 0.0039,
+            "released hold must not constrain subsequent LIO rebuilds");
     std::cout << "laser mapping timing tests passed\n";
 }

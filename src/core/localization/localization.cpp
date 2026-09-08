@@ -1064,12 +1064,10 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         "Entered conservative IMU static hold",
         "Exited conservative IMU static hold",
         std::chrono::seconds(1));
+    lio_->SetIMUStaticHold(static_hold_active);
+    dr_state = lio_->GetIMUState();
     if (static_hold_active) {
         dr_state.is_parking_ = true;
-        dr_state.SetVel(Vec3d::Zero());
-        // Prevent the high-frequency ESKF prediction from integrating a
-        // stationary bias into unbounded velocity and position drift.
-        lio_->SetIMUVelocity(Vec3d::Zero());
     }
     state_timing = state_profile_timer.Stop();
 

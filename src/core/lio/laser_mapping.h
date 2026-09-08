@@ -227,12 +227,18 @@ class LaserMapping {
         }
     }
 
-    /// Apply a conservative zero-velocity constraint to the high-frequency
-    /// prediction state after an external stationary detector has fired.
+    /// One-shot velocity assignment; use SetIMUStaticHold for a persistent hold.
     void SetIMUVelocity(const Vec3d& velocity) {
         auto state = kf_imu_.GetX();
         state.SetVel(velocity);
         kf_imu_.ChangeX(state);
+    }
+
+    /// Persist the external detector's hold across prediction and LIO rebuilds.
+    /// The main LIO filter remains unconstrained so motion can release the hold.
+    void SetIMUStaticHold(bool active) {
+        high_frequency_static_hold_ = active;
+        ApplyHighFrequencyStaticHold();
     }
 
     /// 获取最近一次去畸变后的点云，点仍在当前Lidar坐标系下。
@@ -287,6 +293,7 @@ class LaserMapping {
     friend class LaserMappingTimingTestPeer;
     bool DrainAssembledFrames();
     void RebuildHighFrequencyState();
+    void ApplyHighFrequencyStaticHold();
     bool ApplyWheelSpeedObservation(ESKF& filter, double state_timestamp,
                                     double& last_applied_observation_timestamp,
                                     bool high_frequency_filter);
@@ -427,6 +434,7 @@ class LaserMapping {
 
     ESKF kf_;      // 点云时刻的IMU状态，用于畸变矫正+雷达里程计观测更新
     ESKF kf_imu_;  // imu 最新时刻的eskf状态，提供UI的高频位姿输出
+    bool high_frequency_static_hold_ = false;
 
     NavState state_point_;  // 当前Lidar帧结束时刻的前端状态
 

@@ -47,6 +47,7 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.max_update_gravity_step_ = max_update_gravity_step_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
+    high_frequency_static_hold_ = false;
     velocity_propagation_active_ = propagate_velocity_;
     p_imu_->SetPostPredictCallback([this](ESKF& filter, double timestamp) {
         ApplyWheelSpeedObservation(filter, timestamp,
@@ -516,6 +517,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
         if (kf_imu_.PredictTo(timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
             ApplyWheelSpeedObservation(kf_imu_, timestamp,
                                        last_imu_filter_wheel_timestamp_, true);
+            ApplyHighFrequencyStaticHold();
         }
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
@@ -1045,8 +1047,15 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     return RunStatus::kOutput;
 }
 
+void LaserMapping::ApplyHighFrequencyStaticHold() {
+    if (high_frequency_static_hold_) SetIMUVelocity(Vec3d::Zero());
+}
+
 void LaserMapping::RebuildHighFrequencyState() {
     kf_imu_ = kf_;
+    // Clear the copied LIO velocity before replay, not just before publication:
+    // otherwise buffered samples can already integrate it into position.
+    ApplyHighFrequencyStaticHold();
     {
         std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
         last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
@@ -1057,6 +1066,7 @@ void LaserMapping::RebuildHighFrequencyState() {
         if (kf_imu_.PredictTo(imu->timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
             ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
                                        last_imu_filter_wheel_timestamp_, true);
+            ApplyHighFrequencyStaticHold();
         }
     }
 }
