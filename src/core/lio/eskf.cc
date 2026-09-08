@@ -139,6 +139,16 @@ namespace lightning {
  * @param gyro 当前积分区间使用的角速度输入。
  * @param acce 当前积分区间使用的加速度计输入。
  */
+bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
+    if (!std::isfinite(timestamp) || !std::isfinite(x_.timestamp_) ||
+        timestamp <= x_.timestamp_ || !gyro.allFinite() || !acce.allFinite()) {
+        return false;
+    }
+    Predict(timestamp - x_.timestamp_, Q, gyro, acce);
+    x_.timestamp_ = timestamp;  // Align roundoff only after integrating the full interval.
+    return true;
+}
+
 void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
     // f_是名义状态连续时间导数 f(x,u)，例如位置导数、姿态角速度、速度导数。
     // f_x_是连续动力学对误差状态的雅可比 F_c，后面会通过 I + F_c * dt 做一阶离散化。

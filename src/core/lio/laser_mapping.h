@@ -284,7 +284,9 @@ class LaserMapping {
 
     bool EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLidarFrameStats *stats = nullptr,
                       double preprocess_ms = 0.0);
+    friend class LaserMappingTimingTestPeer;
     bool DrainAssembledFrames();
+    void RebuildHighFrequencyState();
     bool ApplyWheelSpeedObservation(ESKF& filter, double state_timestamp,
                                     double& last_applied_observation_timestamp,
                                     bool high_frequency_filter);

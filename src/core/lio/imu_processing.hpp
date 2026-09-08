@@ -311,7 +311,6 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     // 否则当前帧起点到第一条IMU之间会缺少约束，点云开头附近的运动补偿容易不连续。
     auto v_imu = meas.imu_;
     v_imu.push_front(last_imu_);
-    const double &imu_end_time = v_imu.back()->timestamp;
 
     // 点云时间戳使用“本帧扫描开始时刻”为零点，后面保存IMU位姿时也统一转成该相对时间。
     const double &pcl_beg_time = meas.lidar_begin_time_;
@@ -356,13 +355,10 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 
         // 先把加速度计量测缩放到标定尺度，再交给ESKF预测；角速度这里没有做额外缩放。
         acc_avr = ScaleAccelerationForPrediction(acc_avr);  // 使用缓存的缩放因子进行加速度计标定
-        // 如果head早于上一帧Lidar结束时刻，只积分 [last_lidar_end_time_, tail] 这一段。
-        // 这样可以避免把上一帧已经积分过的IMU时间重复计入当前帧。
-        if (head->timestamp < last_lidar_end_time_) {
-            dt = tail->timestamp - last_lidar_end_time_;
-        } else {
-            dt = tail->timestamp - head->timestamp;
-        }
+        // The state epoch, not the previous raw IMU, owns the integration frontier.
+        // Clip an interval straddling scan end instead of integrating beyond it.
+        const double interval_end = std::min(tail->timestamp, pcl_end_time);
+        dt = interval_end - kf_state.GetX().timestamp_;
 
         acc = acc_avr;
         gyro = angvel_avr;
@@ -387,7 +383,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
         Q_.block<3, 3>(9, 9).diagonal() = cov_bias_acc_;
-        kf_state.Predict(dt, Q_, gyro, acc);
+        kf_state.PredictTo(interval_end, Q_, gyro, acc);
         if (post_predict_callback_) {
             post_predict_callback_(kf_state, kf_state.GetX().timestamp_);
         }
@@ -410,21 +406,15 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         // 1.ESKF预测使用的是前向欧拉积分：kf_state.Predict(dt, Q_, gyro, acc)
         // 2.在 [head_timestamp, tail_timestamp] 区间内，使用平均的输入值进行积分
         // 3.但积分结果对应的是区间末端的状态
-        double &&offs_t = tail->timestamp - pcl_beg_time;
+        const double offs_t = imu_state.timestamp_ - pcl_beg_time;
         imu_pose_.emplace_back(
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
     /*** 计算帧结束时刻的位姿预测，确保IMU积分覆盖整个点云扫描周期 ***/
-    // 前面的循环只积分到了最后一条IMU的时间 imu_end_time。
-    // 点云补偿的目标帧是当前Lidar扫描结束时刻 pcl_end_time，所以还要把状态对齐到这个时刻。
-    // note用于兼容两种情况：
-    // - IMU早于点云结束：继续预测到点云结束；
-    // - IMU晚于点云结束：按当前写法取两者时间差的非负值，沿用原框架的预测逻辑。
-    double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
-    dt = note * (pcl_end_time - imu_end_time);  // 正向或反向预测到点云结束时刻
-    kf_state.Predict(dt, Q_, gyro, acc);
-    if (post_predict_callback_) {
+    // Integrate only the remaining positive interval; never turn a negative
+    // difference into a forward prediction beyond the scan end.
+    if (kf_state.PredictTo(pcl_end_time, Q_, gyro, acc) && post_predict_callback_) {
         post_predict_callback_(kf_state, kf_state.GetX().timestamp_);
     }
 

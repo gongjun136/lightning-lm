@@ -161,6 +161,9 @@ class ESKF {
      * @param acce 当前区间使用的加速度，通常为相邻IMU量测平均值。
      */
     void Predict(const double& dt, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
+    /// Integrate only the uncovered interval from the actual state epoch.
+    /// Covered/invalid samples leave both state and covariance unchanged.
+    bool PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
     struct ForwardSpeedUpdateResult {
         bool accepted = false;

@@ -498,27 +498,25 @@ void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
 }
 
 void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
+    if (!imu || !std::isfinite(imu->timestamp) || imu->timestamp <= 0.0 ||
+        !imu->angular_velocity.allFinite() || !imu->linear_acceleration.allFinite()) return;
     publish_count_++;
 
     double timestamp = imu->timestamp;
 
     UL lock(mtx_buffer_);
-    if (timestamp < last_timestamp_imu_) {
-        LOG(WARNING) << "imu loop back, clear buffer";
-        imu_buffer_.clear();
-        std::lock_guard<std::mutex> wheel_lock(wheel_speed_mutex_);
-        wheel_speed_buffer_.clear();
-        last_raw_wheel_speed_timestamp_ = std::numeric_limits<double>::lowest();
-        last_lidar_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
-        last_imu_filter_wheel_timestamp_ = std::numeric_limits<double>::lowest();
+    if (timestamp <= last_timestamp_imu_) {
+        if (timestamp < last_timestamp_imu_) LOG(WARNING) << "reject IMU timestamp rollback";
+        return;
     }
 
     if (p_imu_->IsIMUInited()) {
         /// 更新最新imu状态
         const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
-        kf_imu_.Predict(timestamp - last_timestamp_imu_, p_imu_->Q_, imu->angular_velocity, acc);
-        ApplyWheelSpeedObservation(kf_imu_, timestamp,
-                                   last_imu_filter_wheel_timestamp_, true);
+        if (kf_imu_.PredictTo(timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
+            ApplyWheelSpeedObservation(kf_imu_, timestamp,
+                                       last_imu_filter_wheel_timestamp_, true);
+        }
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
 
@@ -585,9 +583,9 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         auto safe_state = kf_.GetX();
         safe_state.timestamp_ = measures_.lidar_end_time_;
         kf_.ChangeX(safe_state);
-        kf_imu_ = kf_;
         ResetWheelSpeedIntegrationBridge(measures_.lidar_end_time_);
         p_imu_->ResetIntegrationBridge(measures_.imu_.back(), measures_.lidar_end_time_, safe_state);
+        RebuildHighFrequencyState();
         last_lidar_time_ = measures_.lidar_begin_time_;
         last_tracking_healthy_ = false;
         return RunStatus::kConsumed;
@@ -681,7 +679,11 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     allocation_timing = allocation_profile_timer.Stop();
     profiling::Stopwatch imu_profile_timer(profiling_enabled);
     const auto imu_start = BenchClock::now();
+    const bool imu_was_initialized = p_imu_->IsIMUInited();
     p_imu_->Process(measures_, kf_, scan_undistort_full_);
+    if (!imu_was_initialized && p_imu_->IsIMUInited()) {
+        RebuildHighFrequencyState();
+    }
     imu_undistort_ms = elapsed_ms(imu_start);
     imu_timing = imu_profile_timer.Stop();
 
@@ -784,6 +786,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         last_tracking_healthy_ = true;
         map_update_ms = elapsed_ms(initial_map_start);
         map_update_timing = initial_map_profile_timer.Stop();
+        RebuildHighFrequencyState();
         emit_benchmark("initialization", scan_undistort_->size());
         emit_pipeline_benchmark("initialization", scan_undistort_->size());
         return RunStatus::kOutput;
@@ -1019,23 +1022,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
     // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
     profiling::Stopwatch post_imu_profile_timer(profiling_enabled);
-    kf_imu_ = kf_;
-    {
-        std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
-        last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
-    }
-    if (!measures_.imu_.empty()) {
-        double t = measures_.imu_.back()->timestamp;
-        for (auto &imu : imu_buffer_) {
-            double dt = imu->timestamp - t;
-            // 这里做高频显示预测，不参与Lidar帧的去畸变输出。
-            const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
-            kf_imu_.Predict(dt, p_imu_->Q_, imu->angular_velocity, acc);
-            ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
-                                       last_imu_filter_wheel_timestamp_, true);
-            t = imu->timestamp;
-        }
-    }
+    RebuildHighFrequencyState();
     post_imu_timing = post_imu_profile_timer.Stop();
 
     if (ui_) {
@@ -1056,6 +1043,22 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     emit_pipeline_benchmark("tracking", scan_down_lidar_->size());
 
     return RunStatus::kOutput;
+}
+
+void LaserMapping::RebuildHighFrequencyState() {
+    kf_imu_ = kf_;
+    {
+        std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
+        last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
+    }
+    for (const auto &imu : imu_buffer_) {
+        // kf_ already covers the scan end, including the frame-tail IMU gap.
+        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
+        if (kf_imu_.PredictTo(imu->timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
+            ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
+                                       last_imu_filter_wheel_timestamp_, true);
+        }
+    }
 }
 
 void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {

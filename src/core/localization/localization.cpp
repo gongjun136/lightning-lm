@@ -34,6 +34,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         lock.lock();
     }
     live_output_timestamp_gate_.Reset();
+    last_imu_time_ = 0.0;
 
     YAML_IO yaml(yaml_path);
     options_.with_ui_ = yaml.GetValue<bool>("system", "with_ui");
@@ -972,6 +973,8 @@ void Localization::ProcessIMUData(IMUPtr imu) {
         return;
     }
 
+    if (!imu || !std::isfinite(imu->timestamp) || imu->timestamp <= 0.0 ||
+        !imu->angular_velocity.allFinite() || !imu->linear_acceleration.allFinite()) return;
     double this_imu_time = imu->timestamp;
     if (last_imu_time_ > 0 && this_imu_time < last_imu_time_) {
         LOG(WARNING) << "IMU 时间异常：" << this_imu_time << ", last: " << last_imu_time_;
@@ -980,7 +983,9 @@ void Localization::ProcessIMUData(IMUPtr imu) {
                 << last_imu_time_ - this_imu_time;
         debug_event::EmitThrottled("imu_timestamp_rollback", message.str(),
                                    std::chrono::seconds(1));
+        return;
     }
+    if (this_imu_time == last_imu_time_) return;
     last_imu_time_ = this_imu_time;
 
     /// 里程计处理IMU

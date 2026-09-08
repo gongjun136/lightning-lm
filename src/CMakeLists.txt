@@ -158,6 +158,9 @@ if(BUILD_TESTING)
     add_executable(laser_mapping_projection_test test/laser_mapping_projection_test.cc)
     target_link_libraries(laser_mapping_projection_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(laser_mapping_timing_test test/laser_mapping_timing_test.cc)
+    target_link_libraries(laser_mapping_timing_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(debug_event_test test/debug_event_test.cc)
     target_link_libraries(debug_event_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -181,6 +184,7 @@ if(BUILD_TESTING)
     add_test(NAME compute_budget_test COMMAND $<TARGET_FILE:compute_budget_test>)
     add_test(NAME thread_scheduling_test COMMAND $<TARGET_FILE:thread_scheduling_test>)
     add_test(NAME laser_mapping_projection_test COMMAND $<TARGET_FILE:laser_mapping_projection_test>)
+    add_test(NAME laser_mapping_timing_test COMMAND $<TARGET_FILE:laser_mapping_timing_test>)
     add_test(NAME debug_event_test COMMAND $<TARGET_FILE:debug_event_test>)
 endif()
 
