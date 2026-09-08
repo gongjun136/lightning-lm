@@ -410,10 +410,23 @@ void TestFormalSanyAdaptiveConfigs() {
                     config.adaptive_load.cloud_publish_min_lidars == 3 &&
                     config.adaptive_load.cloud_publish_require_primary,
                 "formal SANY localization and publication minima");
-        Require(config.adaptive_load.target_latency_sec == 0.2 &&
-                    config.adaptive_load.hard_latency_sec == 0.3 &&
-                    config.adaptive_load.point_strides == std::vector<int>({1, 2, 3}),
-                "formal SANY latency and point-stride policy");
+        Require(config.adaptive_load.hard_latency_sec == 0.3,
+                "formal SANY hard stale protection remains unchanged");
+        if (expected_lidar_count == 3) {
+            Require(config.adaptive_load.target_latency_sec == 0.09 &&
+                        config.adaptive_load.point_strides == std::vector<int>({1, 1, 1}) &&
+                        config.adaptive_load.lio_point_budgets == std::vector<int>({2200, 1804, 1500}) &&
+                        config.adaptive_load.predictive &&
+                        config.adaptive_load.tracking_lidar_count == 3 &&
+                        !config.adaptive_load.rotate_secondary_lidars &&
+                        root["compute_budget"]["ndt_max_points"].as<int>() == 3500,
+                    "formal three-lidar YAML enables the conservative deployment budget");
+        } else {
+            Require(config.adaptive_load.target_latency_sec == 0.2 &&
+                        config.adaptive_load.point_strides == std::vector<int>({1, 2, 3}) &&
+                        config.adaptive_load.lio_point_budgets.empty(),
+                    "four-lidar deployment policy is unchanged");
+        }
         const YAML::Node system = root["system"];
         Require(root["fasterlio"]["skip_lidar_num"].as<int>() == 0 && system &&
                     system["enable_lidar_loc_skip"] &&

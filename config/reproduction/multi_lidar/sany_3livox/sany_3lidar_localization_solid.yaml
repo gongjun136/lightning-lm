@@ -13,6 +13,7 @@ common:
 compute_budget:
   lio_threads: 6
   ndt_threads: 4
+  ndt_max_points: 3500
   solid_icp_workers: 12
   # SOLiD still uses every idle core, but yields to normal-priority LIO/NDT
   # threads when startup/loss relocalization overlaps continuous tracking.
@@ -33,13 +34,19 @@ multi_lidar:
     relocalization_min_lidars: 3
     cloud_publish_min_lidars: 3
     cloud_publish_require_primary: true
-    target_latency_sec: 0.2
+    # Validated conservative candidate: keep all three LiDAR observations.
+    # Target-Orin full-stack latency acceptance is still required.
+    tracking_lidar_count: 3
+    rotate_secondary_lidars: false
+    lio_point_budgets: [2200, 1804, 1500]
+    predictive: true
+    target_latency_sec: 0.09
     hard_latency_sec: 0.3
-    degrade_processing_ratio: 0.8
-    recover_processing_ratio: 0.6
-    degrade_consecutive_frames: 3
-    recover_consecutive_frames: 20
-    point_strides: [1, 2, 3]
+    degrade_processing_ratio: 0.72
+    recover_processing_ratio: 0.5
+    degrade_consecutive_frames: 1
+    recover_consecutive_frames: 75
+    point_strides: [1, 1, 1]
   online_extrinsic_estimation: false
   topics:
     lidar_0: /livox/lidar_192_168_3_184

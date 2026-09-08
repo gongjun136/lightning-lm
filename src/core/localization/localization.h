@@ -137,6 +137,7 @@ class Localization {
         MultiLidarFrameStats frame_stats;
         bool publication_eligible = true;
         std::chrono::steady_clock::time_point primary_received_at{};
+        std::chrono::steady_clock::time_point enqueued_at{};
     };
     void LidarLocProcCloud(const LidarLocInput& input);
 
@@ -205,6 +206,7 @@ class Localization {
         CloudPtr cloud;
         int lidar_id = 0;
         bool is_imu = false;
+        std::chrono::steady_clock::time_point enqueued_at{};
     };
     void ProcessSensorInput(const SensorInput& input);
     void ProcessIMUData(IMUPtr imu);
@@ -223,6 +225,10 @@ class Localization {
         {"preprocess", "dispatch", "outer"}};
     profiling::MultiStageTimingWindow imu_dr_timing_window_{
         {"lio_imu", "drain_lio", "state_static", "lidar_loc_dr", "pgo_dr", "outer"}};
+    // Single sensor consumer owns these windows; queue age uses monotonic time,
+    // not the sensor Header clock. It excludes processing after callback entry.
+    profiling::MultiStageTimingWindow imu_queue_timing_window_{{"queue_wait"}};
+    profiling::MultiStageTimingWindow lidar_queue_timing_window_{{"queue_wait"}};
     // Bounded primary-frame arrival ledger bridges preprocessing, sensor queue,
     // LIO and the asynchronous map matcher. Its clock never uses ROS wall time.
     void RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,

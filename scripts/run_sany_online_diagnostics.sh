@@ -44,10 +44,12 @@ case "${run_mode}" in
   diagnostic)
     default_compute_profile=1
     default_reduce_nonessential_overhead=0
+    default_resource_profile=1
     ;;
   production)
     default_compute_profile=0
     default_reduce_nonessential_overhead=1
+    default_resource_profile=0
     ;;
   *)
     echo "ERROR: LIGHTNING_LM_RUN_MODE must be diagnostic or production." >&2
@@ -57,6 +59,8 @@ esac
 compute_profile="${LIGHTNING_LM_COMPUTE_PROFILE:-${default_compute_profile}}"
 reduce_nonessential_overhead="${LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD:-${default_reduce_nonessential_overhead}}"
 cpu_affinity="${LIGHTNING_LM_CPU_AFFINITY:-}"
+resource_profile="${LIGHTNING_LM_RESOURCE_PROFILE:-${default_resource_profile}}"
+resource_interval_sec="${LIGHTNING_LM_RESOURCE_INTERVAL_SEC:-1}"
 
 usage() {
   cat <<'EOF'
@@ -97,6 +101,12 @@ Useful environment variables:
                               (mode default: diagnostic=0, production=1)
   LIGHTNING_LM_LIO_THREADS    Override compute_budget.lio_threads
   LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
+  LIGHTNING_LM_NDT_MAX_POINTS Override NDT point cap only; LIO budgets come from YAML
+  LIGHTNING_LM_RESOURCE_PROFILE
+                              /proc process/thread CPU, runqueue wait, memory and I/O:
+                              1=yes, 0=no (mode default: diagnostic=1, production=0)
+  LIGHTNING_LM_RESOURCE_INTERVAL_SEC
+                              /proc sampling interval in [0.5,60] seconds (default: 1)
   LIGHTNING_LM_SOLID_ICP_WORKERS
                               Override compute_budget.solid_icp_workers
   LIGHTNING_LM_SOLID_WORKER_NICE
@@ -184,6 +194,16 @@ fi
 [[ "${reduce_nonessential_overhead}" == "0" || "${reduce_nonessential_overhead}" == "1" ]] ||
   fail "LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD must be 0 or 1."
 validate_optional_thread_count LIGHTNING_LM_LIO_THREADS
+[[ "${resource_profile}" == "0" || "${resource_profile}" == "1" ]] ||
+  fail "LIGHTNING_LM_RESOURCE_PROFILE must be 0 or 1."
+python3 - "${resource_interval_sec}" <<'PY' || fail "resource interval must be finite and in [0.5,60] seconds."
+import math, sys
+try:
+    value = float(sys.argv[1])
+    assert math.isfinite(value) and 0.5 <= value <= 60.0
+except (ValueError, AssertionError):
+    raise SystemExit(1)
+PY
 validate_optional_thread_count LIGHTNING_LM_NDT_THREADS
 validate_optional_thread_count LIGHTNING_LM_SOLID_ICP_WORKERS
 validate_optional_nice LIGHTNING_LM_SOLID_WORKER_NICE
@@ -335,6 +355,9 @@ if [[ "${record_bag}" == "1" ]]; then
 fi
 config_path="$(realpath "${config_path}")"
 cp -- "${config_path}" "${run_dir}/config.yaml"
+python3 "${script_dir}/summarize_run_config.py" \
+  --config "${run_dir}/config.yaml" --output "${run_dir}/launch_compute_config.json" \
+  | tee "${run_dir}/logs/launch_compute_config.log"
 
 wait_for_inputs() {
   local deadline=$((SECONDS + topic_wait_seconds))
@@ -458,6 +481,7 @@ recorder_pid=""
 watchdog_pid=""
 tegrastats_pid=""
 algorithm_pid=""
+resource_pid=""
 stopping=false
 profile_extracted=false
 extract_compute_profile() {
@@ -487,8 +511,18 @@ stop_children() {
   [[ -z "${algorithm_pid}" ]] || kill -INT -- "-${algorithm_pid}" 2>/dev/null || true
   [[ -z "${watchdog_pid}" ]] || kill -TERM "${watchdog_pid}" 2>/dev/null || true
   [[ -z "${tegrastats_pid}" ]] || kill -TERM "${tegrastats_pid}" 2>/dev/null || true
+  [[ -z "${resource_pid}" ]] || kill -TERM "${resource_pid}" 2>/dev/null || true
   for pid in "${child_pids[@]}"; do
-    wait "${pid}" 2>/dev/null || true
+    if [[ -n "${resource_pid}" && "${pid}" == "${resource_pid}" ]]; then
+      local resource_status=0
+      wait "${pid}" 2>/dev/null || resource_status=$?
+      echo "resource_monitor_exit_code=${resource_status}" >>"${run_dir}/run_metadata.txt"
+      if ((resource_status != 0)); then
+        echo "WARNING: resource monitor exited with ${resource_status}; inspect logs/resource_monitor.stderr.log." >&2
+      fi
+    else
+      wait "${pid}" 2>/dev/null || true
+    fi
   done
   extract_compute_profile
 }
@@ -537,6 +571,8 @@ fi
   echo "enable_can_observation=${enable_can_observation}"
   echo "run_mode=${run_mode}"
   echo "compute_profile=${compute_profile}"
+  echo "resource_profile=${resource_profile}"
+  echo "resource_interval_sec=${resource_interval_sec}"
   echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
   echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
@@ -621,6 +657,14 @@ setsid "${algorithm_launcher[@]}" "${algorithm_args[@]}" \
   2>"${run_dir}/logs/run_loc_online.stderr.log" &
 algorithm_pid=$!
 child_pids+=("${algorithm_pid}")
+if [[ "${resource_profile}" == "1" ]]; then
+  python3 "${script_dir}/monitor_process_resources.py" \
+    --process-group "${algorithm_pid}" --interval-sec "${resource_interval_sec}" \
+    --output "${run_dir}/results/process_resources.jsonl" \
+    2>"${run_dir}/logs/resource_monitor.stderr.log" &
+  resource_pid=$!
+  child_pids+=("${resource_pid}")
+fi
 wait "${algorithm_pid}"
 algorithm_status=$?
 set -e

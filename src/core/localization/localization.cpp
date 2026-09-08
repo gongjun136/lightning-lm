@@ -310,7 +310,9 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
-        sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
+        sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false,
+                                profiling_enabled ? std::chrono::steady_clock::now()
+                                                  : std::chrono::steady_clock::time_point{}});
         input_lock.unlock();
         lifecycle_lock.unlock();
     } else {
@@ -368,7 +370,9 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
     profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
-        sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false});
+        sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false,
+                                profiling_enabled ? std::chrono::steady_clock::now()
+                                                  : std::chrono::steady_clock::time_point{}});
         input_lock.unlock();
         lifecycle_lock.unlock();
     } else {
@@ -404,6 +408,25 @@ void Localization::RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
+    if (profiling::ComputeProfilingEnabled() &&
+        input.enqueued_at != std::chrono::steady_clock::time_point{}) {
+        const auto dequeued_at = std::chrono::steady_clock::now();
+        profiling::TimingSample age;
+        age.valid = true;
+        age.wall_ms = std::chrono::duration<double, std::milli>(dequeued_at - input.enqueued_at).count();
+        auto& window = input.is_imu ? imu_queue_timing_window_ : lidar_queue_timing_window_;
+        if (const auto summary = window.Add({age}, dequeued_at)) {
+            const auto& wall = summary->stages.front().wall_ms;
+            LOG(INFO) << std::fixed << std::setprecision(6)
+                      << "COMPUTE_BENCH_SUMMARY module=sensor_queue source="
+                      << (input.is_imu ? "imu" : "lidar")
+                      << " window_s=" << summary->window_s << " samples=" << wall.count
+                      << " queue_wait_mean_ms=" << wall.mean
+                      << " queue_wait_p95_ms=" << wall.p95
+                      << " queue_wait_p99_ms=" << wall.p99
+                      << " queue_wait_max_ms=" << wall.max;
+        }
+    }
     const double timestamp = input.is_imu && input.imu
                                  ? input.imu->timestamp
                                  : (input.cloud ? static_cast<double>(input.cloud->header.stamp) * 1e-9 : 0.0);
@@ -515,6 +538,9 @@ void Localization::DrainLioOutputs() {
             // auto scan = lio_->GetScanUndist();
 
             if (options_.online_mode_) {
+                if (profiling::ComputeProfilingEnabled()) {
+                    lidar_loc_input.enqueued_at = std::chrono::steady_clock::now();
+                }
                 lidar_loc_proc_cloud_.AddMessage(lidar_loc_input);
             } else {
                 LidarLocProcCloud(lidar_loc_input);
@@ -523,6 +549,9 @@ void Localization::DrainLioOutputs() {
             // auto scan = cloud;   // 这个cloud应该差一个外参
 
             if (options_.online_mode_) {
+                if (profiling::ComputeProfilingEnabled()) {
+                    lidar_loc_input.enqueued_at = std::chrono::steady_clock::now();
+                }
                 lidar_loc_proc_cloud_.AddMessage(lidar_loc_input);
             } else {
                 LidarLocProcCloud(lidar_loc_input);
@@ -853,6 +882,11 @@ void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed
 
 void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
+    const double queue_wait_ms = profiling_enabled &&
+                                        input.enqueued_at != std::chrono::steady_clock::time_point{}
+                                    ? std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - input.enqueued_at).count()
+                                    : -1.0;
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lidar_loc_ == nullptr || pgo_ == nullptr) return;
@@ -943,6 +977,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
         LOG(INFO) << std::fixed << std::setprecision(6) << "COMPUTE_BENCH_FRAME module=lidar_loc_pipeline"
                   << " frame_id=" << scan_undist->header.stamp
                   << " primary_to_pgo_ms=" << primary_to_pgo_ms
+                  << " queue_wait_ms=" << queue_wait_ms
                   << " timestamp_s=" << res.timestamp_
                   << " localization_points=" << (scan_undist ? scan_undist->size() : 0)
                   << " lidar_valid=" << res.lidar_loc_valid_
@@ -972,7 +1007,9 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(imu ? imu->timestamp : 0.0);
-        sensor_proc_.AddMessage({imu, nullptr, 0, true});
+        sensor_proc_.AddMessage({imu, nullptr, 0, true,
+                                profiling::ComputeProfilingEnabled() ? std::chrono::steady_clock::now()
+                                                                     : std::chrono::steady_clock::time_point{}});
         return;
     }
     lifecycle_lock.unlock();
