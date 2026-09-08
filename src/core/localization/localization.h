@@ -251,8 +251,12 @@ class Localization {
     double last_static_lio_speed_ = 0.0;
     bool last_static_lio_reliable_ = false;
     double last_valid_lidar_loc_stamp_ = 0.0;
+    struct StaticWheelSpeedSample {
+        double timestamp = 0.0;
+        double speed_mps = 0.0;
+    };
+    std::deque<StaticWheelSpeedSample> static_wheel_speed_history_;
     double last_wheel_speed_stamp_ = 0.0;
-    double last_wheel_speed_mps_ = 0.0;
     bool wheel_speed_observed_ = false;
     bool wheel_timestamp_mismatch_reported_ = false;
     int static_exit_count_ = 0;

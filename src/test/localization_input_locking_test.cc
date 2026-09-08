@@ -4,6 +4,7 @@
 #include <future>
 #include <iostream>
 #include <mutex>
+#include <limits>
 
 namespace lightning::loc {
 
@@ -51,6 +52,9 @@ class LocalizationLockingTestPeer {
 
     static bool UpdateImuStaticState(Localization& localization, const IMUPtr& imu) {
         return localization.UpdateImuStaticState(imu);
+    }
+    static std::size_t WheelHistorySize(const Localization& localization) {
+        return localization.static_wheel_speed_history_.size();
     }
 };
 
@@ -268,6 +272,94 @@ int main() {
     if (!static_active) {
         std::cerr << "timestamp-aligned zero CAN did not recover the stationary observation"
                   << std::endl;
+        return 1;
+    }
+
+    // CAN callbacks can run ahead of the serialized IMU worker. A future
+    // sample must neither hide a valid historical zero nor release the hold.
+    Localization queued_can_localization;
+    LocalizationLockingTestPeer::EnableImuStaticHold(queued_can_localization);
+    for (int index = 0; index <= 150; ++index) {
+        queued_can_localization.ProcessWheelSpeed(400.0 + 0.01 * index,
+                                                  index < 125 ? 0.0 : 0.5);
+    }
+    const auto observe_queued_imu = [&](double stamp) {
+        lightning::NavState lio;
+        lio.timestamp_ = stamp;
+        lio.lidar_odom_reliable_ = true;
+        LocalizationLockingTestPeer::ObserveLio(queued_can_localization, lio);
+        lightning::loc::LocalizationResult loc;
+        loc.timestamp_ = stamp;
+        loc.lidar_loc_valid_ = true;
+        LocalizationLockingTestPeer::ObserveLidarLoc(queued_can_localization, loc);
+        auto imu = std::make_shared<lightning::IMU>();
+        imu->timestamp = stamp;
+        imu->angular_velocity = lightning::Vec3d(0.09, 0.01, -0.02);
+        imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 9.81);
+        return LocalizationLockingTestPeer::UpdateImuStaticState(queued_can_localization, imu);
+    };
+    for (int index = 0; index <= 120; ++index) {
+        static_active = observe_queued_imu(400.0 + 0.01 * index);
+    }
+    if (!static_active) {
+        std::cerr << "future CAN hid the valid stationary history" << std::endl;
+        return 1;
+    }
+    for (int index = 121; index <= 124; ++index) {
+        if (!observe_queued_imu(400.0 + 0.01 * index)) {
+            std::cerr << "future moving CAN released the hold before its epoch" << std::endl;
+            return 1;
+        }
+    }
+    for (int index = 125; index <= 127; ++index) {
+        static_active = observe_queued_imu(400.0 + 0.01 * index);
+    }
+    if (static_active) {
+        std::cerr << "historical moving CAN did not release hold in three samples" << std::endl;
+        return 1;
+    }
+    Localization future_zero_localization;
+    LocalizationLockingTestPeer::EnableImuStaticHold(future_zero_localization);
+    future_zero_localization.ProcessWheelSpeed(500.0, 0.5);
+    future_zero_localization.ProcessWheelSpeed(501.1, 0.0);
+    for (int index = 0; index <= 95; ++index) {
+        const double stamp = 500.0 + 0.01 * index;
+        lightning::NavState lio;
+        lio.timestamp_ = stamp;
+        lio.lidar_odom_reliable_ = true;
+        LocalizationLockingTestPeer::ObserveLio(future_zero_localization, lio);
+        lightning::loc::LocalizationResult loc;
+        loc.timestamp_ = stamp;
+        loc.lidar_loc_valid_ = true;
+        LocalizationLockingTestPeer::ObserveLidarLoc(future_zero_localization, loc);
+        auto imu = std::make_shared<lightning::IMU>();
+        imu->timestamp = stamp;
+        imu->angular_velocity = lightning::Vec3d(0.09, 0.0, 0.0);
+        imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 9.81);
+        if (LocalizationLockingTestPeer::UpdateImuStaticState(future_zero_localization, imu)) {
+            std::cerr << "future zero CAN incorrectly engaged static hold" << std::endl;
+            return 1;
+        }
+    }
+    Localization bounded_can;
+    LocalizationLockingTestPeer::EnableImuStaticHold(bounded_can);
+    bounded_can.ProcessWheelSpeed(600.0, 0.0);
+    bounded_can.ProcessWheelSpeed(600.0, 0.5);
+    bounded_can.ProcessWheelSpeed(599.9, 0.5);
+    bounded_can.ProcessWheelSpeed(std::numeric_limits<double>::quiet_NaN(), 0.0);
+    bounded_can.ProcessWheelSpeed(600.1, std::numeric_limits<double>::infinity());
+    if (LocalizationLockingTestPeer::WheelHistorySize(bounded_can) != 1) {
+        std::cerr << "invalid or nonmonotonic CAN changed history" << std::endl;
+        return 1;
+    }
+    for (int i = 1; i <= 1000; ++i) bounded_can.ProcessWheelSpeed(600.0 + i * 0.001, 0.0);
+    if (LocalizationLockingTestPeer::WheelHistorySize(bounded_can) > 512) {
+        std::cerr << "CAN history sample bound exceeded" << std::endl;
+        return 1;
+    }
+    bounded_can.ProcessWheelSpeed(604.0, 0.0);
+    if (LocalizationLockingTestPeer::WheelHistorySize(bounded_can) != 1) {
+        std::cerr << "CAN history age bound exceeded" << std::endl;
         return 1;
     }
     return 0;

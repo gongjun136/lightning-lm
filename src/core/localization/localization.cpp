@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <sstream>
 
 #include "common/debug_event.h"
@@ -115,8 +116,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         last_static_lio_speed_ = 0.0;
         last_static_lio_reliable_ = false;
         last_valid_lidar_loc_stamp_ = 0.0;
+        static_wheel_speed_history_.clear();
         last_wheel_speed_stamp_ = 0.0;
-        last_wheel_speed_mps_ = 0.0;
         wheel_speed_observed_ = false;
         wheel_timestamp_mismatch_reported_ = false;
         static_exit_count_ = 0;
@@ -738,32 +739,41 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     const double loc_age = sample.timestamp - last_valid_lidar_loc_stamp_;
     const bool fresh_lio = lio_age >= 0.0 && lio_age <= kMaxLioAgeSec;
     const bool fresh_valid_loc = loc_age >= 0.0 && loc_age <= kMaxValidLocAgeSec;
-    // PTP now aligns the CAN and LiDAR/IMU Header clocks. Use sensor time so a
-    // continuously delivered but stale or mis-timestamped CAN sample cannot
-    // override the IMU/LIO fallback.
+    // CAN callbacks may be ahead of the serialized IMU worker. Select the
+    // latest causal sample, not the latest arrival (and never a future zero).
+    const StaticWheelSpeedSample* wheel_sample = nullptr;
+    for (auto it = static_wheel_speed_history_.rbegin(); it != static_wheel_speed_history_.rend(); ++it) {
+        if (it->timestamp <= sample.timestamp) {
+            wheel_sample = &*it;
+            break;
+        }
+    }
+    const double wheel_age = wheel_sample ? sample.timestamp - wheel_sample->timestamp
+                                         : std::numeric_limits<double>::infinity();
+    const double wheel_speed_mps = wheel_sample ? wheel_sample->speed_mps : 0.0;
     const double wheel_imu_timestamp_delta = last_wheel_speed_stamp_ - sample.timestamp;
-    const bool fresh_wheel_speed = wheel_speed_observed_ &&
-                                   last_wheel_speed_stamp_ > 0.0 &&
-                                   std::abs(wheel_imu_timestamp_delta) <= kMaxWheelSpeedAgeSec;
+    const bool fresh_wheel_speed = wheel_sample && wheel_age <= kMaxWheelSpeedAgeSec;
     if (wheel_speed_observed_ && !fresh_wheel_speed &&
         !wheel_timestamp_mismatch_reported_) {
         wheel_timestamp_mismatch_reported_ = true;
-        LOG(WARNING) << "ignore CAN wheel speed: CAN-IMU Header delta="
+        LOG(WARNING) << "ignore CAN wheel speed: latest CAN-IMU Header delta="
                      << std::setprecision(14) << wheel_imu_timestamp_delta
-                     << " sec exceeds " << kMaxWheelSpeedAgeSec
+                     << " sec, selected_history_age=" << wheel_age
+                     << " sec; no causal sample within " << kMaxWheelSpeedAgeSec
                      << " sec; using IMU/LIO fallback";
     } else if (fresh_wheel_speed && wheel_timestamp_mismatch_reported_) {
         wheel_timestamp_mismatch_reported_ = false;
-        LOG(INFO) << "CAN wheel-speed Header alignment recovered: CAN-IMU delta="
-                  << std::setprecision(14) << wheel_imu_timestamp_delta << " sec";
+        LOG(INFO) << "CAN wheel-speed history recovered: selected_history_age="
+                  << std::setprecision(14) << wheel_age
+                  << " sec, latest CAN-IMU delta=" << wheel_imu_timestamp_delta << " sec";
     }
     debug_event::ReportState("can_imu_timestamp_mismatch",
                              wheel_speed_observed_ && !fresh_wheel_speed,
-                             "CAN and IMU timestamps are misaligned; using IMU/LIO fallback",
-                             "CAN and IMU timestamp alignment recovered",
+                             "No fresh causal CAN sample at IMU epoch; using IMU/LIO fallback",
+                             "Fresh causal CAN sample recovered",
                              std::chrono::seconds(1));
     const bool wheel_reports_stationary =
-        fresh_wheel_speed && std::abs(last_wheel_speed_mps_) < kEnterWheelSpeed;
+        fresh_wheel_speed && std::abs(wheel_speed_mps) < kEnterWheelSpeed;
 
     if (!imu_static_hold_active_) {
         const bool stable_imu_window = gyro_mean < kEnterGyroMean &&
@@ -786,7 +796,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
             LOG(WARNING) << "enter conservative IMU static hold at " << std::setprecision(14)
                          << sample.timestamp << ", lio_speed=" << last_static_lio_speed_
                          << ", wheel_speed="
-                         << (fresh_wheel_speed ? last_wheel_speed_mps_ : 0.0)
+                         << (fresh_wheel_speed ? wheel_speed_mps : 0.0)
                          << ", wheel_observed=" << wheel_speed_observed_
                          << ", gyro_mean=" << gyro_mean << ", accel_cv=" << accel_cv;
         }
@@ -802,7 +812,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
                                       ? kExitLioSpeedWithZeroCan
                                       : kExitLioSpeed;
     const bool moving = (fresh_wheel_speed &&
-                         std::abs(last_wheel_speed_mps_) > kExitWheelSpeed) ||
+                         std::abs(wheel_speed_mps) > kExitWheelSpeed) ||
                         (fresh_lio && last_static_lio_speed_ > lio_exit_speed) ||
                         (!wheel_reports_stationary && inertial_motion);
     static_exit_count_ = moving ? static_exit_count_ + 1 : 0;
@@ -813,25 +823,31 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
                      << sample.timestamp << ", gyro=" << sample.gyro_norm
                      << ", accel_delta_ratio=" << accel_delta_ratio
                      << ", lio_speed=" << last_static_lio_speed_
-                     << ", wheel_speed=" << last_wheel_speed_mps_;
+                     << ", wheel_speed=" << wheel_speed_mps;
     }
     return imu_static_hold_active_;
 }
 
 void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed_mps,
                                      double motor_torque_nm) {
-    if (!std::isfinite(timestamp) || !std::isfinite(longitudinal_speed_mps) ||
+    if (!std::isfinite(timestamp) || timestamp <= 0.0 || !std::isfinite(longitudinal_speed_mps) ||
         !std::isfinite(motor_torque_nm)) return;
-    {
-        std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-        if (lio_ != nullptr) {
-            lio_->ProcessWheelSpeed(timestamp, longitudinal_speed_mps, motor_torque_nm);
-        }
+    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    if (lio_ != nullptr) {
+        lio_->ProcessWheelSpeed(timestamp, longitudinal_speed_mps, motor_torque_nm);
     }
     if (!imu_static_hold_enabled_) return;
     std::lock_guard<std::mutex> lock(static_detector_mutex_);
+    if (timestamp <= last_wheel_speed_stamp_) return;
     last_wheel_speed_stamp_ = timestamp;
-    last_wheel_speed_mps_ = longitudinal_speed_mps;
+    static_wheel_speed_history_.push_back({timestamp, longitudinal_speed_mps});
+    constexpr double kHistorySec = 2.0;
+    constexpr std::size_t kMaxHistorySamples = 512;
+    while (!static_wheel_speed_history_.empty() &&
+           (timestamp - static_wheel_speed_history_.front().timestamp > kHistorySec ||
+            static_wheel_speed_history_.size() > kMaxHistorySamples)) {
+        static_wheel_speed_history_.pop_front();
+    }
     wheel_speed_observed_ = true;
 }
 
