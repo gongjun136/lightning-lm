@@ -531,7 +531,8 @@ offline_localization:
 output:
   map_frame: map
   fixed_map_transform:
-    enabled: true
+    # Current site uses this localization map directly; no legacy-map alignment.
+    enabled: false
     convention: target_from_localization
     source_frame: localization_map
     target_frame: map

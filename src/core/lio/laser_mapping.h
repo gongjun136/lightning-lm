@@ -236,10 +236,7 @@ class LaserMapping {
 
     /// Persist the external detector's hold across prediction and LIO rebuilds.
     /// The main LIO filter remains unconstrained so motion can release the hold.
-    void SetIMUStaticHold(bool active) {
-        high_frequency_static_hold_ = active;
-        ApplyHighFrequencyStaticHold();
-    }
+    void SetIMUStaticHold(bool active);
 
     /// 获取最近一次去畸变后的点云，点仍在当前Lidar坐标系下。
     CloudPtr GetScanUndist() const { return scan_undistort_; }
@@ -296,7 +293,8 @@ class LaserMapping {
     void ApplyHighFrequencyStaticHold();
     bool ApplyWheelSpeedObservation(ESKF& filter, double state_timestamp,
                                     double& last_applied_observation_timestamp,
-                                    bool high_frequency_filter);
+                                    bool high_frequency_filter,
+                                    const char* trace_source);
     void ResetWheelSpeedIntegrationBridge(double timestamp);
     struct WheelSpeedSample {
         double timestamp = 0.0;

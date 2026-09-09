@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import yaml
+
 import monitor_process_resources as monitor
 import summarize_run_config as config_summary
 
@@ -63,6 +65,22 @@ class ResourceTests(unittest.TestCase):
             result=config_summary.summarize(generated,{})
             self.assertEqual(result['adaptive_load'],declared['adaptive_load'])
 
+    def test_three_lidar_uses_current_map_without_fixed_transform(self):
+        repo=Path(__file__).resolve().parent.parent
+        path=repo/'config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml'
+        config=yaml.safe_load(path.read_text(encoding='utf-8'))
+        self.assertIs(config['output']['fixed_map_transform']['enabled'],False)
+
+    def test_system_cpu_ranking_handles_pid_reuse(self):
+        old={1:dict(start_ticks=10,cpu_ticks=100),2:dict(start_ticks=20,cpu_ticks=80),9:{}}
+        current={1:dict(pid=1,start_ticks=10,cpu_ticks=250,name='worker',pgrp=1,state='R',threads=3),
+                 2:dict(pid=2,start_ticks=21,cpu_ticks=900,name='reused',pgrp=2,state='S',threads=1)}
+        result=monitor.system_process_intervals(current,old,2,100)
+        self.assertEqual(len(result['top']),1)
+        self.assertAlmostEqual(result['top'][0]['cpu_core_equivalents'],.75)
+        self.assertEqual(result['unpaired_processes'],1)
+        self.assertEqual(result['vanished_processes'],1)
+
     @unittest.skipUnless(sys.platform=='linux','requires real Linux /proc')
     def test_find_executable_below_launcher(self):
         # ros2 run is a Python parent; the sampler must identify its executable child.
@@ -99,6 +117,7 @@ class ResourceTests(unittest.TestCase):
                 self.assertEqual(sampler.returncode,0,error)
                 records=[json.loads(line) for line in out.read_text().splitlines()]
                 self.assertEqual(records[0]['pid'],child.pid)
+                self.assertEqual(records[0]['schema_version'],2)
                 self.assertEqual(len(records[0]['executable_sha256']),64)
                 samples=[r for r in records if r['type']=='sample']
                 self.assertGreaterEqual(len(samples),3)
@@ -106,6 +125,10 @@ class ResourceTests(unittest.TestCase):
                 self.assertGreater(max(r['cpu_core_equivalents'] or 0 for r in samples),.1)
                 self.assertTrue(all(r['pid']==child.pid for r in samples))
                 self.assertTrue(all(r['memory']['VmRSS_kb'] is not None for r in samples))
+                self.assertTrue(all('wchan' in thread for r in samples for thread in r['threads']))
+                self.assertTrue(all(len(r['system_process_cpu']['top'])<=20 for r in samples))
+                self.assertTrue(any(row['pid']==child.pid and row['cpu_core_equivalents']>.1
+                                    for r in samples for row in r['system_process_cpu']['top']))
                 self.assertEqual(records[-1]['type'],'end')
             finally:
                 if child.poll() is None:child.terminate();child.wait(timeout=5)

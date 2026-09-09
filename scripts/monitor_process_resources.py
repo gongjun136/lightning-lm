@@ -63,6 +63,8 @@ def read_thread(path):
         result.update(sched_run_ns=run_ns, sched_wait_ns=wait_ns, sched_slices=slices)
     except (OSError, ValueError):
         result.update(sched_run_ns=None, sched_wait_ns=None, sched_slices=None)
+    try: result['wchan'] = (path / 'wchan').read_text().strip() or None
+    except OSError: result['wchan'] = None
     return result
 
 
@@ -78,6 +80,7 @@ def thread_interval(current, previous, elapsed, ticks_per_sec):
     result = dict(tid=current['pid'], start_ticks=current['start_ticks'], name=current['name'],
                   state=current['state'], last_cpu=current['last_cpu'], allowed_cpus=current['allowed_cpus'],
                   cpu_core_equivalents=ticks / ticks_per_sec / elapsed if ticks is not None and elapsed > 0 else None)
+    result['wchan'] = current.get('wchan')  # Read-time snapshot, not interval attribution.
     for key in ('sched_run_ns', 'sched_wait_ns', 'sched_slices', 'voluntary_switches', 'involuntary_switches'):
         result[key + '_delta'] = counter_delta(current, previous, key)
     return result
@@ -119,6 +122,35 @@ def discover_target(proc, pgrp, executable):
     return matches[0] if matches else None
 
 
+def read_system_processes(proc):
+    """Only /proc stat counters and comm; no command lines or environments."""
+    rows = {}; missing = 0
+    for path in proc.iterdir():
+        if not path.name.isdigit(): continue
+        try:
+            row = parse_stat((path / 'stat').read_text())
+            rows[row['pid']] = row
+        except (OSError, ValueError, IndexError): missing += 1
+    return rows, missing
+
+
+def system_process_intervals(current, previous, elapsed, ticks_per_sec, top_count=20):
+    rows = []; unpaired = 0
+    for pid, row in current.items():
+        old = previous.get(pid)
+        if old is None or old['start_ticks'] != row['start_ticks']:
+            unpaired += 1
+            continue
+        delta = counter_delta(row, old, 'cpu_ticks')
+        if delta is None or elapsed <= 0: continue
+        rows.append(dict(pid=pid, start_ticks=row['start_ticks'], name=row['name'],
+                         pgrp=row['pgrp'], state=row['state'], threads=row['threads'],
+                         cpu_core_equivalents=delta/ticks_per_sec/elapsed))
+    rows.sort(key=lambda r:(-r['cpu_core_equivalents'],r['pid']))
+    return dict(top=rows[:top_count], ranked_processes=len(rows), unpaired_processes=unpaired,
+                vanished_processes=len(set(previous)-set(current)), top_count=top_count)
+
+
 def process_snapshot(proc, pid, include_pss):
     path = proc / str(pid)
     stamp = time.monotonic()
@@ -139,12 +171,14 @@ def process_snapshot(proc, pid, include_pss):
         except OSError as exc: pss_error = type(exc).__name__
     try: io = {k:int(v) for k,v in read_status(path / 'io').items()}
     except OSError: io = {}
+    system_processes, system_missing = read_system_processes(proc)
     # Protect against PID reuse across the multi-file read.
     if parse_stat((path / 'stat').read_text())['start_ticks'] != stat['start_ticks']:
         raise RuntimeError('target PID reused during sample')
     return dict(monotonic_s=stamp, stat=stat, memory=memory, threads=threads, missing_threads=missed,
                 allowed_cpus=status.get('Cpus_allowed_list', ''), io=io, pss_error=pss_error,
-                host_cpus=read_host_cpus(proc), pss_sampled=include_pss)
+                host_cpus=read_host_cpus(proc), pss_sampled=include_pss,
+                system_processes=system_processes, system_missing=system_missing)
 
 
 def sample_interval(current, previous, ticks_per_sec):
@@ -165,7 +199,10 @@ def sample_interval(current, previous, ticks_per_sec):
                 missing_thread_samples=current['missing_threads'], memory=current['memory'],
                 pss_sampled=current['pss_sampled'], pss_error=current['pss_error'],
                 io_delta={k:counter_delta(current['io'],previous['io'],k) if previous else None for k in current['io']},
-                host_cpus=host_intervals(current['host_cpus'],previous['host_cpus'] if previous else {}),threads=threads)
+                host_cpus=host_intervals(current['host_cpus'],previous['host_cpus'] if previous else {}),threads=threads,
+                system_process_cpu=system_process_intervals(current['system_processes'],
+                    previous['system_processes'] if previous else {},elapsed,ticks_per_sec),
+                system_process_read_misses=current['system_missing'])
 
 
 def main():
@@ -208,10 +245,11 @@ def main():
         except OSError: selected_env=None
         try: schedstats=(proc/'sys/kernel/sched_schedstats').read_text().strip()
         except OSError:schedstats=None
-        emit(dict(type='metadata',schema_version=1,pid=target['pid'],process_start_ticks=target['start_ticks'],
+        emit(dict(type='metadata',schema_version=2,pid=target['pid'],process_start_ticks=target['start_ticks'],
                   process_group=args.process_group,executable=exe,executable_sha256=digest,
                   ticks_per_sec=ticks,interval_sec=args.interval_sec,pss_interval_sec=args.pss_interval_sec,
                   kernel_sched_schedstats=schedstats,selected_environment=selected_env,
+                  system_process_scope='top20 by paired CPU delta; comm only, no cmdline; new/exited processes not attributed; wchan is a read-time snapshot',
                   semantics='CPU equivalents=process CPU delta/wall delta; active threads are not occupied cores; last_cpu is a snapshot; sched_wait=runqueue wait, not mutex/sleep or pipeline queue wait; zero schedstat may mean disabled'))
         previous=None;next_pss=0;samples=0
         while not stop.is_set():

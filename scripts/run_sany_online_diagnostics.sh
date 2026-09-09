@@ -60,6 +60,7 @@ compute_profile="${LIGHTNING_LM_COMPUTE_PROFILE:-${default_compute_profile}}"
 reduce_nonessential_overhead="${LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD:-${default_reduce_nonessential_overhead}}"
 cpu_affinity="${LIGHTNING_LM_CPU_AFFINITY:-}"
 resource_profile="${LIGHTNING_LM_RESOURCE_PROFILE:-${default_resource_profile}}"
+causal_trace="${LIGHTNING_LM_CAUSAL_TRACE:-${default_resource_profile}}"
 resource_interval_sec="${LIGHTNING_LM_RESOURCE_INTERVAL_SEC:-1}"
 
 usage() {
@@ -107,6 +108,8 @@ Useful environment variables:
                               1=yes, 0=no (mode default: diagnostic=1, production=0)
   LIGHTNING_LM_RESOURCE_INTERVAL_SEC
                               /proc sampling interval in [0.5,60] seconds (default: 1)
+  LIGHTNING_LM_CAUSAL_TRACE  Bounded async velocity/queue/lock trace, 1=yes, 0=no
+                              (mode default: diagnostic=1, production=0)
   LIGHTNING_LM_SOLID_ICP_WORKERS
                               Override compute_budget.solid_icp_workers
   LIGHTNING_LM_SOLID_WORKER_NICE
@@ -196,6 +199,8 @@ fi
 validate_optional_thread_count LIGHTNING_LM_LIO_THREADS
 [[ "${resource_profile}" == "0" || "${resource_profile}" == "1" ]] ||
   fail "LIGHTNING_LM_RESOURCE_PROFILE must be 0 or 1."
+[[ "${causal_trace}" == "0" || "${causal_trace}" == "1" ]] ||
+  fail "LIGHTNING_LM_CAUSAL_TRACE must be 0 or 1."
 python3 - "${resource_interval_sec}" <<'PY' || fail "resource interval must be finite and in [0.5,60] seconds."
 import math, sys
 try:
@@ -350,6 +355,11 @@ if [[ "${record_bag}" == "1" ]]; then
 fi
 
 mkdir -p "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
+# Always scope the trace to this unique run, ignoring any inherited path.
+unset LIGHTNING_LM_CAUSAL_TRACE_PATH
+if [[ "${causal_trace}" == "1" ]]; then
+  export LIGHTNING_LM_CAUSAL_TRACE_PATH="${run_dir}/results/causal_trace.csv"
+fi
 if [[ "${record_bag}" == "1" ]]; then
   mkdir -p "${run_dir}/bag"
 fi
@@ -497,6 +507,10 @@ extract_compute_profile() {
       >>"${run_dir}/run_metadata.txt"
   fi
   profile_extracted=true
+  if [[ -f "${run_dir}/results/causal_trace.csv" ]]; then
+    echo "causal_trace_footer=$(tail -n 1 -- "${run_dir}/results/causal_trace.csv")" \
+      >>"${run_dir}/run_metadata.txt"
+  fi
 }
 stop_children() {
   [[ "${stopping}" == false ]] || return 0
@@ -572,6 +586,7 @@ fi
   echo "run_mode=${run_mode}"
   echo "compute_profile=${compute_profile}"
   echo "resource_profile=${resource_profile}"
+  echo "causal_trace=${causal_trace}"
   echo "resource_interval_sec=${resource_interval_sec}"
   echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"

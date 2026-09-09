@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <string>
 
 namespace {
 bool NearZeroVelocity(const lightning::NavState& state) {
@@ -406,7 +407,7 @@ bool ForwardSpeedUpdateChangesOnlyVelocity() {
     const NavState before = eskf.GetX();
     const auto result = eskf.UpdateBodyForwardSpeed(1.0, 0.25, 2.0, 9.0, 1.0);
     const NavState& after = eskf.GetX();
-    if (!result.accepted || std::abs(after.vel_.x() - 0.8) > 1e-12) {
+    if (!result.accepted || std::string(result.reason) != "accepted" || std::abs(after.vel_.x() - 0.8) > 1e-12) {
         std::cerr << "Forward speed update did not produce the expected velocity. velocity="
                   << after.vel_.transpose() << std::endl;
         return false;
@@ -450,7 +451,7 @@ bool ForwardSpeedUpdateRejectsAbsoluteInnovationOutlier() {
     const NavState before = eskf.GetX();
     const ESKF::CovType covariance_before = eskf.GetP();
     const auto result = eskf.UpdateBodyForwardSpeed(3.0, 0.25, 1.0, 100.0, 1.0);
-    if (result.accepted || (eskf.GetX().boxminus(before)).norm() > 1e-12 ||
+    if (result.accepted || std::string(result.reason) != "innovation_gate" || (eskf.GetX().boxminus(before)).norm() > 1e-12 ||
         (eskf.GetP() - covariance_before).norm() > 1e-12) {
         std::cerr << "Absolute innovation outlier changed the filter." << std::endl;
         return false;
@@ -468,7 +469,7 @@ bool ForwardSpeedUpdateRejectsNisOutlier() {
     eskf.ChangeP(covariance);
     const NavState before = eskf.GetX();
     const auto result = eskf.UpdateBodyForwardSpeed(0.5, 0.01, 2.0, 9.0, 1.0);
-    if (result.accepted || result.normalized_innovation_squared <= 9.0 ||
+    if (result.accepted || std::string(result.reason) != "nis_gate" || result.normalized_innovation_squared <= 9.0 ||
         (eskf.GetX().boxminus(before)).norm() > 1e-12) {
         std::cerr << "NIS outlier was not rejected. nis="
                   << result.normalized_innovation_squared << std::endl;
@@ -485,7 +486,7 @@ bool ForwardSpeedUpdateRejectsLargeVelocityStep() {
     eskf.Init(options);
     const NavState before = eskf.GetX();
     const auto result = eskf.UpdateBodyForwardSpeed(1.0, 0.01, 2.0, 100.0, 0.2);
-    if (result.accepted || (eskf.GetX().boxminus(before)).norm() > 1e-12) {
+    if (result.accepted || std::string(result.reason) != "velocity_step_gate" || (eskf.GetX().boxminus(before)).norm() > 1e-12) {
         std::cerr << "Large velocity step was not rejected." << std::endl;
         return false;
     }

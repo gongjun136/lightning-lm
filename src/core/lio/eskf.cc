@@ -253,10 +253,12 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     result.innovation_mps = measured_speed_mps - result.predicted_speed_mps;
     if (!std::isfinite(result.predicted_speed_mps) ||
         !std::isfinite(result.innovation_mps)) {
+        result.reason = "nonfinite_prediction";
         return result;
     }
     if (max_abs_innovation_mps > 0.0 &&
         std::abs(result.innovation_mps) > max_abs_innovation_mps) {
+        result.reason = "innovation_gate";
         return result;
     }
 
@@ -267,6 +269,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     result.innovation_variance = (H * P_ * H.transpose())(0, 0) + variance_mps2;
     if (!std::isfinite(result.innovation_variance) ||
         result.innovation_variance <= options_.min_cov_diag_) {
+        result.reason = "invalid_variance";
         return result;
     }
 
@@ -274,6 +277,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         result.innovation_mps * result.innovation_mps / result.innovation_variance;
     if (normalized_innovation_squared_gate > 0.0 &&
         result.normalized_innovation_squared > normalized_innovation_squared_gate) {
+        result.reason = "nis_gate";
         return result;
     }
 
@@ -288,6 +292,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         dx.template segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
     if (!std::isfinite(velocity_step) ||
         (max_velocity_step_mps > 0.0 && velocity_step > max_velocity_step_mps)) {
+        result.reason = "velocity_step_gate";
         return result;
     }
 
@@ -299,6 +304,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
     LogCovarianceStats(P_, "forward_speed_update");
     result.accepted = true;
+    result.reason = "accepted";
     return result;
 }
 

@@ -167,6 +167,7 @@ class ESKF {
 
     struct ForwardSpeedUpdateResult {
         bool accepted = false;
+        const char* reason = "invalid_measurement";
         double predicted_speed_mps = 0.0;
         double innovation_mps = 0.0;
         double innovation_variance = 0.0;

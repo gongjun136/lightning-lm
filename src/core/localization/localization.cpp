@@ -17,6 +17,7 @@
 #include "core/localization/pose_graph/pgo.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/causal_trace.h"
 
 namespace lightning::loc {
 
@@ -408,6 +409,11 @@ void Localization::RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
+    const bool trace = profiling::CausalTraceEnabled();
+    profiling::Stopwatch trace_timer(trace);
+    const double trace_queue_ms = trace && input.enqueued_at != std::chrono::steady_clock::time_point{}
+        ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - input.enqueued_at).count()
+        : -1.0;
     if (profiling::ComputeProfilingEnabled() &&
         input.enqueued_at != std::chrono::steady_clock::time_point{}) {
         const auto dequeued_at = std::chrono::steady_clock::now();
@@ -437,14 +443,35 @@ void Localization::ProcessSensorInput(const SensorInput& input) {
     }
     // This frontier means callback completion, not merely dequeue/start.
     ObserveSensorProcessed(timestamp);
+    if (trace) {
+        const auto elapsed = trace_timer.Stop();
+        // Normal IMU callbacks need no detailed trace; retain every lidar and
+        // slow IMU callback, without altering existing all-message summaries.
+        if (!input.is_imu || trace_queue_ms >= 5.0 || elapsed.wall_ms >= 20.0) {
+            profiling::CausalEvent event;
+            event.kind = "sensor_process"; event.source = input.is_imu ? "imu" : "lidar";
+            event.stamp = timestamp;
+            event.frame_id = input.cloud ? input.cloud->header.stamp : 0;
+            event.duration_ms = elapsed.wall_ms; event.thread_cpu_ms = elapsed.thread_cpu_ms;
+            event.queue_wait_ms = trace_queue_ms;
+            profiling::RecordCausalEvent(event);
+        }
+    }
 }
 
 void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
     // LIO must observe IMU and lidar in callback order. Running this update in
     // a second worker lets later IMU callbacks overtake the cloud and changes
     // the filter result relative to offline processing.
+    const auto wait_started = profiling::CausalTraceEnabled() ? std::chrono::steady_clock::now()
+                                                            : std::chrono::steady_clock::time_point{};
+    const double trace_stamp = cloud ? cloud->header.stamp * 1e-9 : 0.0;
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    profiling::TraceLockWait("lidar_lifecycle", trace_stamp, wait_started);
+    const auto processing_started = wait_started == std::chrono::steady_clock::time_point{}
+        ? wait_started : std::chrono::steady_clock::now();
     UL processing_lock(processing_mutex_);
+    profiling::TraceLockWait("lidar_processing", trace_stamp, processing_started);
 
     if (lio_ == nullptr) {
         return;
@@ -803,6 +830,18 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
                              std::chrono::seconds(1));
     const bool wheel_reports_stationary =
         fresh_wheel_speed && std::abs(wheel_speed_mps) < kEnterWheelSpeed;
+    const auto trace_decision = [&](bool hold, const char* reason) {
+        if (!profiling::CausalTraceEnabled()) return;
+        profiling::CausalEvent event;
+        event.kind = "static_decision"; event.source = "static_detector"; event.reason = reason;
+        event.stamp = sample.timestamp;
+        if (wheel_sample) {
+            event.input_stamp = wheel_sample->timestamp;
+            event.measured_v = wheel_speed_mps;
+        }
+        event.hold = hold;
+        profiling::RecordCausalEvent(event);
+    };
 
     if (!imu_static_hold_active_) {
         const bool stable_imu_window = gyro_mean < kEnterGyroMean &&
@@ -822,6 +861,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
             last_static_lio_speed_ < kEnterLioSpeed) {
             imu_static_hold_active_ = true;
             static_exit_count_ = 0;
+            trace_decision(true, fresh_wheel_speed ? "can_stationary" : "imu_stationary");
             LOG(WARNING) << "enter conservative IMU static hold at " << std::setprecision(14)
                          << sample.timestamp << ", lio_speed=" << last_static_lio_speed_
                          << ", wheel_speed="
@@ -848,6 +888,12 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     if (static_exit_count_ >= kExitSamples) {
         imu_static_hold_active_ = false;
         static_exit_count_ = 0;
+        // These flags describe the final decision sample, not all three debounce samples.
+        const unsigned flags = (fresh_wheel_speed && std::abs(wheel_speed_mps) > kExitWheelSpeed ? 1u : 0u) |
+            (fresh_lio && last_static_lio_speed_ > lio_exit_speed ? 2u : 0u) |
+            (!wheel_reports_stationary && inertial_motion ? 4u : 0u);
+        static const char* reasons[] = {"none", "can", "lio", "can+lio", "imu", "can+imu", "lio+imu", "can+lio+imu"};
+        trace_decision(false, reasons[flags]);
         LOG(WARNING) << "exit conservative IMU static hold at " << std::setprecision(14)
                      << sample.timestamp << ", gyro=" << sample.gyro_norm
                      << ", accel_delta_ratio=" << accel_delta_ratio
@@ -861,6 +907,13 @@ void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed
                                      double motor_torque_nm) {
     if (!std::isfinite(timestamp) || timestamp <= 0.0 || !std::isfinite(longitudinal_speed_mps) ||
         !std::isfinite(motor_torque_nm)) return;
+    if (profiling::CausalTraceEnabled()) {
+        profiling::CausalEvent event;
+        event.kind = "can_input"; event.source = "callback";
+        event.stamp = timestamp; event.measured_v = longitudinal_speed_mps;
+        event.torque = motor_torque_nm;
+        profiling::RecordCausalEvent(event);
+    }
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     if (lio_ != nullptr) {
         lio_->ProcessWheelSpeed(timestamp, longitudinal_speed_mps, motor_torque_nm);
@@ -1019,8 +1072,15 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
 void Localization::ProcessIMUData(IMUPtr imu) {
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
+    const auto wait_started = profiling::CausalTraceEnabled() ? std::chrono::steady_clock::now()
+                                                            : std::chrono::steady_clock::time_point{};
+    const double trace_stamp = imu ? imu->timestamp : 0.0;
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    profiling::TraceLockWait("imu_lifecycle", trace_stamp, wait_started);
+    const auto processing_started = wait_started == std::chrono::steady_clock::time_point{}
+        ? wait_started : std::chrono::steady_clock::now();
     UL lock(processing_mutex_);
+    profiling::TraceLockWait("imu_processing", trace_stamp, processing_started);
 
     if (lidar_loc_ == nullptr || lio_ == nullptr || pgo_ == nullptr) {
         return;

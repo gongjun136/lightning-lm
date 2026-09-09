@@ -45,6 +45,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/timer.cc
         utils/compute_budget.cc
         utils/compute_profiling.cc
+        utils/causal_trace.cc
         utils/pointcloud_utils.cc
         utils/thread_scheduling.cc
 

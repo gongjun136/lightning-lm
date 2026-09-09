@@ -19,6 +19,7 @@
 #include "ui/pangolin_window.h"
 #include "utils/compute_budget.h"
 #include "utils/compute_profiling.h"
+#include "utils/causal_trace.h"
 #include "wrapper/ros_utils.h"
 
 namespace lightning {
@@ -51,7 +52,7 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     velocity_propagation_active_ = propagate_velocity_;
     p_imu_->SetPostPredictCallback([this](ESKF& filter, double timestamp) {
         ApplyWheelSpeedObservation(filter, timestamp,
-                                   last_lidar_filter_wheel_timestamp_, false);
+                                   last_lidar_filter_wheel_timestamp_, false, "lio_predict");
     });
 
     LOG(INFO) << "ESKF lidar velocity gate=" << max_update_velocity_step_
@@ -433,7 +434,8 @@ WheelSpeedDrStats LaserMapping::GetWheelSpeedDrStats() const {
 
 bool LaserMapping::ApplyWheelSpeedObservation(
     ESKF& filter, double state_timestamp,
-    double& last_applied_observation_timestamp, bool high_frequency_filter) {
+    double& last_applied_observation_timestamp, bool high_frequency_filter,
+    const char* trace_source) {
     WheelSpeedSample observation;
     WheelSpeedDrConfig config;
     bool found = false;
@@ -455,6 +457,14 @@ bool LaserMapping::ApplyWheelSpeedObservation(
             } else {
                 ++wheel_speed_dr_stats_.lidar_filter_stale_count;
             }
+            if (profiling::CausalTraceEnabled()) {
+                profiling::CausalEvent event;
+                event.kind = "can_update"; event.source = trace_source;
+                event.reason = "stale"; event.accepted = 0;
+                event.stamp = state_timestamp; event.input_stamp = observation.timestamp;
+                event.measured_v = observation.speed_mps;
+                profiling::RecordCausalEvent(event);
+            }
             return false;
         }
     }
@@ -472,6 +482,20 @@ bool LaserMapping::ApplyWheelSpeedObservation(
         config.max_abs_innovation_mps,
         config.normalized_innovation_squared_gate,
         config.max_velocity_step_mps);
+
+    if (profiling::CausalTraceEnabled()) {
+        const auto& state = filter.GetX();
+        profiling::CausalEvent event;
+        event.kind = "can_update"; event.source = trace_source; event.reason = result.reason;
+        event.stamp = state_timestamp; event.input_stamp = observation.timestamp;
+        event.before_v = result.predicted_speed_mps;
+        event.after_v = state.rot_.matrix().col(0).dot(state.vel_);
+        event.measured_v = observation.speed_mps; event.innovation = result.innovation_mps;
+        event.nis = result.normalized_innovation_squared; event.stddev = standard_deviation;
+        event.torque = observation.torque_nm; event.accepted = result.accepted;
+        event.hold = high_frequency_filter ? static_cast<int>(high_frequency_static_hold_) : -1;
+        profiling::RecordCausalEvent(event);
+    }
 
     {
         std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
@@ -516,7 +540,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
         const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
         if (kf_imu_.PredictTo(timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
             ApplyWheelSpeedObservation(kf_imu_, timestamp,
-                                       last_imu_filter_wheel_timestamp_, true);
+                                       last_imu_filter_wheel_timestamp_, true, "imu_predict");
             ApplyHighFrequencyStaticHold();
         }
 
@@ -894,6 +918,18 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // 更新当前Lidar帧结束时刻的前端状态，供建图、关键帧和外部查询使用。
     state_point_ = kf_.GetX();
     state_point_.timestamp_ = measures_.lidar_end_time_;
+    if (profiling::CausalTraceEnabled()) {
+        profiling::CausalEvent event;
+        event.kind = "lidar_update"; event.source = "lio";
+        event.stamp = state_point_.timestamp_; event.prior_stamp = pred_state.timestamp_;
+        event.frame_id = scan_undistort_->header.stamp;
+        event.before_v = pred_state.rot_.matrix().col(0).dot(pred_state.vel_);
+        event.after_v = state_point_.rot_.matrix().col(0).dot(state_point_.vel_);
+        event.position_delta = (state_point_.pos_ - pred_state.pos_).norm();
+        event.yaw_delta = std::remainder(state_point_.rot_.angleZ<double>() - pred_state.rot_.angleZ<double>(), 2*M_PI);
+        event.accepted = kf_.LastUpdateAccepted();
+        profiling::RecordCausalEvent(event);
+    }
     last_tracking_healthy_ = kf_.LastUpdateAccepted() && effect_feat_surf_ >= 20 && current_max_imu_gap_ <= 0.25 &&
                              state_point_.pos_.allFinite() && state_point_.rot_.matrix().allFinite();
 
@@ -1051,7 +1087,27 @@ void LaserMapping::ApplyHighFrequencyStaticHold() {
     if (high_frequency_static_hold_) SetIMUVelocity(Vec3d::Zero());
 }
 
+void LaserMapping::SetIMUStaticHold(bool active) {
+    const bool changed = active != high_frequency_static_hold_;
+    const bool trace = changed && profiling::CausalTraceEnabled();
+    const auto before = trace ? kf_imu_.GetX() : NavState{};
+    high_frequency_static_hold_ = active;
+    ApplyHighFrequencyStaticHold();
+    if (trace) {
+        const auto after = kf_imu_.GetX();
+        profiling::CausalEvent event;
+        event.kind = "static_transition"; event.source = "imu";
+        event.stamp = after.timestamp_; event.prior_stamp = before.timestamp_;
+        event.before_v = before.rot_.matrix().col(0).dot(before.vel_);
+        event.after_v = after.rot_.matrix().col(0).dot(after.vel_);
+        event.hold = active;
+        profiling::RecordCausalEvent(event);
+    }
+}
+
 void LaserMapping::RebuildHighFrequencyState() {
+    const bool trace = profiling::CausalTraceEnabled();
+    const auto previous = trace ? kf_imu_.GetX() : NavState{};
     kf_imu_ = kf_;
     // Clear the copied LIO velocity before replay, not just before publication:
     // otherwise buffered samples can already integrate it into position.
@@ -1065,9 +1121,22 @@ void LaserMapping::RebuildHighFrequencyState() {
         const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
         if (kf_imu_.PredictTo(imu->timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
             ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
-                                       last_imu_filter_wheel_timestamp_, true);
+                                       last_imu_filter_wheel_timestamp_, true, "imu_replay");
             ApplyHighFrequencyStaticHold();
         }
+    }
+    if (trace) {
+        const auto current = kf_imu_.GetX();
+        profiling::CausalEvent event;
+        event.kind = "hf_rebuild"; event.source = "lio_to_imu";
+        event.stamp = current.timestamp_; event.prior_stamp = previous.timestamp_;
+        event.input_stamp = kf_.GetX().timestamp_;
+        event.before_v = previous.rot_.matrix().col(0).dot(previous.vel_);
+        event.after_v = current.rot_.matrix().col(0).dot(current.vel_);
+        event.position_delta = (current.pos_ - previous.pos_).norm();
+        event.yaw_delta = std::remainder(current.rot_.angleZ<double>() - previous.rot_.angleZ<double>(), 2*M_PI);
+        event.hold = high_frequency_static_hold_;
+        profiling::RecordCausalEvent(event);
     }
 }
 
