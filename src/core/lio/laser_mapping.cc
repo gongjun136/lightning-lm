@@ -1,4 +1,5 @@
 #include <pcl/common/transforms.h>
+#include "common/imu_body_velocity.h"
 #include <yaml-cpp/yaml.h>
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include "utils/compute_budget.h"
 #include "utils/compute_profiling.h"
 #include "utils/causal_trace.h"
+#include "utils/offline_prediction_trace.h"
 #include "wrapper/ros_utils.h"
 
 namespace lightning {
@@ -217,7 +219,14 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         }
 
         const YAML::Node system = yaml["system"];
+        if (yaml["output"] && yaml["output"]["primary_lidar_position_in_body"]) {
+            const auto r = yaml["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
+            if (r.size() != 3) return false;
+            wheel_speed_dr_config_.rear_to_lidar_body = Vec3d(r[0], r[1], r[2]);
+        }
         if (system) {
+            if (system["imu_gyro_prefilter_samples"])
+                gyro_prefilter_samples_ = system["imu_gyro_prefilter_samples"].as<int>();
             if (system["enable_wheel_speed_dr_observation"]) {
                 wheel_speed_dr_config_.enabled =
                     system["enable_wheel_speed_dr_observation"].as<bool>();
@@ -228,6 +237,12 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
                 wheel_speed_dr_config_.stationary_std_mps = system["wheel_speed_dr_stationary_std_mps"].as<double>();
             if (system["wheel_speed_dr_stationary_threshold_mps"])
                 wheel_speed_dr_config_.stationary_speed_threshold_mps = system["wheel_speed_dr_stationary_threshold_mps"].as<double>();
+            if (system["wheel_speed_dr_use_body_axis"])
+                wheel_speed_dr_config_.use_body_axis = system["wheel_speed_dr_use_body_axis"].as<bool>();
+            if (system["wheel_speed_dr_lever_arm_enabled"])
+                wheel_speed_dr_config_.lever_arm_enabled = system["wheel_speed_dr_lever_arm_enabled"].as<bool>();
+            if (system["wheel_speed_dr_lever_gyro_std_radps"])
+                wheel_speed_dr_config_.lever_gyro_std_radps = system["wheel_speed_dr_lever_gyro_std_radps"].as<double>();
             if (system["wheel_speed_dr_max_age_sec"])
                 wheel_speed_dr_config_.max_age_sec = system["wheel_speed_dr_max_age_sec"].as<double>();
             if (system["wheel_speed_dr_future_tolerance_sec"])
@@ -245,7 +260,13 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             if (system["wheel_speed_dr_max_velocity_step_mps"])
                 wheel_speed_dr_config_.max_velocity_step_mps = system["wheel_speed_dr_max_velocity_step_mps"].as<double>();
         }
-        if (wheel_speed_dr_config_.base_std_mps <= 0.0 ||
+        if ((gyro_prefilter_samples_ != 1 && gyro_prefilter_samples_ != 3) ||
+            (gyro_prefilter_samples_ > 1 && use_imu_filter) ||
+            !wheel_speed_dr_config_.rear_to_lidar_body.allFinite() ||
+            !std::isfinite(wheel_speed_dr_config_.lever_gyro_std_radps) ||
+            wheel_speed_dr_config_.lever_gyro_std_radps < 0.0 ||
+            (wheel_speed_dr_config_.lever_arm_enabled && !wheel_speed_dr_config_.use_body_axis) ||
+            wheel_speed_dr_config_.base_std_mps <= 0.0 ||
             wheel_speed_dr_config_.stationary_std_mps <= 0.0 ||
             wheel_speed_dr_config_.stationary_speed_threshold_mps < 0.0 ||
             wheel_speed_dr_config_.max_age_sec <= 0.0 ||
@@ -432,6 +453,14 @@ WheelSpeedDrStats LaserMapping::GetWheelSpeedDrStats() const {
     return wheel_speed_dr_stats_;
 }
 
+double LaserMapping::GetRearAxleSpeedOffset(const NavState& state) const {
+    if (!wheel_speed_dr_config_.lever_arm_enabled ||
+        std::abs(state.prediction_gyro_timestamp_ - state.timestamp_) > 1e-6) return 0.0;
+    const SO3 imu_to_body = GetImuToBodyRotation();
+    const Vec3d rear_to_imu = wheel_speed_dr_config_.rear_to_lidar_body - imu_to_body * offset_t_lidar_fixed_;
+    return RearAxleSpeedOffset(imu_to_body, state.prediction_gyro_ - state.bg_, rear_to_imu);
+}
+
 bool LaserMapping::ApplyWheelSpeedObservation(
     ESKF& filter, double state_timestamp,
     double& last_applied_observation_timestamp, bool high_frequency_filter,
@@ -469,19 +498,30 @@ bool LaserMapping::ApplyWheelSpeedObservation(
         }
     }
 
+    // A held high-frequency state represents a zero-motion hypothesis. Consume
+    // CAN timestamps above but do not alternate a CAN correction with zeroing.
+    if (config.lever_arm_enabled && high_frequency_filter && high_frequency_static_hold_) return false;
+    if (config.lever_arm_enabled &&
+        std::abs(filter.GetX().prediction_gyro_timestamp_ - state_timestamp) > 1e-6) return false;
+    const double speed_offset = GetRearAxleSpeedOffset(filter.GetX());
+    const Vec3d rear_to_imu = config.rear_to_lidar_body - GetImuToBodyRotation() * offset_t_lidar_fixed_;
+    const double lever_variance = config.lever_arm_enabled
+        ? std::pow(config.lever_gyro_std_radps, 2) *
+          (rear_to_imu.y() * rear_to_imu.y() + rear_to_imu.z() * rear_to_imu.z()) : 0.0;
     const double base_std =
         std::abs(observation.speed_mps) <= config.stationary_speed_threshold_mps
             ? config.stationary_std_mps
             : config.base_std_mps;
     const double torque_ratio =
         std::min(1.0, std::abs(observation.torque_nm) / config.torque_reference_nm);
-    const double standard_deviation =
-        base_std * (1.0 + config.torque_std_scale * torque_ratio);
+    const double standard_deviation = std::sqrt(
+        std::pow(base_std * (1.0 + config.torque_std_scale * torque_ratio), 2) + lever_variance);
+    const SO3 observation_imu_to_body = config.use_body_axis ? GetImuToBodyRotation() : SO3();
     const auto result = filter.UpdateBodyForwardSpeed(
         observation.speed_mps, standard_deviation * standard_deviation,
         config.max_abs_innovation_mps,
         config.normalized_innovation_squared_gate,
-        config.max_velocity_step_mps);
+        config.max_velocity_step_mps, BodyForwardAxisInImu(observation_imu_to_body), speed_offset);
 
     if (profiling::CausalTraceEnabled()) {
         const auto& state = filter.GetX();
@@ -489,7 +529,8 @@ bool LaserMapping::ApplyWheelSpeedObservation(
         event.kind = "can_update"; event.source = trace_source; event.reason = result.reason;
         event.stamp = state_timestamp; event.input_stamp = observation.timestamp;
         event.before_v = result.predicted_speed_mps;
-        event.after_v = state.rot_.matrix().col(0).dot(state.vel_);
+        event.after_v = ImuVelocityToBody(observation_imu_to_body,
+                                         state.rot_.inverse() * state.vel_).x() - speed_offset;
         event.measured_v = observation.speed_mps; event.innovation = result.innovation_mps;
         event.nis = result.normalized_innovation_squared; event.stddev = standard_deviation;
         event.torque = observation.torque_nm; event.accepted = result.accepted;
@@ -522,7 +563,8 @@ void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
     last_imu_filter_wheel_timestamp_ = timestamp;
 }
 
-void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
+void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
+    auto imu = raw_imu;
     if (!imu || !std::isfinite(imu->timestamp) || imu->timestamp <= 0.0 ||
         !imu->angular_velocity.allFinite() || !imu->linear_acceleration.allFinite()) return;
     publish_count_++;
@@ -535,13 +577,39 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
         return;
     }
 
+    // Causal ingress filter shared by LIO, live prediction and replay. Do not
+    // mutate the caller's raw sample or filter an overlapping scan twice.
+    // Three samples at 200 Hz add about 5 ms signal delay; default is bypass.
+    if (gyro_prefilter_samples_ > 1) {
+        raw_gyro_window_.push_back(imu->angular_velocity);
+        while (raw_gyro_window_.size() > static_cast<std::size_t>(gyro_prefilter_samples_))
+            raw_gyro_window_.pop_front();
+        imu = std::make_shared<IMU>(*imu);
+        imu->angular_velocity.setZero();
+        for (const auto& gyro : raw_gyro_window_) imu->angular_velocity += gyro;
+        imu->angular_velocity /= static_cast<double>(raw_gyro_window_.size());
+    }
+
     if (p_imu_->IsIMUInited()) {
         /// 更新最新imu状态
-        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
-        if (kf_imu_.PredictTo(timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
+        Vec3d raw_acc = imu->linear_acceleration;
+        Vec3d gyro = imu->angular_velocity;
+        if (high_frequency_previous_imu_ && high_frequency_previous_imu_->timestamp < timestamp &&
+            high_frequency_previous_imu_->timestamp <= kf_imu_.GetX().timestamp_) {
+            raw_acc = 0.5 * (high_frequency_previous_imu_->linear_acceleration + raw_acc);
+            gyro = 0.5 * (high_frequency_previous_imu_->angular_velocity + gyro);
+        }
+        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(raw_acc);
+        auto& offline_trace = profiling::OfflinePredictionTrace::Instance();
+        const auto before = offline_trace.Enabled() ? kf_imu_.GetX() : NavState{};
+        if (kf_imu_.PredictTo(timestamp, p_imu_->Q_, gyro, acc)) {
+            const auto predicted = offline_trace.Enabled() ? kf_imu_.GetX() : NavState{};
             ApplyWheelSpeedObservation(kf_imu_, timestamp,
                                        last_imu_filter_wheel_timestamp_, true, "imu_predict");
             ApplyHighFrequencyStaticHold();
+            if (offline_trace.Enabled()) offline_trace.Record("imu_predict", before, predicted,
+                kf_imu_.GetX(), imu->linear_acceleration, acc, gyro,
+                kf_imu_.PropagateVelocity(), high_frequency_static_hold_);
         }
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
@@ -553,6 +621,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &imu) {
     }
 
     last_timestamp_imu_ = timestamp;
+    high_frequency_previous_imu_ = imu;
 
     imu_buffer_.emplace_back(imu);
 }
@@ -923,8 +992,10 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         event.kind = "lidar_update"; event.source = "lio";
         event.stamp = state_point_.timestamp_; event.prior_stamp = pred_state.timestamp_;
         event.frame_id = scan_undistort_->header.stamp;
-        event.before_v = pred_state.rot_.matrix().col(0).dot(pred_state.vel_);
-        event.after_v = state_point_.rot_.matrix().col(0).dot(state_point_.vel_);
+        event.before_v = ImuVelocityToBody(GetImuToBodyRotation(),
+                                          pred_state.rot_.inverse() * pred_state.vel_).x();
+        event.after_v = ImuVelocityToBody(GetImuToBodyRotation(),
+                                         state_point_.rot_.inverse() * state_point_.vel_).x();
         event.position_delta = (state_point_.pos_ - pred_state.pos_).norm();
         event.yaw_delta = std::remainder(state_point_.rot_.angleZ<double>() - pred_state.rot_.angleZ<double>(), 2*M_PI);
         event.accepted = kf_.LastUpdateAccepted();
@@ -1098,8 +1169,8 @@ void LaserMapping::SetIMUStaticHold(bool active) {
         profiling::CausalEvent event;
         event.kind = "static_transition"; event.source = "imu";
         event.stamp = after.timestamp_; event.prior_stamp = before.timestamp_;
-        event.before_v = before.rot_.matrix().col(0).dot(before.vel_);
-        event.after_v = after.rot_.matrix().col(0).dot(after.vel_);
+        event.before_v = ImuVelocityToBody(GetImuToBodyRotation(), before.rot_.inverse() * before.vel_).x();
+        event.after_v = ImuVelocityToBody(GetImuToBodyRotation(), after.rot_.inverse() * after.vel_).x();
         event.hold = active;
         profiling::RecordCausalEvent(event);
     }
@@ -1116,23 +1187,40 @@ void LaserMapping::RebuildHighFrequencyState() {
         std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
         last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
     }
+    auto previous_imu = last_synchronized_imu_;
     for (const auto &imu : imu_buffer_) {
+        if (previous_imu && imu->timestamp <= previous_imu->timestamp) continue;
         // kf_ already covers the scan end, including the frame-tail IMU gap.
-        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(imu->linear_acceleration);
-        if (kf_imu_.PredictTo(imu->timestamp, p_imu_->Q_, imu->angular_velocity, acc)) {
+        // Match LIO's two-endpoint input, but integrate only from the state epoch.
+        Vec3d raw_acc = imu->linear_acceleration;
+        Vec3d gyro = imu->angular_velocity;
+        if (previous_imu && previous_imu->timestamp <= kf_imu_.GetX().timestamp_) {
+            raw_acc = 0.5 * (previous_imu->linear_acceleration + raw_acc);
+            gyro = 0.5 * (previous_imu->angular_velocity + gyro);
+        }
+        const Vec3d acc = p_imu_->ScaleAccelerationForPrediction(raw_acc);
+        auto& offline_trace = profiling::OfflinePredictionTrace::Instance();
+        const auto before = offline_trace.Enabled() ? kf_imu_.GetX() : NavState{};
+        if (kf_imu_.PredictTo(imu->timestamp, p_imu_->Q_, gyro, acc)) {
+            const auto predicted = offline_trace.Enabled() ? kf_imu_.GetX() : NavState{};
             ApplyWheelSpeedObservation(kf_imu_, imu->timestamp,
                                        last_imu_filter_wheel_timestamp_, true, "imu_replay");
             ApplyHighFrequencyStaticHold();
+            if (offline_trace.Enabled()) offline_trace.Record("imu_replay", before, predicted,
+                kf_imu_.GetX(), imu->linear_acceleration, acc, gyro,
+                kf_imu_.PropagateVelocity(), high_frequency_static_hold_);
         }
+        previous_imu = imu;
     }
+    high_frequency_previous_imu_ = previous_imu;
     if (trace) {
         const auto current = kf_imu_.GetX();
         profiling::CausalEvent event;
         event.kind = "hf_rebuild"; event.source = "lio_to_imu";
         event.stamp = current.timestamp_; event.prior_stamp = previous.timestamp_;
         event.input_stamp = kf_.GetX().timestamp_;
-        event.before_v = previous.rot_.matrix().col(0).dot(previous.vel_);
-        event.after_v = current.rot_.matrix().col(0).dot(current.vel_);
+        event.before_v = ImuVelocityToBody(GetImuToBodyRotation(), previous.rot_.inverse() * previous.vel_).x();
+        event.after_v = ImuVelocityToBody(GetImuToBodyRotation(), current.rot_.inverse() * current.vel_).x();
         event.position_delta = (current.pos_ - previous.pos_).norm();
         event.yaw_delta = std::remainder(current.rot_.angleZ<double>() - previous.rot_.angleZ<double>(), 2*M_PI);
         event.hold = high_frequency_static_hold_;
@@ -1426,6 +1514,7 @@ bool LaserMapping::SyncPackages() {
         }
 
         measures_.imu_.push_back(imu_buffer_.front());
+        last_synchronized_imu_ = imu_buffer_.front();
 
         imu_buffer_.pop_front();
     }

@@ -178,6 +178,10 @@ struct NavState {
     Vec3d pos_ = Vec3d::Zero();
     SO3 rot_;
     Vec3d vel_ = Vec3d::Zero();
+    // Prediction-input metadata, not additional error-state dimensions.
+    Vec3d prediction_gyro_ = Vec3d::Zero();
+    double prediction_gyro_timestamp_ = -1.0;
+    double rear_axle_speed_offset_ = 0.0;
     Vec3d bg_ = Vec3d::Zero();
     Vec3d ba_ = Vec3d::Zero();
     Vec3d grav_ = Vec3d(0.0, 0.0, -kGravityNorm);

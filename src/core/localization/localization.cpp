@@ -111,6 +111,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         static_imu_window_.clear();
         static_gyro_sum_ = 0.0;
         static_gyro_sq_sum_ = 0.0;
+        static_gyro_vector_sum_.setZero();
         static_accel_sum_ = 0.0;
         static_accel_sq_sum_ = 0.0;
         last_static_lio_stamp_ = 0.0;
@@ -599,6 +600,11 @@ SO3 Localization::GetInitialLidarRotation() const {
     return lio_->GetInitialLidarRotation();
 }
 
+SO3 Localization::GetImuToBodyRotation() const {
+    CHECK(lio_ != nullptr);
+    return lio_->GetImuToBodyRotation();
+}
+
 Localization::RuntimeStats Localization::GetRuntimeStats() const {
     RuntimeStats stats;
     {
@@ -750,6 +756,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     constexpr double kMinWindowSec = 0.8;
     constexpr double kEnterGyroMean = 0.025;
     constexpr double kEnterGyroStd = 0.010;
+    constexpr double kEnterMeanAngularRate = 0.025;
     constexpr double kEnterAccelCv = 0.025;
     constexpr double kEnterLioSpeed = 0.05;
     constexpr double kExitLioSpeed = 0.08;
@@ -763,12 +770,14 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     constexpr double kExitWheelSpeed = 0.05;
     constexpr int kExitSamples = 3;
 
-    const StaticImuSample sample{imu->timestamp, imu->angular_velocity.norm(),
+    const StaticImuSample sample{imu->timestamp, imu->angular_velocity,
+                                 imu->angular_velocity.norm(),
                                  imu->linear_acceleration.norm()};
     std::lock_guard<std::mutex> lock(static_detector_mutex_);
     static_imu_window_.push_back(sample);
     static_gyro_sum_ += sample.gyro_norm;
     static_gyro_sq_sum_ += sample.gyro_norm * sample.gyro_norm;
+    static_gyro_vector_sum_ += sample.angular_velocity;
     static_accel_sum_ += sample.accel_norm;
     static_accel_sq_sum_ += sample.accel_norm * sample.accel_norm;
     while (!static_imu_window_.empty() &&
@@ -776,6 +785,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         const auto& old = static_imu_window_.front();
         static_gyro_sum_ -= old.gyro_norm;
         static_gyro_sq_sum_ -= old.gyro_norm * old.gyro_norm;
+        static_gyro_vector_sum_ -= old.angular_velocity;
         static_accel_sum_ -= old.accel_norm;
         static_accel_sq_sum_ -= old.accel_norm * old.accel_norm;
         static_imu_window_.pop_front();
@@ -784,6 +794,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     const double count = static_cast<double>(static_imu_window_.size());
     if (count < 2.0) return imu_static_hold_active_;
     const double gyro_mean = static_gyro_sum_ / count;
+    const double mean_angular_rate = (static_gyro_vector_sum_ / count).norm();
     const double accel_mean = static_accel_sum_ / count;
     const double gyro_std = std::sqrt(std::max(0.0, static_gyro_sq_sum_ / count - gyro_mean * gyro_mean));
     const double accel_std = std::sqrt(std::max(0.0, static_accel_sq_sum_ / count - accel_mean * accel_mean));
@@ -852,9 +863,13 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         // debounced zero wheel speed as the stationary observation and retain
         // low-speed LIO plus a fresh map match as independent safeguards. Old
         // bags without CAN continue to require the strict IMU window.
-        const bool stationary_observation = fresh_wheel_speed
-                                                ? wheel_reports_stationary
-                                                : stable_imu_window;
+        // Zero wheel speed rules out translation, but not a slow in-place turn.
+        // The vector mean rejects sustained rotation while allowing zero-mean
+        // engine vibration whose per-sample gyro norm can be relatively large.
+        const bool stationary_observation =
+            fresh_wheel_speed
+                ? wheel_reports_stationary && mean_angular_rate < kEnterMeanAngularRate
+                : stable_imu_window;
         if (window_span >= kMinWindowSec && stationary_observation && fresh_lio &&
             fresh_valid_loc &&
             last_static_lio_reliable_ &&
@@ -866,8 +881,10 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
                          << sample.timestamp << ", lio_speed=" << last_static_lio_speed_
                          << ", wheel_speed="
                          << (fresh_wheel_speed ? wheel_speed_mps : 0.0)
-                         << ", wheel_observed=" << wheel_speed_observed_
-                         << ", gyro_mean=" << gyro_mean << ", accel_cv=" << accel_cv;
+                          << ", wheel_observed=" << wheel_speed_observed_
+                          << ", gyro_mean=" << gyro_mean
+                          << ", mean_angular_rate=" << mean_angular_rate
+                          << ", accel_cv=" << accel_cv;
         }
         return imu_static_hold_active_;
     }

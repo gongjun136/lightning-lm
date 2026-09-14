@@ -13,6 +13,7 @@
 
 #include "common/eigen_types.h"
 #include "common/imu.h"
+#include "common/imu_body_velocity.h"
 #include "common/keyframe.h"
 #include "common/options.h"
 #include "core/ivox3d/ivox3d.h"
@@ -31,11 +32,15 @@ class PangolinWindow;
 
 struct WheelSpeedDrConfig {
     bool enabled = false;
+    bool use_body_axis = true;  // false is a legacy-axis diagnostic comparison only.
+    bool lever_arm_enabled = false;  // Experimental opt-in until replay acceptance.
+    double lever_gyro_std_radps = 0.02;
+    Vec3d rear_to_lidar_body = Vec3d(2.199, 0.0, 2.740);
     double base_std_mps = 0.35;
     double stationary_std_mps = 0.08;
     double stationary_speed_threshold_mps = 0.03;
     double max_age_sec = 0.25;
-    double future_tolerance_sec = 0.03;
+    double future_tolerance_sec = 0.0;
     double max_acceleration_mps2 = 4.0;
     double max_abs_innovation_mps = 1.5;
     double normalized_innovation_squared_gate = 9.0;
@@ -211,6 +216,9 @@ class LaserMapping {
     double GetLastFrameEndTime() const { return measures_.lidar_end_time_; }
     const Mat3d &GetLidarToImuRotation() const { return offset_R_lidar_fixed_; }
     const Vec3d &GetLidarToImuTranslation() const { return offset_t_lidar_fixed_; }
+    // Initial level vehicle defines body axes, matching publication convention.
+    // This is not an extrinsic calibration for an arbitrary sloped start.
+    SO3 GetImuToBodyRotation() const { return p_imu_->GetInitialRotation(); }
     SO3 GetInitialLidarRotation() const {
         return p_imu_->GetInitialRotation() *
                SO3(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized());
@@ -219,7 +227,9 @@ class LaserMapping {
     /// 获取IMU最新时刻状态；IMU未初始化时返回pose_is_ok_=false的无效状态。
     NavState GetIMUState() const {
         if (p_imu_->IsIMUInited()) {
-            return kf_imu_.GetX();
+            auto state = kf_imu_.GetX();
+            state.rear_axle_speed_offset_ = high_frequency_static_hold_ ? 0.0 : GetRearAxleSpeedOffset(state);
+            return state;
         } else {
             NavState s;
             s.pose_is_ok_ = false;
@@ -291,11 +301,14 @@ class LaserMapping {
     bool DrainAssembledFrames();
     void RebuildHighFrequencyState();
     void ApplyHighFrequencyStaticHold();
+    double GetRearAxleSpeedOffset(const NavState& state) const;
     bool ApplyWheelSpeedObservation(ESKF& filter, double state_timestamp,
                                     double& last_applied_observation_timestamp,
                                     bool high_frequency_filter,
                                     const char* trace_source);
     void ResetWheelSpeedIntegrationBridge(double timestamp);
+    int gyro_prefilter_samples_ = 1;
+    std::deque<Vec3d> raw_gyro_window_;
     struct WheelSpeedSample {
         double timestamp = 0.0;
         double speed_mps = 0.0;
@@ -380,6 +393,8 @@ class LaserMapping {
 
     std::deque<PointCloudType::Ptr> lidar_buffer_;  // 激光雷达数据缓冲队列（用于与IMU时间同步）
     std::deque<lightning::IMUPtr> imu_buffer_;      // IMU数据缓冲队列（高频数据，用于状态预测）
+    IMUPtr high_frequency_previous_imu_;  // Raw left endpoint, independent of the filter epoch.
+    IMUPtr last_synchronized_imu_;        // Retain the sample removed at the scan boundary.
     std::deque<MultiLidarFrameStats> lidar_stats_buffer_;
     std::deque<double> preprocess_time_buffer_ms_;
     double current_preprocess_ms_ = 0.0;

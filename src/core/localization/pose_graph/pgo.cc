@@ -57,6 +57,8 @@ void PGO::PubResult() {
         if (!impl_->dr_pose_queue_.empty()) {
             const NavState& latest_dr = impl_->dr_pose_queue_.back();
             result.vel_b_ = latest_dr.GetRot().inverse() * latest_dr.GetVel();
+            result.rear_axle_speed_offset_ = latest_dr.rear_axle_speed_offset_;
+            result.rear_axle_speed_timestamp_ = latest_dr.timestamp_;
         }
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(result);
         if (!impl_->lidar_loc_pose_queue_.empty()) {
@@ -225,6 +227,8 @@ bool PGO::ProcessDR(const NavState& dr_result) {
                 dr_result.GetRot().inverse() * dr_result.GetVel();
             smoother_->Reset();
         }
+        static_hold_release_watermark_ =
+            std::max(static_hold_release_watermark_, dr_result.timestamp_);
         parking_result_ = LocalizationResult{};
     }
     if (!impl_->dr_pose_queue_.empty() && !is_parking_) {
@@ -312,6 +316,19 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     }
 
     if (!loc_result.lidar_loc_valid_) {
+        return false;
+    }
+
+    if (loc_result.timestamp_ <= static_hold_release_watermark_) {
+        LOG(WARNING) << "drop queued LidarLoc from the parked epoch: t="
+                     << std::setprecision(18) << loc_result.timestamp_
+                     << ", hold release watermark="
+                     << static_hold_release_watermark_;
+        std::ostringstream message;
+        message << "Rejected parked-epoch lidar localization after hold release: age_sec="
+                << static_hold_release_watermark_ - loc_result.timestamp_;
+        debug_event::EmitThrottled("pgo_lidar_loc_parked_epoch_drop", message.str(),
+                                   std::chrono::seconds(1));
         return false;
     }
 
@@ -408,6 +425,7 @@ bool PGO::Reset() {
     localization_unusual_tag_ = false;
     last_lidar_loc_time_ = 0.0;
     last_lidar_loc_input_time_ = -1.0;
+    static_hold_release_watermark_ = -1.0;
     high_freq_result_ = LocalizationResult{};
     parking_result_ = LocalizationResult{};
     is_parking_ = false;

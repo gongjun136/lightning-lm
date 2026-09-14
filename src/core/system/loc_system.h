@@ -31,6 +31,7 @@
 #include "core/lio/multi_lidar_fusion.h"
 #include "core/localization/localization_result.h"
 #include "core/system/sany_localization_output.h"
+#include "core/system/speed_smoothing_shadow.h"
 #include "lightning/msg/debug_message.hpp"
 #include "lightning/msg/pipeline_diagnostics.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
@@ -119,6 +120,8 @@ class LocSystem {
     std::string map_frame_ = "map";
     std::string rear_axle_frame_ = "rear_axle";
     bool wheel_speed_observation_enabled_ = true;
+    bool speed_smoothing_shadow_enabled_ = false;
+    sany_output::SpeedSmoothingShadow speed_smoothing_shadow_;
     std::string wheel_speed_topic_ = "/SpeThrCAN4_topic";
     double wheel_speed_scale_mps_per_rpm_ = 0.00120639253574024;
     double online_lidar_input_max_timestamp_lag_sec_ = 0.0;

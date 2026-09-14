@@ -182,7 +182,9 @@ class ESKF {
         double variance_mps2,
         double max_abs_innovation_mps,
         double normalized_innovation_squared_gate,
-        double max_velocity_step_mps = 0.5);
+        double max_velocity_step_mps = 0.5,
+        const Vec3d& body_forward_in_imu = Vec3d::UnitX(),
+        double reference_point_speed_offset_mps = 0.0);
 
     /**
      * @brief 使用指定观测类型对状态进行迭代更新。

@@ -48,6 +48,12 @@ struct LocalizationResult {
     bool rel_pose_set_ = false;      // 相对定位是否被设置（通常是lidarOdom）
     SE3 rel_pose_;                   // 相对定位的位置和姿态
     Vec3d vel_b_ = Vec3d::Zero();    // 相对定位的速度
+    double rear_axle_speed_offset_ = 0.0;
+    double rear_axle_speed_timestamp_ = -1.0;
+    double RearAxleSpeedOffset() const {
+        return !is_parking_ && std::abs(rear_axle_speed_timestamp_ - timestamp_) <= 1e-6
+                   ? rear_axle_speed_offset_ : 0.0;
+    }
     double lidar_odom_delta_t_ = 0;  // 相对于上一帧lidarOdom消息的时延
     double dr_delta_t_ = 0;          // 相对于上一帧DR消息的时延
     double is_parking_ = false;

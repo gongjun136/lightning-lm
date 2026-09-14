@@ -3,6 +3,7 @@
 //
 
 #include "core/system/loc_system.h"
+#include "common/imu_body_velocity.h"
 
 #include <algorithm>
 #include <chrono>
@@ -44,6 +45,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     finished_ = false;
     lidar_input_timestamp_gate_.Reset();
     posres_timestamp_gate_.Reset();
+    speed_smoothing_shadow_.Reset();
+    speed_smoothing_shadow_enabled_ = sany_output::SpeedSmoothingShadow::Enabled(
+        std::getenv("LIGHTNING_LM_RUN_MODE"), std::getenv("LIGHTNING_LM_SPEED_SMOOTHING_SHADOW"),
+        profiling::ReduceNonessentialOverhead());
+    LOG(INFO) << "SPEED_SMOOTHING_SHADOW enabled=" << speed_smoothing_shadow_enabled_
+              << " tau_ms=30 output=raw";
     last_localization_stamp_ = 0.0;
     last_posres_stamp_ = 0.0;
     localization_ever_good_ = false;
@@ -526,7 +533,10 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         return;
     }
     last_localization_stamp_ = result.timestamp_;
-    if (!publication_gate_.PoseOutputsEnabled()) return;
+    if (!publication_gate_.PoseOutputsEnabled()) {
+        speed_smoothing_shadow_.Reset();
+        return;
+    }
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -547,7 +557,9 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     // wheel speed remains an internal filter observation, but must not replace
     // the estimator state at the downstream output boundary.
     profiling::Stopwatch message_build_timer(profiling_enabled);
-    const double vehicle_speed = result.vel_b_.x();
+    // PGO retains IMU-frame velocity internally; rotate only at the output boundary.
+    const double vehicle_speed =
+        ImuVelocityToBody(loc_->GetImuToBodyRotation(), result.vel_b_).x() - result.RearAxleSpeedOffset();
     const auto position = sany_output::MakePosResMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
     const auto pose = sany_output::MakePoseMessage(position);
@@ -572,6 +584,18 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
 
     profiling::Stopwatch diagnostic_io_timer(profiling_enabled);
     if (position_published && !profiling::ReduceNonessentialOverhead()) {
+        if (speed_smoothing_shadow_enabled_) {
+            const double shadow = speed_smoothing_shadow_.Observe(
+                result.timestamp_, vehicle_speed, result.is_parking_);
+            LOG(INFO) << "SPEED_SMOOTHING_SHADOW"
+                      << " stamp_sec=" << position.header.stamp.sec
+                      << " stamp_nanosec=" << position.header.stamp.nanosec
+                      << " raw_mps=" << std::setprecision(12) << vehicle_speed
+                      << " filtered_mps=" << shadow << " tau_ms=30"
+                      << " parking=" << result.is_parking_
+                      << " reset=" << speed_smoothing_shadow_.ResetLast()
+                      << " output=raw";
+        }
         // Keep this marker and key=value layout stable: it is intentionally
         // machine-readable so an exported run log can reproduce the exact
         // downstream /PosRes X/Y/speed time series without a recorded rosbag.
@@ -582,7 +606,9 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
                   << " y_m=" << position.f8enh[1]
                   << " z_m=" << position.f8enh[2]
                   << " speed_mps=" << position.f8vehiclespeed
-                  << " speed_source=estimator_body_x";
+                  << " speed_source=estimator_body_x"
+                  << " rear_axle_offset_mps=" << result.RearAxleSpeedOffset()
+                  << " offset_stamp=" << result.rear_axle_speed_timestamp_;
     }
     const auto diagnostic_io_timing = diagnostic_io_timer.Stop();
 

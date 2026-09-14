@@ -182,7 +182,9 @@ fasterlio:
   propagate_velocity: true
   lidar_update_pose_only: false
   lidar_update_inertial_states: true
-  max_update_velocity_step: 0.5
+  # Bound a single lidar posterior's velocity injection; full-state updates
+  # inside this limit remain enabled, with pose-only fallback above it.
+  max_update_velocity_step: 0.1
   max_update_gyro_bias_step: 0.05
   max_update_acc_bias_step: 0.5
   max_update_gravity_step: 0.05
@@ -247,7 +249,8 @@ system:
   wheel_speed_dr_stationary_std_mps: 0.08
   wheel_speed_dr_stationary_threshold_mps: 0.03
   wheel_speed_dr_max_age_sec: 0.25
-  wheel_speed_dr_future_tolerance_sec: 0.03
+  # CAN selection is causal: never consume a sample newer than the filter state.
+  wheel_speed_dr_future_tolerance_sec: 0.0
   wheel_speed_dr_max_acceleration_mps2: 4.0
   wheel_speed_dr_max_abs_innovation_mps: 1.5
   wheel_speed_dr_nis_gate: 9.0

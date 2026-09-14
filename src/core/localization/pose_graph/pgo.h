@@ -103,6 +103,10 @@ class PGO {
     int localization_unusual_count_ = 0;     // 定位异常次数
     double last_lidar_loc_time_ = 0.;        // 上次激光定位时间戳
     double last_lidar_loc_input_time_ = -1.;
+    // LidarLoc is asynchronous. Results sampled no later than the most recent
+    // DR hold release still belong to the parked epoch even if they arrive
+    // after is_parking_ becomes false.
+    double static_hold_release_watermark_ = -1.;
     bool is_parking_ = false;
     bool dr_is_parking_ = false;
     bool lidar_loc_is_parking_ = false;

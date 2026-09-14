@@ -1,4 +1,5 @@
 #include <gflags/gflags.h>
+#include "common/imu_body_velocity.h"
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <glog/logging.h>
 #include <rclcpp/rclcpp.hpp>
@@ -114,7 +115,8 @@ class OfflineLocalizationPublisher {
     }
 
     void PublishPose(const lightning::loc::LocalizationResult& result,
-                     const lightning::SO3& initial_lidar_rotation) {
+                     const lightning::SO3& initial_lidar_rotation,
+                     const lightning::SO3& imu_to_body_rotation) {
         if (!result.valid_ || result.timestamp_ <= 0.0 ||
             !publication_gate_.PoseOutputsEnabled()) {
             return;
@@ -122,7 +124,8 @@ class OfflineLocalizationPublisher {
         const lightning::SE3 map_rear_axle_pose = lightning::sany_output::MakeMapRearAxlePose(
             result.pose_, initial_lidar_rotation, primary_lidar_position_in_body_);
         const auto position = lightning::sany_output::MakePosResMessage(
-            map_rear_axle_pose, result.vel_b_.x(), result.timestamp_, map_frame_);
+            map_rear_axle_pose, lightning::ImuVelocityToBody(imu_to_body_rotation, result.vel_b_).x() - result.RearAxleSpeedOffset(),
+            result.timestamp_, map_frame_);
         if (pos_res_pub_) pos_res_pub_->publish(position);
         const auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(position);
         if (vehicle_pose_pub_) vehicle_pose_pub_->publish(vehicle_pose);
@@ -539,7 +542,8 @@ int main(int argc, char** argv) {
     pgo.SetGlobalOutputHandleFunction(capture_final_result);
     pgo.SetHighFrequencyGlobalOutputHandleFunction([&](const loc::LocalizationResult& result) {
         capture_final_result(result);
-        if (topic_publisher) topic_publisher->PublishPose(result, lio.GetInitialLidarRotation());
+        if (topic_publisher) topic_publisher->PublishPose(result, lio.GetInitialLidarRotation(),
+                                                        lio.GetImuToBodyRotation());
     });
 
     std::ofstream fused_tum, lidar_loc_tum, csv, frame_stats_csv;

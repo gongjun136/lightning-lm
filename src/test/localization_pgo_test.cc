@@ -286,6 +286,22 @@ int main() {
     Require(velocity_pgo.ProcessDR(moving_dr), "resume PGO extrapolation after stationary hold");
     Require(!velocity_output.is_parking_, "motion releases the PGO stationary output");
 
+    // LidarLoc runs asynchronously. A scan captured during the hold can finish
+    // after ProcessDR has already released the held output. It belongs to the
+    // parked epoch and must not inject its accumulated map correction into the
+    // first moving pose.
+    LocalizationResult delayed_parked_map_update = velocity_loc;
+    delayed_parked_map_update.timestamp_ = 2000.04;
+    delayed_parked_map_update.pose_ =
+        SE3(SO3::exp(Vec3d(0.0, 0.0, 1.0)), Vec3d(20.0, -10.0, 3.0));
+    const LocalizationResult output_before_delayed_parked_map_update = velocity_output;
+    Require(!velocity_pgo.ProcessLidarLoc(delayed_parked_map_update),
+            "drop a parked-epoch lidar match that completes after hold exit");
+    Require((velocity_output.pose_.inverse() * output_before_delayed_parked_map_update.pose_)
+                    .log()
+                    .norm() < 1e-9,
+            "delayed parked lidar match cannot release a pose jump after hold exit");
+
     // Reproduce a hold long enough to evict the pre-hold fused timestamp from
     // the bounded DR queue.  The first moving result must continue from the
     // held sensor-time epoch rather than publishing that evicted old result.

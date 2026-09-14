@@ -1,4 +1,5 @@
 #include "core/lio/eskf.hpp"
+#include "common/imu_body_velocity.h"
 #include "core/lio/imu_processing.hpp"
 
 #include <cmath>
@@ -442,6 +443,38 @@ bool ForwardSpeedUpdateUsesBodyHeading() {
     return true;
 }
 
+bool ForwardSpeedUsesTiltedMounting() {
+    using namespace lightning;
+    const SO3 mounting = SO3::exp(Vec3d(0.0, M_PI / 6.0, 0.0));
+    for (double heading : {0.0, M_PI_2}) {
+        const SO3 world_body = SO3::exp(Vec3d(0.0, 0.0, heading));
+        NavState state;
+        state.rot_ = world_body * mounting;
+        state.vel_ = world_body * Vec3d(-1.0, 0.0, 0.0);
+        ESKF filter(state, ESKF::CovType::Identity());
+        filter.Init(ESKF::Options());
+        const auto exact = filter.UpdateBodyForwardSpeed(-1.0, .25, 2, 9, 1,
+                                                        BodyForwardAxisInImu(mounting));
+        const Vec3d output = ImuVelocityToBody(mounting, state.rot_.inverse() * state.vel_);
+        if (!exact.accepted || std::abs(exact.innovation_mps) > 1e-12 ||
+            std::abs(output.x() + 1.0) > 1e-12 ||
+            (filter.GetX().vel_ - state.vel_).norm() > 1e-12) return false;
+        state.vel_.setZero();
+        ESKF moving(state, ESKF::CovType::Identity());
+        moving.Init(ESKF::Options());
+        const auto update = moving.UpdateBodyForwardSpeed(1.0, .25, 2, 9, 1,
+                                                          BodyForwardAxisInImu(mounting));
+        if (!update.accepted ||
+            (moving.GetX().vel_ - world_body * Vec3d(.8, 0, 0)).norm() > 1e-12 ||
+            (moving.GetX().rot_.inverse() * state.rot_).log().norm() > 1e-12 ||
+            !CovarianceIsPositiveSemidefinite(moving.GetP())) return false;
+        const auto before = moving.GetX();
+        if (moving.UpdateBodyForwardSpeed(1.0, .25, 2, 9, 1, Vec3d::Zero()).accepted ||
+            (moving.GetX().vel_ - before.vel_).norm() != 0.0) return false;
+    }
+    return true;
+}
+
 bool ForwardSpeedUpdateRejectsAbsoluteInnovationOutlier() {
     using namespace lightning;
 
@@ -613,9 +646,38 @@ bool ImuInitializationAppliesConfiguredHeadingOffset() {
     }
     return true;
 }
+bool ForwardSpeedUsesLeverArm() {
+    using namespace lightning;
+    ESKF filter;
+    ESKF::Options options;
+    filter.Init(options);
+    NavState state;
+    state.timestamp_ = 10.0;
+    state.vel_ = Vec3d(1.3, 0, 0);
+    filter.ChangeX(state);
+    const double offset = RearAxleSpeedOffset(SO3(), Vec3d(0, 0.1, 0), Vec3d(2, 0, 3));
+    if (std::abs(offset - 0.3) > 1e-12) return false;
+    auto update = filter.UpdateBodyForwardSpeed(1.0, 0.01, 2, 100, 1, Vec3d::UnitX(), offset);
+    if (!update.accepted || std::abs(update.innovation_mps) > 1e-12 ||
+        (filter.GetX().vel_-state.vel_).norm() > 1e-12) return false;
+    // Reversing yaw and lateral lever signs must reverse the forward offset.
+    if (std::abs(RearAxleSpeedOffset(SO3(), Vec3d(0,0,1), Vec3d(2,1,3))+1)>1e-12) return false;
+    if (filter.UpdateBodyForwardSpeed(1, 0.01, 2, 100, 1, Vec3d::UnitX(),
+                                     std::numeric_limits<double>::quiet_NaN()).accepted) return false;
+    const Vec3d gyro(0.1,0.2,0.3);
+    filter.PredictTo(10.005, ESKF::ProcessNoiseType::Identity(), gyro, Vec3d(0,0,9.81));
+    if (filter.GetX().prediction_gyro_timestamp_ != 10.005 ||
+        (filter.GetX().prediction_gyro_-gyro).norm()>1e-12) return false;
+    filter.PredictTo(10.004, ESKF::ProcessNoiseType::Identity(), Vec3d::Zero(), Vec3d::Zero());
+    return filter.GetX().prediction_gyro_timestamp_ == 10.005 && CovarianceIsPositiveSemidefinite(filter.GetP());
+}
 }  // namespace
 
 int main() {
+    if (!ForwardSpeedUsesLeverArm()) {
+        std::cerr << "lever-arm observation/epoch test failed" << std::endl;
+        return 1;
+    }
     if (!InvalidLidarUpdateIsNotMarkedAccepted()) {
         return 1;
     }
@@ -633,6 +695,10 @@ int main() {
     }
 
     if (!ForwardSpeedUpdateUsesBodyHeading()) {
+        return 1;
+    }
+    if (!ForwardSpeedUsesTiltedMounting()) {
+        std::cerr << "tilted mounting body-speed test failed" << std::endl;
         return 1;
     }
 

@@ -146,6 +146,8 @@ bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& g
     }
     Predict(timestamp - x_.timestamp_, Q, gyro, acce);
     x_.timestamp_ = timestamp;  // Align roundoff only after integrating the full interval.
+    x_.prediction_gyro_ = gyro;
+    x_.prediction_gyro_timestamp_ = timestamp;
     return true;
 }
 
@@ -241,15 +243,20 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     double variance_mps2,
     double max_abs_innovation_mps,
     double normalized_innovation_squared_gate,
-    double max_velocity_step_mps) {
+    double max_velocity_step_mps,
+    const Vec3d& body_forward_in_imu,
+    double reference_point_speed_offset_mps) {
     ForwardSpeedUpdateResult result;
     if (!std::isfinite(measured_speed_mps) || !std::isfinite(variance_mps2) ||
-        variance_mps2 <= 0.0) {
+        variance_mps2 <= 0.0 || !std::isfinite(reference_point_speed_offset_mps) ||
+        !body_forward_in_imu.allFinite() ||
+        std::abs(body_forward_in_imu.norm() - 1.0) > 1e-6) {
         return result;
     }
 
-    const Vec3d forward_in_world = x_.rot_.matrix().col(0);
-    result.predicted_speed_mps = forward_in_world.dot(x_.vel_);
+    // Preserve the conditional, velocity-only observation; correct its axis.
+    const Vec3d forward_in_world = x_.rot_ * body_forward_in_imu;
+    result.predicted_speed_mps = forward_in_world.dot(x_.vel_) - reference_point_speed_offset_mps;
     result.innovation_mps = measured_speed_mps - result.predicted_speed_mps;
     if (!std::isfinite(result.predicted_speed_mps) ||
         !std::isfinite(result.innovation_mps)) {

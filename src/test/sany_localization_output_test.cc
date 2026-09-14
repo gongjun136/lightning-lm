@@ -1,5 +1,7 @@
 #include "core/system/sany_localization_output.h"
+#include "core/system/speed_smoothing_shadow.h"
 #include "common/timestamp_gate.h"
+#include "core/localization/localization_result.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -26,6 +28,34 @@ bool Near(double left, double right, double tolerance = 1e-6) {
 }  // namespace
 
 int main() {
+    using Shadow = lightning::sany_output::SpeedSmoothingShadow;
+    Require(Shadow::Enabled("diagnostic", "1", false), "shadow explicit diagnostic opt-in");
+    Require(!Shadow::Enabled("production", "1", false), "production blocks shadow");
+    Require(!Shadow::Enabled("diagnostic", "1", true), "reduced IO blocks shadow");
+    Require(!Shadow::Enabled(nullptr, "1", false), "missing mode blocks shadow");
+    Require(!Shadow::Enabled("diagnostic", nullptr, false), "shadow defaults off");
+    Shadow shadow;
+    Require(Near(shadow.Observe(1.0, 0.0, false), 0.0), "shadow initial raw");
+    Require(Near(shadow.Observe(1.005, 1.0, false), -std::expm1(-.005/.03)), "shadow exact causal gain");
+    Require(shadow.Observe(1.01, 1.0, true) == 0.0, "parking immediate zero");
+    Require(Near(shadow.Observe(1.015, -1.0, false), std::expm1(-.005/.03)), "signed reverse release");
+    Require(shadow.Observe(1.2, 2.0, false) == 2.0 && shadow.ResetLast(), "gap resets shadow");
+    Require(shadow.Observe(1.2, 3.0, false) == 3.0 && shadow.ResetLast(), "duplicate resets shadow");
+    Require(shadow.Observe(1.1, 4.0, false) == 4.0, "rollback resets shadow");
+    shadow.Reset();
+    Require(shadow.Observe(1.105, 5.0, false) == 5.0, "publication suppression reset");
+    Require(std::isnan(shadow.Observe(1.11, NAN, false)), "invalid speed remains visible");
+    Require(shadow.Observe(1.115, 6.0, false) == 6.0, "invalid sample clears history");
+    lightning::loc::LocalizationResult speed_result;
+    speed_result.timestamp_ = 1.0;
+    speed_result.rear_axle_speed_timestamp_ = 1.0;
+    speed_result.rear_axle_speed_offset_ = 0.3;
+    if (std::abs(speed_result.RearAxleSpeedOffset() - 0.3) > 1e-12) return 1;
+    speed_result.is_parking_ = true;
+    if (speed_result.RearAxleSpeedOffset() != 0.0) return 1;
+    speed_result.is_parking_ = false;
+    speed_result.timestamp_ = 1.01;
+    if (speed_result.RearAxleSpeedOffset() != 0.0) return 1;
     using namespace lightning;
     using namespace lightning::sany_output;
 

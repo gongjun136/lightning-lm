@@ -590,6 +590,7 @@ fi
   echo "resource_interval_sec=${resource_interval_sec}"
   echo "reduce_nonessential_overhead=${reduce_nonessential_overhead}"
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
+  echo "speed_smoothing_shadow_requested=${LIGHTNING_LM_SPEED_SMOOTHING_SHADOW:-0}"
   echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
   echo "ndt_max_points_override=${LIGHTNING_LM_NDT_MAX_POINTS:-<from-config>}"
   echo "solid_icp_workers_override=${LIGHTNING_LM_SOLID_ICP_WORKERS:-<from-config>}"

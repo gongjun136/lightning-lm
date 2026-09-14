@@ -1,6 +1,7 @@
 #include "core/localization/localization.h"
 
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <iostream>
 #include <mutex>
@@ -194,8 +195,9 @@ int main() {
         }
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = timestamp;
-        const double vibration = index % 2 == 0 ? 0.09 : 0.04;
-        imu->angular_velocity = lightning::Vec3d(vibration, 0.01, -0.02);
+        const double vibration_sign = index % 2 == 0 ? 1.0 : -1.0;
+        imu->angular_velocity =
+            vibration_sign * lightning::Vec3d(0.09, 0.01, -0.02);
         imu->linear_acceleration = lightning::Vec3d(0.0, 0.0,
                                                      index % 2 == 0 ? 1.08 : 0.94);
         static_active = LocalizationLockingTestPeer::UpdateImuStaticState(
@@ -228,6 +230,35 @@ int main() {
         return 1;
     }
 
+    Localization slow_rotation_localization;
+    LocalizationLockingTestPeer::EnableImuStaticHold(slow_rotation_localization);
+    for (int index = 0; index <= 120; ++index) {
+        const double timestamp = 250.0 + 0.01 * index;
+        if (index % 10 == 0) {
+            lightning::NavState lio_state;
+            lio_state.timestamp_ = timestamp;
+            lio_state.lidar_odom_reliable_ = true;
+            LocalizationLockingTestPeer::ObserveLio(slow_rotation_localization, lio_state);
+
+            lightning::loc::LocalizationResult lidar_loc;
+            lidar_loc.timestamp_ = timestamp;
+            lidar_loc.lidar_loc_valid_ = true;
+            LocalizationLockingTestPeer::ObserveLidarLoc(slow_rotation_localization, lidar_loc);
+        }
+        slow_rotation_localization.ProcessWheelSpeed(timestamp, 0.0);
+        auto imu = std::make_shared<lightning::IMU>();
+        imu->timestamp = timestamp;
+        imu->angular_velocity = lightning::Vec3d(0.0, 0.0, 0.04);
+        imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 1.0);
+        static_active = LocalizationLockingTestPeer::UpdateImuStaticState(
+            slow_rotation_localization, imu);
+    }
+    if (static_active) {
+        std::cerr << "zero wheel speed allowed persistent slow rotation to enter static hold"
+                  << std::endl;
+        return 1;
+    }
+
     Localization offset_can_localization;
     LocalizationLockingTestPeer::EnableImuStaticHold(offset_can_localization);
     for (int index = 0; index <= 120; ++index) {
@@ -250,8 +281,9 @@ int main() {
         }
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = timestamp;
-        const double vibration = index % 2 == 0 ? 0.09 : 0.04;
-        imu->angular_velocity = lightning::Vec3d(vibration, 0.01, -0.02);
+        const double vibration_sign = index % 2 == 0 ? 1.0 : -1.0;
+        imu->angular_velocity =
+            vibration_sign * lightning::Vec3d(0.09, 0.01, -0.02);
         imu->linear_acceleration = lightning::Vec3d(
             0.0, 0.0, index % 2 == 0 ? 1.08 : 0.94);
         static_active = LocalizationLockingTestPeer::UpdateImuStaticState(
@@ -294,7 +326,10 @@ int main() {
         LocalizationLockingTestPeer::ObserveLidarLoc(queued_can_localization, loc);
         auto imu = std::make_shared<lightning::IMU>();
         imu->timestamp = stamp;
-        imu->angular_velocity = lightning::Vec3d(0.09, 0.01, -0.02);
+        const double vibration_sign =
+            static_cast<long long>(std::llround(stamp * 100.0)) % 2 == 0 ? 1.0 : -1.0;
+        imu->angular_velocity =
+            vibration_sign * lightning::Vec3d(0.09, 0.01, -0.02);
         imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 9.81);
         return LocalizationLockingTestPeer::UpdateImuStaticState(queued_can_localization, imu);
     };

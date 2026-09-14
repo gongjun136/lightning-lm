@@ -158,6 +158,7 @@ class Localization {
     bool IsMultiLidarEnabled() const;
     const MultiLidarConfig& GetMultiLidarConfig() const;
     SO3 GetInitialLidarRotation() const;
+    SO3 GetImuToBodyRotation() const;
     RuntimeStats GetRuntimeStats() const;
 
     // void SetPathCallback(std::function<void(const nav_msgs::msg::Path& path)>&& callback);
@@ -244,6 +245,7 @@ class Localization {
 
     struct StaticImuSample {
         double timestamp = 0.0;
+        Vec3d angular_velocity = Vec3d::Zero();
         double gyro_norm = 0.0;
         double accel_norm = 0.0;
     };
@@ -251,6 +253,7 @@ class Localization {
     std::deque<StaticImuSample> static_imu_window_;
     double static_gyro_sum_ = 0.0;
     double static_gyro_sq_sum_ = 0.0;
+    Vec3d static_gyro_vector_sum_ = Vec3d::Zero();
     double static_accel_sum_ = 0.0;
     double static_accel_sq_sum_ = 0.0;
     double last_static_lio_stamp_ = 0.0;
