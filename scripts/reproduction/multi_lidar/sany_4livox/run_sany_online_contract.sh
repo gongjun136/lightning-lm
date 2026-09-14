@@ -39,7 +39,7 @@ if [[ -n "$fault_contract" ]]; then
   selected_analyzer="$fault_analyzer"
 fi
 template="$repo/scripts/run_frontend_online.sh"
-binary="$repo/install/lightning/lib/lightning/run_frontend_online"
+binary="$repo/install/lightning_lm/lib/lightning_lm/run_frontend_online"
 source_file="$repo/src/app/run_frontend_online.cc"
 
 if [[ ! -f "$bag/metadata.yaml" || ! -f "$config" || ! -x "$template" || ! -f "$selected_analyzer" || ! -x "$binary" ]]; then
@@ -76,7 +76,7 @@ source "$repo/install/setup.bash"
 set -u
 export ROS_DOMAIN_ID="$ros_domain_id"
 export ROS_LOCALHOST_ONLY=1
-if [[ "$(realpath "$(ros2 pkg prefix lightning)")" != "$(realpath "$repo/install/lightning")" ]]; then
+if [[ "$(realpath "$(ros2 pkg prefix lightning_lm)")" != "$(realpath "$repo/install/lightning_lm")" ]]; then
   echo "ros2 package prefix does not resolve to the requested install tree" >&2
   exit 2
 fi
@@ -95,7 +95,7 @@ mkdir -p "$ROS_LOG_DIR"
 cd "$output_dir"
 {
   printf 'ros_distro=%s\n' "${ROS_DISTRO:-}"
-  printf 'package_prefix=%s\n' "$(ros2 pkg prefix lightning)"
+  printf 'package_prefix=%s\n' "$(ros2 pkg prefix lightning_lm)"
   printf 'ros_domain_id=%s\n' "$ROS_DOMAIN_ID"
   printf 'ros_localhost_only=%s\n' "$ROS_LOCALHOST_ONLY"
   printf 'kernel='; uname -a

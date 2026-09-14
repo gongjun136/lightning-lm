@@ -106,7 +106,7 @@ ros2 run livox_ros_driver2 pointcloud_zstd_decompressor
 
 # 终端 2：启动待验证版本定位（不要用嵌入式 --bag 模式）
 source /home/nvidia/project/gj_ws/lightning-lm/install/setup.bash
-ros2 run lightning run_loc_online \
+ros2 run lightning_lm run_loc_online \
   --config=/absolute/path/config.yaml \
   --map=/absolute/path/to/map \
   --output_tum=/tmp/replay_global.tum \

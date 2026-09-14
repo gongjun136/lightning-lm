@@ -19,4 +19,4 @@ source "$ros_setup"
 source "$install_setup"
 set -u
 
-exec ros2 run lightning run_frontend_online --config "$(realpath "$config_path")" "$@"
+exec ros2 run lightning_lm run_frontend_online --config "$(realpath "$config_path")" "$@"

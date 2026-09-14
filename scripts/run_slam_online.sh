@@ -38,7 +38,7 @@ source "$install_setup"
 set -u
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  exe_path="$(ros2 pkg prefix lightning)/lib/lightning/run_slam_online"
+  exe_path="$(ros2 pkg prefix lightning_lm)/lib/lightning_lm/run_slam_online"
   set +e
   "$exe_path" --help
   help_status=$?
@@ -78,7 +78,7 @@ mkdir -p "$log_dir"
 
 (
   cd "$run_dir"
-  ros2 run lightning run_slam_online \
+  ros2 run lightning_lm run_slam_online \
     --config "$config_path" \
     "$@"
 ) > "$log_dir/run_slam_online.stdout.log" \

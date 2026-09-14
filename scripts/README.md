@@ -229,7 +229,7 @@ SANY 正式定位 YAML 通过统一的 `compute_budget` 限制 LIO、NDT 和 SOL
 构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
 
 ```bash
-ros2 run lightning pos_res_recorder --ros-args \
+ros2 run lightning_lm pos_res_recorder --ros-args \
   -p topic:=/PosRes \
   -p output_dir:=./posres_record
 ```

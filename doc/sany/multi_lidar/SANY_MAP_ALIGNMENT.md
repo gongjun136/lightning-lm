@@ -14,7 +14,7 @@ T_old_body = T_old_new * T_new_body
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select lightning --cmake-args -DCMAKE_BUILD_TYPE=Release
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 

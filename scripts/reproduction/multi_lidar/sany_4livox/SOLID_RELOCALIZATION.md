@@ -25,7 +25,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-./install/lightning/lib/lightning/build_solid_database \
+./install/lightning_lm/lib/lightning_lm/build_solid_database \
   --config=config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
   --map_path=/absolute/path/to/new_map
 ```
@@ -79,7 +79,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-./install/lightning/lib/lightning/build_solid_database \
+./install/lightning_lm/lib/lightning_lm/build_solid_database \
   --config=config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
   --map_path=runs/sany_4lidar_mapping_data1_20260811_full/data/new_map
 ```
@@ -147,7 +147,7 @@ workers=12 相比 workers=8 将处理 P95 降低约 `15.5%`，检索/ICP P95 降
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select lightning --cmake-args -DCMAKE_BUILD_TYPE=Release
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ./bin/solid_descriptor_test
 ```

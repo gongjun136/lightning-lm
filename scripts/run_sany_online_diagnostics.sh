@@ -647,7 +647,7 @@ if command -v tegrastats >/dev/null 2>&1; then
 fi
 
 algorithm_args=(
-  ros2 run lightning run_loc_online
+  ros2 run lightning_lm run_loc_online
   --config="${config_path}"
   --output_tum="${run_dir}/results/trajectory_global.tum"
   --output_high_frequency_tum="${run_dir}/results/trajectory_high_frequency.tum"

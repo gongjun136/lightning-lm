@@ -331,7 +331,7 @@ Set-Location F:\SLAM_AI_KnowledgeBase\code\WSL_Ubuntu_22.04\lightning-lm
 如果源码发生过修改，应先编译 Release 版本。离线入口实际从项目的 `install/` 空间解析可执行文件：
 
 ```powershell
-wsl -d Ubuntu-22.04 -- bash -lc "cd /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm && source /opt/ros/humble/setup.bash && colcon build --packages-select lightning --cmake-args -DCMAKE_BUILD_TYPE=Release"
+wsl -d Ubuntu-22.04 -- bash -lc "cd /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm && source /opt/ros/humble/setup.bash && MAKEFLAGS='-j4' colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release"
 ```
 
 正式运行前可使用 `--dry-run` 检查控制器展开的 12 条 Lightning-LM 命令。该操作不创建实验结果：

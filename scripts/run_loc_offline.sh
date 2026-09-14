@@ -157,14 +157,14 @@ set +u
 source "$ros_setup"
 source "$install_setup"
 set -u
-prefix="$(realpath "$(ros2 pkg prefix lightning)")"
-expected_prefix="$(realpath "$repo_dir/install/lightning")"
+prefix="$(realpath "$(ros2 pkg prefix lightning_lm)")"
+expected_prefix="$(realpath "$repo_dir/install/lightning_lm")"
 if [[ "$prefix" != "$expected_prefix" ]]; then
   echo "lightning resolves to unexpected install prefix: $prefix (expected $expected_prefix)" >&2
   exit 2
 fi
 
-binary="$prefix/lib/lightning/run_loc_offline"
+binary="$prefix/lib/lightning_lm/run_loc_offline"
 monitor="$script_dir/monitor_process_tree.py"
 inspector="$script_dir/inspect_rosbag2_sqlite.py"
 timing_extractor="$script_dir/extract_frontend_timing.py"

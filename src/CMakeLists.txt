@@ -74,12 +74,12 @@ ament_target_dependencies(
         "pcl_conversions"
         "tf2_ros"
         "tf2"
+        "lightning"
 )
 
 add_dependencies(${PROJECT_NAME}.libs
         livox_interfaces2__rosidl_typesupport_cpp
         geosun_msgs__rosidl_typesupport_cpp
-        ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
@@ -92,7 +92,6 @@ target_link_libraries(${PROJECT_NAME}.libs
         miao.utils
         livox_interfaces2__rosidl_typesupport_cpp
         geosun_msgs__rosidl_typesupport_cpp
-        ${PROJECT_NAME}__rosidl_typesupport_cpp
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils

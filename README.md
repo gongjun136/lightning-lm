@@ -130,12 +130,18 @@ Ubuntu 20.04 should also work, but not tested.
 - glog
 - gflags
 - pcl_conversions
+- `lightning` ROS 2 interface package (messages and services)
 
 On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
 
 ### Build
 
-Build this package with ```colcon build```.
+Place the `lightning` interface package in the same workspace (or source its installation), then build through the
+algorithm package with limited parallelism:
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
 
 Then ```source install/setup.bash``` to use it.
 
@@ -146,7 +152,7 @@ offline programs are suitable for scenarios with offline data packets to quickly
 while the online programs are suitable for scenarios with actual sensors to obtain real-time results.
 
 For example, calling the offline mapping program on the NCLT dataset:
-```ros2 run lightning run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
+```ros2 run lightning_lm run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
 
 If you want to call the online version, just change the offline part to online.
 
@@ -170,11 +176,11 @@ Original dataset addresses:
 
 1. Real-time mapping (real-time bag playback)
     - Start the mapping program:
-      ```ros2 run lightning run_slam_online --config ./config/default_nclt.yaml```
+      ```ros2 run lightning_lm run_slam_online --config ./config/default_nclt.yaml```
     - Play the data bag
     - Save the map ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
 2. Offline mapping (traverse data, faster)
-    - ```ros2 run lightning run_slam_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
+    - ```ros2 run lightning_lm run_slam_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
     - It will automatically save to the data/new_map directory after finishing.
 3. Viewing the map
     - View the full map: ```pcl_viewer ./data/new_map/global.pcd```
@@ -190,10 +196,10 @@ Original dataset addresses:
       default).
     - Place the vehicle at the mapping starting point.
     - Start the localization program:
-      ```ros2 run lightning run_loc_online --config ./config/default_nclt.yaml```
+      ```ros2 run lightning_lm run_loc_online --config ./config/default_nclt.yaml```
     - Play the bag or input sensor data.
 2. Offline localization
-    - ```ros2 run lightning run_loc_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
+    - ```ros2 run lightning_lm run_loc_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
 3. Receiving localization results
     - The localization program outputs TF topics at the same frequency as the IMU (50-100Hz).
 
@@ -362,7 +368,7 @@ Ubuntu 20.04 应该也可行，未测试。
 编译后，会得到本包对应的在线/离线建图程序与定位程序。离线程序适用于存在离线数据包，快速得到建图/定位结果的方案，在线程序则适用于有实际传感器，得到实时结果的方案。
 
 例如：在NCLT数据集上调用离线建图程序:
-```ros2 run lightning run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
+```ros2 run lightning_lm run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
 
 如果希望调用在线的版本，则将offline部分改成online即可。
 
@@ -385,11 +391,11 @@ Ubuntu 20.04 应该也可行，未测试。
 
 1. 实时建图（实时播包）
     - 启动建图程序:
-      ```ros2 run lightning run_slam_online --config ./config/default_nclt.yaml```
+      ```ros2 run lightning_lm run_slam_online --config ./config/default_nclt.yaml```
     - 播放数据包
     - 保存地图 ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
 2. 离线建图（遍历跑数据，更快一些）
-    - ```ros2 run lightning run_slam_offline --config ./config/default_nclt.yaml --input_bag 数据包```
+    - ```ros2 run lightning_lm run_slam_offline --config ./config/default_nclt.yaml --input_bag 数据包```
     - 结束后会自动保存至data/new_map目录下
 3. 查看地图
     - 查看完整地图：```pcl_viewer ./data/new_map/global.pcd```
@@ -403,11 +409,11 @@ Ubuntu 20.04 应该也可行，未测试。
     - 将地图路径写到yaml中的 system-map_path 下，默认是new_map（和建图默认一致)
     - 将车放在建图起点处
     - 启动定位程序：
-      ```ros2 run lightning run_loc_online --config ./config/default_nclt.yaml```
+      ```ros2 run lightning_lm run_loc_online --config ./config/default_nclt.yaml```
     - 播包或者输入传感器数据即可
 
 2. 离线定位
-    - ```ros2 run lightning run_loc_offline --config ./config/default_nclt.yaml --input_bag 数据包```
+    - ```ros2 run lightning_lm run_loc_offline --config ./config/default_nclt.yaml --input_bag 数据包```
 
 3. 接收定位结果
     - 定位程序输出与IMU同频的TF话题（50-100Hz）

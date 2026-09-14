@@ -25,7 +25,7 @@ git apply --check /path/to/sany_compute_candidate.patch
 git apply /path/to/sany_compute_candidate.patch
 source /opt/ros/humble/setup.bash
 # 继续 source 现场原有的驱动/依赖工作空间 setup.bash。
-colcon build --packages-select lightning --cmake-args -DCMAKE_BUILD_TYPE=Release
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 如 `git apply --check` 报冲突，停止应用，不要强制覆盖现场修改。

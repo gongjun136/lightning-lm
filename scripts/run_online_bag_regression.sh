@@ -78,7 +78,7 @@ trap cleanup EXIT INT TERM
 } > "$run_dir/run_metadata.txt"
 
 cd "$run_dir"
-exe_prefix="$(ros2 pkg prefix lightning)/lib/lightning"
+exe_prefix="$(ros2 pkg prefix lightning_lm)/lib/lightning_lm"
 if [[ "$embedded_playback" == "1" ]]; then
   if [[ "$mode" == "slam" ]]; then
     /usr/bin/time -f 'elapsed_seconds=%e\nmax_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S' \
