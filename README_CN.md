@@ -109,13 +109,13 @@ Ubuntu 20.04 应该也可行，未测试。
 - glog
 - gflags
 - pcl_conversions
-- `lightning` ROS 2 消息与服务接口包
+- 可选的外部 `lightning` ROS 2 消息与服务接口包
 
 在Ubuntu 22.04上，执行：```bash ./scripts/install_dep.sh```即可。
 
 ### 编译
 
-将 `lightning` 接口包放在同一工作空间中（或预先 source 其安装环境），然后在仓库根目录限制并发构建：
+如果同一工作空间或已 source 的环境中存在 `lightning` 接口包，算法会优先使用它；否则自动从仓库内置接口构建。请在仓库根目录限制并发构建：
 
 ```bash
 source /opt/ros/humble/setup.bash

@@ -24,13 +24,22 @@ if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif ()
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 # set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 # set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/libs)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(cmake/packages.cmake)
 add_definitions(-DROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/") # 设置项目根目录路径
+
+if (NOT lightning_FOUND)
+    message(STATUS "lightning interface package not found; building embedded interfaces")
+    add_subdirectory(thirdparty/lightning_interfaces)
+    include_directories(
+            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/lightning_interfaces/rosidl_generator_cpp
+    )
+endif ()
+
 install(DIRECTORY config
         DESTINATION lib/${PROJECT_NAME}/
 )

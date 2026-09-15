@@ -130,14 +130,14 @@ Ubuntu 20.04 should also work, but not tested.
 - glog
 - gflags
 - pcl_conversions
-- `lightning` ROS 2 interface package (messages and services)
+- Optional external `lightning` ROS 2 interface package (messages and services)
 
 On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
 
 ### Build
 
-Place the `lightning` interface package in the same workspace (or source its installation), then build through the
-algorithm package with limited parallelism:
+When the `lightning` interface package exists in the workspace (or a sourced installation), the algorithm uses it.
+Otherwise, the same interfaces are built from the embedded fallback automatically. Build with limited parallelism:
 
 ```bash
 MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
