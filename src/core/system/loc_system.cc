@@ -12,7 +12,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -28,6 +30,35 @@ namespace {
 double CloudStampSec(const CloudPtr& cloud) {
     if (!cloud) return 0.0;
     return static_cast<double>(cloud->header.stamp) * 1e-9;
+}
+
+functional_safety::HeartbeatConfig LoadHeartbeatConfig(rclcpp::Node& node) {
+    const auto node_id = node.declare_parameter<std::int64_t>("functional_safety.node_id", 6);
+    const auto topic = node.declare_parameter<std::string>(
+        "functional_safety.heartbeat_topic", "/diagnostics/heartbeat/lightning_slam");
+    const auto period_ms =
+        node.declare_parameter<std::int64_t>("functional_safety.heartbeat_period_ms", 100);
+    const auto qos_depth =
+        node.declare_parameter<std::int64_t>("functional_safety.heartbeat_qos_depth", 1);
+    const auto reliability = node.declare_parameter<std::string>(
+        "functional_safety.heartbeat_qos_reliability", "best_effort");
+    if (node_id <= 0 || node_id > std::numeric_limits<std::uint16_t>::max()) {
+        throw std::invalid_argument("functional_safety.node_id must be in [1, 65535]");
+    }
+    if (period_ms <= 0 || qos_depth <= 0) {
+        throw std::invalid_argument("functional safety heartbeat period and QoS depth must be positive");
+    }
+    if (reliability != "best_effort" && reliability != "reliable") {
+        throw std::invalid_argument(
+            "functional_safety.heartbeat_qos_reliability must be best_effort or reliable");
+    }
+    functional_safety::HeartbeatConfig config;
+    config.node_id = static_cast<std::uint16_t>(node_id);
+    config.topic = topic;
+    config.period = std::chrono::milliseconds(period_ms);
+    config.qos_depth = static_cast<std::size_t>(qos_depth);
+    config.reliable = reliability == "reliable";
+    return config;
 }
 
 }  // namespace
@@ -157,16 +188,24 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     telemetry_ = std::make_unique<sany_output::LocalizationTelemetryState>(
         static_cast<std::size_t>(lost_frame_threshold));
 
-    if (!loc_->Init(yaml_path, map_path)) {
-        LOG(ERROR) << "failed to initialize online localization";
+    LOG(INFO) << "online mode, creating ros2 node ... ";
+    node_ = std::make_shared<rclcpp::Node>("lightning_slam");
+    try {
+        heartbeat_ = std::make_unique<functional_safety::HeartbeatPublisher>(
+            *node_, LoadHeartbeatConfig(*node_));
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "invalid functional safety heartbeat configuration: " << error.what();
         return false;
     }
 
-    LOG(INFO) << "online mode, creating ros2 node ... ";
+    if (!loc_->Init(yaml_path, map_path)) {
+        LOG(ERROR) << "failed to initialize online localization";
+        heartbeat_->SetState(functional_safety::NodeState::kFault);
+        heartbeat_->PublishNow();
+        return false;
+    }
 
     /// subscribers
-    node_ = std::make_shared<rclcpp::Node>("lightning_slam");
-
     imu_topic_ = yaml.GetValue<std::string>("common", "imu_topic");
     cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
     livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
@@ -336,6 +375,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             PublishProcessedCloud(cloud, result, stats, eligible);
     });
 
+    heartbeat_->SetState(functional_safety::NodeState::kIdle);
     LOG(INFO) << "online loc node has been created.";
     debug_event::Emit("Online localization node is ready");
     return true;
@@ -391,6 +431,7 @@ void LocSystem::Finish() {
     if (finished_) return;
     debug_event::ClearSink();
     if (loc_) loc_->Finish();
+    if (heartbeat_) heartbeat_->Stop();
     ClosePublishedTrajectoryTum();
     finished_ = true;
 }
@@ -563,7 +604,12 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto position = sany_output::MakePosResMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
     const auto pose = sany_output::MakePoseMessage(position);
-    const auto vehicle_pose = sany_output::MakeVehiclePoseMessage(position);
+    auto vehicle_pose = sany_output::MakeVehiclePoseMessage(position);
+    vehicle_pose.comm_header.source_id = heartbeat_->NodeId();
+    vehicle_pose.comm_header.seq =
+        functional_safety::HeartbeatPublisher::Advance(pose_vel_comm_seq_);
+    vehicle_pose.comm_header.stamp_us =
+        functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
     const auto message_build_timing = message_build_timer.Stop();
 
     profiling::Stopwatch ros_publish_timer(profiling_enabled);
@@ -579,6 +625,12 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     if (vehicle_pose_pub_) {
         vehicle_pose_pub_->publish(vehicle_pose);
+        heartbeat_->RecordWork();
+        const auto heartbeat_state = heartbeat_->State();
+        if (heartbeat_state == functional_safety::NodeState::kNotReady ||
+            heartbeat_state == functional_safety::NodeState::kIdle) {
+            heartbeat_->SetState(functional_safety::NodeState::kRunning);
+        }
     }
     const auto ros_publish_timing = ros_publish_timer.Stop();
 
@@ -771,10 +823,24 @@ void LocSystem::PublishHealthStatus() {
     }
     const bool lidar_match_stale = publication_gate_.LidarMatchStale(latest_input_sensor_stamp);
     telemetry_->ObserveLocalizationStale(lidar_match_stale);
-    const auto fault_status = telemetry_->MakeFaultStatus(stamp);
+    auto fault_status = telemetry_->MakeFaultStatus(stamp);
+    fault_status.comm_header.source_id = heartbeat_->NodeId();
+    fault_status.comm_header.seq =
+        functional_safety::HeartbeatPublisher::Advance(fault_status_comm_seq_);
+    fault_status.comm_header.stamp_us =
+        functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
     const auto localization_status = telemetry_->MakeLocalizationStatus(stamp);
     fault_status_pub_->publish(fault_status);
     loc_status_pub_->publish(localization_status);
+    if (fault_status.level == lightning::msg::FaultStatus::LEVEL_P0) {
+        heartbeat_->SetState(functional_safety::NodeState::kFault);
+    } else if (fault_status.level == lightning::msg::FaultStatus::LEVEL_P1) {
+        heartbeat_->SetState(functional_safety::NodeState::kDegraded);
+    } else if (heartbeat_->WorkSequence() == 0) {
+        heartbeat_->SetState(functional_safety::NodeState::kIdle);
+    } else {
+        heartbeat_->SetState(functional_safety::NodeState::kRunning);
+    }
     const auto runtime = loc_->GetRuntimeStats();
     diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
     diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;

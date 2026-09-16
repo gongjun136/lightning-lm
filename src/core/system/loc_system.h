@@ -35,6 +35,7 @@
 #include "lightning/msg/debug_message.hpp"
 #include "lightning/msg/pipeline_diagnostics.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
+#include "utils/functional_safety_heartbeat.h"
 #include "utils/compute_profiling.h"
 
 namespace lightning {
@@ -156,6 +157,8 @@ class LocSystem {
     std::atomic_bool map_outputs_ever_enabled_{false};
     std::atomic_bool map_outputs_enabled_last_{false};
     std::atomic_bool localization_ever_good_{false};
+    std::atomic<std::uint32_t> pose_vel_comm_seq_{0};
+    std::atomic<std::uint32_t> fault_status_comm_seq_{0};
     profiling::MultiStageTimingWindow output_timing_window_{
         {"pose_transform", "message_build", "ros_publish", "diagnostic_io",
          "record_tum", "outer"}};
@@ -164,6 +167,8 @@ class LocSystem {
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
     rclcpp::Subscription<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_sub_ = nullptr;
+
+    std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;
 
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;

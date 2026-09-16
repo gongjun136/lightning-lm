@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>diagnostic_monitor_interfaces</name>
+  <version>1.0.0</version>
+  <description>Minimal functional-safety heartbeat and topic communication interfaces.</description>
+  <maintainer email="dev@local.invalid">Project maintainers</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

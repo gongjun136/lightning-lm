@@ -28,6 +28,7 @@
 #include "core/system/sany_localization_output.h"
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
+#include "utils/functional_safety_heartbeat.h"
 #include "utils/timer.h"
 #include "wrapper/bag_io.h"
 #include "wrapper/ros_utils.h"
@@ -127,7 +128,11 @@ class OfflineLocalizationPublisher {
             map_rear_axle_pose, lightning::ImuVelocityToBody(imu_to_body_rotation, result.vel_b_).x() - result.RearAxleSpeedOffset(),
             result.timestamp_, map_frame_);
         if (pos_res_pub_) pos_res_pub_->publish(position);
-        const auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(position);
+        auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(position);
+        vehicle_pose.comm_header.source_id = kLocalizationSourceId;
+        vehicle_pose.comm_header.seq = ++pose_vel_comm_seq_;
+        vehicle_pose.comm_header.stamp_us =
+            lightning::functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
         if (vehicle_pose_pub_) vehicle_pose_pub_->publish(vehicle_pose);
         const auto pose = lightning::sany_output::MakePoseMessage(position);
         if (pose_pub_) pose_pub_->publish(pose);
@@ -145,7 +150,11 @@ class OfflineLocalizationPublisher {
         const builtin_interfaces::msg::Time stamp = rclcpp::Time(
             static_cast<std::int64_t>(std::llround(sensor_time * 1e9)));
         if (telemetry_.OfflineHealthPublishDue(sensor_time)) {
-            const auto fault = telemetry_.MakeFaultStatus(stamp);
+            auto fault = telemetry_.MakeFaultStatus(stamp);
+            fault.comm_header.source_id = kLocalizationSourceId;
+            fault.comm_header.seq = ++fault_status_comm_seq_;
+            fault.comm_header.stamp_us =
+                lightning::functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
             const auto status = telemetry_.MakeLocalizationStatus(stamp);
             if (fault_status_pub_) fault_status_pub_->publish(fault);
             if (loc_status_pub_) loc_status_pub_->publish(status);
@@ -189,6 +198,7 @@ class OfflineLocalizationPublisher {
     }
 
    private:
+    static constexpr std::uint16_t kLocalizationSourceId = 6;
     rclcpp::Node::SharedPtr node_;
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_;
     rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_;
@@ -204,6 +214,8 @@ class OfflineLocalizationPublisher {
     lightning::sany_output::LocalizationPublicationGate publication_gate_;
     lightning::sany_output::FrameDecimator map_cloud_decimator_;
     lightning::sany_output::LocalizationTelemetryState telemetry_;
+    std::uint32_t pose_vel_comm_seq_ = 0;
+    std::uint32_t fault_status_comm_seq_ = 0;
     std::unique_ptr<rosbag2_cpp::Writer> bag_writer_;
 };
 

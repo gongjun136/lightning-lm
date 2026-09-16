@@ -46,6 +46,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/compute_budget.cc
         utils/compute_profiling.cc
         utils/causal_trace.cc
+        utils/functional_safety_heartbeat.cc
         utils/pointcloud_utils.cc
         utils/thread_scheduling.cc
 
@@ -75,6 +76,14 @@ ament_target_dependencies(
         "tf2_ros"
         "tf2"
 )
+
+if (DIAGNOSTIC_MONITOR_INTERFACES_EMBEDDED)
+    add_dependencies(${PROJECT_NAME}.libs diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
+    target_link_libraries(${PROJECT_NAME}.libs
+            diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
+else ()
+    ament_target_dependencies(${PROJECT_NAME}.libs "diagnostic_monitor_interfaces")
+endif ()
 
 if (lightning_FOUND)
     ament_target_dependencies(${PROJECT_NAME}.libs "lightning")

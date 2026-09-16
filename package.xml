@@ -18,6 +18,7 @@
     <depend>scrubber_common</depend>
     <depend>agibot_robot</depend>
     <depend>lightning</depend>
+    <depend>diagnostic_monitor_interfaces</depend>
     <depend>rclcpp</depend>
     <depend>std_msgs</depend>
     <depend>geometry_msgs</depend>
