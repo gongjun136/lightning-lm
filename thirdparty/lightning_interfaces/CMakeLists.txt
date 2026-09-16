@@ -13,13 +13,13 @@ if (NOT diagnostic_monitor_interfaces_FOUND)
 endif ()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-        "${CMAKE_SOURCE_DIR}:msg/DebugMessage.msg"
-        "${CMAKE_SOURCE_DIR}:msg/FaultStatus.msg"
-        "${CMAKE_SOURCE_DIR}:msg/LocalizationStatus.msg"
-        "${CMAKE_SOURCE_DIR}:msg/PipelineDiagnostics.msg"
-        "${CMAKE_SOURCE_DIR}:msg/VehiclePose.msg"
-        "${CMAKE_SOURCE_DIR}:srv/LocCmd.srv"
-        "${CMAKE_SOURCE_DIR}:srv/SaveMap.srv"
+        "msg/DebugMessage.msg"
+        "msg/FaultStatus.msg"
+        "msg/LocalizationStatus.msg"
+        "msg/PipelineDiagnostics.msg"
+        "msg/VehiclePose.msg"
+        "srv/LocCmd.srv"
+        "srv/SaveMap.srv"
         DEPENDENCIES std_msgs geometry_msgs sensor_msgs nav_msgs diagnostic_monitor_interfaces
 )
 
@@ -54,8 +54,13 @@ if (DIAGNOSTIC_MONITOR_INTERFACES_EMBEDDED)
     endforeach ()
 endif ()
 
-file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/lightning" CONTENT "")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/lightning"
-        DESTINATION share/ament_index/resource_index/packages)
-install(FILES package.xml
-        DESTINATION share/${PROJECT_NAME})
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    ament_export_dependencies(rosidl_default_runtime)
+    ament_package()
+else ()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/lightning" CONTENT "")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/lightning"
+            DESTINATION share/ament_index/resource_index/packages)
+    install(FILES package.xml
+            DESTINATION share/${PROJECT_NAME})
+endif ()
