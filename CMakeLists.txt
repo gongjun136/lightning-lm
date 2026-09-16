@@ -34,7 +34,9 @@ add_definitions(-DROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/") # 设置项目根目�
 
 if (NOT lightning_FOUND)
     message(STATUS "lightning interface package not found; building embedded interfaces")
+    find_package(ament_cmake_python REQUIRED)
     add_subdirectory(thirdparty/lightning_interfaces)
+    _ament_cmake_python_register_environment_hook()
     include_directories(
             ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/lightning_interfaces/rosidl_generator_cpp
     )
