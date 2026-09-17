@@ -26,12 +26,114 @@ if (OPENMP_FOUND)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif ()
 
-option(BUILD_WITH_MARCH_NATIVE "Enable host-specific CPU instructions" OFF)
-if (BUILD_WITH_MARCH_NATIVE)
-    add_compile_options(-march=native)
-elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
-    add_compile_options(-msse -msse2 -msse3 -msse4 -msse4.1 -msse4.2)
+include(CheckCXXCompilerFlag)
+
+set(LIGHTNING_CPU_PROFILE "AUTO" CACHE STRING
+        "CPU optimization profile: AUTO, PORTABLE, NATIVE, or ORIN")
+set_property(CACHE LIGHTNING_CPU_PROFILE PROPERTY STRINGS AUTO PORTABLE NATIVE ORIN)
+string(TOUPPER "${LIGHTNING_CPU_PROFILE}" LIGHTNING_CPU_PROFILE_NORMALIZED)
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED)
+
+set(LIGHTNING_CPU_COMPILE_OPTIONS "")
+
+function(lightning_select_first_supported_cpu_flag OUTPUT_VAR)
+    foreach (CPU_FLAG IN LISTS ARGN)
+        string(MAKE_C_IDENTIFIER "${CPU_FLAG}" CPU_FLAG_ID)
+        set(SUPPORT_VAR "LIGHTNING_COMPILER_SUPPORTS_${CPU_FLAG_ID}")
+        check_cxx_compiler_flag("${CPU_FLAG}" ${SUPPORT_VAR})
+        if (${SUPPORT_VAR})
+            set(${OUTPUT_VAR} "${CPU_FLAG}" PARENT_SCOPE)
+            return()
+        endif ()
+    endforeach ()
+    set(${OUTPUT_VAR} "" PARENT_SCOPE)
+endfunction()
+
+set(LIGHTNING_CPU_PROFILE_EFFECTIVE "${LIGHTNING_CPU_PROFILE_NORMALIZED}")
+if (LIGHTNING_CPU_PROFILE_NORMALIZED STREQUAL "AUTO")
+    if (CMAKE_CROSSCOMPILING)
+        if (LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED MATCHES "^(aarch64|arm64)$")
+            set(LIGHTNING_CPU_PROFILE_EFFECTIVE "ORIN")
+        elseif (LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED MATCHES "^(x86_64|amd64|i[3-6]86)$")
+            set(LIGHTNING_CPU_PROFILE_EFFECTIVE "X86")
+        else ()
+            set(LIGHTNING_CPU_PROFILE_EFFECTIVE "PORTABLE")
+            message(WARNING
+                    "No automatic CPU optimization is defined for cross target "
+                    "${CMAKE_SYSTEM_PROCESSOR}; using portable CPU settings")
+        endif ()
+    else ()
+        set(LIGHTNING_CPU_PROFILE_EFFECTIVE "NATIVE")
+    endif ()
 endif ()
+
+if (LIGHTNING_CPU_PROFILE_EFFECTIVE STREQUAL "PORTABLE")
+    # Keep the compiler's architecture baseline for portable artifacts.
+elseif (LIGHTNING_CPU_PROFILE_EFFECTIVE STREQUAL "NATIVE")
+    if (CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR
+                "LIGHTNING_CPU_PROFILE=NATIVE is invalid during cross compilation")
+    endif ()
+
+    if (LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED MATCHES "^(aarch64|arm64)$")
+        lightning_select_first_supported_cpu_flag(NATIVE_CPU_FLAG
+                -mcpu=native -march=native)
+    else ()
+        lightning_select_first_supported_cpu_flag(NATIVE_CPU_FLAG -march=native)
+    endif ()
+    if (NATIVE_CPU_FLAG)
+        list(APPEND LIGHTNING_CPU_COMPILE_OPTIONS "${NATIVE_CPU_FLAG}")
+    elseif (LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED MATCHES "^(x86_64|amd64|i[3-6]86)$")
+        lightning_select_first_supported_cpu_flag(X86_CPU_FLAG
+                -march=x86-64-v2 -msse4.2)
+        if (X86_CPU_FLAG)
+            list(APPEND LIGHTNING_CPU_COMPILE_OPTIONS "${X86_CPU_FLAG}")
+        endif ()
+    endif ()
+    if (NOT LIGHTNING_CPU_COMPILE_OPTIONS)
+        message(WARNING
+                "The compiler does not support native CPU optimization; "
+                "using portable CPU settings")
+    endif ()
+elseif (LIGHTNING_CPU_PROFILE_EFFECTIVE STREQUAL "X86")
+    lightning_select_first_supported_cpu_flag(X86_CPU_FLAG
+            -march=x86-64-v2 -msse4.2)
+    if (X86_CPU_FLAG)
+        list(APPEND LIGHTNING_CPU_COMPILE_OPTIONS "${X86_CPU_FLAG}")
+    else ()
+        message(WARNING
+                "No x86 CPU optimization flag is supported; "
+                "using portable CPU settings")
+    endif ()
+elseif (LIGHTNING_CPU_PROFILE_EFFECTIVE STREQUAL "ORIN")
+    if (NOT LIGHTNING_SYSTEM_PROCESSOR_NORMALIZED MATCHES "^(aarch64|arm64)$")
+        message(FATAL_ERROR
+                "LIGHTNING_CPU_PROFILE=ORIN requires an ARM64 target, but "
+                "CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}")
+    endif ()
+
+    # GEACX2 uses Cortex-A78AE (Armv8.2-A). Prefer exact CPU tuning, then
+    # progressively fall back to options supported by older ARM64 compilers.
+    lightning_select_first_supported_cpu_flag(ORIN_CPU_FLAG
+            -mcpu=cortex-a78ae -mcpu=cortex-a78 -march=armv8.2-a)
+    if (ORIN_CPU_FLAG)
+        list(APPEND LIGHTNING_CPU_COMPILE_OPTIONS "${ORIN_CPU_FLAG}")
+    else ()
+        message(WARNING
+                "No GEACX2 CPU optimization flag is supported; "
+                "using portable CPU settings")
+    endif ()
+else ()
+    message(FATAL_ERROR
+            "Unknown LIGHTNING_CPU_PROFILE=${LIGHTNING_CPU_PROFILE}. "
+            "Expected AUTO, PORTABLE, NATIVE, or ORIN")
+endif ()
+
+message(STATUS "Lightning CPU profile: ${LIGHTNING_CPU_PROFILE_NORMALIZED} "
+        "(effective: ${LIGHTNING_CPU_PROFILE_EFFECTIVE})")
+message(STATUS "Lightning target processor: ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "Lightning cross compiling: ${CMAKE_CROSSCOMPILING}")
+message(STATUS "Lightning CPU compile options: ${LIGHTNING_CPU_COMPILE_OPTIONS}")
 
 include_directories(
         ${OpenCV_INCLUDE_DIRS}
@@ -64,7 +166,7 @@ set(third_party_libs
         ${PCL_LIBRARIES}
         ${OpenCV_LIBS}
         ${Pangolin_LIBRARIES}
-        glog gflags
+        glog::glog gflags
         ${yaml-cpp_LIBRARIES}
         ${pcl_conversions_LIBRARIES}
         tbb

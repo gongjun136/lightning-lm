@@ -122,6 +122,28 @@ source /opt/ros/humble/setup.bash
 MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
+默认的 `LIGHTNING_CPU_PROFILE=AUTO` 会自动选择优化方式，因此通常只需执行上面的 `colcon build`：原生 x86/ARM 构建优先使用 `native`，ARM64 交叉编译自动使用 GEACX2/Orin 优化，x86 交叉编译优先使用 `x86-64-v2` 并可回退到 SSE4.2。编译器不支持时会逐级回退，且这些参数只应用于 Lightning 算法源码。
+
+如果产物需要部署到 CPU 能力未知的机器，可显式关闭特定 CPU 指令：
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLIGHTNING_CPU_PROFILE=PORTABLE
+```
+
+在 GEACX2/Orin 的 ARM64 交叉编译 Docker 中，不要直接使用镜像内置工具链，而应使用仓库提供的覆盖工具链。该文件可确保 CMake 重新配置时仍使用 AArch64 编译器和多架构库路径，并让 ROSIDL Python 扩展使用目标端 ABI 后缀：
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/geacx2-aarch64.cmake"
+```
+
+上述路径假设命令在仓库根目录执行；如果 CI 从外层工作空间调用 colcon，应传入 `cmake/toolchains/geacx2-aarch64.cmake` 的绝对路径。交叉编译器必须在 CMake 配置项目之前选定，不能由后续的 `LIGHTNING_CPU_PROFILE` 推断；因此只需在 Docker 环境或构建命令中配置一次工具链，CPU profile 继续保持 `AUTO`。
+
+`AUTO` 在识别到 ARM64 交叉编译时会依次尝试 `cortex-a78ae`、`cortex-a78` 和 `armv8.2-a`，使用交叉编译器支持的最高级别；若均不支持，则保留可移植设置并给出警告。也可以显式指定 `ORIN` 或 `NATIVE`；其中 `NATIVE` 禁止用于交叉编译，防止 `-march=native` 错误地针对 Docker 宿主机生成指令。
+
 然后```source install/setup.bash```即可使用。
 
 ### 统一离线前端模板

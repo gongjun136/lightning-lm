@@ -143,6 +143,39 @@ Otherwise, the same interfaces are built from the embedded fallback automaticall
 MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
+The default `LIGHTNING_CPU_PROFILE=AUTO` selects the optimization automatically, so the plain `colcon build` command
+above is normally sufficient. Native x86/ARM builds prefer a `native` option, ARM64 cross builds select the
+GEACX2/Orin profile, and x86 cross builds prefer `x86-64-v2` with an SSE4.2 fallback. Unsupported options fall back
+progressively, and the selected flags apply only to Lightning algorithm sources.
+
+For artifacts that must run on machines with unknown CPU capabilities, disable target-specific instructions explicitly:
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLIGHTNING_CPU_PROFILE=PORTABLE
+```
+
+For ARM64 cross compilation targeting the GEACX2/Orin, use the repository overlay instead of the vendor toolchain
+directly. The overlay keeps the AArch64 compiler and multiarch paths active across CMake reconfiguration and gives
+ROSIDL Python extensions the target ABI suffix:
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/geacx2-aarch64.cmake"
+```
+
+The path above assumes the command runs from the repository root. CI jobs that invoke colcon from a parent workspace
+must pass the absolute path to `cmake/toolchains/geacx2-aarch64.cmake`. Cross-compiler selection happens before the
+project is configured, so it cannot be inferred later by `LIGHTNING_CPU_PROFILE`; set the toolchain once in the Docker
+environment or build command, while leaving the CPU profile on `AUTO`.
+
+When `AUTO` detects an ARM64 cross build, it tries `cortex-a78ae`, `cortex-a78`, and `armv8.2-a` in order, selecting the
+best option supported by the cross compiler and warning before falling back to portable settings. `ORIN` and `NATIVE`
+can still be selected explicitly. The `NATIVE` profile is rejected during cross compilation so `-march=native` cannot
+accidentally target the Docker host CPU.
+
 Then ```source install/setup.bash``` to use it.
 
 ### Build Results

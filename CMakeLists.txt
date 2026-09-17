@@ -73,6 +73,12 @@ install(FILES thirdparty/livox_ros_driver/resource/livox_ros_driver2
 install(FILES thirdparty/livox_ros_driver/package.xml
         DESTINATION share/livox_ros_driver2)
 
+# Apply architecture-specific options only to Lightning sources. Interface
+# generators and vendored third-party targets above keep their own baselines.
+if (LIGHTNING_CPU_COMPILE_OPTIONS)
+    add_compile_options(${LIGHTNING_CPU_COMPILE_OPTIONS})
+endif ()
+
 add_subdirectory(src)
 
 ament_package()
