@@ -49,11 +49,15 @@ class BtcRelocalizer : public GlobalRelocalizer {
     };
 
     struct DatabaseEntry {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
         int descriptor_id = -1;
         SE3 T_world_lidar;
     };
 
     struct QueryFrame {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
         CloudPtr cloud;
         SE3 T_odom_lidar;
         double timestamp = 0.0;
@@ -64,8 +68,8 @@ class BtcRelocalizer : public GlobalRelocalizer {
     Options options_;
     ConfigSetting descriptor_config_;
     STDescManager manager_;
-    std::vector<DatabaseEntry> entries_;
-    std::deque<QueryFrame> query_frames_;
+    std::vector<DatabaseEntry, Eigen::aligned_allocator<DatabaseEntry>> entries_;
+    std::deque<QueryFrame, Eigen::aligned_allocator<QueryFrame>> query_frames_;
     std::size_t frames_since_query_ = 0;
     SE3 T_imu_lidar_;
     bool ready_ = false;

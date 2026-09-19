@@ -355,7 +355,7 @@ std::optional<BtcRelocalizationResult> BtcRelocalizer::AddFrame(
     const auto search_begin = std::chrono::steady_clock::now();
     bool generated_descriptors = false;
     bool raw_candidate_found = false;
-    std::vector<BtcRelocalizationCandidate> hypotheses;
+    RelocalizationCandidateVector hypotheses;
     for (const int configured_size : options_.query_submap_sizes) {
         const std::size_t window = static_cast<std::size_t>(configured_size);
         if (window > query_frames_.size()) continue;
@@ -403,12 +403,19 @@ std::optional<BtcRelocalizationResult> BtcRelocalizer::AddFrame(
                                 .count();
     result.candidate_found = raw_candidate_found;
 
-    std::stable_sort(hypotheses.begin(), hypotheses.end(), [](const auto& left, const auto& right) {
+    // RelocalizationCandidate is over-aligned because it owns an SE3.  GCC
+    // 11's stable_sort temporary buffer is not over-aligned, which can fault
+    // during candidate moves in native AVX builds.  Keep the ordering fully
+    // deterministic so std::sort is safe to use here.
+    std::sort(hypotheses.begin(), hypotheses.end(), [](const auto& left, const auto& right) {
         if (left.score != right.score) return left.score > right.score;
         if (left.rough_match_count != right.rough_match_count) {
             return left.rough_match_count > right.rough_match_count;
         }
-        return left.candidate_id < right.candidate_id;
+        if (left.candidate_id != right.candidate_id) {
+            return left.candidate_id < right.candidate_id;
+        }
+        return left.query_submap_size < right.query_submap_size;
     });
     const double maximum_yaw_distance =
         options_.candidate_dedup_yaw_deg * M_PI / 180.0;

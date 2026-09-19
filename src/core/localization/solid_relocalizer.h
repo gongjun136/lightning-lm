@@ -11,6 +11,12 @@
 
 namespace lightning::loc {
 
+// Project map<-odom to a gravity-aligned yaw rotation while preserving the
+// matched current lidar position exactly. This keeps the result independent
+// of the absolute odometry translation after a long localization outage.
+SE3 MakePlanarMapOdom(const SE3& T_map_current_lidar,
+                      const SE3& T_odom_current_lidar);
+
 class SolidRelocalizer : public GlobalRelocalizer {
    public:
     SolidRelocalizer();
@@ -64,6 +70,8 @@ class SolidRelocalizer : public GlobalRelocalizer {
     };
 
     struct DatabaseEntry {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
         int descriptor_id = -1;
         SE3 T_world_lidar;
         SolidDescriptor descriptor;
@@ -73,6 +81,8 @@ class SolidRelocalizer : public GlobalRelocalizer {
     };
 
     struct QueryFrame {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
         CloudPtr cloud;
         SE3 T_odom_lidar;
         double timestamp = 0.0;
@@ -92,8 +102,8 @@ class SolidRelocalizer : public GlobalRelocalizer {
     Options options_;
     SolidDescriptorOptions descriptor_options_;
     SolidDescriptorEngine descriptor_engine_;
-    std::vector<DatabaseEntry> entries_;
-    std::deque<QueryFrame> query_frames_;
+    std::vector<DatabaseEntry, Eigen::aligned_allocator<DatabaseEntry>> entries_;
+    std::deque<QueryFrame, Eigen::aligned_allocator<QueryFrame>> query_frames_;
     std::size_t frames_since_query_ = 0;
     std::size_t icp_batch_cursor_ = 0;
     SE3 T_imu_lidar_;

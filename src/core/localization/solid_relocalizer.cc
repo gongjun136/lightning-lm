@@ -155,6 +155,18 @@ PointCloudType ConvertCloud(const pcl::PointCloud<pcl::PointXYZI>& source) {
 
 }  // namespace
 
+SE3 MakePlanarMapOdom(const SE3& T_map_current_lidar,
+                      const SE3& T_odom_current_lidar) {
+    const SE3 T_map_odom_raw =
+        T_map_current_lidar * T_odom_current_lidar.inverse();
+    const Quatd planar_rotation(
+        AngAxisd(Yaw(T_map_odom_raw), Vec3d::UnitZ()));
+    const Vec3d planar_translation =
+        T_map_current_lidar.translation() -
+        planar_rotation * T_odom_current_lidar.translation();
+    return SE3(planar_rotation, planar_translation);
+}
+
 SolidRelocalizer::SolidRelocalizer() : descriptor_engine_(descriptor_options_) {}
 
 bool SolidRelocalizer::BuildDatabase(const std::string& config_path,
@@ -575,11 +587,8 @@ bool SolidRelocalizer::RefineCandidateWithIcp(
     }
 
     const SE3 T_map_current_lidar = entry.T_world_lidar * refined;
-    const SE3 T_map_odom_raw =
-        T_map_current_lidar * query_frames_.back().T_odom_lidar.inverse();
-    const SE3 T_map_odom_planar(
-        Quatd(AngAxisd(Yaw(T_map_odom_raw), Vec3d::UnitZ())),
-        T_map_odom_raw.translation());
+    const SE3 T_map_odom_planar = MakePlanarMapOdom(
+        T_map_current_lidar, query_frames_.back().T_odom_lidar);
     candidate.T_world_imu =
         T_map_odom_planar * query_frames_.back().T_odom_lidar *
         T_imu_lidar_.inverse();
@@ -610,11 +619,8 @@ bool SolidRelocalizer::RefineCandidateWithKissMatcher(
     candidate.spatial_coverage = match.spatial_coverage;
     const SE3 T_map_current_lidar =
         entry.T_world_lidar * match.T_target_source;
-    const SE3 T_map_odom_raw =
-        T_map_current_lidar * query_frames_.back().T_odom_lidar.inverse();
-    const SE3 T_map_odom_planar(
-        Quatd(AngAxisd(Yaw(T_map_odom_raw), Vec3d::UnitZ())),
-        T_map_odom_raw.translation());
+    const SE3 T_map_odom_planar = MakePlanarMapOdom(
+        T_map_current_lidar, query_frames_.back().T_odom_lidar);
     candidate.T_world_imu =
         T_map_odom_planar * query_frames_.back().T_odom_lidar *
         T_imu_lidar_.inverse();
@@ -659,7 +665,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch search_profile_timer(profiling_enabled);
     const auto begin = std::chrono::steady_clock::now();
-    std::vector<RelocalizationCandidate> hypotheses;
+    RelocalizationCandidateVector hypotheses;
     std::vector<std::pair<int, pcl::PointCloud<pcl::PointXYZI>::Ptr>> query_clouds;
     bool descriptor_generated = false;
     bool score_candidate_found = false;
@@ -732,12 +738,10 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             // can introduce artificial roll/pitch.  Project the resulting
             // map<-odom rotation onto world Z, preserving the LIO gravity
             // estimate while retaining the descriptor's heading hypothesis.
-            const SE3 T_map_odom_raw =
-                entry.T_world_lidar * T_source_lidar_current_lidar *
-                query_frames_.back().T_odom_lidar.inverse();
-            const SE3 T_map_odom_planar(
-                Quatd(AngAxisd(Yaw(T_map_odom_raw), Vec3d::UnitZ())),
-                T_map_odom_raw.translation());
+            const SE3 T_map_current_lidar =
+                entry.T_world_lidar * T_source_lidar_current_lidar;
+            const SE3 T_map_odom_planar = MakePlanarMapOdom(
+                T_map_current_lidar, query_frames_.back().T_odom_lidar);
             RelocalizationCandidate candidate;
             candidate.candidate_id = entry.descriptor_id;
             candidate.score = scored[rank].score;
@@ -753,9 +757,17 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
     }
     const double maximum_yaw_distance =
         options_.candidate_dedup_yaw_deg * 3.14159265358979323846 / 180.0;
-    std::stable_sort(hypotheses.begin(), hypotheses.end(), [](const auto& left, const auto& right) {
+    // libstdc++ 11 implements stable_sort with get_temporary_buffer(), whose
+    // storage is only default-new aligned.  RelocalizationCandidate is
+    // over-aligned because it owns an SE3, so moving candidates through that
+    // buffer can fault in native AVX builds.  std::sort keeps its temporaries
+    // correctly aligned; the explicit final key preserves deterministic ties.
+    std::sort(hypotheses.begin(), hypotheses.end(), [](const auto& left, const auto& right) {
         if (left.score != right.score) return left.score > right.score;
-        return left.candidate_id < right.candidate_id;
+        if (left.candidate_id != right.candidate_id) {
+            return left.candidate_id < right.candidate_id;
+        }
+        return left.query_submap_size < right.query_submap_size;
     });
     for (const auto& hypothesis : hypotheses) {
         const bool duplicate = std::any_of(
@@ -775,7 +787,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
         const std::size_t available = result.candidates.size();
         const std::size_t batch_size = std::min<std::size_t>(
             available, static_cast<std::size_t>(options_.icp_batch_size));
-        std::vector<RelocalizationCandidate> batch;
+        RelocalizationCandidateVector batch;
         batch.reserve(batch_size);
         if (available > 0) {
             const std::size_t start = icp_batch_cursor_ % available;
@@ -948,7 +960,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
         }
         for (auto& worker : workers) worker.get();
 
-        std::vector<RelocalizationCandidate> refined_candidates;
+        RelocalizationCandidateVector refined_candidates;
         refined_candidates.reserve(batch.size());
         for (std::size_t batch_index = 0; batch_index < batch.size();
              ++batch_index) {
