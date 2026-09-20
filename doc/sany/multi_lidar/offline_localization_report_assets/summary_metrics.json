@@ -1,0 +1,164 @@
+{
+  "generated_assets": [
+    "trajectory_xy_overlay.png",
+    "trajectory_error_timeseries.png",
+    "xy_error_distribution.png",
+    "localization_quality_timeseries.png",
+    "lidar_point_contribution.png",
+    "merged_points_timeseries.png",
+    "core_stage_timing.png",
+    "resource_usage.png"
+  ],
+  "dataset": {
+    "bag": "/mnt/f/datasets/SANY/mid360/data_20260701/rosbag2_2026_07_01-17_30_42_merged",
+    "sensor_duration_s": 120.222785744,
+    "primary_lidar_topic": "/livox/lidar_192_168_1_114",
+    "payload_sha256": "67f4da9784046a847afdba08e2ca8dd1d182492e4f78751a5d85ec21df94f9db"
+  },
+  "map_export": {
+    "algorithm_rc": 0,
+    "trajectory_lines": 1083,
+    "last_stamp": 1782898360.9002664,
+    "expected_last_lidar_end_s": 1782898362.7087536,
+    "tail_delta_s": 1.8084871768951416,
+    "map_chunk_count_index": 6,
+    "map_chunk_count_metadata": 7,
+    "global_map_points": 1449740,
+    "wall_time_s": 151.717104,
+    "max_output_gap_s": 0.10034322738647461
+  },
+  "localization": {
+    "algorithm_rc": 0,
+    "trajectory_lines": 1083,
+    "completion": "reached_final_lidar",
+    "valid_frames": 1083,
+    "valid_ratio": 1.0,
+    "associated_pairs": 1082,
+    "xy_error": {
+      "count": 1082,
+      "max": 0.10512263235343228,
+      "mean": 0.03972621715706091,
+      "median": 0.03787284990192226,
+      "min": 0.013912822322548897,
+      "p95": 0.0598119204095634
+    },
+    "error_3d": {
+      "count": 1082,
+      "max": 0.43479749322535327,
+      "mean": 0.0740056928767364,
+      "median": 0.06706783884223541,
+      "min": 0.02055286446401957,
+      "p95": 0.09570353252287302
+    },
+    "confidence": {
+      "count": 1083,
+      "max": 2.931145137813,
+      "mean": 2.728938115608592,
+      "median": 2.803045182817,
+      "min": 0.632012492273,
+      "p95": 2.918246813387
+    },
+    "processing_ms": {
+      "count": 1083,
+      "max": 143.785438,
+      "mean": 25.50871717728532,
+      "median": 22.878696,
+      "min": 12.542834,
+      "p95": 44.92212679999997
+    },
+    "loc_odom_delta": {
+      "count": 1083,
+      "max": 0.031784071173,
+      "mean": 0.0011786204572373038,
+      "median": 0.00056026106,
+      "min": 0.0,
+      "p95": 0.00416851341869999
+    },
+    "match_iterations": {
+      "count": 1083,
+      "max": 6.0,
+      "mean": 2.1846722068328717,
+      "median": 2.0,
+      "min": 2.0,
+      "p95": 3.0
+    },
+    "active_map_chunks": {
+      "count": 1083,
+      "max": 6.0,
+      "mean": 6.0,
+      "median": 6.0,
+      "min": 6.0,
+      "p95": 6.0
+    },
+    "wall_time_s": 185.673462,
+    "realtime_factor": 1.54441158,
+    "processing_speed_x": 0.647495794,
+    "max_output_gap_s": 0.20019245147705078,
+    "nonmonotonic_count": 0,
+    "invalid_count": 0
+  },
+  "multi_lidar_sync": {
+    "fused_frames": 1185,
+    "complete_frames": 1185,
+    "partial_frames": 0,
+    "complete_ratio": 1.0,
+    "mean_merged_points": 22830.427848101266,
+    "p95_merged_points": 23151.8,
+    "total_points_by_lidar": {
+      "lidar_0": 6562833,
+      "lidar_1": 6982756,
+      "lidar_2": 7072569,
+      "lidar_3": 6435899
+    },
+    "mean_points_by_lidar": {
+      "lidar_0": 5538.255696202532,
+      "lidar_1": 5892.6210970464135,
+      "lidar_2": 5968.412658227848,
+      "lidar_3": 5431.138396624473
+    }
+  },
+  "resources": {
+    "slam": {
+      "samples": 693,
+      "duration_s": 142.46729715100014,
+      "mean_cpu_cores": 1.13698725174512,
+      "peak_cpu_cores": 2.4351188547476066,
+      "p95_cpu_cores": 2.0017987284530716,
+      "mean_cpu_pct_of_allocation": 14.21234064681397,
+      "peak_cpu_pct_of_allocation": 30.43898568434508,
+      "mean_rss_mb": 894.3461230609668,
+      "peak_rss_mb": 3054.24609375
+    },
+    "localization": {
+      "samples": 846,
+      "duration_s": 174.8417332240001,
+      "mean_cpu_cores": 1.511064599144347,
+      "peak_cpu_cores": 3.3887830573634377,
+      "p95_cpu_cores": 2.6135373753597126,
+      "mean_cpu_pct_of_allocation": 18.888307489304324,
+      "peak_cpu_pct_of_allocation": 42.35978821704297,
+      "mean_rss_mb": 277.2107897458629,
+      "peak_rss_mb": 320.703125
+    }
+  },
+  "timing": {
+    "slam": {
+      "input_sensor_duration_s": 120.222785744,
+      "processing_speed_x": null,
+      "realtime_factor": null,
+      "trajectory_frames": 1083,
+      "trajectory_frames_per_wall_s": 7.13828547636923,
+      "wall_ms_per_trajectory_frame": 140.0896620498615,
+      "wall_time_s": 151.717104
+    },
+    "localization": {
+      "input_sensor_duration_s": 120.222785744,
+      "processing_speed_x": 0.6474957942239479,
+      "realtime_factor": 1.5444115759833528,
+      "trajectory_frames": 1083,
+      "trajectory_frames_per_wall_s": 5.832820632169825,
+      "wall_ms_per_trajectory_frame": 171.44363988919667,
+      "wall_time_s": 185.673462
+    }
+  }
+}

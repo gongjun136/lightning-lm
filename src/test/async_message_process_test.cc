@@ -1,0 +1,151 @@
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#include "core/system/async_message_process.h"
+
+int main() {
+    using namespace std::chrono_literals;
+
+    lightning::sys::AsyncMessageProcess<int> processor;
+    std::atomic<int> processed{0};
+    std::mutex started_mutex;
+    std::condition_variable started_cv;
+    bool first_started = false;
+
+    processor.SetMaxSize(100);
+    processor.SetProcFunc([&](int value) {
+        if (value == 0) {
+            {
+                std::lock_guard<std::mutex> lock(started_mutex);
+                first_started = true;
+            }
+            started_cv.notify_one();
+            std::this_thread::sleep_for(50ms);
+        }
+        ++processed;
+    });
+    processor.Start();
+    processor.AddMessage(0);
+
+    {
+        std::unique_lock<std::mutex> lock(started_mutex);
+        if (!started_cv.wait_for(lock, 2s, [&] { return first_started; })) {
+            std::cerr << "worker did not start" << std::endl;
+            processor.Quit();
+            return 1;
+        }
+    }
+
+    constexpr int kMessages = 50;
+    for (int value = 1; value < kMessages; ++value) processor.AddMessage(value);
+    processor.Quit();
+
+    if (processed != kMessages) {
+        std::cerr << "Quit dropped pending messages: processed=" << processed << ", expected=" << kMessages
+                  << std::endl;
+        return 1;
+    }
+    if (processor.PendingCount() != 0 || processor.ProcessedCount() != kMessages ||
+        processor.DroppedCount() != 0) {
+        std::cerr << "unexpected queue counters after clean drain" << std::endl;
+        return 1;
+    }
+
+    lightning::sys::AsyncMessageProcess<int> bounded_processor;
+    std::atomic<bool> release_first{false};
+    std::atomic<bool> bounded_started{false};
+    bounded_processor.SetMaxSize(3);
+    bounded_processor.SetProcFunc([&](int value) {
+        if (value == 0) {
+            bounded_started = true;
+            while (!release_first.load()) std::this_thread::yield();
+        }
+    });
+    bounded_processor.Start();
+    bounded_processor.AddMessage(0);
+    while (!bounded_started.load()) std::this_thread::yield();
+    for (int value = 1; value <= 10; ++value) bounded_processor.AddMessage(value);
+    if (bounded_processor.PendingCount() != 4 || bounded_processor.DroppedCount() != 7) {
+        std::cerr << "bounded queue counters did not expose backlog/drop state" << std::endl;
+        release_first = true;
+        bounded_processor.Quit();
+        return 1;
+    }
+    release_first = true;
+    bounded_processor.Quit();
+
+    lightning::sys::AsyncMessageProcess<int> latest_processor;
+    std::atomic<bool> release_latest{false};
+    std::atomic<bool> latest_started{false};
+    std::vector<int> latest_values;
+    latest_processor.SetMaxSize(1);
+    latest_processor.SetProcFunc([&](int value) {
+        latest_values.push_back(value);
+        if (value == 0) {
+            latest_started = true;
+            while (!release_latest.load()) std::this_thread::yield();
+        }
+    });
+    latest_processor.Start();
+    latest_processor.AddMessage(0);
+    while (!latest_started.load()) std::this_thread::yield();
+    for (int value = 1; value <= 10; ++value) latest_processor.AddMessage(value);
+    if (latest_processor.PendingCount() != 2 || latest_processor.DroppedCount() != 9) {
+        std::cerr << "latest-only queue did not retain exactly one buffered message" << std::endl;
+        release_latest = true;
+        latest_processor.Quit();
+        return 1;
+    }
+    release_latest = true;
+    latest_processor.Quit();
+    if (latest_values.size() != 2 || latest_values.front() != 0 || latest_values.back() != 10) {
+        std::cerr << "latest-only queue replayed a stale buffered message" << std::endl;
+        return 1;
+    }
+
+    lightning::sys::AsyncMessageProcess<int> in_flight_processor;
+    std::atomic<bool> release_prefill{false};
+    std::atomic<bool> prefill_started{false};
+    std::atomic<bool> release_in_flight{false};
+    std::atomic<bool> in_flight_started{false};
+    in_flight_processor.SetMaxSize(100);
+    in_flight_processor.SetProcFunc([&](int value) {
+        if (value == -1) {
+            prefill_started = true;
+            while (!release_prefill.load()) std::this_thread::yield();
+        }
+        if (value == 0) {
+            in_flight_started = true;
+            while (!release_in_flight.load()) std::this_thread::yield();
+        }
+    });
+    in_flight_processor.Start();
+    in_flight_processor.AddMessage(-1);
+    while (!prefill_started.load()) std::this_thread::yield();
+    for (int value = 0; value < 50; ++value) in_flight_processor.AddMessage(value);
+    release_prefill = true;
+    while (!in_flight_started.load()) std::this_thread::yield();
+    for (int value = 50; value < 200; ++value) in_flight_processor.AddMessage(value);
+    if (in_flight_processor.PendingCount() > 101) {
+        std::cerr << "bounded queue moved an unbounded batch in flight" << std::endl;
+        release_in_flight = true;
+        in_flight_processor.Quit();
+        return 1;
+    }
+    release_in_flight = true;
+    in_flight_processor.Quit();
+
+    lightning::sys::AsyncMessageProcess<int> admission_processor;
+    admission_processor.RecordDroppedMessage();
+    admission_processor.RecordDroppedMessage();
+    if (admission_processor.DroppedCount() != 2) {
+        std::cerr << "external admission drops were not counted" << std::endl;
+        return 1;
+    }
+    return 0;
+}

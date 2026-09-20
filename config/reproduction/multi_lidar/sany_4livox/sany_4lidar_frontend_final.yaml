@@ -1,0 +1,332 @@
+common:
+  dataset: "sany"
+  lidar_topic: "/livox/lidar_192_168_1_114"
+  livox_lidar_topic: ""
+  imu_topic: "/livox/imu_192_168_1_114"
+
+multi_lidar:
+  enabled: true
+  primary_lidar_id: 0
+  frame_period: 0.1
+  match_tolerance: 0.002
+  reorder_window: 0.5
+  min_lidars: 1
+  online_extrinsic_estimation: false
+  topics:
+    lidar_0: "/livox/lidar_192_168_1_114"
+    lidar_1: "/livox/lidar_192_168_1_127"
+    lidar_2: "/livox/lidar_192_168_1_187"
+    lidar_3: "/livox/lidar_192_168_1_195"
+    imu_0: "/livox/imu_192_168_1_114"
+    imu_1: "/livox/imu_192_168_1_127"
+    imu_2: "/livox/imu_192_168_1_187"
+    imu_3: "/livox/imu_192_168_1_195"
+  extrinsics:
+    lidar0:
+      T: [1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          0, 0, 0, 1]
+    lidar1:
+      T: [0.519071, 0.833662, 0.18861, 0.76589,
+          -0.335364, -0.00432802, 0.942079, 0.836835,
+          0.786191, -0.552258, 0.277334, -0.47969,
+          0, 0, 0, 1]
+    lidar2:
+      T: [0.507464, -0.849466, 0.144527, 0.734696,
+          0.334484, 0.0396211, -0.941568, -0.877796,
+          0.794104, 0.526154, 0.304239, -0.471682,
+          0, 0, 0, 1]
+    lidar3:
+      T: [-0.455841, -0.00754045, 0.890029, 1.50563,
+          -0.000118732, -0.999964, -0.00853264, -0.0302673,
+          0.890061, -0.0039952, 0.455824, -0.93556,
+          0, 0, 0, 1]
+
+imu_initialization:
+  # Gravity fixes roll/pitch; the calibrated lidar constellation resolves the remaining heading ambiguity.
+  initial_yaw_deg: 180.0
+  min_duration: 2.0
+  min_samples: 300
+  max_mean_gyro_norm: 0.2
+  max_gyro_std: 0.1
+  max_acc_std: 0.5
+  min_mean_acc_norm: 0.5
+  max_mean_acc_norm: 1.5
+
+lidar_noise_model:
+  enabled: true
+  range_sigma: 0.02
+  angular_sigma_deg: 0.05
+  reference_sigma: 0.05
+  min_information_scale: 0.25
+  max_information_scale: 4.0
+
+output:
+  map_frame: "map"
+  lidar_frame: "lidar_114"
+  primary_lidar_position_in_body: [2.199, 0.0, 2.740]
+
+# Normalize only the saved map package. The live SLAM/odom frame is unchanged.
+# The estimator searches the flat start area near the first optimized pose,
+# finds the dominant ground-height layer, and applies one pure Z translation
+# consistently to the map, tiled chunks, trajectories, start pose, and BTC
+# database poses.
+map_export:
+  normalize_start_ground_z: true
+  start_ground_search_radius: 10.0
+  # Effective start-pose-to-ground distance in the SLAM estimator frame.
+  # Four existing SANY maps measured 3.561-3.562 m at the flat start area.
+  expected_sensor_height: 3.560
+  expected_height_tolerance: 0.8
+  histogram_bin_size: 0.05
+  inlier_tolerance: 0.20
+  max_median_absolute_deviation: 0.10
+  min_ground_inliers: 100
+
+fasterlio:
+  lidar_type: 1
+  scan_line: 4
+  blind: 0.5
+  time_scale: 1e-3
+  skip_lidar_num: 0
+  point_filter_num: 3
+  max_iteration: 4
+  filter_size_scan: 0.5
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  esti_plane_threshold: 0.1
+  use_aa: false
+  propagate_velocity: true
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_velocity_step: 0.5
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  acc_cov: 1.0
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T: [-0.011, -0.02329, 0.04412]
+  extrinsic_R: [1, 0, 0,
+                0, 1, 0,
+                0, 0, 1]
+  keep_first_imu_estimation: false
+  kf_dis_th: -1.0
+  kf_angle_th: 0.0
+  enable_icp_part: false
+  plane_icp_weight: 300.0
+  min_pts: 300
+  imu_filter: false
+  proj_kfs: false
+
+roi:
+  height_max: 100.0
+  height_min: -100.0
+
+system:
+  with_ui: false
+  with_loop_closing: true
+  with_2dui: false
+  with_g2p5: false
+  step_on_kf: false
+  enable_lidar_loc_skip: false
+  enable_lidar_loc_rviz: false
+  enable_lidar_odom_skip: false
+  lidar_loc_skip_num: 1
+  lidar_odom_skip_num: 1
+  map_path: ./data/new_map/
+  pub_tf: true
+
+# BA + BTC + HBA backend used for the SANY four-Livox map that is later
+# consumed by multi-LiDAR localization and BTC relocalization.
+backend:
+  mode: ba_btc_hba
+  verbose: true
+  local_ba:
+    enabled: true
+    window_size: 10
+    window_stride: 1
+    max_iterations: 3
+    max_points_per_frame: 3000
+    min_points_per_voxel: 20
+    min_frames_per_voxel: 2
+    max_voxel_depth: 2
+    voxel_size: 1.0
+    planarity_ratio: 0.10
+    correction_prior_rotation: 400.0
+    correction_prior_translation: 100.0
+    correction_smoothness_rotation: 400.0
+    correction_smoothness_translation: 100.0
+    max_rotation_step_deg: 2.0
+    max_translation_step: 0.30
+    max_total_rotation_deg: 3.0
+    max_total_translation: 0.30
+    initial_damping: 0.01
+  btc:
+    enabled: true
+    descriptor_submap_size: 10
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.20
+    min_loop_score: 0.60
+    max_drift_ratio: 0.005
+    max_rotation_correction_deg: 45.0
+    refine_with_plane_icp: true
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    allow_degenerate_plane_icp: true
+    degenerate_min_loop_score: 0.60
+    degenerate_min_matches: 60
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    loop_cooldown_descriptors: 10
+    max_odom_revisit_distance: 0.0
+    min_optimization_translation: 0.20
+    min_optimization_rotation_deg: 2.0
+    descriptor:
+      useful_corner_num: 200
+      plane_merge_normal_threshold: 0.10
+      plane_merge_distance_threshold: 0.30
+      plane_detection_threshold: 0.01
+      voxel_size: 1.0
+      voxel_init_points: 10
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      projection_height_increment: 0.1
+      projection_min_distance: 0.0
+      projection_max_distance: 5.0
+      summary_min_threshold: 10.0
+      line_filter: 1
+      touch_filter: 0
+      descriptor_near_count: 15
+      descriptor_min_length: 2.0
+      descriptor_max_length: 50.0
+      non_max_suppression_radius: 2.0
+      triangle_side_resolution: 0.2
+      skip_near_descriptors: 30
+      candidate_count: 50
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.50
+      internal_icp_threshold: 0.15
+      normal_threshold: 0.20
+      plane_distance_threshold: 0.50
+  pose_graph:
+    iterations: 20
+    outlier_iterations: 10
+    motion_translation_noise: 0.10
+    motion_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.20
+    loop_rotation_noise_deg: 3.0
+    robust_kernel_delta: 1.0
+    loop_outlier_chi2: 25.0
+  hba:
+    enabled: true
+    leaf_submap_size: 10
+    branching_factor: 4
+    max_levels: 4
+    max_points_per_submap: 50000
+    level_voxel_scale: 2.0
+    global_top_level: true
+    final_local_refinement: true
+    require_applied_loop_for_commit: true
+    optimizer:
+      enabled: true
+      max_iterations: 3
+      max_points_per_frame: 4000
+      min_points_per_voxel: 20
+      min_frames_per_voxel: 2
+      max_voxel_depth: 2
+      voxel_size: 1.0
+      planarity_ratio: 0.10
+      correction_prior_rotation: 100.0
+      correction_prior_translation: 25.0
+      correction_smoothness_rotation: 100.0
+      correction_smoothness_translation: 25.0
+      max_rotation_step_deg: 2.0
+      max_translation_step: 0.30
+      max_total_rotation_deg: 8.0
+      max_total_translation: 2.0
+      initial_damping: 0.01
+
+loop_closing:
+  with_height: false
+
+localization_pgo:
+  # Preserve the established localization output path. These switches remain
+  # explicit so isolated A/B diagnostics can disable either stage if needed.
+  enable_dr_extrapolation: true
+  enable_dr_smoothing: true
+
+lidar_loc:
+  enable_dynamic_polygon: false
+  enable_parking_static: false
+  enable_icp_adjust: false
+  filter_intensity_max: 100.0
+  filter_intensity_min: 0.0
+  filter_z_max: 100.0
+  filter_z_min: -100.0
+  force_2d: false
+  grid_search_angle_range: 20.0
+  grid_search_angle_step: 20
+  lidar_loc_odom_th: 1.0
+  init_with_fp: false
+  min_init_confidence: 0.5
+  min_tracking_confidence: 0.4
+  update_dynamic_cloud: false
+  update_err_h: 0.2
+  update_err_v: 0.2
+  update_kf_dis: 2.0
+  update_lidar_loc_score: 2.5
+  loc_on_kf: false
+  try_self_extrap: false
+
+relocalization:
+  enabled: true
+  database_subdirectory: btc_relocalization
+  lost_frame_threshold: 5
+  query_submap_size: 10
+  max_points_per_submap: 50000
+  min_points_per_submap: 100
+  downsample_leaf_size: 0.20
+  # BTC is only the coarse global-search gate. NDT map registration below is
+  # the authoritative geometric check, so keep this just above BTC's 0.15
+  # internal ICP threshold to preserve cross-session recall.
+  min_btc_score: 0.16
+  # A BTC candidate must also place the fused four-lidar scan inside and on the
+  # static map.  The thresholds are calibrated below against the known-good
+  # 20260701 identity localization run.
+  enable_map_consistency: true
+  map_bounds_margin: 0.5
+  map_nearest_neighbor_distance: 0.5
+  map_min_inside_xy_ratio: 0.90
+  map_min_overlap_ratio: 0.20
+  # Both sessions are gravity-aligned by LIO. Reject floor/ceiling-symmetric
+  # BTC/NDT matches that would flip the map and odometry vertical axes.
+  map_min_gravity_alignment_cos: 0.95
+  map_consistency_max_points: 50000
+
+maps:
+  delete_when_unload: false
+  dyn_cloud_policy: persistent
+  load_dyn_cloud: false
+  load_map_size: 2
+  max_pts_dyn_chunk: 100000
+  save_dyn_when_quit: false
+  save_dyn_when_unload: false
+  unload_map_size: 4
+  with_dyn_area: false
+
+offline_localization:
+  initial_pose:
+    enabled: true
+    # This seed is expressed in the pre-export SLAM frame and is transformed
+    # with map_frame.yaml before localization starts.
+    frame: slam
+    translation: [0.0, 0.0, 0.0]
+    quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]

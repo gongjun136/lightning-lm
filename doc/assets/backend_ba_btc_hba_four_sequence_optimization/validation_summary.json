@@ -1,0 +1,39 @@
+{
+  "status": "passed",
+  "sequence_count": 4,
+  "row_count": 16,
+  "primary_method": "lightning_current",
+  "primary_config_sha256": [
+    "72c952017719fb7530bda6f977afbf6ec4294474518e5670a4c4e1a38b2a88cf"
+  ],
+  "primary_binary_sha256": [
+    "77268cd64994e7a66344e2b3e38b477a519cca2990bdcf7b28e7d1c0d11760a4"
+  ],
+  "aggregates": {
+    "legacy": {
+      "mean_ate_rmse_m": 5.706430645423553,
+      "mean_rpe_10m_rmse_m": 2.4646984884033514,
+      "mean_peak_rss_mb": 2513.5205078125
+    },
+    "lightning_previous": {
+      "mean_ate_rmse_m": 3.4021407187658355,
+      "mean_rpe_10m_rmse_m": 1.4872533166273694,
+      "mean_peak_rss_mb": 3361.0908203125
+    },
+    "lightning_current": {
+      "mean_ate_rmse_m": 0.34317038464705446,
+      "mean_rpe_10m_rmse_m": 0.2827826486509934,
+      "mean_peak_rss_mb": 2821.3330078125
+    },
+    "ws_voxel_slam": {
+      "mean_ate_rmse_m": 0.2951474674442758,
+      "mean_rpe_10m_rmse_m": 0.2723170276028961,
+      "mean_peak_rss_mb": 2313.0517578125
+    }
+  },
+  "improvement_over_baseline_pct": {
+    "mean_ate_rmse": 89.91310433592109,
+    "mean_rpe_10m_rmse": 80.98624857719214,
+    "mean_peak_rss": 16.0590070710977
+  }
+}

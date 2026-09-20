@@ -1,0 +1,237 @@
+common:
+  dataset: "m3dgr"
+  lidar_topic: ""
+  livox_lidar_topic: "/livox/mid360/lidar"
+  imu_topic: "/livox/mid360/imu"
+
+imu_initialization:
+  min_duration: 2.0
+  min_samples: 300
+  max_mean_gyro_norm: 0.2
+  max_gyro_std: 0.1
+  max_acc_std: 0.5
+  min_mean_acc_norm: 0.5
+  max_mean_acc_norm: 1.5
+
+lidar_noise_model:
+  enabled: true
+  range_sigma: 0.02
+  angular_sigma_deg: 0.05
+  reference_sigma: 0.05
+  min_information_scale: 0.25
+  max_information_scale: 4.0
+
+output:
+  map_frame: "map"
+  lidar_frame: "mid360"
+  primary_lidar_position_in_body: [0.0, 0.0, 0.0]
+
+fasterlio:
+  lidar_type: 1
+  scan_line: 4
+  blind: 0.5
+  time_scale: 1e-3
+  skip_lidar_num: 0
+  point_filter_num: 3
+  max_iteration: 4
+  filter_size_scan: 0.5
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  esti_plane_threshold: 0.1
+  use_aa: false
+  # Propagate the nominal velocity with the built-in Mid360 IMU. The 0.5 m/s
+  # lidar-update guard below is required by the four-sequence stability sweep.
+  propagate_velocity: true
+  # The innovation-adaptive model remains available for historical ablation,
+  # but the unified M3DGR default now uses continuous propagation.
+  adaptive_velocity_propagation: false
+  velocity_innovation_ema_alpha: 0.05
+  velocity_innovation_enable_threshold: 0.16
+  velocity_innovation_disable_threshold: 0.10
+  # At 10 Hz, cap each adaptive interval at 20 s and cool down for at least
+  # 10 s. A safety timeout remains latched until the EMA falls below 0.10.
+  velocity_propagation_max_active_updates: 200
+  velocity_propagation_cooldown_updates: 100
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_velocity_step: 0.5
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  acc_cov: 0.1
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T: [-0.011, -0.02329, 0.04412]
+  extrinsic_R: [1, 0, 0,
+                0, 1, 0,
+                0, 0, 1]
+  keep_first_imu_estimation: false
+  kf_dis_th: -1.0
+  kf_angle_th: 0.0
+  enable_icp_part: false
+  plane_icp_weight: 300.0
+  min_pts: 300
+  imu_filter: false
+  proj_kfs: false
+
+roi:
+  height_max: 100.0
+  height_min: -100.0
+
+system:
+  with_loop_closing: true
+  with_ui: false
+  with_2dui: false
+  with_g2p5: false
+  step_on_kf: false
+
+# Backend selection for fair ablations:
+#   legacy      - original odometry-distance candidate search + NDT + pose graph
+#   ba_btc_hba  - local plane-voxel BA + global BTC + robust PGO + hierarchical BA
+#   disabled    - frontend trajectory only
+backend:
+  mode: ba_btc_hba
+  verbose: true
+  local_ba:
+    enabled: true
+    window_size: 10
+    window_stride: 1
+    max_iterations: 3
+    max_points_per_frame: 3000
+    min_points_per_voxel: 20
+    min_frames_per_voxel: 2
+    max_voxel_depth: 2
+    voxel_size: 1.0
+    planarity_ratio: 0.10
+    correction_prior_rotation: 400.0
+    correction_prior_translation: 100.0
+    correction_smoothness_rotation: 400.0
+    correction_smoothness_translation: 100.0
+    max_rotation_step_deg: 2.0
+    max_translation_step: 0.30
+    max_total_rotation_deg: 3.0
+    max_total_translation: 0.30
+    initial_damping: 0.01
+  btc:
+    enabled: true
+    descriptor_submap_size: 10
+    max_points_per_submap: 100000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.0
+    # Four-sequence RTK tuning: Outdoor04 true loops scored 0.615/0.635,
+    # while accepted false positives stayed below 0.506.
+    min_loop_score: 0.60
+    # Dimensionless post-geometry safety bound. This is correction/path length,
+    # not an odometry-distance loop retrieval gate.
+    max_drift_ratio: 0.005
+    max_rotation_correction_deg: 45.0
+    refine_with_plane_icp: true
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    # Planar outdoor loops can be rank-deficient. They may pass only when BTC
+    # confidence is high and the plane refinement has converged with many pairs.
+    allow_degenerate_plane_icp: true
+    degenerate_min_loop_score: 0.60
+    degenerate_min_matches: 60
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    loop_cooldown_descriptors: 10
+    # BTC remains the global place-recognition route. When LIO returns close
+    # to an old pose, add that historical submap as a recall candidate and
+    # still require the same plane-ICP verification and safety gates.
+    enable_odom_revisit_fallback: true
+    odom_revisit_search_radius: 5.0
+    odom_revisit_min_journey: 50.0
+    # Near-neighbour candidates already have a 5 m spatial prior. Rough-road
+    # plane sets may be rank deficient, so use a dedicated temporal-consensus
+    # threshold without weakening the global BTC acceptance gate.
+    odom_revisit_degenerate_min_matches: 40
+    odom_revisit_max_drift_ratio: 0.015
+    # Descriptor retrieval and acceptance are independent of accumulated LIO
+    # drift. A positive value enables an optional post-geometry safety bound.
+    max_odom_revisit_distance: 0.0
+    # A verified loop must enter the graph in the backend-benefit experiment;
+    # otherwise the experiment measures detection instead of optimization.
+    min_optimization_translation: 0.0
+    min_optimization_rotation_deg: 0.0
+    descriptor:
+      useful_corner_num: 200
+      plane_merge_normal_threshold: 0.10
+      plane_merge_distance_threshold: 0.30
+      plane_detection_threshold: 0.01
+      voxel_size: 1.0
+      voxel_init_points: 10
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      projection_height_increment: 0.1
+      projection_min_distance: 0.0
+      projection_max_distance: 5.0
+      summary_min_threshold: 10.0
+      line_filter: 1
+      touch_filter: 0
+      descriptor_near_count: 15
+      descriptor_min_length: 2.0
+      descriptor_max_length: 50.0
+      non_max_suppression_radius: 2.0
+      triangle_side_resolution: 0.2
+      # One BTC descriptor represents 10 scans at 10 Hz; 30 descriptors ~= 30 s.
+      skip_near_descriptors: 30
+      candidate_count: 50
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.50
+      internal_icp_threshold: 0.15
+      normal_threshold: 0.20
+      plane_distance_threshold: 0.50
+  pose_graph:
+    iterations: 20
+    outlier_iterations: 10
+    motion_translation_noise: 0.10
+    motion_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.20
+    loop_rotation_noise_deg: 3.0
+    robust_kernel_delta: 1.0
+    loop_outlier_chi2: 25.0
+  hba:
+    enabled: true
+    leaf_submap_size: 10
+    branching_factor: 4
+    max_levels: 4
+    max_points_per_submap: 50000
+    level_voxel_scale: 2.0
+    global_top_level: true
+    final_local_refinement: true
+    # End/manual requests still execute HBA, but point-level corrections are
+    # committed only after a BTC constraint actually changed the global graph.
+    require_applied_loop_for_commit: true
+    optimizer:
+      enabled: true
+      max_iterations: 3
+      max_points_per_frame: 4000
+      min_points_per_voxel: 20
+      min_frames_per_voxel: 2
+      max_voxel_depth: 2
+      voxel_size: 1.0
+      planarity_ratio: 0.10
+      correction_prior_rotation: 100.0
+      correction_prior_translation: 25.0
+      correction_smoothness_rotation: 100.0
+      correction_smoothness_translation: 25.0
+      max_rotation_step_deg: 2.0
+      max_translation_step: 0.30
+      max_total_rotation_deg: 8.0
+      max_total_translation: 2.0
+      initial_damping: 0.01
+
+# Retained only for backend.mode=legacy baseline runs.
+loop_closing:
+  loop_kf_gap: 20
+  min_id_interval: 20
+  closest_id_th: 50
+  max_range: 20.0
+  ndt_score_th: 1.3
+  with_height: false

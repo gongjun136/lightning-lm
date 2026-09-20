@@ -1,0 +1,123 @@
+{
+  "methods_order": ["legacy", "lightning_final", "ws_voxel_slam"],
+  "methods_display": {
+    "legacy": "Legacy Lightning",
+    "lightning_final": "Lightning BA+BTC+HBA",
+    "ws_voxel_slam": "ws_voxel_slam"
+  },
+  "sequences": {
+    "Grass02": {
+      "gt": "F:/datasets/M3DGR/GT/Wheel_Slippage/Outdoor/Grass02.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Grass02/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_final": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Grass02/lightning_new/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Grass02_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Grass02/ws_voxel_slam_full_run/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Outdoor04": {
+      "gt": "F:/datasets/M3DGR/GT/Standard/Outdoor04.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Outdoor04/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_final": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Outdoor04/lightning_final/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor04_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v2/runs/Outdoor04/ws_voxel_slam_full_run/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Outdoor01": {
+      "gt": "F:/datasets/M3DGR/GT/Standard/Outdoor01.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor01_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v3/runs/Outdoor01_complete/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_final": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor01_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Outdoor01/lightning_final/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Outdoor01_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Outdoor01/ws_voxel_slam_full/results/trajectory_slam_opt.tum",
+          "valid_for_primary": false,
+          "validity_note": "Only the final reset segment is present: 67.60 s and 16.22% RTK coverage."
+        }
+      }
+    },
+    "Z-Rough-Road01": {
+      "gt": "F:/datasets/M3DGR/GT/Wheel_Slippage/Outdoor/Z-Rough-Road01.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v3/runs/Z-Rough-Road01/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_final": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Z-Rough-Road01/lightning_final/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Z-Rough-Road01_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Z-Rough-Road01/ws_voxel_slam_full/results/trajectory_slam_opt.tum"
+        }
+      }
+    },
+    "Dark01": {
+      "gt": "F:/datasets/M3DGR/GT/Visual_Challenge/Outdoor/Dark01.txt",
+      "methods": {
+        "legacy": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "legacy",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_v3/runs/Dark01/legacy/results/trajectory_slam_opt.tum"
+        },
+        "lightning_final": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "lightning_final",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Dark01/lightning_new/results/trajectory_slam_opt.tum"
+        },
+        "ws_voxel_slam": {
+          "evaluation": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/results/Dark01_all_methods_final.json",
+          "run_label": "ws_voxel_slam",
+          "trajectory": "F:/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_final/runs/Dark01/ws_voxel_slam_full/results/trajectory_slam_opt.tum"
+        }
+      }
+    }
+  },
+  "ablations": [
+    {"label": "O1 stable final", "ate_rmse_m": 6.9881, "color": "#2471a3"},
+    {"label": "O1 no odom gate (unsafe)", "ate_rmse_m": 2.9725, "color": "#c0392b"},
+    {"label": "O1 adaptive front (rejected)", "ate_rmse_m": 4.9061, "color": "#c0392b"},
+    {"label": "O4 stable final", "ate_rmse_m": 0.4341, "color": "#2471a3"},
+    {"label": "O4 adaptive front (rejected)", "ate_rmse_m": 3.0135, "color": "#c0392b"},
+    {"label": "Z stable final", "ate_rmse_m": 12.5653, "color": "#2471a3"},
+    {"label": "Z fixed propagation (unsafe cross-seq)", "ate_rmse_m": 0.3916, "color": "#c0392b"},
+    {"label": "Z adaptive front", "ate_rmse_m": 6.2408, "color": "#d68910"},
+    {"label": "Z wide adaptive (rejected)", "ate_rmse_m": 70.9887, "color": "#c0392b"}
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "branch": "feature/multi-lidar-relocalization-btc",
+  "base_branch": "feature/backend-ba-btc-hba-v2",
+  "evaluation_protocol": {
+    "alignment": "fixed-scale SE(3); Sim(3) prohibited",
+    "trajectory_primary_metrics": ["ATE translation RMSE", "10 m translation RPE RMSE"],
+    "physical_motion_checks": "diagnostic only",
+    "start_end_distance": "not an acceptance criterion"
+  },
+  "sany_20260701_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260701/codex_relocalization_eval/localization_identity_final_gravity_gate_20260716/results/trajectory_vs_truth_final.json",
+  "sany_20260701_btc_database": "/mnt/f/datasets/SANY/mid360/data_20260701/codex_relocalization_eval/mapping_btc_database_20260716/data/new_map/btc_relocalization/database.yaml",
+  "sany_20260716": {
+    "data1": {
+      "merge_contract": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/merged_bag_sqlite_v2/merge_contract.json",
+      "reference_trajectory": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/slam_reference_full_20260716/results/trajectory_slam_opt.tum",
+      "frontend_backend_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/slam_reference_full_20260716/results/frontend_vs_backend_full.json",
+      "voxel_backend_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/voxel_114_reference_full_20260716/results/voxel_opt_vs_lightning_backend_full.json",
+      "startup_trajectory": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/trajectory_loc.tum",
+      "startup_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/aligned_full_vs_slam_backend.json",
+      "startup_early_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/aligned_early_vs_slam_backend.json",
+      "startup_summary": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/localization_summary.json",
+      "recovery_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_forced_loss_frame600_20260716/results/aligned_full_vs_slam_backend.json",
+      "recovery_summary": "/mnt/f/datasets/SANY/mid360/data_20260716/data1/codex_relocalization_eval/localization_btc_forced_loss_frame600_20260716/results/localization_summary.json",
+      "forced_loss_frame": 600,
+      "recovery_accept_frame": 819,
+      "recovery_attempts_after_loss": 22,
+      "recovery_latency_s": 21.799763917923
+    },
+    "data2": {
+      "merge_contract": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/merged_bag_sqlite_v2/merge_contract.json",
+      "reference_trajectory": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/slam_reference_full_20260716/results/trajectory_slam_opt.tum",
+      "frontend_backend_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/slam_reference_full_20260716/results/frontend_vs_backend_full.json",
+      "voxel_backend_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/voxel_114_reference_full_20260716/results/voxel_opt_vs_lightning_backend_full.json",
+      "startup_trajectory": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/trajectory_loc.tum",
+      "startup_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/aligned_full_vs_slam_backend.json",
+      "startup_early_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/aligned_early_vs_slam_backend.json",
+      "startup_summary": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_startup_gravity_gate_20260716/results/localization_summary.json",
+      "recovery_evaluation": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_forced_loss_frame350_20260716/results/aligned_full_vs_slam_backend.json",
+      "recovery_summary": "/mnt/f/datasets/SANY/mid360/data_20260716/data2/codex_relocalization_eval/localization_btc_forced_loss_frame350_20260716/results/localization_summary.json",
+      "forced_loss_frame": 350,
+      "recovery_accept_frame": 569,
+      "recovery_attempts_after_loss": 22,
+      "recovery_latency_s": 21.7997806072235
+    }
+  },
+  "map_overlap_threshold": 0.2,
+  "gravity_alignment_threshold": 0.95,
+  "gravity_gate_candidates": [
+    {
+      "label": "False candidate",
+      "btc_score": 0.505102040816,
+      "map_overlap_ratio": 0.712592980227,
+      "gravity_alignment_cos": -0.997098083382,
+      "accepted": false
+    },
+    {
+      "label": "Correct candidate",
+      "btc_score": 0.753939393939,
+      "map_overlap_ratio": 0.980329094989,
+      "gravity_alignment_cos": 0.999984775837,
+      "accepted": true
+    }
+  ],
+  "m3dgr_evaluations": {
+    "Grass02": "/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_relocalization_regression_20260716/evaluations/Grass02.json",
+    "Outdoor04": "/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_relocalization_regression_20260716/evaluations/Outdoor04.json",
+    "Dark01": "/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_relocalization_regression_20260716/evaluations/Dark01.json",
+    "Z-Rough-Road01": "/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench_relocalization_regression_20260716/evaluations/Z-Rough-Road01.json"
+  }
+}

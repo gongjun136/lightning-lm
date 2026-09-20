@@ -1,0 +1,380 @@
+#pragma once
+
+#include <pcl/registration/icp.h>
+#include <chrono>
+#include <deque>
+#include <future>
+#include <iostream>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <thread>
+
+#include "common/nav_state.h"
+#include "common/timed_pose.h"
+#include "core/localization/global_relocalizer.h"
+#include "core/localization/localization_result.h"
+#include "core/localization/point_to_plane_registration.h"
+#include "core/maps/tiled_map.h"
+#include "utils/compute_profiling.h"
+
+#include "pclomp/ndt_omp_impl.hpp"
+
+namespace lightning::ui {
+class PangolinWindow;
+}
+
+namespace lightning::loc {
+
+/// 激光定位对外接口类
+class LidarLoc {
+   public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    using UL = std::unique_lock<std::mutex>;
+
+    /// 定位方法
+    enum class LocMethod {
+        NDT_OMP,  // OMP版本NDT
+    };
+
+    struct Options {
+        Options() {}
+
+        bool display_realtime_cloud_ = false;          // 是否显示实时点云
+        bool debug_ = false;                           // 是否使用单测模式
+        LocMethod match_method_ = LocMethod::NDT_OMP;  // 匹配方式
+        bool try_self_extrap_ = false;                 // 是否尝试自己的外推pose
+        bool with_height_ = true;                      // 建图期间是否带有高度约束？
+        bool force_2d_ = true;                         // 强制在2D空间
+        float min_init_confidence_ = 0.1;              // 初始化时要求的最小分值
+        float min_tracking_confidence_ = 0.1;
+        int relocalization_lost_frame_threshold_ = 5;
+        bool init_with_fp_ = true;                     // 是否使用功能点进行初始化
+        bool enable_parking_static_ = false;           // 是否在静止时输出固定位置
+        bool enable_icp_adjust_ = false;               // 是否使用icp调整ndt匹配结果提高定位精度
+
+        /// 点云过滤
+        // float filter_z_min_ = -1.0;
+        float filter_z_max_ = 30.0;
+        // float filter_intensity_min_ = 10.0;
+        // float filter_intensity_max_ = 100.0;
+
+        /// 地图配置
+        TiledMap::Options map_option_ = TiledMap::Options();
+
+        // 动态图层更新相关
+        bool update_dynamic_cloud_ = true;     // 是否使用定位后的点云来更新动态图层
+        double update_kf_dis_ = 5.0;           // 每隔多少米更新一次
+        double update_kf_time_ = 10.0;         // 每隔多少时间更新一次
+        double update_lidar_loc_score_ = 2.2;  // 更新时激光定位匹配分值阈值
+        double lidar_loc_odom_th_ = 0.3;       // 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
+
+        double max_update_cache_dis_ = 30.0;  // 更新动态图层的缓冲距离
+        std::string recover_pose_path_ = "./data/recover_pose.txt";
+        bool enable_relocalization_map_consistency_ = true;
+        double relocalization_bounds_margin_ = 0.5;
+        double relocalization_nearest_neighbor_distance_ = 0.5;
+        double relocalization_min_inside_xy_ratio_ = 0.90;
+        double relocalization_min_overlap_ratio_ = 0.20;
+        double relocalization_precheck_min_overlap_ratio_ = 0.20;
+        double relocalization_min_gravity_alignment_cos_ = 0.95;
+        int relocalization_map_consistency_max_points_ = 50000;
+        int relocalization_precheck_max_points_ = 50000;
+        int relocalization_validation_workers_ = 2;
+        int relocalization_max_refinement_candidates_ = 0;
+        int relocalization_confirmation_count_ = 2;
+        double relocalization_confirmation_max_translation_ = 1.0;
+        double relocalization_confirmation_max_rotation_deg_ = 5.0;
+        double relocalization_confirmation_max_interval_ = 1.0;
+        std::string relocalization_refinement_backend_ = "ndt";
+        PointToPlaneRegistration::Options relocalization_plane_icp_options_;
+        std::string relocalization_debug_dir_;
+    };
+
+    struct MatchStats {
+        double confidence = 0.0;
+        int iterations = 0;
+        bool success = false;
+        int active_map_chunks = 0;
+        bool relocalization_attempted = false;
+        bool relocalization_candidate_found = false;
+        bool relocalization_accepted = false;
+        int relocalization_candidate_id = -1;
+        double relocalization_score = 0.0;
+        int relocalization_candidate_count = 0;
+        int relocalization_candidates_prechecked = 0;
+        int relocalization_confirmation_count = 0;
+        int relocalization_query_submap_size = 0;
+        double relocalization_search_time_ms = 0.0;
+        std::string relocalization_reason;
+        bool map_consistency_evaluated = false;
+        bool map_consistency_passed = false;
+        std::size_t map_consistency_points = 0;
+        double map_inside_xy_ratio = 0.0;
+        double map_inside_xyz_ratio = 0.0;
+        double map_overlap_ratio = 0.0;
+        double map_gravity_alignment_cos = 0.0;
+    };
+
+    explicit LidarLoc(Options options = Options());
+    virtual ~LidarLoc();
+
+    /// 初始化
+    bool Init(const std::string& config_path);
+
+    /// 处理 lidar odom 消息
+    bool ProcessLO(const NavState& state);
+
+    /// 处理拼接后点云
+    bool ProcessCloud(CloudPtr cloud_input);
+
+    /// 处理DR状态
+    bool ProcessDR(const NavState& state);
+
+    /// 获取位姿
+    NavState GetState();
+
+    /// 设置当前定位状态标志位
+    void SetInitRltState();
+
+    /**
+     * 尝试在另一个位置进行定位
+     * @param input
+     * @param pose
+     * @return
+     */
+    bool TryOtherSolution(CloudPtr input, SE3& pose);
+
+    /// 使用功能点初始化
+    bool InitWithFP(CloudPtr input, const SE3& fp_pose);
+
+    /// 更新全局地图
+    bool UpdateGlobalMap();
+
+    /// @brief 定位是否已经成功初始化
+    bool LocInited();
+
+    /// @brief 激光定位重置接口
+    void ResetLastPose(const SE3& last_pose);
+
+    /**
+     * @brief 激光地图匹配
+     * @param pose       预测位姿
+     * @param confidence    得分
+     * @param input 输入点云
+     * @param output 输出点云
+     * @param use_rough_res 是否使用粗分辨率
+     * @return
+     */
+    bool Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res = false);
+
+    /// 设置UI
+    void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
+
+    /// 设置init pose
+    void SetInitialPose(SE3 init_pose);
+
+    /// Clear the current map alignment and restart global BTC initialization.
+    /// This is also useful when an external health monitor detects localization
+    /// failure before the internal consecutive-match threshold is reached.
+    void RequestGlobalRelocalization();
+
+    /// 获取定位结果
+    LocalizationResult GetLocalizationResult() {
+        UL lock(result_mutex_);
+        return localization_result_;
+    }
+
+    MatchStats GetLastMatchStats() const;
+
+    void Finish();
+
+    /// 激光定位是否认为LO有效
+    bool LidarLocThinkLOReliable() { return lo_reliable_; }
+
+   private:
+    // 内部函数  ==========================================================================
+    /**
+     * 对点云进行配准
+     * @param input
+     */
+    void Align(const CloudPtr& input);
+
+    /**
+     * 寻找当前帧对应的LO相对位姿
+     * @param timestamp
+     * @return
+     */
+    bool AssignLOPose(double timestamp);
+
+    /**
+     * 寻找当前帧对应的DR相对位姿
+     * @param timestamp
+     * @return
+     */
+    bool AssignDRPose(double timestamp);
+
+    /**
+     * 检查车辆是否静止
+     * @param timestamp
+     * @return
+     */
+    bool CheckStatic(double timestamp);
+
+    /**
+     * 更新自身状态
+     * @param input
+     */
+    void UpdateState(const CloudPtr& input);
+
+    /**
+     * 更新地图
+     */
+    void UpdateMapThread();
+
+    /**
+     * 使用网格搜索best yaw
+     */
+    bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
+
+    bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
+    bool TryGlobalRelocalization(const CloudPtr& input);
+    struct MapConsistencyResult {
+        bool evaluated = false;
+        bool passed = false;
+        std::size_t points = 0;
+        double inside_xy_ratio = 0.0;
+        double inside_xyz_ratio = 0.0;
+        double overlap_ratio = 0.0;
+        double gravity_alignment_cos = 0.0;
+    };
+    bool BuildRelocalizationMapCache();
+    MapConsistencyResult EvaluateRelocalizationMapConsistency(
+        const CloudPtr& input, const SE3& pose, std::size_t worker_index,
+        double min_overlap_ratio, std::size_t maximum_points) const;
+    void ApplyMapConsistencyResult(const MapConsistencyResult& result);
+    bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
+    void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
+                                    const Vec3d& map_min, const Vec3d& map_max,
+                                    const MatchStats& stats);
+
+    struct FrameProfiling {
+        profiling::TimingSample assign_pose;
+        profiling::TimingSample map_load;
+        profiling::TimingSample ndt_align;
+        profiling::TimingSample icp_adjust;
+        profiling::TimingSample state_update;
+        profiling::TimingSample dynamic_map;
+        profiling::TimingSample recover_pose_io;
+        profiling::TimingSample relocalization_poll;
+        int ndt_calls = 0;
+        std::size_t ndt_input_points = 0;
+    } frame_profiling_;
+
+    // 成员变量  ==========================================================================
+    Options options_;
+    int ndt_threads_ = 4;
+    std::size_t ndt_max_points_ = 0;
+
+    std::mutex match_mutex_;  // 锁定pcl_ndt指针
+
+    using NDTType = pclomp::NormalDistributionsTransform<PointType, PointType>;
+    NDTType::Ptr pcl_ndt_ = nullptr;
+    NDTType::Ptr pcl_ndt_rough_ = nullptr;  // 粗分辨率
+
+    using ICPType = pcl::IterativeClosestPoint<PointType, PointType>;
+    ICPType::Ptr pcl_icp_ = nullptr;
+
+    CloudPtr current_scan_ = nullptr;                   // 当前扫描
+    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  // ui
+    SE3 last_loc_pose_;
+
+    std::mutex initial_pose_mutex_;  // 初始定位锁
+    bool initial_pose_set_ = false;  // 定位是否被手动设置
+    SE3 initial_pose_;               // 手动设置的初始位姿
+    bool loc_inited_ = false;        // 定位是否初始化成功
+
+    double current_timestamp_ = 0;  // 本次输入的时间戳
+    double last_timestamp_ = 0;     // 上次输入的时间戳
+
+    bool last_lo_pose_set_ = false;
+    bool current_lo_pose_set_ = false;
+    SE3 last_lo_pose_;     // 上一次相对位置，相对位置来自LO
+    SE3 current_lo_pose_;  // 本次的LO相对位置
+
+    bool last_dr_pose_set_ = false;
+    bool current_dr_pose_set_ = false;
+    SE3 last_dr_pose_;     // 上一次相对位置，相对位置来自DR
+    SE3 current_dr_pose_;  // 本次的DR相对位置
+    bool parking_ = false;
+
+    double try_other_guess_trans_th_ = 0.3;               // 在初始估计相差多少时，尝试其他的解
+    double try_other_guess_rot_th_ = 0.5 * M_PI / 180.0;  // 在初始估计相差多少时，尝试其他的解
+    // double low_vel_th_ = 1.0;                             // 低速阈值m/s
+    // double update_cache_dis_ = 0;                         // 动态图层的更新缓冲距离
+
+    std::deque<double> ave_scores_;  // 近期匹配的分值情况
+
+    Vec3d current_vel_b_ = Vec3d::Zero();  // 本次的车体系下的速度
+    Vec3d current_vel_ = Vec3d::Zero();    // 本次dr的速度
+
+    std::deque<TimedPose> lidar_loc_pose_queue_;  // lidar odom pose 轨迹
+
+    bool lo_reliable_ = true;
+    int lo_reliable_cnt_ = 0;
+
+    SE3 last_abs_pose_;            // 上一次绝对定位，绝对定位来自于地图匹配得到的位姿
+    TimedPose last_dyn_upd_pose_;  // 上次更新动态图层时使用的位姿
+    SE3 current_abs_pose_;         // 本次的绝对定位
+    bool last_abs_pose_set_ = false;
+    double current_score_ = 1e5;  /// 设一个大分值，若定位一开始就匹配失败，则可以直接用GPS重置
+    MatchStats last_match_stats_;
+    int match_fail_count_ = 0;
+    int static_count_ = 0;
+
+    int rtk_reset_cnt_ = 0;  // RTK重置计数
+
+    std::mutex result_mutex_;
+    LocalizationResult localization_result_;  // 输出结果
+
+    // 相对运动观测队列
+    std::mutex lo_pose_mutex_;
+    std::deque<NavState> lo_pose_queue_;
+
+    std::mutex dr_pose_mutex_;
+    std::deque<NavState> dr_pose_queue_;
+
+    /// 功能点初始化的记录
+    std::vector<SE3> fp_init_fail_pose_vec_;
+    double fp_last_tried_time_ = 0;
+
+    bool update_map_quit_ = false;
+    std::thread update_map_thread_;            // 地图更新
+    std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
+    std::unique_ptr<GlobalRelocalizer> global_relocalizer_;
+    std::string relocalization_backend_name_ = "btc";
+    std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;
+    CloudPtr relocalization_static_map_;
+    Vec3d relocalization_map_min_ = Vec3d::Zero();
+    Vec3d relocalization_map_max_ = Vec3d::Zero();
+    std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;
+    struct PendingRelocalization {
+        bool valid = false;
+        SE3 T_map_odom;
+        SE3 pose;
+        int candidate_id = -1;
+        int query_submap_size = 0;
+        double score = 0.0;
+        double ndt_confidence = 0.0;
+        double timestamp = 0.0;
+        int confirmation_count = 0;
+    } pending_relocalization_;
+    bool relocalization_event_active_ = false;
+    double map_height_ = 0;
+    int relocalization_debug_index_ = 0;
+
+    bool has_set_pose_ = false;  // 外部set_pose标志位，若存在则本次动态图层不落盘
+
+    std::ofstream recover_pose_out_;
+};
+
+}  // namespace lightning::loc

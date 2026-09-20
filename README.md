@@ -1,93 +1,499 @@
-# localization
+# Lightning-LM
 
+English | [中文](./README_CN.md)
 
+Lightning-Speed Lidar Localization and Mapping
 
-## Getting started
+Lightning-LM is a complete laser mapping and localization module.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Features of Lightning-LM:
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+1. [done] Complete 3D Lidar SLAM, fast LIO front-end (AA-FasterLIO), standard
+2. [done] 3D to 2D map conversion (g2p5), optional, if selected outputs real-time 2D grid map, can be saved
+3. [done] Real-time loop closure detection, standard, performs back-end loop closure detection and correction if
+   selected
+4. [done] Smooth high-precision 3D Lidar localization, standard
+5. [done] Dynamic loading scheme for map partitions, suitable for large-scale scenes
+6. [done] Localization with separate dynamic and static layers, adaptable to dynamic scenes, selectable strategies for
+   dynamic layer, optional, if selected saves dynamic layer map content, three strategies available (short-term,
+   medium-term, permanent), default is permanent
+7. [done] High-frequency IMU smooth output, standard, 100Hz
+8. GPS geoinformation association, optional (TODO)
+9. Vehicle odometry input, optional (TODO)
+10. [done] Lightweight optimization library miao and incremental optimization (derived from g2o, but lighter and faster,
+    supports incremental optimization, no need to rebuild optimization model), standard, used in both loop closure and
+    localization
+11. [done] Two verification schemes: offline and online. Offline allows breakpoint debugging with strong consistency.
+    Online allows multi-threaded concurrency, fast processing speed, dynamic frame skipping, and low resource usage.
+12. [done] High-frequency output based on extrapolator and smoother, adjustable smoothing factor
+13. [done] High-performance computing: All the above features can run using less than one CPU core on the pure CPU
+    side (online localization 0.8 cores, mapping 1.2 cores, 32-line LiDAR, without UI).
 
-## Add your files
+Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_ba_btc_hba.md),
+[four-sequence optimization report](./doc/backend_ba_btc_hba_four_sequence_optimization_report_20260715.md), and
+[historical five-sequence report](./doc/backend_ba_btc_hba_five_sequence_algorithm_report_20260715.md).
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Updates
 
+### 2026.4.2
+
+- Significantly improved the stability of mapping and localization, now adapted to multi-floor data mentioned in issues
+  and data provided by Deep Robotics. Related data is being uploaded to BaiduYun — feel free to try it!
+- Adjusted the structure and dimensions of state variables. `ba`, `grav`, `offset_R`, `offset_t` no longer need to be
+  estimated online, reducing the state vector to 12 dimensions (previously 23).
+- Added a correction scale for laser localization. Localization is now based on LIO prediction to prevent large laser
+  jumps.
+- Added point-to-point ICP error in the LaserMapping module; point-to-point computations are also accelerated with
+  multi-threading.
+- Added some practical tricks in the ESKF module.
+- Localization now uses LIO keyframes for map-to-map registration.
+- Tuned parameters for several Deep Robotics datasets and GitHub issue datasets.
+- Adjusted the ESKF interface to accommodate point-to-point ICP (which has different dimensions from point-to-plane ICP).
+- Added Kalman filter tricks: symmetrization of the P matrix, protection of minimum values, etc.
+
+### 2026.3.20
+
+- MapIncremental is now called at the keyframe level to improve LIO robustness (no drift on the VBR dataset).
+- Fixed a Jacobian issue with the height constraint (issue #100, #110).
+- Fixed an out-of-bounds issue in the loop closure detection module (issue #88).
+- Adapted to Deep Robotics quadruped robot data (RoboSense lidar type=4).
+- Added timestamp data checks (VBR has abnormal timestamp issues).
+- Loop closure detection now uses the optimized pose as the initial estimate (useful for large loops).
+- If the point cloud after voxelization has too few points, use the pre-voxelization point cloud for LIO (prevents too
+  few points after downsampling).
+- Fixed an issue with `std::vector<bool>` in parallelization.
+- Fixed several issues that could cause segmentation faults.
+
+### 2025.11.27
+
+- Added Cauchy's kernel in the LIO module.
+- Added the `try_self_extrap` configuration in the localization module (disabled by default). When disabled, the
+  localization module does not use its own extrapolated pose for localization (since the localization interval is large
+  and can be inaccurate when the vehicle moves significantly).
+- Added a configuration file for Livox, as it is widely used.
+- If a fixed height is set during mapping, localization will also use this map height (disabled by default).
+
+### 2025.11.13
+
+- Fix two logic typos in FasterLIO.
+- Add global height constraint that can be configured in loop_closing.with_height. If set true, lightning-lm will keep
+  the output map into the same height to avoid the Z-axis drifting in large scenes. It should not be set if you are
+  using lightning-lm in scenes that have multi-floor or stairs structures.
+
+## Examples
+
+- Mapping on the VBR campus dataset:
+
+  ![](./doc/slam_vbr.gif)
+
+- Localization on VBR
+
+  ![](./doc/lm_loc_vbr_campus.gif)
+
+- Map on VBR
+    - Point Cloud
+
+  ![](./doc/campus_vbr.png)
+    - Grid Map
+
+  ![](./doc/campus.png)
+
+- Localization on the NCLT dataset
+
+![](./doc/lm_loc1_nclt.gif)
+
+- Data on the Deep Robotics quadruped robot
+
+![](./doc/demo_ysc1.png)
+![](./doc/demo_ysc2.png)
+![](./doc/demo_ysc3.png)
+
+- Tilted mounting demo
+
+  ![](./doc/demo_github.png)
+
+## Build
+
+### Environment
+
+Ubuntu 22.04 or higher.
+
+Ubuntu 20.04 should also work, but not tested.
+
+### Dependencies
+
+- ros2 humble or above
+- Pangolin (for visualization, see thirdparty)
+- OpenCV
+- PCL
+- yaml-cpp
+- glog
+- gflags
+- pcl_conversions
+- Optional external `lightning` ROS 2 interface package (messages and services)
+
+On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
+
+### Build
+
+When the `lightning` interface package exists in the workspace (or a sourced installation), the algorithm uses it.
+Otherwise, the same interfaces are built from the embedded fallback automatically. Build with limited parallelism:
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
-cd existing_repo
-git remote add origin http://10.233.88.6:60002/runnable/localization.git
-git branch -M main
-git push -uf origin main
+
+The default `LIGHTNING_CPU_PROFILE=AUTO` selects the optimization automatically, so the plain `colcon build` command
+above is normally sufficient. Native x86/ARM builds prefer a `native` option, ARM64 cross builds select the
+GEACX2/Orin profile, and x86 cross builds prefer `x86-64-v2` with an SSE4.2 fallback. Unsupported options fall back
+progressively, and the selected flags apply only to Lightning algorithm sources.
+
+For artifacts that must run on machines with unknown CPU capabilities, disable target-specific instructions explicitly:
+
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DLIGHTNING_CPU_PROFILE=PORTABLE
 ```
 
-## Integrate with your tools
+For ARM64 cross compilation targeting the GEACX2/Orin, use the repository overlay instead of the vendor toolchain
+directly. The overlay keeps the AArch64 compiler and multiarch paths active across CMake reconfiguration and gives
+ROSIDL Python extensions the target ABI suffix:
 
-* [Set up project integrations](http://10.233.88.6:60002/runnable/localization/-/settings/integrations)
+```bash
+MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/toolchains/geacx2-aarch64.cmake"
+```
 
-## Collaborate with your team
+The path above assumes the command runs from the repository root. CI jobs that invoke colcon from a parent workspace
+must pass the absolute path to `cmake/toolchains/geacx2-aarch64.cmake`. Cross-compiler selection happens before the
+project is configured, so it cannot be inferred later by `LIGHTNING_CPU_PROFILE`; set the toolchain once in the Docker
+environment or build command, while leaving the CPU profile on `AUTO`.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+When `AUTO` detects an ARM64 cross build, it tries `cortex-a78ae`, `cortex-a78`, and `armv8.2-a` in order, selecting the
+best option supported by the cross compiler and warning before falling back to portable settings. `ORIN` and `NATIVE`
+can still be selected explicitly. The `NATIVE` profile is rejected during cross compilation so `-march=native` cannot
+accidentally target the Docker host CPU.
 
-## Test and Deploy
+Then ```source install/setup.bash``` to use it.
 
-Use the built-in continuous integration in GitLab.
+### Build Results
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+After building, you will get the corresponding online/offline mapping and localization programs for this package. The
+offline programs are suitable for scenarios with offline data packets to quickly obtain mapping/localization results,
+while the online programs are suitable for scenarios with actual sensors to obtain real-time results.
 
-***
+For example, calling the offline mapping program on the NCLT dataset:
+```ros2 run lightning_lm run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
 
-# Editing this README
+If you want to call the online version, just change the offline part to online.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## Testing on Datasets
 
-## Suggestions for a good README
+You can directly use our converted datasets. If you need the original datasets, you need to convert them to the ros2 db3
+format.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Converted dataset addresses:
 
-## Name
-Choose a self-explaining name for your project.
+- OneDrive: https://1drv.ms/f/c/1a7361d22c554503/EpDSys0bWbxDhNGDYL_O0hUBa2OnhNRvNo2Gey2id7QMQA?e=7Ui0f5
+- BaiduYun: https://pan.baidu.com/s/1XmFitUtnkKa2d0YtWquQXw?pwd=xehn 提取码: xehn
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Original dataset addresses:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+- NCLT dataset: http://robots.engin.umich.edu/nclt/
+- UrbanLoco dataset: https://github.com/weisongwen/UrbanLoco
+- VBR dataset: https://www.rvp-group.net/slam-dataset.html
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+### Mapping Test
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+1. Real-time mapping (real-time bag playback)
+    - Start the mapping program:
+      ```ros2 run lightning_lm run_slam_online --config ./config/default_nclt.yaml```
+    - Play the data bag
+    - Save the map ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
+2. Offline mapping (traverse data, faster)
+    - ```ros2 run lightning_lm run_slam_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
+    - It will automatically save to the data/new_map directory after finishing.
+3. Viewing the map
+    - View the full map: ```pcl_viewer ./data/new_map/global.pcd```
+    - The actual map is stored in blocks, global.pcd is only for displaying the result.
+    - map.pgm stores the 2D grid map information.
+    - Note that during the localization program run or upon exit, results for dynamic layers might also be stored in the
+      same directory, so there might be more files.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Localization Test
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+1. Real-time localization
+    - Write the map path to `system.map_path` in the yaml file, default is `new_map` (consistent with the mapping
+      default).
+    - Place the vehicle at the mapping starting point.
+    - Start the localization program:
+      ```ros2 run lightning_lm run_loc_online --config ./config/default_nclt.yaml```
+    - Play the bag or input sensor data.
+2. Offline localization
+    - ```ros2 run lightning_lm run_loc_offline --config ./config/default_nclt.yaml --input_bag [bag_file]```
+3. Receiving localization results
+    - The localization program outputs TF topics at the same frequency as the IMU (50-100Hz).
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### Debugging on Your Own Device
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+First, you need to know your LiDAR type and set the corresponding `fasterlio.lidar_type`. Set it to 1 for Livox series,
+2 for Velodyne, 3 for Ouster.
+If it's not one of the above types, you can refer to the Velodyne setup method.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+A simpler way is to first record a ros2 bag, get offline mapping and localization working, and then debug the online
+situation.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+You usually need to modify `common.lidar_topic` and `common.imu_topic` to set the LiDAR and IMU topics.
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+The IMU and LiDAR extrinsic parameters can default to zero; we are not sensitive to them.
 
-## License
-For open source projects, say how it is licensed.
+The `fasterlio.time_scale` related to timestamps is sensitive. You should pay attention to whether the LiDAR point cloud
+has timestamps for each point and if they are calculated correctly. This code is in `core/lio/pointcloud_preprocess`.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Refer to the next section for other parameter adjustments.
+
+### Deep Robotics Quadruped Robot
+
+Repo: https://github.com/DeepRoboticsLab/lightning-lm-deep-robotics
+
+Video: [Embodied Intelligence Episode 3 | [Lynx M20] [SLAM] M20 RoboSense LiDAR Usage and Secondary Development, Using lightning-lm as an Example] https://www.bilibili.com/video/BV12YQZBqE1b?vd_source=57f46145c37bfb96f7583c9e02081590
+
+### Fine-tuning Lightning-LM
+
+You can fine-tune Lightning by modifying the configuration file, turning some features on or off. Common configuration
+items include:
+
+- `system.with_loop_closing` Whether loop closure detection is needed
+- `system.with_ui` Whether 3D UI is needed
+- `system.with_2dui` Whether 2D UI is needed
+- `system.with_g2p5` Whether grid map is needed
+- `system.map_path` Storage path for the map
+- `fasterlio.point_filter_num` Point sampling number. Increasing this results in fewer points, faster computation, but
+  not recommended to set above 10.
+- `g2p5.esti_floor` Whether g2p5 needs to dynamically estimate ground parameters. If the LiDAR rotates horizontally and
+  the height is constant, you can turn this option off.
+- `g2p5.grid_map_resolution` Resolution of the grid map
+
+### TODO
+
+- [done] UI displays trajectory after loop closure
+- [done] Grid map saved in ROS-compatible format
+- [done] Check if grid map resolution values are normal
+- Force 2D output
+- Additional convenience features (turn localization on/off, reinitialize, specify location, etc.)
+
+### Test Results
+
+1. Mapping
+
+- NCLT: pass
+- VBR: pass
+- Livox Multi Floor: pass
+- GitHub issues:
+    - Tilted 30 degrees https://github.com/gaoxiang12/lightning-lm/issues/75#issuecomment-4131131883 pass (need to
+      disable IMU filter)
+    - multi_floor multi-floor map: pass (can map but cannot loop close)
+    - Outdoor only, elevated bridge
+- geely: pass
+- Deep Robotics (yunshenchu):
+    - building1 multi-floor indoor/outdoor mixed: pass
+    - building2: pass
+    - building3: pass
+    - grass: need to increase minimum height, e.g., above 0.5
+    - road1: same as above, pass
+
+2. Localization
+
+## Miscellaneous
+
+1. Converting ros1 data to ros2
+   Install ``` pip install -i https://pypi.tuna.tsinghua.edu.cn/simple rosbags```
+
+   Convert: ```rosbags-convert --src [your_ROS1_bag_file.bag] --dst [output_ROS2_bag_directory]```
+
+---
+
+Lightning-LM 是一个完整的激光建图+定位模块。
+
+Lightning-LM特性：
+
+1. [done] 完整的3D Lidar SLAM，快速的LIO前端（AA-FasterLIO），标配
+2. [done] 3D至2D地图转换（g2p5），选配，选上的话会输出实时的2D栅格，可以保存
+3. [done] 实时回环检测，标配，选上的话会进行后端回环检测并闭环
+4. [done] 流畅的高精3D Lidar 定位，标配
+5. [done] 地图分区动态加载方案，适用大场景
+6. [done] 动静态图层分离定位，适配动态场景，可选择动态图层的策略，选配，选上的话会保存动态图层的地图内容，有三种策略可以选（短期、中期、永久），默认永久
+7. [done] 高频率IMU平滑输出，标配，100Hz
+8. GPS地理信息关联，选配 (TODO)
+9. 车辆里程计输入，选配 (TODO)
+10. [done] 轻量优化库miao以及增量式优化（来自g2o，但更轻更快，支持增量优化，不需要重新构建优化模型），标配，在回环、定位中均有用到
+11. [done] 离线与在线两种验证方案。离线可以断点调试，一致性强。在线可以多线程并发，处理速度快，可以设置动态跳帧，占用低。
+12. [done] 基于外推器和平滑器的高频率输出，平滑因子可调
+13. [done] 高性能计算：以上这些特性在纯CPU端不到一个核心就可以运行（在线定位0.8个核，建图1.2个核，32线雷达，无UI情况）
+
+## 更新
+
+### 2025.11.27
+
+- 在LIO模块中添加了Cauchy's kernel
+- 在定位模块中增加了配置： try_self_extrap，默认关闭。也就是定位模块不会根据自身外推的位姿做定位（因为定位间隔较大，车辆运动较大时不准）。
+- 添加了一个livox的配置文件，因为用livox的人比较多
+- 如果建图时设置了固定高度，那么定位也会使用这个地图高度（默认关闭）
+
+### 2025.11.13
+
+- 修复了FasterLIO中的两个逻辑问题
+- 增加了高度约束，在loop_closing.with_height中配置。配置高度约束以后，lightning会保障输出地图的水平度（限制Z轴飘移），但这样就不适用于多层室内之类的带有立体结构的场景。
+
+## 案例
+
+- VBR campus数据集上的建图：
+
+![](./doc/slam_vbr.gif)
+
+- VBR上的定位
+
+  ![](./doc/lm_loc_vbr_campus.gif)
+
+- VBR上的地图
+    - 点云
+
+  ![](./doc/campus_vbr.png)
+    - 栅格
+
+  ![](./doc/campus.png)
+
+- NCLT 数据集上的定位
+
+![](./doc/lm_loc1_nclt.gif)
+
+## 编译
+
+### 环境
+
+Ubuntu 22.04 或更高版本。
+
+Ubuntu 20.04 应该也可行，未测试。
+
+### 依赖
+
+- ros2 humble 及以上
+- Pangolin（用于可视化，见thirdparty）
+- OpenCV
+- PCL
+- yaml-cpp
+- glog
+- gflags
+- pcl_conversions
+
+在Ubuntu 22.04上，执行：```bash ./scripts/install_dep.sh```即可。
+
+### 编译
+
+```colcon build```本包即可。
+
+然后```source install/setup.bash```即可使用。
+
+### 编译结果
+
+编译后，会得到本包对应的在线/离线建图程序与定位程序。离线程序适用于存在离线数据包，快速得到建图/定位结果的方案，在线程序则适用于有实际传感器，得到实时结果的方案。
+
+例如：在NCLT数据集上调用离线建图程序:
+```ros2 run lightning_lm run_slam_offline --input_bag ~/data/NCLT/20130110/20130110.db3 --config ./config/default_nclt.yaml```
+
+如果希望调用在线的版本，则将offline部分改成online即可。
+
+## 在数据集上测试
+
+您可以直接使用我们转换完的数据集。如果需要原始的数据集，您需要将它们转换到ros2的db3格式。
+
+转换后的数据集地址：
+
+- OneDrive: https://1drv.ms/f/c/1a7361d22c554503/EpDSys0bWbxDhNGDYL_O0hUBa2OnhNRvNo2Gey2id7QMQA?e=7Ui0f5
+- BaiduYun: https://pan.baidu.com/s/1XmFitUtnkKa2d0YtWquQXw?pwd=xehn 提取码: xehn
+
+原始数据集地址：
+
+- NCLT 数据集：http://robots.engin.umich.edu/nclt/
+- UrbanLoco 数据集： https://github.com/weisongwen/UrbanLoco
+- VBR 数据集：https://www.rvp-group.net/slam-dataset.html
+
+### 建图测试
+
+1. 实时建图（实时播包）
+    - 启动建图程序:
+      ```ros2 run lightning_lm run_slam_online --config ./config/default_nclt.yaml```
+    - 播放数据包
+    - 保存地图 ```ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: new_map}"```
+2. 离线建图（遍历跑数据，更快一些）
+    - ```ros2 run lightning_lm run_slam_offline --config ./config/default_nclt.yaml --input_bag 数据包```
+    - 结束后会自动保存至data/new_map目录下
+3. 查看地图
+    - 查看完整地图：```pcl_viewer ./data/new_map/global.pcd```
+    - 实际地图是分块存储的，global.pcd仅用于显示结果
+    - map.pgm存储了2D栅格地图信息
+    - 请注意，在定位程序运行过程中或退出时，也可能在同目录存储动态图层的结果，所以文件可能会有更多。
+
+### 定位测试
+
+1. 实时定位
+    - 将地图路径写到yaml中的 system-map_path 下，默认是new_map（和建图默认一致)
+    - 将车放在建图起点处
+    - 启动定位程序：
+      ```ros2 run lightning_lm run_loc_online --config ./config/default_nclt.yaml```
+    - 播包或者输入传感器数据即可
+
+2. 离线定位
+    - ```ros2 run lightning_lm run_loc_offline --config ./config/default_nclt.yaml --input_bag 数据包```
+
+3. 接收定位结果
+    - 定位程序输出与IMU同频的TF话题（50-100Hz）
+
+### 在您自己的设备上调试
+
+首先您需要知道自己的雷达类型，设置对应的fasterlio.lidar_type类型。livox系列的配置成1，Velodyne的设置成2,ouster设置成3.
+如果不在以上种类，可以参考velodyne的设置方式。
+
+比较简单的方式是先录一个ros2的数据包，将离线的建图、定位调通后，再去调试在线的情况。
+
+您通常需要修改common.lidar_topic和common.imu_topic来设置雷达与imu的话题。
+
+imu和雷达外参默认为零就好，我们对这个不敏感。
+
+时间戳相关的fasterlio.time_scale是敏感的。您最好关注一下雷达点云是否带有每个点的时间戳，以及它们是否计算正确。这些代码在core/lio/pointcloud_preprocess里.
+
+其他参数调整参考下一节。
+
+### 对lightning-lm进行微调
+
+您可以在配置文件中对lightning进行微调，打开或者关闭一些功能。常见的配置项有：
+
+- system.with_loop_closing 是否需要回环检测
+- system.with_ui 是否需要3DUI
+- system.with_2dui 是否需要2DUI
+- system.with_g2p5 是否需要栅格地图
+- system.map_path 地图的存储路径
+- fasterlio.point_filter_num 点的采样数。调大后点数会少一些，计算更快，但不建议调到10以上。
+- g2p5.esti_floor g2p5是否需要动态估计地面参数。如果雷达水平旋转且高度不变，可以关闭此选项.
+- g2p5.grid_map_resolution 栅格地图的分辨率
+
+### TODO
+
+- [done] UI显示闭环后轨迹
+- [done] 栅格地图保存为兼容ROS的形式
+- [done] 检查栅格地图的分辨率取值是否正常
+- 强制2D输出
+- 额外便利性功能（打开关闭定位，重新初始化，指定位置等）
+
+## 其他
+
+1. 将ros1数据转换至ros2
+   安装 ``` pip install -i https://pypi.tuna.tsinghua.edu.cn/simple rosbags```
+
+   转换: ```rosbags-convert --src [你的ROS1_bag文件.bag] --dst [输出ROS2bag目录]```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=gaoxiang12/lightning-lm&type=date&legend=top-left)](https://www.star-history.com/#gaoxiang12/lightning-lm&type=date&legend=top-left)
