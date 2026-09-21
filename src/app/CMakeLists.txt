@@ -86,14 +86,7 @@ add_executable(pos_res_recorder
 ament_target_dependencies(pos_res_recorder
         rclcpp
         tf2
-)
-
-add_dependencies(pos_res_recorder
-        geosun_msgs__rosidl_typesupport_cpp
-)
-
-target_link_libraries(pos_res_recorder
-        geosun_msgs__rosidl_typesupport_cpp
+        geosun_msgs
 )
 
 add_executable(test_ui
