@@ -77,11 +77,8 @@ ament_target_dependencies(
         "tf2"
         "diagnostic_monitor_interfaces"
         "lightning"
-)
-
-add_dependencies(${PROJECT_NAME}.libs
-        livox_interfaces2__rosidl_typesupport_cpp
-        geosun_msgs__rosidl_typesupport_cpp
+        "geosun_msgs"
+        "livox_ros_driver2"
 )
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
@@ -92,8 +89,6 @@ target_link_libraries(${PROJECT_NAME}.libs
         ${PCL_LIBRARIES}
         miao.core
         miao.utils
-        livox_interfaces2__rosidl_typesupport_cpp
-        geosun_msgs__rosidl_typesupport_cpp
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils

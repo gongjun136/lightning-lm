@@ -18,6 +18,8 @@ find_package(tf2_ros REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(diagnostic_monitor_interfaces REQUIRED)
 find_package(lightning REQUIRED)
+find_package(geosun_msgs REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
 
 # OMP
 find_package(OpenMP)
@@ -149,11 +151,6 @@ include_directories(
         ${rclcpp_INCLUDE_DIRS}
         ${rosbag2_cpp_INCLUDE_DIRS}
         ${nav_msgs_INCLUDE_DIRS}
-)
-
-include_directories(
-        ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/livox_ros_driver/rosidl_generator_cpp
-        ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/geosun_msgs/rosidl_generator_cpp
 )
 
 include_directories(
