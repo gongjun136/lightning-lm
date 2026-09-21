@@ -75,30 +75,14 @@ ament_target_dependencies(
         "pcl_conversions"
         "tf2_ros"
         "tf2"
+        "diagnostic_monitor_interfaces"
+        "lightning"
 )
-
-if (DIAGNOSTIC_MONITOR_INTERFACES_EMBEDDED)
-    add_dependencies(${PROJECT_NAME}.libs diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
-    target_link_libraries(${PROJECT_NAME}.libs
-            diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
-else ()
-    ament_target_dependencies(${PROJECT_NAME}.libs "diagnostic_monitor_interfaces")
-endif ()
-
-if (lightning_FOUND)
-    ament_target_dependencies(${PROJECT_NAME}.libs "lightning")
-else ()
-    add_dependencies(${PROJECT_NAME}.libs lightning__rosidl_typesupport_cpp)
-endif ()
 
 add_dependencies(${PROJECT_NAME}.libs
         livox_interfaces2__rosidl_typesupport_cpp
         geosun_msgs__rosidl_typesupport_cpp
 )
-
-if (NOT lightning_FOUND)
-    target_link_libraries(${PROJECT_NAME}.libs lightning__rosidl_typesupport_cpp)
-endif ()
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)

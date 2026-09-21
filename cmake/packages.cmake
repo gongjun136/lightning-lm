@@ -16,8 +16,8 @@ find_package(OpenCV REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
-find_package(diagnostic_monitor_interfaces QUIET)
-find_package(lightning QUIET)
+find_package(diagnostic_monitor_interfaces REQUIRED)
+find_package(lightning REQUIRED)
 
 # OMP
 find_package(OpenMP)

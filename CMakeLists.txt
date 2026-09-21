@@ -32,32 +32,6 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(cmake/packages.cmake)
 add_definitions(-DROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/") # 设置项目根目录路径
 
-if (NOT diagnostic_monitor_interfaces_FOUND)
-    message(STATUS "diagnostic_monitor_interfaces not found; building embedded interfaces")
-    set(DIAGNOSTIC_MONITOR_INTERFACES_EMBEDDED TRUE)
-    add_subdirectory(thirdparty/diagnostic_monitor_interfaces)
-    include_directories(
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_generator_c
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_generator_cpp
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_c
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_cpp
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_fastrtps_c
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_fastrtps_cpp
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_introspection_c
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/diagnostic_monitor_interfaces/rosidl_typesupport_introspection_cpp
-    )
-endif ()
-
-if (NOT lightning_FOUND)
-    message(STATUS "lightning interface package not found; building embedded interfaces")
-    find_package(ament_cmake_python REQUIRED)
-    add_subdirectory(thirdparty/lightning_interfaces)
-    _ament_cmake_python_register_environment_hook()
-    include_directories(
-            ${CMAKE_CURRENT_BINARY_DIR}/thirdparty/lightning_interfaces/rosidl_generator_cpp
-    )
-endif ()
-
 install(DIRECTORY config
         DESTINATION lib/${PROJECT_NAME}/
 )
