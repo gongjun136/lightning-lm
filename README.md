@@ -130,14 +130,24 @@ Ubuntu 20.04 should also work, but not tested.
 - glog
 - gflags
 - pcl_conversions
-- Optional external `lightning` ROS 2 interface package (messages and services)
+- The required `lightning` and `diagnostic_monitor_interfaces` ROS 2 packages from
+  [lightning_lm_msgs](https://github.com/gongjun136/lightning_lm_msgs)
 
 On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
 
 ### Build
 
-When the `lightning` interface package exists in the workspace (or a sourced installation), the algorithm uses it.
-Otherwise, the same interfaces are built from the embedded fallback automatically. Build with limited parallelism:
+Clone both repositories into the same workspace. The `lightning_lm_msgs.repos` manifest can import the public message
+repository automatically:
+
+```bash
+cd lightning_lm_ws
+vcs import src < src/lightning-lm/lightning_lm_msgs.repos
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+The workspace and historical-path mapping are documented in
+[docs/workspace_layout.md](./docs/workspace_layout.md). Build with limited parallelism:
 
 ```bash
 MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release

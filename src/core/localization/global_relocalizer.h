@@ -4,12 +4,16 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/StdVector>
+
 #include "common/eigen_types.h"
 #include "common/point_def.h"
 
 namespace lightning::loc {
 
 struct RelocalizationCandidate {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     int candidate_id = -1;
     double score = 0.0;
     int query_submap_size = 0;
@@ -20,7 +24,13 @@ struct RelocalizationCandidate {
     SE3 T_world_imu;
 };
 
+using RelocalizationCandidateVector =
+    std::vector<RelocalizationCandidate,
+                Eigen::aligned_allocator<RelocalizationCandidate>>;
+
 struct RelocalizationResult {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
     bool attempted = false;
     bool candidate_found = false;
     bool accepted = false;
@@ -31,7 +41,7 @@ struct RelocalizationResult {
     std::size_t descriptor_count = 0;
     double search_time_ms = 0.0;
     SE3 T_world_imu;
-    std::vector<RelocalizationCandidate> candidates;
+    RelocalizationCandidateVector candidates;
     std::string reason;
 };
 

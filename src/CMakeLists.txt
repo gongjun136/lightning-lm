@@ -75,30 +75,11 @@ ament_target_dependencies(
         "pcl_conversions"
         "tf2_ros"
         "tf2"
+        "diagnostic_monitor_interfaces"
+        "lightning"
+        "geosun_msgs"
+        "livox_ros_driver2"
 )
-
-if (DIAGNOSTIC_MONITOR_INTERFACES_EMBEDDED)
-    add_dependencies(${PROJECT_NAME}.libs diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
-    target_link_libraries(${PROJECT_NAME}.libs
-            diagnostic_monitor_interfaces__rosidl_typesupport_cpp)
-else ()
-    ament_target_dependencies(${PROJECT_NAME}.libs "diagnostic_monitor_interfaces")
-endif ()
-
-if (lightning_FOUND)
-    ament_target_dependencies(${PROJECT_NAME}.libs "lightning")
-else ()
-    add_dependencies(${PROJECT_NAME}.libs lightning__rosidl_typesupport_cpp)
-endif ()
-
-add_dependencies(${PROJECT_NAME}.libs
-        livox_interfaces2__rosidl_typesupport_cpp
-        geosun_msgs__rosidl_typesupport_cpp
-)
-
-if (NOT lightning_FOUND)
-    target_link_libraries(${PROJECT_NAME}.libs lightning__rosidl_typesupport_cpp)
-endif ()
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)
@@ -108,8 +89,6 @@ target_link_libraries(${PROJECT_NAME}.libs
         ${PCL_LIBRARIES}
         miao.core
         miao.utils
-        livox_interfaces2__rosidl_typesupport_cpp
-        geosun_msgs__rosidl_typesupport_cpp
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
@@ -145,6 +124,9 @@ if(BUILD_TESTING)
 
     add_executable(solid_descriptor_test test/solid_descriptor_test.cc)
     target_link_libraries(solid_descriptor_test ${PROJECT_NAME}.libs ${third_party_libs})
+
+    add_executable(solid_relocalizer_transform_test test/solid_relocalizer_transform_test.cc)
+    target_link_libraries(solid_relocalizer_transform_test ${PROJECT_NAME}.libs ${third_party_libs})
 
     add_executable(point_to_plane_registration_test test/point_to_plane_registration_test.cc)
     target_link_libraries(point_to_plane_registration_test ${PROJECT_NAME}.libs ${third_party_libs})
@@ -192,6 +174,7 @@ if(BUILD_TESTING)
     add_test(NAME btc_loop_detector_test COMMAND $<TARGET_FILE:btc_loop_detector_test>)
     add_test(NAME localization_pgo_test COMMAND $<TARGET_FILE:localization_pgo_test>)
     add_test(NAME solid_descriptor_test COMMAND $<TARGET_FILE:solid_descriptor_test>)
+    add_test(NAME solid_relocalizer_transform_test COMMAND $<TARGET_FILE:solid_relocalizer_transform_test>)
     add_test(NAME point_to_plane_registration_test COMMAND $<TARGET_FILE:point_to_plane_registration_test>)
     add_test(NAME kiss_matcher_registration_test COMMAND $<TARGET_FILE:kiss_matcher_registration_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
