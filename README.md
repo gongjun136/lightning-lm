@@ -131,18 +131,18 @@ Ubuntu 20.04 should also work, but not tested.
 - gflags
 - pcl_conversions
 - The required `lightning` and `diagnostic_monitor_interfaces` ROS 2 packages from
-  [lightning_lm_msgs](https://github.com/gongjun136/lightning_lm_msgs)
+  [common_msgs](https://github.com/gongjun136/common_msgs)
 
 On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
 
 ### Build
 
-Clone both repositories into the same workspace. The `lightning_lm_msgs.repos` manifest can import the public message
+Clone both repositories into the same workspace. The `common_msgs.repos` manifest can import the public message
 repository automatically:
 
 ```bash
 cd lightning_lm_ws
-vcs import src < src/lightning-lm/lightning_lm_msgs.repos
+vcs import src < src/lightning-lm/common_msgs.repos
 rosdep install --from-paths src --ignore-src -r -y
 ```
 

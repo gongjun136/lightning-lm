@@ -1,7 +1,7 @@
 # Lightning-LM workspace layout
 
 `lightning_lm` depends on two ROS 2 interface packages maintained in the
-separate `lightning_lm_msgs` repository:
+separate `common_msgs` repository:
 
 - `diagnostic_monitor_interfaces`
 - `lightning` (source directory: `lightning_interfaces`)
@@ -12,19 +12,19 @@ The supported source layout is:
 lightning_lm_ws/
 └── src/
     ├── lightning-lm/
-    └── lightning_lm_msgs/
+    └── common_msgs/
 ```
 
 Import the public message repository from the workspace root with:
 
 ```bash
-vcs import src < src/lightning-lm/lightning_lm_msgs.repos
+vcs import src < src/lightning-lm/common_msgs.repos
 ```
 
-The company checkout uses these remotes for `lightning_lm_msgs`:
+The company checkout uses these remotes for `common_msgs`:
 
 ```text
-origin   git@github.com:gongjun136/lightning_lm_msgs.git
+origin   git@github.com:gongjun136/common_msgs.git
 company  git@10.233.88.16:common/message.git
 ```
 

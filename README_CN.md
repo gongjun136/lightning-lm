@@ -110,7 +110,7 @@ Ubuntu 20.04 应该也可行，未测试。
 - gflags
 - pcl_conversions
 - 必需的 `lightning` 与 `diagnostic_monitor_interfaces` ROS 2 接口包，来自
-  [lightning_lm_msgs](https://github.com/gongjun136/lightning_lm_msgs)
+  [common_msgs](https://github.com/gongjun136/common_msgs)
 
 在Ubuntu 22.04上，执行：```bash ./scripts/install_dep.sh```即可。
 
@@ -120,7 +120,7 @@ Ubuntu 20.04 应该也可行，未测试。
 
 ```bash
 cd lightning_lm_ws
-vcs import src < src/lightning-lm/lightning_lm_msgs.repos
+vcs import src < src/lightning-lm/common_msgs.repos
 rosdep install --from-paths src --ignore-src -r -y
 ```
 

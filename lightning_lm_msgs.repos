@@ -1,5 +1,0 @@
-repositories:
-  lightning_lm_msgs:
-    type: git
-    url: https://github.com/gongjun136/lightning_lm_msgs.git
-    version: main
