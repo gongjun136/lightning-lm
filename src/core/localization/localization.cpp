@@ -968,7 +968,6 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
 
     profiling::Stopwatch result_profile_timer(profiling_enabled);
     auto res = lidar_loc_->GetLocalizationResult();
-    ObserveLidarLocForStaticDetector(res);
     const auto match_stats = lidar_loc_->GetLastMatchStats();
     {
         std::lock_guard<std::mutex> lock(runtime_stats_mutex_);
@@ -987,6 +986,13 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
+    const bool stationary_map_conflict = !pgo_->CheckStationaryMapConsistency(res);
+    if (stationary_map_conflict) {
+        res.lidar_loc_valid_ = false;
+        res.valid_ = false;
+        res.status_ = LocalizationStatus::FAIL;
+    }
+    ObserveLidarLocForStaticDetector(res);
     // LidarLoc owns lidar_loc_valid_; valid_ belongs to fused/DR outputs.
     lio_->SetLocalizationGood(res.lidar_loc_valid_ && res.status_ == LocalizationStatus::GOOD);
     const profiling::TimingSample result_timing = result_profile_timer.Stop();
@@ -997,7 +1003,13 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     }
     const profiling::TimingSample cloud_callback_timing = cloud_callback_profile_timer.Stop();
     profiling::Stopwatch pgo_profile_timer(profiling_enabled);
-    pgo_->ProcessLidarLoc(res);
+    if (stationary_map_conflict) {
+        // Notify the publication/telemetry boundary above before starting recovery.
+        pgo_->Reset();
+        lidar_loc_->RequestGlobalRelocalization();
+    } else {
+        pgo_->ProcessLidarLoc(res);
+    }
     const profiling::TimingSample pgo_timing = pgo_profile_timer.Stop();
 
     double primary_to_pgo_ms = -1.0;

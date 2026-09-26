@@ -49,6 +49,10 @@ class PGO {
     /// 接收激光定位信息（触发PGO优化）
     bool ProcessLidarLoc(const LocalizationResult& loc_result);
 
+    /// A stationary hold may suppress jitter, but must not hide a map conflict.
+    /// On failure invalidate held output until the caller resets/relocalizes.
+    bool CheckStationaryMapConsistency(const LocalizationResult& loc_result);
+
     /// 处理外部组装好的一个PGO frame，将触发优化（仅在单测时外部直接调用）
     bool ProcessPGOFrame(std::shared_ptr<PGOFrame> frame);
 
@@ -107,6 +111,7 @@ class PGO {
     // DR hold release still belong to the parked epoch even if they arrive
     // after is_parking_ becomes false.
     double static_hold_release_watermark_ = -1.;
+    double static_hold_start_stamp_ = -1.;
     bool is_parking_ = false;
     bool dr_is_parking_ = false;
     bool lidar_loc_is_parking_ = false;

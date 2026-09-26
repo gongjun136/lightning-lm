@@ -405,6 +405,47 @@ int main() {
     recovery_loc.timestamp_ = 3000.7;
     Require(recovery_pgo.ProcessLidarLoc(recovery_loc), "resume PGO with only fresh relative poses");
 
+    // Reproduce the 2026-09-25 16:15 internal held/map disagreement.
+    PGO conflict_pgo;
+    conflict_pgo.SetDebug(false);
+    conflict_pgo.SetDrSmoothingEnabled(false);
+    conflict_pgo.SetDrExtrapolationEnabled(false);
+    int conflict_output_count = 0;
+    conflict_pgo.SetHighFrequencyGlobalOutputHandleFunction(
+        [&](const LocalizationResult&) { ++conflict_output_count; });
+    NavState stationary;
+    stationary.timestamp_ = 3999.9;
+    stationary.pose_is_ok_ = true;
+    stationary.lidar_odom_reliable_ = true;
+    Require(conflict_pgo.ProcessLidarOdom(stationary), "seed stationary conflict odometry");
+    Require(conflict_pgo.ProcessDR(stationary), "seed stationary conflict DR");
+    stationary.timestamp_ = 4000.0;
+    Require(conflict_pgo.ProcessLidarOdom(stationary), "bracket stationary conflict odometry");
+    Require(conflict_pgo.ProcessDR(stationary), "bracket stationary conflict DR");
+    auto held = recovery_loc;
+    held.timestamp_ = stationary.timestamp_;
+    held.pose_ = SE3(SO3(), Vec3d(8.8141, -30.1305, 4.1099));
+    Require(conflict_pgo.ProcessLidarLoc(held), "initialize held map pose");
+    stationary.timestamp_ = 4000.1;
+    stationary.is_parking_ = true;
+    Require(conflict_pgo.ProcessDR(stationary), "enter stationary hold for conflict test");
+    auto check = held;
+    check.timestamp_ = 4000.2;
+    check.pose_.translation().x() += 0.02;
+    Require(conflict_pgo.CheckStationaryMapConsistency(check), "stationary hold tolerates small map jitter");
+    check.pose_ = SE3(SO3(), Vec3d(8.73446, -22.4846, 3.76964));
+    check.timestamp_ = 3999.9;
+    Require(conflict_pgo.CheckStationaryMapConsistency(check), "pre-hold queued scans cannot invalidate a hold");
+    check.timestamp_ = 4000.2;
+    Require(!conflict_pgo.CheckStationaryMapConsistency(check),
+            "7.65 m held/map conflict invalidates stationary output despite a GOOD map flag");
+    const int before_conflicted_dr = conflict_output_count;
+    stationary.timestamp_ = 4000.3;
+    Require(conflict_pgo.ProcessDR(stationary), "DR continues after stationary conflict");
+    Require(conflict_output_count == before_conflicted_dr,
+            "stationary conflict stops high-frequency output instead of retimestamping a bad pose");
+    Require(conflict_pgo.Reset(), "stationary conflict supports global relocalization reset");
+
     std::cout << "localization_pgo_test passed" << std::endl;
     return 0;
 }

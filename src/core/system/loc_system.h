@@ -138,6 +138,7 @@ class LocSystem {
     std::ofstream published_tum_stream_;
     std::string published_tum_path_;
     double last_published_tum_timestamp_ = 0.0;
+    double last_production_pose_audit_stamp_ = 0.0;
     std::uint64_t published_tum_pose_count_ = 0;
     std::uint64_t published_tum_write_error_count_ = 0;
     bool finished_ = false;

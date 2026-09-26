@@ -269,8 +269,8 @@ int main() {
     Require(publication_gate.MapOutputsEnabled(), "first valid match enables map outputs");
     for (int lost = 1; lost < 5; ++lost) {
         publication_gate.ObserveLidarMatch(false);
-        Require(publication_gate.PoseOutputsEnabled(), "grace frames keep pose outputs enabled");
-        Require(publication_gate.MapOutputsEnabled(), "grace frames keep map outputs enabled");
+        Require(!publication_gate.PoseOutputsEnabled(), "first rejected match stops pose outputs");
+        Require(!publication_gate.MapOutputsEnabled(), "rejected match stops map outputs during loss debounce");
     }
     publication_gate.ObserveLidarMatch(false);
     Require(!publication_gate.PoseOutputsEnabled(), "fifth failure disables pose outputs");
@@ -284,8 +284,8 @@ int main() {
     freshness_gate.ObserveLidarMatch(true, 10.0);
     Require(freshness_gate.MapOutputsEnabled(10.6), "lidar match remains fresh at the age boundary");
     Require(!freshness_gate.MapOutputsEnabled(10.61), "stale lidar worker disables map outputs");
-    Require(freshness_gate.PoseOutputsEnabled(),
-            "stale lidar worker keeps IMU/CAN DR pose outputs enabled");
+    Require(!freshness_gate.PoseOutputsEnabled(),
+            "stale lidar worker stops IMU/CAN DR business pose outputs");
     Require(freshness_gate.LidarMatchStale(10.61), "stale lidar worker is diagnosed explicitly");
     Require(Near(freshness_gate.LidarMatchAgeSec(10.7), 0.7), "lidar match age uses sensor time");
     Require(Near(freshness_gate.LastLidarMatchStamp(), 10.0), "last completed lidar match is retained");
@@ -293,6 +293,32 @@ int main() {
     Require(!freshness_gate.MapOutputsEnabled(10.7), "an invalid frame cannot clear a stale-output latch");
     freshness_gate.ObserveLidarMatch(true, 10.8);
     Require(freshness_gate.MapOutputsEnabled(10.8), "a fresh valid match clears the stale-output latch");
+
+    LocalizationPublicationGate silent_gate(5);
+    silent_gate.SetMaxLidarMatchAge(0.5);
+    const auto arrival = LocalizationPublicationGate::Clock::now();
+    silent_gate.ObserveLidarMatch(true, 20.0, arrival);
+    Require(silent_gate.PoseOutputsEnabled(20.5, arrival), "pose age boundary is inclusive");
+    Require(!silent_gate.PoseOutputsEnabled(20.51, arrival),
+            "pose callback enforces freshness without waiting for the health timer");
+    silent_gate.ObserveLidarMatch(true, 20.0, arrival);
+    Require(!silent_gate.PoseOutputsEnabled(20.0, arrival), "duplicate match cannot clear stale latch");
+    silent_gate.ObserveLidarMatch(true, 20.6, arrival);
+    const auto silent_now = arrival + std::chrono::milliseconds(501);
+    Require(silent_gate.LidarMatchStale(20.6, silent_now),
+            "steady clock detects loss when every sensor timestamp stops");
+    Require(!silent_gate.PoseOutputsEnabled(20.6, silent_now), "all-input silence stops business poses");
+    silent_gate.ObserveLidarMatch(false, 21.2, silent_now);
+    Require(silent_gate.LidarMatchStale(21.2, silent_now),
+            "invalid fresh matches cannot refresh valid-localization age");
+    silent_gate.ObserveLidarMatch(true, 21.3, silent_now);
+    Require(silent_gate.PoseOutputsEnabled(21.3, silent_now), "fresh valid match recovers publication");
+    Require(silent_gate.LidarMatchStale(23.0, silent_now), "newer input exposes a processing backlog");
+    silent_gate.ObserveLidarMatch(true, 21.4, silent_now);
+    Require(!silent_gate.PoseOutputsEnabled(21.4, silent_now),
+            "fresh completion of an old scan cannot reopen outputs behind the known sensor watermark");
+    silent_gate.ObserveLidarMatch(true, 23.1, silent_now);
+    Require(silent_gate.PoseOutputsEnabled(23.1, silent_now), "caught-up match can reopen outputs");
 
     LocalizationTelemetryState telemetry(5, 500, 0.1);
     telemetry.Start();
@@ -334,12 +360,12 @@ int main() {
             "GOOD clears localization faults");
     telemetry.ObserveLocalizationStale(true);
     fault = telemetry.MakeFaultStatus(telemetry_stamp);
-    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P1 &&
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0 &&
                 fault.fault_type == static_cast<std::int32_t>(
-                    LocalizationFaultType::LOCALIZATION_DEGRADED) &&
+                    LocalizationFaultType::LOCALIZATION_LOST) &&
                 telemetry.MakeLocalizationStatus(telemetry_stamp).status ==
-                    lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR,
-            "a stalled lidar worker degrades to DR without reporting P0");
+                    lightning::msg::LocalizationStatus::STATUS_FAIL,
+            "a stalled lidar worker reports FAIL/P0 while stopping poses");
     telemetry.ObserveLocalization(loc::LocalizationStatus::FAIL, 0);
     fault = telemetry.MakeFaultStatus(telemetry_stamp);
     Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0,

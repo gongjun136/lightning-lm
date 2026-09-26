@@ -137,7 +137,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         root["system"] && root["system"]["localization_output_max_lidar_age_sec"]
             ? root["system"]["localization_output_max_lidar_age_sec"].as<double>()
             : 0.5;
-    if (max_lidar_match_age_sec <= 0.0) {
+    if (!std::isfinite(max_lidar_match_age_sec) || max_lidar_match_age_sec <= 0.0) {
         LOG(ERROR) << "system.localization_output_max_lidar_age_sec must be positive";
         return false;
     }
@@ -574,7 +574,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         return;
     }
     last_localization_stamp_ = result.timestamp_;
-    if (!publication_gate_.PoseOutputsEnabled()) {
+    if (!publication_gate_.PoseOutputsEnabled(result.timestamp_)) {
         speed_smoothing_shadow_.Reset();
         return;
     }
@@ -665,8 +665,11 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto diagnostic_io_timing = diagnostic_io_timer.Stop();
 
     profiling::Stopwatch record_tum_timer(profiling_enabled);
-    if (position_published && !profiling::ReduceNonessentialOverhead()) {
+    if (position_published &&
+        (!profiling::ReduceNonessentialOverhead() ||
+         result.timestamp_ - last_production_pose_audit_stamp_ >= 1.0)) {
         RecordPublishedPoseTum(pose);
+        last_production_pose_audit_stamp_ = result.timestamp_;
     }
     const auto record_tum_timing = record_tum_timer.Stop();
     const auto outer_timing = outer_timer.Stop();
@@ -689,9 +692,14 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
                                       const MultiLidarFrameStats& stats, bool eligible) {
-    publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
-    if (telemetry_) {
-        telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
+    {
+        // Serialize invalidation with the complete group of business pose publishes.
+        std::lock_guard<std::mutex> lock(posres_publish_mutex_);
+        publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
+        if (telemetry_) {
+            telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
+            telemetry_->ObserveLocalizationStale(publication_gate_.LidarMatchStale(result.timestamp_));
+        }
     }
     if (result.status_ == loc::LocalizationStatus::GOOD) {
         if (!localization_ever_good_.exchange(true)) {
@@ -702,7 +710,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
         debug_event::ReportState(
             "localization_following_dr",
             result.status_ == loc::LocalizationStatus::FOLLOWING_DR,
-            "Localization degraded; following dead reckoning",
+            "Localization degraded; pose outputs stopped pending a valid match",
             "Localization recovered from dead reckoning",
             std::chrono::milliseconds(300));
     }
@@ -772,6 +780,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 
 void LocSystem::PublishHealthStatus() {
     if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
+    std::lock_guard<std::mutex> publish_lock(posres_publish_mutex_);
     const builtin_interfaces::msg::Time stamp = node_->now();
 
     lightning::msg::PipelineDiagnostics diagnostics;
@@ -881,25 +890,25 @@ void LocSystem::PublishHealthStatus() {
         std::chrono::milliseconds(0));
     debug_event::ReportState(
         "lidar_match_stale", !localization_lost && lidar_match_stale,
-        "Localization map outputs paused because the lidar match is stale",
-        "Localization map outputs recovered after a fresh lidar match",
+        "Localization pose and map outputs stopped because the lidar match is stale",
+        "Localization pose and map outputs recovered after a fresh lidar match",
         std::chrono::milliseconds(500));
     const bool map_outputs_were_enabled =
         map_outputs_enabled_last_.exchange(map_outputs_enabled);
     if (map_outputs_enabled) {
         const bool had_enabled_output = map_outputs_ever_enabled_.exchange(true);
         if (had_enabled_output && !map_outputs_were_enabled) {
-            LOG(WARNING) << "localization map outputs recovered after a fresh valid lidar match";
+            LOG(WARNING) << "localization pose and map outputs recovered after a fresh valid lidar match";
         }
     } else if (map_outputs_were_enabled) {
         if (lidar_match_stale) {
-            LOG(WARNING) << "localization map outputs paused while following DR: "
+            LOG(WARNING) << "localization pose and map outputs stopped after lidar timeout: "
                          << "lidar_match_age_sec="
                          << publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp)
                          << ", consecutive_lost_frames="
                          << publication_gate_.ConsecutiveLostFrames();
         } else {
-            LOG(ERROR) << "localization map outputs disabled after localization loss: "
+            LOG(ERROR) << "localization pose and map outputs disabled after rejected localization: "
                        << "consecutive_lost_frames="
                        << publication_gate_.ConsecutiveLostFrames();
         }
@@ -913,6 +922,16 @@ void LocSystem::PublishHealthStatus() {
         publication_gate_.LastValidLidarMatchStamp();
     diagnostics.last_localization_stamp = last_localization_stamp_.load();
     diagnostics.last_posres_stamp = last_posres_stamp_.load();
+    LOG_EVERY_N(INFO, 10) << "LOCALIZATION_HEALTH"
+                        << " status=" << static_cast<int>(localization_status.status)
+                        << " fault_level=" << static_cast<int>(fault_status.level)
+                        << " pose_enabled=" << publication_gate_.PoseOutputsEnabled(latest_input_sensor_stamp)
+                        << " lost_frames=" << diagnostics.consecutive_lost_frames
+                        << " stale=" << lidar_match_stale
+                        << " match_age_sec=" << diagnostics.lidar_match_age_sec
+                        << " last_valid_match=" << std::setprecision(16)
+                        << diagnostics.last_valid_lidar_match_stamp
+                        << " last_published_pose=" << diagnostics.last_posres_stamp;
     diagnostics.posres_non_monotonic_drop_count =
         posres_timestamp_gate_.RejectedCount();
     diagnostics.worst_posres_timestamp_rollback_sec =

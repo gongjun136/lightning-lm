@@ -1,0 +1,282 @@
+{
+  "environment": "WSL Ubuntu-22.04 / ROS Humble / x86_64",
+  "bag": "rosbag2_2026_08_31-16_59_08",
+  "bag_duration_seconds": 157.302463126,
+  "note": "Historical healthy bag, not 2026-09-25 incident replay. External subscriber did not discover publisher; empty topic counts are not evidence of stopped publishing. Internal post-publish TUM and health logs plus C++ regression tests are the available verification.",
+  "ctest": {
+    "tests": [
+      "lidar_tracking_health_test",
+      "sany_localization_output_test",
+      "localization_pgo_test"
+    ],
+    "passed": 3,
+    "failed": 0,
+    "last_test_log_sha256": "926f488b4e74cacfc82eafb408e3d70fd8a5c7b506f77e1195513eee46f14eb8"
+  },
+  "runs": [
+    {
+      "run": "replay",
+      "playback_rate": 1,
+      "exit_status": "algorithm_exit=0\nobserver_exit=0",
+      "stderr_sha256": "4ca2acbf0fc184895221f24e05540d442af0d22c2ba34a03c9625e93efb0e29f",
+      "sampled_tracking_audits": 155,
+      "sampled_invalid": 0,
+      "tracking_failure_warnings": 0,
+      "stationary_conflicts": 0,
+      "sampled_min_overlap": 0.994448,
+      "sampled_max_iterations": 3.0,
+      "final_health": [
+        {
+          "status": "2",
+          "fault_level": "-1",
+          "pose_enabled": "1",
+          "lost_frames": "0",
+          "stale": "0",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        }
+      ],
+      "trajectories": {
+        "published": {
+          "rows": 154,
+          "monotonic": true
+        },
+        "global": {
+          "rows": 1541,
+          "monotonic": true
+        },
+        "high_frequency": {
+          "rows": 24638,
+          "monotonic": true
+        }
+      },
+      "external_topic_observation": {
+        "duration_sec": 163.14921448699897,
+        "counts": {},
+        "last": {},
+        "pose_last_stamps": {},
+        "monotonic_errors": {},
+        "status_changes": []
+      }
+    },
+    {
+      "run": "replay_topics",
+      "playback_rate": 1,
+      "exit_status": "algorithm_exit=0\nobserver_exit=0",
+      "stderr_sha256": "0233b7101772b405d07758bda52b744faa96695d45e1d27b3385cc2f4f43a4b3",
+      "sampled_tracking_audits": 155,
+      "sampled_invalid": 0,
+      "tracking_failure_warnings": 0,
+      "stationary_conflicts": 0,
+      "sampled_min_overlap": 0.994479,
+      "sampled_max_iterations": 3.0,
+      "final_health": [
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        }
+      ],
+      "trajectories": {
+        "published": {
+          "rows": 154,
+          "monotonic": true
+        },
+        "global": {
+          "rows": 1543,
+          "monotonic": true
+        },
+        "high_frequency": {
+          "rows": 26855,
+          "monotonic": true
+        }
+      },
+      "external_topic_observation": {
+        "duration_sec": 162.92217052698834,
+        "counts": {},
+        "last": {},
+        "pose_last_stamps": {},
+        "monotonic_errors": {},
+        "status_changes": []
+      }
+    },
+    {
+      "run": "replay_graph",
+      "playback_rate": 1,
+      "exit_status": "algorithm_exit=0\nobserver_exit=0",
+      "stderr_sha256": "995a19272f2de6d226b6044649390a1d0454dcbd4306e02fa0b7dc607d6ee816",
+      "sampled_tracking_audits": 155,
+      "sampled_invalid": 0,
+      "tracking_failure_warnings": 0,
+      "stationary_conflicts": 0,
+      "sampled_min_overlap": 0.994479,
+      "sampled_max_iterations": 3.0,
+      "final_health": [
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        }
+      ],
+      "trajectories": {
+        "published": {
+          "rows": 155,
+          "monotonic": true
+        },
+        "global": {
+          "rows": 1543,
+          "monotonic": true
+        },
+        "high_frequency": {
+          "rows": 26500,
+          "monotonic": true
+        }
+      },
+      "external_topic_observation": {
+        "duration_sec": 162.86087506997865,
+        "counts": {},
+        "last": {},
+        "pose_last_stamps": {},
+        "monotonic_errors": {},
+        "status_changes": []
+      }
+    },
+    {
+      "run": "replay_local",
+      "playback_rate": 8,
+      "exit_status": "algorithm_exit=0\nobserver_exit=0",
+      "stderr_sha256": "c4619aef99fcdc8847ad157e7a109a3ba65f23958fb16b10ca5891e8ecd4d13a",
+      "sampled_tracking_audits": 150,
+      "sampled_invalid": 0,
+      "tracking_failure_warnings": 0,
+      "stationary_conflicts": 0,
+      "sampled_min_overlap": 0.994434,
+      "sampled_max_iterations": 2.0,
+      "final_health": [
+        {
+          "status": "2",
+          "fault_level": "-1",
+          "pose_enabled": "1",
+          "lost_frames": "0",
+          "stale": "0",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        },
+        {
+          "status": "4",
+          "fault_level": "0",
+          "pose_enabled": "0",
+          "lost_frames": "0",
+          "stale": "1",
+          "match_age_sec": "0.0460143",
+          "last_valid_match": "1788166908.700016",
+          "last_published_pose": "1788166908.746031"
+        }
+      ],
+      "trajectories": {
+        "published": {
+          "rows": 145,
+          "monotonic": true
+        },
+        "global": {
+          "rows": 1491,
+          "monotonic": true
+        },
+        "high_frequency": {
+          "rows": 4758,
+          "monotonic": true
+        }
+      },
+      "external_topic_observation": {
+        "duration_sec": 25.104153270018287,
+        "counts": {},
+        "last": {},
+        "pose_last_stamps": {},
+        "monotonic_errors": {},
+        "status_changes": []
+      }
+    }
+  ]
+}

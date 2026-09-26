@@ -263,6 +263,8 @@ void LocalizationPublicationGate::SetLostFrameThreshold(std::size_t lost_frame_t
     has_valid_match_ = false;
     last_lidar_match_stamp_ = 0.0;
     last_valid_lidar_match_stamp_ = 0.0;
+    latest_sensor_stamp_ = 0.0;
+    last_valid_match_arrival_ = Clock::time_point{};
     stale_latched_ = false;
 }
 
@@ -271,8 +273,11 @@ void LocalizationPublicationGate::SetMaxLidarMatchAge(double max_age_sec) {
     max_lidar_match_age_sec_ = std::max(0.0, max_age_sec);
 }
 
-void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp) {
+void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp,
+                                                   Clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!std::isfinite(sensor_stamp) ||
+        (sensor_stamp > 0.0 && sensor_stamp <= last_lidar_match_stamp_)) return;
     if (sensor_stamp > 0.0) {
         last_lidar_match_stamp_ = std::max(last_lidar_match_stamp_, sensor_stamp);
     }
@@ -280,6 +285,7 @@ void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
         has_valid_match_ = true;
         consecutive_lost_frames_ = 0;
         stale_latched_ = false;
+        last_valid_match_arrival_ = now;
         if (sensor_stamp > 0.0) {
             last_valid_lidar_match_stamp_ =
                 std::max(last_valid_lidar_match_stamp_, sensor_stamp);
@@ -289,28 +295,36 @@ void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
     }
 }
 
-bool LocalizationPublicationGate::PoseOutputsEnabled() const {
+bool LocalizationPublicationGate::PoseOutputsEnabled(double current_sensor_stamp,
+                                                      Clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_;
+    return has_valid_match_ && !MatchStaleLocked(current_sensor_stamp, now) &&
+           consecutive_lost_frames_ == 0;
 }
 
-bool LocalizationPublicationGate::MapOutputsEnabled(double current_sensor_stamp) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const bool stale = max_lidar_match_age_sec_ > 0.0 && current_sensor_stamp > 0.0 &&
-                       last_lidar_match_stamp_ > 0.0 &&
-                       current_sensor_stamp - last_lidar_match_stamp_ > max_lidar_match_age_sec_;
-    if (stale) stale_latched_ = true;
-    return has_valid_match_ && consecutive_lost_frames_ < lost_frame_threshold_ &&
-           !stale_latched_;
+bool LocalizationPublicationGate::MapOutputsEnabled(double current_sensor_stamp,
+                                                     Clock::time_point now) const {
+    return PoseOutputsEnabled(current_sensor_stamp, now);
 }
 
-bool LocalizationPublicationGate::LidarMatchStale(double current_sensor_stamp) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+bool LocalizationPublicationGate::MatchStaleLocked(double current_sensor_stamp,
+                                                   Clock::time_point now) const {
+    if (std::isfinite(current_sensor_stamp)) {
+        latest_sensor_stamp_ = std::max(latest_sensor_stamp_, current_sensor_stamp);
+    }
     const bool stale = has_valid_match_ && max_lidar_match_age_sec_ > 0.0 &&
-                       current_sensor_stamp > 0.0 && last_lidar_match_stamp_ > 0.0 &&
-                       current_sensor_stamp - last_lidar_match_stamp_ > max_lidar_match_age_sec_;
+        ((latest_sensor_stamp_ > 0.0 && last_valid_lidar_match_stamp_ > 0.0 &&
+          latest_sensor_stamp_ - last_valid_lidar_match_stamp_ > max_lidar_match_age_sec_) ||
+         std::chrono::duration<double>(now - last_valid_match_arrival_).count() >
+             max_lidar_match_age_sec_);
     if (stale) stale_latched_ = true;
-    return stale;
+    return stale_latched_;
+}
+
+bool LocalizationPublicationGate::LidarMatchStale(double current_sensor_stamp,
+                                                 Clock::time_point now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return MatchStaleLocked(current_sensor_stamp, now);
 }
 
 double LocalizationPublicationGate::LidarMatchAgeSec(double current_sensor_stamp) const {
@@ -359,13 +373,17 @@ void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus sta
         (has_good_localization_ && consecutive_lost_frames >= lost_frame_threshold_)) {
         localization_lost_latched_ = true;
     }
+    if (localization_lost_latched_) {
+        current_status_ = lightning::msg::LocalizationStatus::STATUS_FAIL;
+    }
 }
 
 void LocalizationTelemetryState::ObserveLocalizationStale(bool stale) {
     if (!stale) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!has_good_localization_ || localization_lost_latched_) return;
-    current_status_ = lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR;
+    if (!has_good_localization_) return;
+    localization_lost_latched_ = true;
+    current_status_ = lightning::msg::LocalizationStatus::STATUS_FAIL;
 }
 
 void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamped& pose) {
@@ -404,11 +422,11 @@ lightning::msg::FaultStatus LocalizationTelemetryState::MakeFaultStatus(
     if (localization_lost_latched_) {
         message.level = lightning::msg::FaultStatus::LEVEL_P0;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_LOST);
-        message.description = "Localization lost; global relocalization in progress";
+        message.description = "Localization lost or stale; pose outputs stopped";
     } else if (current_status_ == lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR) {
         message.level = lightning::msg::FaultStatus::LEVEL_P1;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_DEGRADED);
-        message.description = "Localization degraded; following dead reckoning";
+        message.description = "Localization degraded; pose outputs stopped pending a valid match";
     } else {
         message.level = lightning::msg::FaultStatus::LEVEL_NO_FAULT;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::NONE);

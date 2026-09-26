@@ -1,0 +1,682 @@
+{
+  "time_basis": "Log wall clock, Asia/Shanghai; feedback time is not failure onset.",
+  "limitation": "No raw bags or ground truth. published_valid is an internal LidarLoc flag, not a ROS receipt.",
+  "runs": [
+    {
+      "run": "sany_3lidar_20260925_102719",
+      "log": "F:\\datasets\\SANY\\sites\\bauma_2026_replica\\derived\\lightning-lm\\diagnostics\\sany_3lidar_20260925_102719\\logs\\run_loc_online.stderr.log",
+      "sha256": "10cd7479f4e69aa29e806ea3610fb12a811c92cfa6b2e51216610fe9d57be888",
+      "first_log_time": "10:27:30.765164",
+      "last_log_time": "13:02:33.410310",
+      "sampled_matches": 9121,
+      "sampled_invalid_matches": 0,
+      "minimum_sampled_confidence": 1.79221,
+      "max_raw_correction": {
+        "line": 2055,
+        "time": "10:43:27.475346",
+        "timestamp": "1.7903e+09",
+        "confidence": "1.79221",
+        "loc_success_lo": "1",
+        "loc_success": "1",
+        "odom_valid": "1",
+        "odom_delta": "0.00109935",
+        "smooth": "1",
+        "published_valid": "1",
+        "guess_xyz": [
+          5.19924,
+          3.15732,
+          3.59407
+        ],
+        "ndt_xyz": [
+          5.1545,
+          3.14921,
+          3.53194
+        ],
+        "balanced_xyz": [
+          5.19485,
+          3.15651,
+          3.58779
+        ],
+        "raw_correction_m": 0.07699075658804745
+      },
+      "max_pgo_lidar_disagreement": {
+        "line": 19321,
+        "time": "12:25:47.415155",
+        "message": "PGO_OUTPUT_AUDIT timestamp=1.79031e+09 base_timestamp=1.79031e+09 lidar_timestamp=1.79031e+09 base_xy=[ 16.1593 0.459463] output_xy=[ 16.1707 0.450492] lidar_xy=[ 15.6489 0.924049] output_base_delta_xy=0.0145117 output_lidar_delta_xy=0.704636 lidar_age=0.263919 valid=1",
+        "delta_xy_m": 0.704636
+      },
+      "feedback_samples": {
+        "16:15:00": null,
+        "17:54:00": null
+      },
+      "nearest_internal_high_frequency_tum": {},
+      "events": [
+        {
+          "line": 97,
+          "time": "10:27:37.437587",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=1389, query_frames=1, confirmations=2, retrieval score=0.984035, refinement_backend=plane_icp, refinement_score=0.921802, overlap=0.990386, interval=1.39982, pose=4.73794  2.9365 3.58545"
+        }
+      ],
+      "smoother_motion_rejections": 0,
+      "first_smoother_motion_rejection": null,
+      "last_smoother_motion_rejection": null,
+      "recorded_published_poses": 0,
+      "top_log_sources": [
+        [
+          "async_message_process.h:164",
+          9418
+        ],
+        [
+          "lidar_loc.cc:1833",
+          9121
+        ],
+        [
+          "laser_mapping.cc:815",
+          1716
+        ],
+        [
+          "localization.cpp:200",
+          1533
+        ],
+        [
+          "pgo.cc:66",
+          1278
+        ],
+        [
+          "eskf.cc:634",
+          1139
+        ],
+        [
+          "localization.cpp:1017",
+          924
+        ],
+        [
+          "loc_system.cc:896",
+          709
+        ],
+        [
+          "loc_system.cc:892",
+          709
+        ],
+        [
+          "localization.cpp:880",
+          61
+        ],
+        [
+          "localization.cpp:914",
+          60
+        ],
+        [
+          "pgo.cc:323",
+          57
+        ]
+      ]
+    },
+    {
+      "run": "sany_3lidar_20260925_134630",
+      "log": "F:\\datasets\\SANY\\sites\\bauma_2026_replica\\derived\\lightning-lm\\diagnostics\\sany_3lidar_20260925_134630\\logs\\run_loc_online.stderr.log",
+      "sha256": "f5b0f2aa1e0afe6a42822b8d8f26ae814d3fb5987e1fb358aab2d9d2feded9b5",
+      "first_log_time": "13:46:39.269325",
+      "last_log_time": "14:38:08.005295",
+      "sampled_matches": 3078,
+      "sampled_invalid_matches": 0,
+      "minimum_sampled_confidence": 2.24352,
+      "max_raw_correction": {
+        "line": 104,
+        "time": "13:46:45.955571",
+        "timestamp": "1.79032e+09",
+        "confidence": "2.40138",
+        "loc_success_lo": "1",
+        "loc_success": "1",
+        "odom_valid": "1",
+        "odom_delta": "0.00890178",
+        "smooth": "1",
+        "published_valid": "1",
+        "guess_xyz": [
+          1.89216,
+          -2.88878,
+          3.54337
+        ],
+        "ndt_xyz": [
+          1.81634,
+          -2.88547,
+          3.59014
+        ],
+        "balanced_xyz": [
+          1.88457,
+          -2.88853,
+          3.54803
+        ],
+        "raw_correction_m": 0.08914629212704249
+      },
+      "max_pgo_lidar_disagreement": {
+        "line": 1376,
+        "time": "13:57:38.662770",
+        "message": "PGO_OUTPUT_AUDIT timestamp=1.79032e+09 base_timestamp=1.79032e+09 lidar_timestamp=1.79032e+09 base_xy=[   7.5447 -0.321109] output_xy=[  7.55092 -0.307492] lidar_xy=[   7.2773 -0.789437] output_base_delta_xy=0.0149683 output_lidar_delta_xy=0.5542 lidar_age=0.161349 valid=1",
+        "delta_xy_m": 0.5542
+      },
+      "feedback_samples": {
+        "16:15:00": null,
+        "17:54:00": null
+      },
+      "nearest_internal_high_frequency_tum": {},
+      "events": [
+        {
+          "line": 97,
+          "time": "13:46:45.938556",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=306, query_frames=1, confirmations=2, retrieval score=0.991636, refinement_backend=plane_icp, refinement_score=0.909702, overlap=0.976795, interval=1.20001, pose= 1.89318 -2.89455  3.54412"
+        }
+      ],
+      "smoother_motion_rejections": 0,
+      "first_smoother_motion_rejection": null,
+      "last_smoother_motion_rejection": null,
+      "recorded_published_poses": 0,
+      "top_log_sources": [
+        [
+          "lidar_loc.cc:1833",
+          3078
+        ],
+        [
+          "async_message_process.h:164",
+          2518
+        ],
+        [
+          "localization.cpp:1017",
+          306
+        ],
+        [
+          "eskf.cc:634",
+          267
+        ],
+        [
+          "pgo.cc:66",
+          235
+        ],
+        [
+          "localization.cpp:200",
+          99
+        ],
+        [
+          "laser_mapping.cc:815",
+          51
+        ],
+        [
+          "loc_system.cc:896",
+          29
+        ],
+        [
+          "loc_system.cc:892",
+          29
+        ],
+        [
+          "laser_mapping.cc:793",
+          21
+        ],
+        [
+          "imu_processing.hpp:558",
+          20
+        ],
+        [
+          "localization.cpp:880",
+          7
+        ]
+      ]
+    },
+    {
+      "run": "sany_3lidar_20260925_145157",
+      "log": "F:\\datasets\\SANY\\sites\\bauma_2026_replica\\derived\\lightning-lm\\diagnostics\\sany_3lidar_20260925_145157\\logs\\run_loc_online.stderr.log",
+      "sha256": "881b1c37029b6e9854c27fbf2c39a78999b5cb3768bf23d06cc9c2399281e4c4",
+      "first_log_time": "14:52:09.425859",
+      "last_log_time": "16:24:05.381574",
+      "sampled_matches": 5499,
+      "sampled_invalid_matches": 1,
+      "minimum_sampled_confidence": 0.313168,
+      "max_raw_correction": {
+        "line": 17271,
+        "time": "16:02:38.595149",
+        "timestamp": "1.79032e+09",
+        "confidence": "0.614458",
+        "loc_success_lo": "1",
+        "loc_success": "1",
+        "odom_valid": "1",
+        "odom_delta": "0.0597848",
+        "smooth": "1",
+        "published_valid": "1",
+        "guess_xyz": [
+          2.06416,
+          -46.9054,
+          4.97484
+        ],
+        "ndt_xyz": [
+          2.0546,
+          -46.3077,
+          4.94345
+        ],
+        "balanced_xyz": [
+          2.06327,
+          -46.8456,
+          4.97172
+        ],
+        "raw_correction_m": 0.5986000465252269
+      },
+      "max_pgo_lidar_disagreement": {
+        "line": 16213,
+        "time": "16:02:10.339310",
+        "message": "PGO_OUTPUT_AUDIT timestamp=1.79032e+09 base_timestamp=1.79032e+09 lidar_timestamp=1.79032e+09 base_xy=[1.76401 48.7879] output_xy=[1.76346 48.7957] lidar_xy=[1.75875 39.2756] output_base_delta_xy=0.00778939 output_lidar_delta_xy=9.52012 lidar_age=6.08231 valid=1",
+        "delta_xy_m": 9.52012
+      },
+      "feedback_samples": {
+        "16:15:00": {
+          "line": 18991,
+          "time": "16:15:00.560356",
+          "timestamp": "1.79032e+09",
+          "confidence": "1.90016",
+          "loc_success_lo": "1",
+          "loc_success": "1",
+          "odom_valid": "1",
+          "odom_delta": "0.00408622",
+          "smooth": "1",
+          "published_valid": "1",
+          "guess_xyz": [
+            8.73465,
+            -22.4897,
+            3.76891
+          ],
+          "ndt_xyz": [
+            8.73267,
+            -22.4384,
+            3.77617
+          ],
+          "balanced_xyz": [
+            8.73446,
+            -22.4846,
+            3.76964
+          ],
+          "raw_correction_m": 0.05184899227564371
+        },
+        "17:54:00": null
+      },
+      "nearest_internal_high_frequency_tum": {
+        "16:15:00": {
+          "target_unix": 1790324100.0,
+          "offset_sec": 0.0013225078582763672,
+          "timestamp": 1790324100.0013225,
+          "xyz": [
+            8.814103632968,
+            -30.13052139084,
+            4.109917584063
+          ],
+          "sampled_lidar_disagreement_xy_m": 7.646336182981821
+        }
+      },
+      "events": [
+        {
+          "line": 106,
+          "time": "14:52:16.571172",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=1107, query_frames=1, confirmations=2, retrieval score=0.981353, refinement_backend=plane_icp, refinement_score=0.913311, overlap=0.985805, interval=0.900004, pose=9.21079 3.28759 3.56529"
+        },
+        {
+          "line": 14673,
+          "time": "16:02:04.357240",
+          "message": "localization failed! score: 0.399608"
+        },
+        {
+          "line": 14707,
+          "time": "16:02:04.496904",
+          "message": "localization failed! score: 0.375285"
+        },
+        {
+          "line": 14731,
+          "time": "16:02:04.586321",
+          "message": "localization failed! score: 0.313168"
+        },
+        {
+          "line": 14760,
+          "time": "16:02:04.691975",
+          "message": "localization failed! score: 0.357821"
+        },
+        {
+          "line": 14789,
+          "time": "16:02:04.825662",
+          "message": "localization failed! score: 0.363388"
+        },
+        {
+          "line": 14790,
+          "time": "16:02:04.825803",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] tracking lost after 5 consecutive rejected NDT matches"
+        },
+        {
+          "line": 14795,
+          "time": "16:02:04.878947",
+          "message": "localization map outputs disabled after localization loss: consecutive_lost_frames=5"
+        },
+        {
+          "line": 16642,
+          "time": "16:02:11.949316",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=307, query_frames=1, confirmations=2, retrieval score=0.992306, refinement_backend=plane_icp, refinement_score=0.909807, overlap=0.979098, interval=1.69995, pose= 1.79939 -2.27612  3.55655"
+        }
+      ],
+      "smoother_motion_rejections": 297,
+      "first_smoother_motion_rejection": {
+        "line": 12108,
+        "time": "16:01:23.560111",
+        "message": "smoother motion is too large: distance=0.316252, dt=0.00410056, speed_mps=3.0491, allowed_distance=0.3"
+      },
+      "last_smoother_motion_rejection": {
+        "line": 14136,
+        "time": "16:01:54.961066",
+        "message": "smoother motion is too large: distance=0.327389, dt=0.00419569, speed_mps=5.30383, allowed_distance=0.3"
+      },
+      "recorded_published_poses": 0,
+      "top_log_sources": [
+        [
+          "lidar_loc.cc:1833",
+          5499
+        ],
+        [
+          "eskf.cc:634",
+          5390
+        ],
+        [
+          "async_message_process.h:164",
+          4097
+        ],
+        [
+          "pgo.cc:38",
+          1545
+        ],
+        [
+          "localization.cpp:200",
+          1401
+        ],
+        [
+          "pgo.cc:66",
+          1005
+        ],
+        [
+          "localization.cpp:1017",
+          547
+        ],
+        [
+          "smoother.h:78",
+          297
+        ],
+        [
+          "localization.cpp:880",
+          44
+        ],
+        [
+          "localization.cpp:914",
+          43
+        ],
+        [
+          "pgo.cc:323",
+          39
+        ],
+        [
+          "laser_mapping.cc:793",
+          21
+        ]
+      ]
+    },
+    {
+      "run": "sany_3lidar_20260925_162406",
+      "missing_algorithm_log": true
+    },
+    {
+      "run": "sany_3lidar_20260925_162448",
+      "log": "F:\\datasets\\SANY\\sites\\bauma_2026_replica\\derived\\lightning-lm\\diagnostics\\sany_3lidar_20260925_162448\\logs\\run_loc_online.stderr.log",
+      "sha256": "7144a96098716cd7964558ec320317bfcfe2c4b534f461fcca12d48fc705bafa",
+      "first_log_time": "16:24:58.949551",
+      "last_log_time": "18:04:26.596619",
+      "sampled_matches": 5953,
+      "sampled_invalid_matches": 0,
+      "minimum_sampled_confidence": 1.15505,
+      "max_raw_correction": {
+        "line": 28454,
+        "time": "17:52:00.568813",
+        "timestamp": "1.79033e+09",
+        "confidence": "2.58893",
+        "loc_success_lo": "1",
+        "loc_success": "1",
+        "odom_valid": "1",
+        "odom_delta": "0.0243161",
+        "smooth": "1",
+        "published_valid": "1",
+        "guess_xyz": [
+          8.73747,
+          2.76438,
+          3.53555
+        ],
+        "ndt_xyz": [
+          8.49485,
+          2.77759,
+          3.57692
+        ],
+        "balanced_xyz": [
+          8.71323,
+          2.76575,
+          3.53975
+        ],
+        "raw_correction_m": 0.24647605441502876
+      },
+      "max_pgo_lidar_disagreement": {
+        "line": 28544,
+        "time": "17:52:03.062927",
+        "message": "PGO_OUTPUT_AUDIT timestamp=1.79033e+09 base_timestamp=1.79033e+09 lidar_timestamp=1.79033e+09 base_xy=[21.9772 2.94342] output_xy=[22.0046 2.94357] lidar_xy=[21.2146 2.91896] output_base_delta_xy=0.0273967 output_lidar_delta_xy=0.790407 lidar_age=0.153262 valid=1",
+        "delta_xy_m": 0.790407
+      },
+      "feedback_samples": {
+        "16:15:00": null,
+        "17:54:00": {
+          "line": 31885,
+          "time": "17:54:00.555938",
+          "timestamp": "1.79033e+09",
+          "confidence": "1.55747",
+          "loc_success_lo": "1",
+          "loc_success": "1",
+          "odom_valid": "1",
+          "odom_delta": "0.00213908",
+          "smooth": "1",
+          "published_valid": "1",
+          "guess_xyz": [
+            48.3495,
+            3.85791,
+            3.43972
+          ],
+          "ndt_xyz": [
+            48.3309,
+            3.84228,
+            3.43579
+          ],
+          "balanced_xyz": [
+            48.3477,
+            3.85634,
+            3.43933
+          ],
+          "raw_correction_m": 0.02461100973141832
+        }
+      },
+      "nearest_internal_high_frequency_tum": {},
+      "events": [
+        {
+          "line": 120,
+          "time": "16:25:09.651264",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=150, query_frames=3, confirmations=2, retrieval score=0.993332, refinement_backend=plane_icp, refinement_score=0.909525, overlap=0.981837, interval=1.40001, pose= 8.6519 3.36572 3.56744"
+        }
+      ],
+      "smoother_motion_rejections": 1342,
+      "first_smoother_motion_rejection": {
+        "line": 18718,
+        "time": "17:49:23.050500",
+        "message": "smoother motion is too large: distance=0.304077, dt=0.00434399, speed_mps=2.907, allowed_distance=0.3"
+      },
+      "last_smoother_motion_rejection": {
+        "line": 30659,
+        "time": "17:52:35.640044",
+        "message": "smoother motion is too large: distance=0.303118, dt=0.00434828, speed_mps=3.09445, allowed_distance=0.3"
+      },
+      "recorded_published_poses": 0,
+      "top_log_sources": [
+        [
+          "eskf.cc:634",
+          13061
+        ],
+        [
+          "lidar_loc.cc:1833",
+          5953
+        ],
+        [
+          "async_message_process.h:164",
+          4918
+        ],
+        [
+          "localization.cpp:200",
+          3953
+        ],
+        [
+          "pgo.cc:66",
+          2610
+        ],
+        [
+          "smoother.h:78",
+          1342
+        ],
+        [
+          "localization.cpp:1017",
+          592
+        ],
+        [
+          "localization.cpp:880",
+          133
+        ],
+        [
+          "localization.cpp:914",
+          132
+        ],
+        [
+          "pgo.cc:323",
+          117
+        ],
+        [
+          "laser_mapping.cc:815",
+          50
+        ],
+        [
+          "laser_mapping.cc:793",
+          21
+        ]
+      ]
+    },
+    {
+      "run": "sany_3lidar_20260925_180212",
+      "log": "F:\\datasets\\SANY\\sites\\bauma_2026_replica\\derived\\lightning-lm\\diagnostics\\sany_3lidar_20260925_180212\\logs\\run_loc_online.stderr.log",
+      "sha256": "7d27209a59b707a893c258ddd26bc3fa461fb3b608a72165531f86d61d3d8f97",
+      "first_log_time": "18:02:22.688151",
+      "last_log_time": "18:22:43.246552",
+      "sampled_matches": 1213,
+      "sampled_invalid_matches": 0,
+      "minimum_sampled_confidence": 2.03676,
+      "max_raw_correction": {
+        "line": 2422,
+        "time": "18:11:01.276360",
+        "timestamp": "1.79033e+09",
+        "confidence": "2.46018",
+        "loc_success_lo": "1",
+        "loc_success": "1",
+        "odom_valid": "1",
+        "odom_delta": "0.00556862",
+        "smooth": "1",
+        "published_valid": "1",
+        "guess_xyz": [
+          14.24,
+          5.13206,
+          3.522
+        ],
+        "ndt_xyz": [
+          14.2431,
+          5.07383,
+          3.52934
+        ],
+        "balanced_xyz": [
+          14.2403,
+          5.12624,
+          3.52273
+        ],
+        "raw_correction_m": 0.05877259990846076
+      },
+      "max_pgo_lidar_disagreement": {
+        "line": 3063,
+        "time": "18:13:25.760720",
+        "message": "PGO_OUTPUT_AUDIT timestamp=1.79033e+09 base_timestamp=1.79033e+09 lidar_timestamp=1.79033e+09 base_xy=[  6.9108 -1.10677] output_xy=[ 6.91837 -1.09841] lidar_xy=[ 6.70978 -1.32534] output_base_delta_xy=0.0112712 output_lidar_delta_xy=0.308232 lidar_age=0.159588 valid=1",
+        "delta_xy_m": 0.308232
+      },
+      "feedback_samples": {
+        "16:15:00": null,
+        "17:54:00": null
+      },
+      "nearest_internal_high_frequency_tum": {},
+      "events": [
+        {
+          "line": 97,
+          "time": "18:02:30.281095",
+          "message": "GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=1316, query_frames=1, confirmations=2, retrieval score=0.986738, refinement_backend=plane_icp, refinement_score=0.916173, overlap=0.981236, interval=1.69994, pose=8.49959 2.79697 3.56868"
+        }
+      ],
+      "smoother_motion_rejections": 0,
+      "first_smoother_motion_rejection": null,
+      "last_smoother_motion_rejection": null,
+      "recorded_published_poses": 0,
+      "top_log_sources": [
+        [
+          "lidar_loc.cc:1833",
+          1214
+        ],
+        [
+          "localization.cpp:200",
+          1090
+        ],
+        [
+          "async_message_process.h:164",
+          764
+        ],
+        [
+          "pgo.cc:66",
+          458
+        ],
+        [
+          "eskf.cc:634",
+          396
+        ],
+        [
+          "localization.cpp:1017",
+          120
+        ],
+        [
+          "localization.cpp:880",
+          27
+        ],
+        [
+          "localization.cpp:914",
+          26
+        ],
+        [
+          "pgo.cc:323",
+          22
+        ],
+        [
+          "laser_mapping.cc:793",
+          21
+        ],
+        [
+          "imu_processing.hpp:558",
+          20
+        ],
+        [
+          "solid_relocalizer.cc:608",
+          7
+        ]
+      ]
+    }
+  ]
+}

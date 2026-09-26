@@ -1384,8 +1384,11 @@ bool LidarLoc::UpdateGlobalMap() {
     NDTType::Ptr ndt(new NDTType());
     ndt->setResolution(1.0);
     ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
+    ndt->setOulierRatio(0.45);
     ndt->setStepSize(0.1);
-    ndt->setMaximumIterations(4);
+    // Map refresh must preserve the tracking matcher configured at startup.
+    ndt->setTransformationEpsilon(0.01);
+    ndt->setMaximumIterations(20);
     ndt->setNumThreads(ndt_threads_);
 
     map_->SetNewTargetForNDT(ndt);
@@ -1765,12 +1768,31 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
 
     if (loc_success) {
-        lidar_loc_odom_valid = CheckLidarOdomValid(current_pose_esti, delta_rel_abs_pose);
+        // Validate the raw registration, before the 0.1 smoothing above can
+        // hide a large correction. Do not commit a rejected match as the next prior.
+        lidar_loc_odom_valid = CheckLidarOdomValid(res_of_lo, delta_rel_abs_pose);
+        loc_success = lidar_loc_odom_valid;
+    }
+    if (loc_success && options_.enable_relocalization_map_consistency_) {
+        // A high local NDT score does not establish whole-scan map agreement.
+        // Reuse the immutable validation map with bounded work in production.
+        const auto consistency = EvaluateRelocalizationMapConsistency(
+            input, current_pose_esti, 0, options_.relocalization_min_overlap_ratio_, 2000);
+        ApplyMapConsistencyResult(consistency);
+        loc_success = consistency.passed;
+    }
+    last_match_stats_.success = loc_success;
+    if (loc_success) {
         match_fail_count_ = 0;
         last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
     } else {
         current_score_ = fitness_score;
-        LOG(WARNING) << "localization failed! score: " << current_score_;
+        LOG(WARNING) << "localization failed! score: " << current_score_
+                     << ", iterations=" << last_match_stats_.iterations
+                     << ", raw_odom_valid=" << lidar_loc_odom_valid
+                     << ", raw_odom_delta=" << delta_rel_abs_pose
+                     << ", map_checked=" << last_match_stats_.map_consistency_evaluated
+                     << ", map_overlap=" << last_match_stats_.map_overlap_ratio;
         ++match_fail_count_;
         // Do not propagate a rejected NDT transform. Lidar odometry remains
         // the short-term motion source while global relocalization starts.
@@ -1782,16 +1804,22 @@ void LidarLoc::Align(const CloudPtr& input) {
             pending_relocalization_ = PendingRelocalization{};
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] tracking lost after " << match_fail_count_
-                         << " consecutive rejected NDT matches";
+                         << " consecutive rejected tracking matches";
             std::ostringstream message;
             message << "Localization tracking lost after " << match_fail_count_
-                    << " consecutive rejected NDT matches; global relocalization started";
+                    << " consecutive rejected tracking matches; global relocalization started";
             debug_event::Emit(message.str());
             relocalization_event_active_ = true;
         }
     }
 
     current_abs_pose_ = current_pose_esti;
+    // Keep the pose and odometry epochs paired, including DR fallback frames.
+    last_abs_pose_ = current_pose_esti;
+    last_lo_pose_ = current_lo_pose_;
+    last_lo_pose_set_ = current_lo_pose_set_;
+    last_dr_pose_ = current_dr_pose_;
+    last_dr_pose_set_ = current_dr_pose_set_;
 
     /// 确定激光定位是否满足平滑性要求
     Vec3d dpred = current_abs_pose_.translation() - guess_from_self.translation();
@@ -1836,6 +1864,9 @@ void LidarLoc::Align(const CloudPtr& input) {
                           << " ndt_xyz=[" << res_of_lo.translation().transpose() << "]"
                           << " balanced_xyz=[" << current_pose_esti.translation().transpose() << "]"
                           << " confidence=" << fitness_score
+                          << " iterations=" << last_match_stats_.iterations
+                          << " map_checked=" << last_match_stats_.map_consistency_evaluated
+                          << " map_overlap=" << last_match_stats_.map_overlap_ratio
                           << " loc_success_lo=" << loc_success_lo
                           << " loc_success=" << loc_success
                           << " odom_valid=" << lidar_loc_odom_valid
@@ -1929,12 +1960,6 @@ bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_p
         lo_reliable_cnt_ = 10;
         valid = false;
     }
-
-    last_abs_pose_ = current_pose_esti;
-    last_lo_pose_ = current_lo_pose_;
-    last_lo_pose_set_ = true;
-    last_dr_pose_ = current_dr_pose_;
-    last_dr_pose_set_ = true;
 
     return valid;
 }

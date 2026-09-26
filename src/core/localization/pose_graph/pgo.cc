@@ -208,6 +208,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
     // freeze an uninitialized (invalid) result and thereby block PGO startup.
     is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
     if (is_parking_ && !was_parking && impl_->result_.valid_) {
+        static_hold_start_stamp_ = dr_result.timestamp_;
         parking_result_ = impl_->result_;
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(parking_result_);
         parking_result_.is_parking_ = true;
@@ -289,6 +290,27 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
     }
 
     return true;
+}
+
+bool PGO::CheckStationaryMapConsistency(const LocalizationResult& loc_result) {
+    UL lock(impl_->data_mutex_);
+    if (!is_parking_ || !parking_result_.valid_ || !loc_result.lidar_loc_valid_ ||
+        loc_result.timestamp_ < static_hold_start_stamp_) return true;
+    const SE3 delta = parking_result_.pose_.inverse() * loc_result.pose_;
+    const double translation = delta.translation().norm();
+    const double rotation_deg = delta.so3().log().norm() * 180.0 / M_PI;
+    if (std::isfinite(translation) && std::isfinite(rotation_deg) &&
+        translation <= 0.5 && rotation_deg <= 5.0) return true;
+    LOG(ERROR) << "STATIONARY_MAP_CONFLICT stamp=" << std::setprecision(16)
+               << loc_result.timestamp_ << " translation_m=" << translation
+               << " rotation_deg=" << rotation_deg
+               << " held_xyz=[" << parking_result_.pose_.translation().transpose()
+               << "] match_xyz=[" << loc_result.pose_.translation().transpose() << "]";
+    debug_event::Emit("Stationary held pose conflicts with map localization; outputs stopped and relocalization requested");
+    parking_result_.valid_ = false;
+    impl_->result_.valid_ = false;
+    is_parking_ = false;
+    return false;
 }
 
 bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
@@ -426,6 +448,7 @@ bool PGO::Reset() {
     last_lidar_loc_time_ = 0.0;
     last_lidar_loc_input_time_ = -1.0;
     static_hold_release_watermark_ = -1.0;
+    static_hold_start_stamp_ = -1.0;
     high_freq_result_ = LocalizationResult{};
     parking_result_ = LocalizationResult{};
     is_parking_ = false;

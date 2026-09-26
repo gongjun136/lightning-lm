@@ -231,12 +231,13 @@ void pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTran
       update_visualizer_(output, std::vector<int>(), *target_, std::vector<int>());
     }
 
-    if (nr_iterations_ > max_iterations_ ||
-        (nr_iterations_ && (std::fabs(delta_p_norm) < transformation_epsilon_))) {
+    if (std::isfinite(delta_p_norm) && std::fabs(delta_p_norm) < transformation_epsilon_) {
       converged_ = true;
     }
 
     nr_iterations_++;
+    // Exhausting the compute budget is not evidence of registration convergence.
+    if (nr_iterations_ >= max_iterations_) break;
   }
 
   hessian_matrix_ = hessian;

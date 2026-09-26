@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <future>
+#include <fstream>
 #include <iostream>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -192,6 +193,7 @@ class LidarLoc {
     bool LidarLocThinkLOReliable() { return lo_reliable_; }
 
    private:
+    friend struct LidarLocRegressionAccess;
     // 内部函数  ==========================================================================
     /**
      * 对点云进行配准

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <iosfwd>
@@ -68,20 +69,26 @@ SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rota
 
 class LocalizationPublicationGate {
    public:
+    using Clock = std::chrono::steady_clock;
     explicit LocalizationPublicationGate(std::size_t lost_frame_threshold = 5);
 
     void SetLostFrameThreshold(std::size_t lost_frame_threshold);
     void SetMaxLidarMatchAge(double max_age_sec);
-    void ObserveLidarMatch(bool valid, double sensor_stamp = 0.0);
-    bool PoseOutputsEnabled() const;
-    bool MapOutputsEnabled(double current_sensor_stamp = 0.0) const;
-    bool LidarMatchStale(double current_sensor_stamp) const;
+    void ObserveLidarMatch(bool valid, double sensor_stamp = 0.0,
+                           Clock::time_point now = Clock::now());
+    bool PoseOutputsEnabled(double current_sensor_stamp = 0.0,
+                            Clock::time_point now = Clock::now()) const;
+    bool MapOutputsEnabled(double current_sensor_stamp = 0.0,
+                           Clock::time_point now = Clock::now()) const;
+    bool LidarMatchStale(double current_sensor_stamp,
+                        Clock::time_point now = Clock::now()) const;
     double LidarMatchAgeSec(double current_sensor_stamp) const;
     double LastLidarMatchStamp() const;
     double LastValidLidarMatchStamp() const;
     std::size_t ConsecutiveLostFrames() const;
 
    private:
+    bool MatchStaleLocked(double current_sensor_stamp, Clock::time_point now) const;
     mutable std::mutex mutex_;
     std::size_t lost_frame_threshold_ = 5;
     std::size_t consecutive_lost_frames_ = 0;
@@ -89,6 +96,8 @@ class LocalizationPublicationGate {
     double max_lidar_match_age_sec_ = 0.0;
     double last_lidar_match_stamp_ = 0.0;
     double last_valid_lidar_match_stamp_ = 0.0;
+    mutable double latest_sensor_stamp_ = 0.0;
+    Clock::time_point last_valid_match_arrival_{};
     mutable bool stale_latched_ = false;
 };
 
