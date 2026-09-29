@@ -43,4 +43,21 @@ endif ()
 
 add_subdirectory(src)
 
+option(BUILD_DOCS "Build the Doxygen code-reading documentation" OFF)
+if (BUILD_DOCS)
+    find_package(Doxygen REQUIRED COMPONENTS dot)
+    set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/docs")
+    configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/docs/code_reading/Doxyfile.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+            @ONLY
+    )
+    add_custom_target(docs
+            COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            COMMENT "Generating Lightning-LM code-reading documentation"
+            VERBATIM
+    )
+endif ()
+
 ament_package()
