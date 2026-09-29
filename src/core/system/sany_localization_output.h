@@ -67,6 +67,7 @@ SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
 SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotation,
                         const Vec3d& primary_lidar_position_in_body);
 
+/** @see @ref output_contracts */
 class LocalizationPublicationGate {
    public:
     using Clock = std::chrono::steady_clock;

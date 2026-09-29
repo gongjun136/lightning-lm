@@ -64,6 +64,7 @@ struct BundleAdjustmentSummary {
 // Plane-voxel LiDAR bundle adjustment adapted from Voxel-SLAM's LidarFactor
 // and Lidar_BA_Optimizer. The first pose is fixed; all other poses are refined
 // against the smallest-eigenvalue plane residual over shared voxels.
+/** @see @ref backend_optimization */
 class VoxelBundleAdjuster {
    public:
     explicit VoxelBundleAdjuster(BundleAdjustmentOptions options = {});

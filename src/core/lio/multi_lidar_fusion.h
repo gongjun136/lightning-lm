@@ -137,6 +137,7 @@ class AdaptiveLidarLoadController {
 
 CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& selection);
 
+/** @see @ref sensor_pipeline */
 class MultiLidarFrameAssembler {
    public:
     MultiLidarFrameAssembler() = default;

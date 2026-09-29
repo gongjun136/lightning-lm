@@ -28,6 +28,7 @@ struct SolidDescriptor {
 // bounds-safe implementation of the public SOLiD formulation.  Input clouds
 // must already be expressed in one common sensor frame; for SANY this is the
 // four-LiDAR fused cloud in the primary/front LiDAR frame.
+/** @see @ref relocalization_theory */
 class SolidDescriptorEngine {
    public:
     explicit SolidDescriptorEngine(SolidDescriptorOptions options = {});

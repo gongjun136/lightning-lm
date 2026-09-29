@@ -1,5 +1,7 @@
 # Lightning-LM
 
+开发与算法手册：[文档首页](./docs/index.md) · [构建文档网站](./docs/getting_started/build_and_run.md)。
+
 [English](./README.md) | 中文
 
 Lightning-Speed Lidar Localization and Mapping
@@ -23,6 +25,8 @@ Lightning-LM特性：
 13. [done] 高性能计算：以上这些特性在纯CPU端不到一个核心就可以运行（在线定位0.8个核，建图1.2个核，32线雷达，无UI情况）
 
 ## 更新
+
+> 当前 ESKF 使用 18 维误差状态；以下日期条目描述历史版本，现状见[ESKF 原理与实现](./docs/algorithms/eskf.md)。
 
 ### 2026.4.2
 
@@ -64,32 +68,32 @@ Lightning-LM特性：
 
 - VBR campus数据集上的建图：
 
-![](./doc/slam_vbr.gif)
+![](docs/assets/examples/slam_vbr.gif)
 
 - VBR上的定位
 
-  ![](./doc/lm_loc_vbr_campus.gif)
+  ![](docs/assets/examples/lm_loc_vbr_campus.gif)
 
 - VBR上的地图
     - 点云
 
-  ![](./doc/campus_vbr.png)
+  ![](docs/assets/examples/campus_vbr.png)
     - 栅格
 
-  ![](./doc/campus.png)
+  ![](docs/assets/examples/campus.png)
 
 - NCLT 数据集上的定位
 
-![](./doc/lm_loc1_nclt.gif)
+![](docs/assets/examples/lm_loc1_nclt.gif)
 
 - 云深处四足机械狗上的数据
 
-![](./doc/demo_ysc1.png)
-![](./doc/demo_ysc2.png)
-![](./doc/demo_ysc3.png)
+![](docs/assets/examples/demo_ysc1.png)
+![](docs/assets/examples/demo_ysc2.png)
+![](docs/assets/examples/demo_ysc3.png)
 
 - 斜装的DEMO
-  ![](./doc/demo_github.png)
+  ![](docs/assets/examples/demo_github.png)
 
 ## 编译
 
@@ -124,7 +128,7 @@ vcs import src < src/lightning-lm/common_msgs.repos
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-工作空间结构和历史路径映射见 [docs/workspace_layout.md](./docs/workspace_layout.md)。在工作空间根目录限制并发构建：
+工作空间结构和历史路径映射见 [docs/getting_started/workspace_layout.md](docs/getting_started/workspace_layout.md)。在工作空间根目录限制并发构建：
 
 ```bash
 source /opt/ros/humble/setup.bash

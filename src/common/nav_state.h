@@ -12,6 +12,7 @@
 
 namespace lightning {
 
+/** @see @ref geometry */
 struct NavState {
     // Error-state layout: position, rotation, velocity, gyro bias, accel bias, gravity.
     constexpr static int dim = 18;

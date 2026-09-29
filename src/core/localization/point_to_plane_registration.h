@@ -12,6 +12,7 @@
 
 namespace lightning::loc {
 
+/** @see @ref lidar_residuals */
 class PointToPlaneRegistration {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW

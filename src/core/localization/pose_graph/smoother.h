@@ -18,6 +18,7 @@ namespace lightning::loc {
 /**
  * 输出位姿的平滑器
  */
+/** @see @ref pose_graph_theory */
 class PoseSmoother {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW

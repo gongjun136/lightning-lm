@@ -29,9 +29,9 @@ Features of Lightning-LM:
 13. [done] High-performance computing: All the above features can run using less than one CPU core on the pure CPU
     side (online localization 0.8 cores, mapping 1.2 cores, 32-line LiDAR, without UI).
 
-Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_ba_btc_hba.md),
-[four-sequence optimization report](./doc/backend_ba_btc_hba_four_sequence_optimization_report_20260715.md), and
-[historical five-sequence report](./doc/backend_ba_btc_hba_five_sequence_algorithm_report_20260715.md).
+Developer and algorithm manual: [documentation home](./docs/index.md), [build instructions](./docs/getting_started/build_and_run.md), and [backend configuration](./docs/reference/backend_configuration.md).
+
+> Current implementation: the ESKF error state has 18 dimensions; dated entries below describe earlier revisions. See [ESKF](./docs/algorithms/eskf.md).
 
 ## Updates
 
@@ -84,33 +84,33 @@ Backend development and M3DGR validation: [BA + BTC + HBA guide](./doc/backend_b
 
 - Mapping on the VBR campus dataset:
 
-  ![](./doc/slam_vbr.gif)
+  ![](docs/assets/examples/slam_vbr.gif)
 
 - Localization on VBR
 
-  ![](./doc/lm_loc_vbr_campus.gif)
+  ![](docs/assets/examples/lm_loc_vbr_campus.gif)
 
 - Map on VBR
     - Point Cloud
 
-  ![](./doc/campus_vbr.png)
+  ![](docs/assets/examples/campus_vbr.png)
     - Grid Map
 
-  ![](./doc/campus.png)
+  ![](docs/assets/examples/campus.png)
 
 - Localization on the NCLT dataset
 
-![](./doc/lm_loc1_nclt.gif)
+![](docs/assets/examples/lm_loc1_nclt.gif)
 
 - Data on the Deep Robotics quadruped robot
 
-![](./doc/demo_ysc1.png)
-![](./doc/demo_ysc2.png)
-![](./doc/demo_ysc3.png)
+![](docs/assets/examples/demo_ysc1.png)
+![](docs/assets/examples/demo_ysc2.png)
+![](docs/assets/examples/demo_ysc3.png)
 
 - Tilted mounting demo
 
-  ![](./doc/demo_github.png)
+  ![](docs/assets/examples/demo_github.png)
 
 ## Build
 
@@ -147,7 +147,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ```
 
 The workspace and historical-path mapping are documented in
-[docs/workspace_layout.md](./docs/workspace_layout.md). Build with limited parallelism:
+[docs/getting_started/workspace_layout.md](docs/getting_started/workspace_layout.md). Build with limited parallelism:
 
 ```bash
 MAKEFLAGS="-j4" colcon build --packages-up-to lightning_lm --cmake-args -DCMAKE_BUILD_TYPE=Release
@@ -361,23 +361,23 @@ Lightning-LM特性：
 
 - VBR campus数据集上的建图：
 
-![](./doc/slam_vbr.gif)
+![](docs/assets/examples/slam_vbr.gif)
 
 - VBR上的定位
 
-  ![](./doc/lm_loc_vbr_campus.gif)
+  ![](docs/assets/examples/lm_loc_vbr_campus.gif)
 
 - VBR上的地图
     - 点云
 
-  ![](./doc/campus_vbr.png)
+  ![](docs/assets/examples/campus_vbr.png)
     - 栅格
 
-  ![](./doc/campus.png)
+  ![](docs/assets/examples/campus.png)
 
 - NCLT 数据集上的定位
 
-![](./doc/lm_loc1_nclt.gif)
+![](docs/assets/examples/lm_loc1_nclt.gif)
 
 ## 编译
 

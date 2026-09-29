@@ -1,0 +1,10 @@
+# Keep legacy API-comment warnings visible in the log, but reject broken manual pages.
+if(NOT EXISTS "${WARN_LOG}")
+    message(FATAL_ERROR "Doxygen warning log not found: ${WARN_LOG}")
+endif()
+file(STRINGS "${WARN_LOG}" warnings)
+foreach(line IN LISTS warnings)
+    if(line MATCHES "[/\\]docs[/\\].*: warning:")
+        message(FATAL_ERROR "Manual validation failed: ${line}")
+    endif()
+endforeach()

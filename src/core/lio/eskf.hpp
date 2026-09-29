@@ -25,6 +25,7 @@ namespace lightning {
  *
  * 当前主要状态块包括：pos / rot / vel / bg，以及NavState中定义的其他固定块。
  */
+/** @see @ref eskf_theory */
 class ESKF {
    public:
     static constexpr int process_noise_dim_ = 12;     // IMU预测噪声维度，通常包含陀螺仪、加速度计及零偏噪声

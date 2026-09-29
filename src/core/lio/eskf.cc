@@ -421,7 +421,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             int idx = it.idx_;                       // SO3状态在向量中的索引
             Vec3d seg_SO3 = dx.block<3, 1>(idx, 0);  // 提取SO3状态的变化量
             // 使用从start_x切空间到当前x_切空间的右雅可比J_r(δθ)。
-            // math::A_matrix(δθ)=J_l(δθ)，由BCH.md中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
+            // math::A_matrix(δθ)=J_l(δθ)，由 docs/algorithms/geometry.md 中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
             // I - 0.5*[δθ]x只是J_r(δθ)的小角度一阶近似；这里保留完整右雅可比。
             Mat3d res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
             // 对dx进行流形变换,这里理论是有负号的，后面dx_current迭代更新抵消了，所以就没写了
@@ -736,7 +736,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 }
 
                 // 这里应使用从start_x切空间到当前x_切空间的右雅可比J_r(δθ)。
-                // math::A_matrix(δθ)=J_l(δθ)，由BCH.md中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
+                // math::A_matrix(δθ)=J_l(δθ)，由 docs/algorithms/geometry.md 中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
                 // I - 0.5*[δθ]x只是J_r(δθ)的小角度一阶近似；这里保留完整右雅可比，避免较大迭代步下误差变大。
                 res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
 
@@ -746,7 +746,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                 }
 
                 // 同样方式更新 K_H 中与该 SO3 状态对应的行（K_H_row = J * K_H_row）
-                // 注意：这里只对参与观测的前 15 维做处理
+                // 注意：这里只对参与观测的前 6 列做处理
                 for (int j = 0; j < pose_obs_dim_; j++) {
                     K_H.block<3, 1>(idx, j) = res_temp_SO3 * (K_H.block<3, 1>(idx, j));
                 }

@@ -81,6 +81,7 @@ struct WheelSpeedDrStats {
  * 但处理一帧点云需要等到扫描结束时间之后的IMU。因此缓存中最新点云往往还不能处理，
  * 实际处理的通常是队列中已经等到足够IMU覆盖的那一帧。
  */
+/** @see @ref laser_mapping_module */
 class LaserMapping {
    public:
     enum class RunStatus { kNoData, kConsumed, kOutput };
