@@ -47,10 +47,15 @@ sudo apt-get install doxygen graphviz
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to lightning_lm \
   --cmake-args -DBUILD_DOCS=ON -DBUILD_TESTING=OFF
+```
+
+`BUILD_DOCS=ON` 会把 `docs` 加入默认 `ALL` 目标，因此上述 `colcon build` 完成时文档已经生成，入口页为 `build/lightning_lm/docs/html/index.html`。如只需重新生成文档，可执行：
+
+```bash
 cmake --build build/lightning_lm --target docs
 ```
 
-入口页为 `build/lightning_lm/docs/html/index.html`。`--packages-up-to` 会先准备工作区内的消息/接口依赖；若改用裸 `cmake` 或 `--packages-select`，需要先 `source install/setup.bash`。普通 `colcon build` 的默认值是 `BUILD_DOCS=OFF`，因此不会因本机缺少 Doxygen 而改变程序构建。
+`--packages-up-to` 会先准备工作区内的消息/接口依赖；若改用裸 `cmake` 或 `--packages-select`，需要先 `source install/setup.bash`。普通 `colcon build` 的默认值是 `BUILD_DOCS=OFF`，因此不会查找 Doxygen，也不会生成文档或改变程序构建。
 
 # 启动约定
 

@@ -52,7 +52,7 @@ if (BUILD_DOCS)
             "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
             @ONLY
     )
-    add_custom_target(docs
+    add_custom_target(docs ALL
             COMMAND "${DOXYGEN_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             COMMENT "Generating Lightning-LM code-reading documentation"
