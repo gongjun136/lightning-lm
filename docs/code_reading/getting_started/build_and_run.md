@@ -38,6 +38,10 @@ source install/setup.bash
 
 `--packages-up-to` 会构建包及其工作区依赖；链接关系的核心是所有业务程序链接 `lightning_lm.libs`，核心库再链接 `${third_party_libs}`、PCL、`miao.core` 和 `miao.utils`。
 
+工作区还必须提供 `diagnostic_monitor_interfaces`、`lightning`、`geosun_msgs` 和 `livox_ros_driver2` 四个 ROS 接口包；本项目的配套布局是把 `common_msgs` 与 `lightning-lm` 两个仓库并列放在 `src/` 下。它们是源码包，不是通过 `apt install` 获得的系统库。
+
+**代码依据：** `cmake/packages.cmake` 的四个 `find_package()`；`package.xml` 的对应 `<depend>` 声明
+
 ## 仅构建文档
 
 Doxygen 与 Graphviz 是可选开发依赖：
@@ -50,6 +54,8 @@ colcon build --packages-up-to lightning_lm \
 ```
 
 `BUILD_DOCS=ON` 会把 `docs` 加入默认 `ALL` 目标，因此上述 `colcon build` 完成时文档已经生成，入口页为 `build/lightning_lm/docs/html/index.html`。如只需重新生成文档，可执行：
+
+`BUILD_TESTING=OFF` 只关闭 CTest/测试目标，用来缩短这次文档验证；它不控制 Doxygen。需要同时编译测试时可以省略该参数，`BUILD_DOCS` 的行为不变。
 
 ```bash
 cmake --build build/lightning_lm --target docs
@@ -77,7 +83,7 @@ scripts/run_slam_offline.sh \
 LIGHTNING_LM_CONFIG="$PWD/config/default.yaml" scripts/run_slam_online.sh
 ```
 
-完整脚本契约见 @subpage script_contracts "Shell 脚本契约"；离线 SLAM 的逐步调用路径见 @subpage offline_slam_flow "离线 SLAM 端到端流程"。
+完整脚本契约见 @ref script_contracts "Shell 脚本契约"；在线定位的逐步调用路径见 @ref online_localization_flow "在线定位端到端流程"；离线建图路径见 @ref offline_slam_flow "离线 SLAM 端到端流程"。
 
 # 常见失败边界
 

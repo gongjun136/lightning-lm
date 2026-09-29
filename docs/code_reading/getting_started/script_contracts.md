@@ -18,6 +18,57 @@
 
 **代码依据：** 上述各脚本（`source/cd/exec/ros2/sudo` 调用与变量默认值）
 
+## `run_loc_online.sh` 详细契约
+
+这条脚本是阅读在线定位时最重要的运行边界。它不实现定位算法，也不自行启动 rosbag；它负责选择环境和配置、建立可归档工作目录，然后把剩余 flags 交给 `run_loc_online`。
+
+### 参数与环境
+
+| 输入 | 默认值/解析 | 影响 |
+|---|---|---|
+| 第一个非 `-` 开头参数 | 时间戳形式 `run_loc_online_YYYYmmdd_HHMMSS` | 作为 run name；消费后不再传给二进制 |
+| 其余参数 | 无 | 原样追加到 `run_loc_online`；可包含 `--map`、`--bag`、轨迹输出等程序 flags |
+| `LIGHTNING_LM_REPO_DIR` | 脚本目录的上一级 | 配置、install setup、默认输出根的基准 |
+| `LIGHTNING_LM_ROS_SETUP` | `/opt/ros/humble/setup.bash` | 第一个 source 的 ROS 环境 |
+| `LIGHTNING_LM_INSTALL_SETUP` | `$repo_dir/install/setup.bash` | 第二个 source 的当前工作区 overlay |
+| `LIGHTNING_LM_CONFIG` | `$repo_dir/config/default.yaml` | 传给程序的配置；运行前必须存在并转为绝对路径 |
+| `LIGHTNING_LM_OUT_ROOT` | `$repo_dir/runs` | 持久运行目录根；创建后转为绝对路径 |
+| `LIGHTNING_LM_RUN_NAME` | 时间戳名称 | 无位置 run name 时生效 |
+
+`-h/--help` 仍会先 source 两个 setup，再通过 `ros2 pkg prefix lightning_lm` 找到安装空间中的真实二进制并调用其 help；help 分支不创建 run dir。
+
+### 工作目录与调用链
+
+```text
+caller cwd
+  → source $LIGHTNING_LM_ROS_SETUP
+  → source $LIGHTNING_LM_INSTALL_SETUP
+  → validate + realpath config
+  → mkdir $LIGHTNING_LM_OUT_ROOT/$run_name/logs
+  → subshell: cd $run_dir
+  → ros2 run lightning_lm run_loc_online --config $config_path "$@"
+```
+
+主 shell 的 cwd 不变，因为 `cd` 位于子 shell；算法进程的 cwd 是 run dir。脚本只规范 config 和 output root，自行透传的 `--map`、`--bag`、`--output-*` 若使用相对路径，仍由算法进程相对于 run dir 解析。为避免换机器后含义改变，建议这些路径也传绝对路径。
+
+### 文件与副作用
+
+```text
+$LIGHTNING_LM_OUT_ROOT/<run_name>/
+├── run_metadata.txt
+└── logs/
+    ├── run_loc_online.stdout.log
+    └── run_loc_online.stderr.log
+```
+
+`run_metadata.txt` 记录 executable、repo/config/run 路径、额外参数与 ISO 时间；标准输出和错误输出分开重定向。节点还会建立 ROS 订阅/发布、timer 与心跳；若程序 flags 请求 TUM 输出或地图配置允许持久化动态地图，还会产生额外文件。脚本没有“目标已存在则拒绝”的保护，同一个 run name 会截断上述 metadata 和日志。
+
+`set -euo pipefail` 使 setup 不存在、配置不存在、目录创建失败或算法返回非零时脚本失败；配置缺失明确返回 2。算法级初始化失败和运行失败沿用 `ros2 run` 的退出状态。
+
+在线定位内部调用与线程路径见 @ref online_localization_flow "在线定位端到端流程"。
+
+**代码依据：** `scripts/run_loc_online.sh`（全部控制流）；@ref run_loc_online.cc "run_loc_online.cc"（可透传 flags 与算法副作用）
+
 ## 标准离线运行器
 
 | 脚本 | 必需参数；重要可选参数 | 主要环境 | cwd / 调用链 / 副作用 |
@@ -66,4 +117,4 @@
 5. 副作用：覆盖保护、目录所有权、临时/持久产物、ROS service/topic、系统安装。
 6. 退出：trap 是否保留真实算法退出码；超时/验证失败是否区分。
 
-文档同步判定见 @subpage documentation_rules "基于代码 diff 的文档更新规则"。
+文档同步判定见 @ref documentation_rules "基于代码 diff 的文档更新规则"。

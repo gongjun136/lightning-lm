@@ -4,6 +4,8 @@
 
 @ref lightning::loc::Localization "Localization" 是定位数据面：它初始化 LIO、@ref lightning::loc::LidarLoc "LidarLoc" 和定位 PGO，接收 IMU/LiDAR/轮速并输出 @ref lightning::loc::LocalizationResult "LocalizationResult"。@ref lightning::LocSystem "LocSystem" 是 ROS 2 编排层，负责订阅、发布、TF、轨迹记录和功能安全心跳；两者不要混为一个对象。
 
+如果目标是从入口系统阅读在线定位，请先看 @ref online_localization_flow "在线定位端到端流程"。本页用于按类边界回查实现，不重复脚本、ROS topic 和整条调用链。
+
 **代码依据：** `src/core/localization/localization.h`、`src/core/system/loc_system.h`（公开接口、成员所有权）
 
 # 数据路径与有序性
@@ -51,9 +53,9 @@ digraph localization_flow {
 | tile 更新线程 | `LidarLoc` | `match_mutex_` 防止替换/使用 NDT 对象冲突 |
 | 定位结果 | `LidarLoc` | `result_mutex_` 保护读写 |
 
-**推断：** `Localization::~Localization() = default` 本身未显式停止队列；安全退出依赖 `AsyncMessageProcess` 成员析构和 `LidarLoc` 析构的 RAII 行为。这个结论来自成员析构顺序，未做故障注入验证。
+`Localization::~Localization() = default`，而 `AsyncMessageProcess` 没有用析构函数自动 join worker；因此调用者必须在对象销毁前走 `Localization::Finish()`。生产路径由 `LocSystem::Finish()` 保证这一点。`LidarLoc` 析构只为地图更新线程提供最后一道 join 保护，不能替代三个消息队列的显式停止。
 
-**代码依据：** `src/core/localization/localization.h`、`src/core/system/async_message_process.h`、`src/core/localization/lidar_loc/lidar_loc.h/.cc`
+**代码依据：** `src/core/localization/localization.h/.cpp`、`src/core/system/loc_system.cc`、`src/core/system/async_message_process.h`、`src/core/localization/lidar_loc/lidar_loc.cc`
 
 # 关键约束
 

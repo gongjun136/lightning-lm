@@ -18,7 +18,7 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 | `scripts/**/*.sh` | @ref script_contracts "脚本契约"、对应 flow/build | 参数、环境、cwd、子调用、副作用、输出/退出契约 |
 | `src/core/lio/**` | @ref laser_mapping_module "前端模块页"、@ref offline_slam_flow "离线流程" | 数据同步、状态更新、关键帧、锁和不变量 |
 | `src/core/backend/**`, `loop_closing/**` | @ref backend_module "后端模块页"、@ref offline_slam_flow "离线流程" | 后端 mode、线程、优化/提交顺序、输出 |
-| `src/core/localization/**`, `system/loc_system.*` | @ref localization_module "定位模块页"、@ref online_systems "在线编排页" | 重定位策略、map/odom、发布门限、线程 |
+| `src/core/localization/**`, `system/loc_system.*`, `app/run_loc_online.cc` | @ref online_localization_flow "在线定位流程"、@ref localization_module "定位模块页"、@ref online_systems "在线编排页" | 输入顺序、重定位策略、map/odom、发布门限、线程与退出 |
 | `src/core/system/**` | @ref online_systems "在线编排页"、受影响 flow | 所有权、消息队列、ROS 回调、启动/停止顺序 |
 | `src/core/maps/**`, `g2p5/**` | @ref map_and_support_modules "地图与支撑模块页"、导出 flow | 坐标系、格式、原点、覆盖/原子性 |
 | `src/wrapper/**`, `src/io/**`, message dependencies | @ref map_and_support_modules "地图与支撑模块页"、所有受影响 flow | topic type、回调线程、序列化/时间语义 |
@@ -44,6 +44,7 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 3. 性能、线程安全、执行顺序若未由实现保证，前缀写 **推断：** 并说明依据。
 4. 不复制大段源码；写不变量、状态转换和失败边界，并链接 API/源码。
 5. 行号可能漂移，评审 diff 时应验证符号链接仍成立；重命名后运行 docs target 让断链变成构建失败。
+6. 只有 `index.md` 使用 `@subpage` 建立导航层级；其他页面之间使用 `@ref`。双向 `@subpage` 会形成页面父子环，并可能让 Doxygen 1.9.1 长时间停在符号解析阶段。
 
 # PR/提交检查
 
@@ -58,4 +59,4 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 
 # 已覆盖范围与后续扩展
 
-当前已按运行风险覆盖 `BackendPipeline`、`LocSystem/Localization`、在线 `SlamSystem`、maps/export、multi-lidar、wrapper/bag、UI/utils 和 `miao`。后续新增模块时复用 @ref laser_mapping_module "LaserMapping 样板" 的结构；若单页超过一个清晰的数据流或生命周期边界，再拆出独立模块页，避免按目录逐文件罗列。
+当前已按运行风险覆盖 `BackendPipeline`、`LocSystem/Localization`、在线 `SlamSystem`、maps/export、multi-lidar、wrapper/bag、UI/utils 和 `miao`。后续扩展遵守两类页面边界：跨模块、可从入口跑通的故事放入 `flows/`；稳定类职责和不变量放入 `modules/`。离线定位、在线 SLAM 或更细的离线建图专题各自成为一条 flow，不在首页平铺文件，也不复制模块页。新增模块时复用 @ref laser_mapping_module "LaserMapping 样板" 的结构；只有单页出现两个独立数据流或生命周期边界时才继续拆分。

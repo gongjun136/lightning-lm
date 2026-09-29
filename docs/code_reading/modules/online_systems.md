@@ -22,18 +22,20 @@
 
 # 在线定位生命周期
 
+在线定位的完整逐帧路径、状态机和发布门控见 @ref online_localization_flow "在线定位端到端流程"；本页只保留系统编排层的共同职责。
+
 1. `LocSystem::Init()` 解析地图路径及 ROS 输出配置，构造 `Localization` 并注册结果/点云回调。
 2. ROS 回调只做消息适配、计数和转发；算法队列与定位线程由 `Localization` 管理。
 3. 定位回调发布 pose、path、TF、状态与诊断；可选轨迹文件由独立互斥量串行写入。
-4. `Stop()` 的契约是 drain 已接收的 sensor/定位数据后停止 worker；析构调用停止路径并释放 ROS 资源。
+4. `Finish()` 依次让 sensor、定位和高频输出队列 drain 并 join，再停止地图更新线程、heartbeat 和轨迹文件；析构会再次进入同一幂等路径。
 
-**代码依据：** `src/core/system/loc_system.h`（`Stop()` 注释和成员），`src/core/system/loc_system.cc`（`Init()`、输入转发、发布与析构）
+**代码依据：** `src/core/system/loc_system.h`（`Finish()` 和成员），`src/core/system/loc_system.cc`（`Init()`、输入转发、发布与析构），`src/core/localization/localization.cpp`（`Finish()`）
 
 # `AsyncMessageProcess<T>` 的队列契约
 
-这个模板是在线数据面的公共线程原语：`Start()` 创建一个 worker；`PushData()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数；退出逻辑按接口选择 drain 或停止。队列、运行标志和统计量均封装在对象内部。
+这个模板是在线定位数据面的公共线程原语：`Start()` 创建一个 worker；`AddMessage()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数。超过 `max_size_` 时淘汰最旧待处理消息；`Quit()` 会继续处理到队列为空再 join。队列、运行标志和统计量均封装在对象内部。
 
-**代码依据：** `src/core/system/async_message_process.h`（`Start()`、`PushData()`、`ProcLoop()`、析构/退出接口）
+**代码依据：** `src/core/system/async_message_process.h`（`Start()`、`AddMessage()`、`ProcLoop()`、`Quit()`）
 
 ## 线程关系
 
@@ -66,4 +68,3 @@ digraph online_threads {
 **推断：** 具体部署中的回调并发度由入口选择的 executor 和 ROS 2 配置决定；本文只陈述源码对象内部的同步，不假定运行时一定单线程。
 
 **代码依据：** `src/app/run_slam_online.cc`、`src/app/run_loc_online.cc`、`src/core/system/*.cc`、`src/core/system/async_message_process.h`
-
