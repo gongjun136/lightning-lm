@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-05",
+  "baseline_commit": "1f49ab7965e18a5720cba38b71bedd3dca3078f2",
+  "platform": "WSL Ubuntu 22.04 x86_64, ROS 2 Humble, GeographicLib 1.52; not target Orin",
+  "implementation_status": "local implementation built, installed and tested; site calibration and vehicle validation pending",
+  "source_sha256_lf": {
+    "src/core/navigation/ins_cloud.cc": "135368be81462c7f4a925e915194d748a3d6e4332ecf14fd8ca8729e402f1f0f",
+    "src/core/navigation/ins_cloud.h": "4b23d369d392bfca6823c55a83dba945d5eb824805df3f92306d79d2e3635a96",
+    "src/core/navigation/ins_navigation.cc": "1ba3350ff8a4c68092c27d5a05921f41d6a11d9da4b5cbbb4909270db2b2ca0e",
+    "src/core/navigation/ins_navigation.h": "ee487b06822ccdfe813f70e9e0474d09f7000a8b0d92f589eb491f8833b47f02",
+    "src/core/system/ins_loc_system.cc": "1c054eebeabeb1a2800554a5b8f94a217c2586d1fa230278ff54d7f3af3b24bd",
+    "src/core/system/ins_loc_system.h": "5fb7910905024d7a8e5eb242c1616428cd36d8976e962c8e12a65ac34075d2e6",
+    "src/app/run_loc_online.cc": "e3905b5d8ab2155d32f51eff502edc2d3df897165799474a77b9221d3202f68d",
+    "src/app/ins_project_llh.cc": "334ca36ee24424fc58e9269cc91e4983de9df8e5260dafaa7662dd95de9ae4f1",
+    "src/app/georeference_map.cc": "7bb6920d1e99feb752fe69808dcaf9771d205d00d1aa4614169ac91ecf40b2af",
+    "src/test/ins_navigation_test.cc": "f5721a6369770bcefb5c5a531df135291b05842184e24119e432a4235fd8aafb",
+    "scripts/ins_georeference.py": "5131febe880e550d5e86f895fa7aac050da9f7dd36ccae5633327b58bcd22aa0",
+    "scripts/test_ins_only_ros.py": "e90b55657ccd80858beb6cfe883aeb4623eaa3dca5eb3e4da4c06a81d26a487d",
+    "scripts/test_ins_only_replay.py": "5d23043a80860b21696fc4f747c2a0751d87f508ebd0799ccdf5458767dd210e",
+    "config/ins_only/sany_cgi430.yaml": "53508bb32cb0c63e32d3680725679fd4f48cac3a1361da69479e04d82506c4d5"
+  },
+  "cpp_tests": {
+    "passed": 7,
+    "failed": 0,
+    "names": [
+      "ins_navigation_test",
+      "lidar_tracking_health_test",
+      "multi_lidar_fusion_test",
+      "rear_axle_pose_test",
+      "sany_localization_output_test",
+      "pointcloud_preprocess_test",
+      "localization_pgo_test"
+    ]
+  },
+  "ros_end_to_end": {
+    "checks": [
+      "valid rear-axle pose, reverse speed, two-lidar body/map cloud outputs",
+      "RTK float and fixed-without-heading stop publication; recovery works",
+      "stale attitude and complete dropout stop output; heartbeat stays alive without advancing work",
+      "unconfirmed calibration, legacy transform, unknown mode and map flag refuse startup"
+    ],
+    "input_bag": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/ins_ros_test_nmxboz1_/input_bag",
+    "middleware": "rmw_cyclonedds_cpp",
+    "passed": true,
+    "ros_domain_id": 88
+  },
+  "clocked_replay": {
+    "check": "input-only clocked replay, monotonic recomputed poses, wall-time timeout after /clock freezes",
+    "passed": true,
+    "poses": 74
+  },
+  "offline_migration": {
+    "passed": true,
+    "checks": [
+      "known SE3 and clock offset",
+      "held-out drift rejection",
+      "collinear route rejection",
+      "task CSV and TUM conversion",
+      "planar PGM transform and tilted-grid refusal",
+      "PCD and tiled map export",
+      "overwrite refusal"
+    ]
+  },
+  "public_dataset": {
+    "scope": "numerical coordinate conversion only; not CGI or GNSS accuracy",
+    "bag": "/mnt/f/datasets/M3DGR/Dataset/Standard/Outdoor01/Outdoor01.bag",
+    "bag_size_bytes": 6553326739,
+    "source_topic": "/ublox_driver/receiver_pvt",
+    "height": "ellipsoidal altitude, not height_msl",
+    "rows": 4116,
+    "finite_valid_rows": 4116,
+    "carrier_solution_counts": {
+      "0": 4116
+    },
+    "fixed_origin_llh": [
+      34.027085,
+      108.76199109999999,
+      393.28000000000003
+    ],
+    "max_conversion_difference_m": 3.2596329092802497e-09,
+    "rms_conversion_difference_m": 1.0036055201879145e-09,
+    "acceptance_tolerance_m": 1e-07,
+    "passed": true,
+    "ground_truth_audit": {
+      "path": "/mnt/f/datasets/M3DGR/GT/Standard/Outdoor01.txt",
+      "rows": 6174,
+      "adjacent_duplicate_stamps": 3313,
+      "backward_stamps": 135,
+      "all_identity_quaternions": true,
+      "note": "No full-attitude accuracy claim and no preprocessing of original data"
+    },
+    "extracted_gnss_sha256": "02f50f243a49e740275ae7275736410a4a2b0f44d03f80d88808773eee68b7b7"
+  },
+  "documentation": {
+    "build": "passed",
+    "manual_pages": 38,
+    "source_link_errors": 0,
+    "html_link_errors": 0
+  },
+  "launcher": {
+    "installed": true,
+    "unconfirmed_template_refused": true,
+    "exit_code": 1
+  },
+  "middleware_limit": "On this WSL host Fast DDS 2.6.10 discovered peers but official C++ talker/listener and C++/Python probes received no cross-process user data. Cyclone DDS passed the independent probe and all ROS acceptance tests. Production middleware defaults were not changed; no vehicle-network validation.",
+  "required_site_work": [
+    "verified WGS84 datum and ellipsoid/orthometric height",
+    "persistent site origin",
+    "measured rear_from_primary transform",
+    "CGI/LiDAR clock offset and scan timing",
+    "matched old-map/rear-axle trajectories for actual migration",
+    "independent ground truth for CGI accuracy",
+    "Orin timing and downstream stop-response acceptance"
+  ],
+  "artifacts": {
+    "logs": "runs/ins_acceptance_20261005",
+    "ros": "runs/ins_ros_test_nmxboz1_",
+    "replay": "runs/ins_ros_test_nmxboz1_/replay_q428zph7",
+    "m3dgr": "runs/ins_m3dgr_20261005"
+  }
+}

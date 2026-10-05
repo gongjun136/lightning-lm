@@ -2,6 +2,8 @@
 
 # Lightning-LM workspace layout
 
+CGI-430 模式还依赖同级 `sdk/cgi430_sdk/src/cgi430_interfaces`。先构建并加载该消息包环境，详见 @ref ins_only_operation "纯组合导航工作区与构建脚本"；无需复制 SDK 源码到 Lightning 仓库。
+
 `lightning_lm` depends on four ROS 2 interface packages maintained in the
 separate `common_msgs` repository:
 

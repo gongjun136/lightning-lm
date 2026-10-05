@@ -2,6 +2,8 @@
 
 # 构建边界
 
+CGI-430 模式新增 `cgi430_interfaces` 和 GeographicLib 依赖，以及 `ins_project_llh`、`georeference_map` 安装目标。消息工作区加载、构建脚本和配置见 @ref ins_only_operation "纯组合导航构建与启动"。
+
 工程是 ROS 2 `ament_cmake` 包，包名 `lightning_lm`。顶层 CMake 载入 `cmake/packages.cmake` 的三方依赖，进入 `src/` 生成库和程序，最后调用 `ament_package()`。
 
 **代码依据：** `CMakeLists.txt`、`package.xml`（`project(lightning_lm)`、`add_subdirectory(src)` 与 `build_type=ament_cmake`）

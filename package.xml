@@ -17,6 +17,8 @@
     <depend>diagnostic_monitor_interfaces</depend>
     <depend>geosun_msgs</depend>
     <depend>livox_ros_driver2</depend>
+    <depend>cgi430_interfaces</depend>
+    <depend>geographiclib</depend>
     <depend>rclcpp</depend>
     <depend>std_msgs</depend>
     <depend>geometry_msgs</depend>

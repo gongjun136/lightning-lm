@@ -2,6 +2,8 @@
 
 # 逻辑模块导航
 
+`run_loc_online` 先按 `system.localization_mode` 选择编排者；缺省为 `lidar`。`ins_only` 由独立的 `InsLocSystem` 持有 ROS 订阅、坐标转换、门控与点云插值，不创建 `LocSystem/Localization`。见 @ref ins_only_operation "CGI-430 模式的数据流与生命周期"。
+
 | 模块 | 主要目录/类型 | 输入 → 输出 | 生命周期与线程 |
 |---|---|---|---|
 | 程序入口 | `src/app` | flags/ROS/bag → 系统对象与产物 | `main()` 持有顶层对象；决定退出顺序 |

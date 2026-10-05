@@ -20,6 +20,9 @@ find_package(diagnostic_monitor_interfaces REQUIRED)
 find_package(lightning REQUIRED)
 find_package(geosun_msgs REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
+find_package(cgi430_interfaces REQUIRED)
+find_path(GEOGRAPHICLIB_INCLUDE_DIR GeographicLib/LocalCartesian.hpp REQUIRED)
+find_library(GEOGRAPHICLIB_LIBRARY NAMES GeographicLib Geographic REQUIRED)
 
 # OMP
 find_package(OpenMP)

@@ -58,6 +58,9 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/system/slam.cc
         core/system/loc_system.cc
+        core/system/ins_loc_system.cc
+        core/navigation/ins_navigation.cc
+        core/navigation/ins_cloud.cc
         core/system/sany_localization_output.cc
 
         wrapper/bag_io.cc
@@ -79,7 +82,9 @@ ament_target_dependencies(
         "lightning"
         "geosun_msgs"
         "livox_ros_driver2"
+        "cgi430_interfaces"
 )
+target_include_directories(${PROJECT_NAME}.libs PUBLIC ${GEOGRAPHICLIB_INCLUDE_DIR})
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)
@@ -89,12 +94,17 @@ target_link_libraries(${PROJECT_NAME}.libs
         ${PCL_LIBRARIES}
         miao.core
         miao.utils
+        ${GEOGRAPHICLIB_LIBRARY}
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(ins_navigation_test test/ins_navigation_test.cc)
+    target_link_libraries(ins_navigation_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME ins_navigation_test COMMAND $<TARGET_FILE:ins_navigation_test>)
+
     add_executable(lidar_tracking_health_test test/lidar_tracking_health_test.cc)
     target_link_libraries(lidar_tracking_health_test ${PROJECT_NAME}.libs ${third_party_libs})
     add_test(NAME lidar_tracking_health_test COMMAND $<TARGET_FILE:lidar_tracking_health_test>)

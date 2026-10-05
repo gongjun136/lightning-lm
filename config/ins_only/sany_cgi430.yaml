@@ -1,0 +1,44 @@
+# Copy this file to a site-specific configuration and fill measured values.
+# Nulls/confirmed:false deliberately prevent launching with an invented origin
+# or an uncalibrated primary-LiDAR rotation.
+system:
+  localization_mode: ins_only
+  pub_tf: true
+output:
+  map_frame: map
+ins_only:
+  topic_prefix: /cgi430
+  output_reference: rear_axle
+  attitude_reference: rear_body
+  use_sim_time: false
+  receive_time_offset_sec: 0.0
+  pose_interpolation_max_gap_sec: 0.05
+  audit_root: runs
+  georeference:
+    confirmed: false
+    datum: WGS84
+    origin_llh: [null, null, null]  # latitude deg, longitude deg, ellipsoid height m
+    input_height: null            # ellipsoidal or orthometric, verify device settings
+    geoid_separation_m: null      # h = H + N; required only for orthometric input
+    max_radius_m: 20000
+  quality:
+    # Engineering initial limits, not a certified accuracy guarantee.
+    max_age_sec: 0.15
+    max_skew_sec: 0.02
+    max_future_sec: 0.02
+    max_differential_age_sec: 2.0
+    max_horizontal_sigma_m: 0.10
+    max_vertical_sigma_m: 0.20
+    max_attitude_sigma_deg: 0.5
+    max_velocity_sigma_mps: 0.20
+    recovery_samples: 10
+cloud:
+  enabled: true
+  lidar_config: ../reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml
+  rear_from_primary:
+    confirmed: false
+    translation_m: [null, null, null]
+    quaternion_xyzw: [null, null, null, null]
+  max_wait_sec: 0.3
+  map_publish_every: 1
+  voxel_leaf_m: 0.1

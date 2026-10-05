@@ -2,6 +2,8 @@
 
 # 两个系统对象
 
+另有启动时选择的 `InsLocSystem`：单线程 ROS 回调持有 CGI 最新字段、质量门控、有限时长位姿缓冲和多雷达组装；独立心跳线程随对象析构停止。Init 配置失败返回 false，Spin 随 ROS shutdown 退出。它不创建下面的 LIO/地图定位对象，详见 @ref ins_only_operation "纯组合导航生命周期"。
+
 @ref lightning::SlamSystem "SlamSystem" 封装在线建图，@ref lightning::LocSystem "LocSystem" 封装在线定位。二者都把 ROS 2 生命周期、算法对象和输出副作用集中在一个顶层对象中，但算法数据路径不同：SLAM 产生关键帧并更新地图，定位加载既有地图并发布定位状态。
 
 | 系统 | 主要拥有对象 | 输入 | 主要输出/副作用 |

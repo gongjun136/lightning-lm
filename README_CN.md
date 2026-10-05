@@ -2,6 +2,8 @@
 
 开发与算法手册：[文档首页](./docs/index.md) · [构建文档网站](./docs/getting_started/build_and_run.md)。
 
+SANY CGI-430：[纯组合导航模式、固定地理坐标系与验证](./docs/operations/ins_only.md)。
+
 [English](./README.md) | 中文
 
 Lightning-Speed Lidar Localization and Mapping

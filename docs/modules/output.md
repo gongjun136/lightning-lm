@@ -2,6 +2,8 @@
 
 # 三层有效性
 
+本页的 LIO/地图匹配门控适用于 `lidar` 模式。`ins_only` 复用业务消息构造函数，但直接输出已由设备补偿到后轴的导航解，采用独立的严格质量门控；坐标、失效和点云输出契约见 @ref ins_only_operation "CGI-430 纯组合导航模式"。
+
 `LidarLoc` 的 `lidar_loc_valid_` 表示地图匹配状态；`LocalizationResult::valid_` 表示融合结果；`LocalizationPublicationGate` 最后决定 ROS 位姿和地图相关输出是否允许。内部结果有效不等于消息已发送，发送也不等于 UI 已接收。
 
 @ref lightning::LocSystem "LocSystem" 持有发布器、telemetry、heartbeat 和轨迹文件，算法状态由 @ref lightning::loc::Localization "Localization" 管理。关闭顺序见 @ref online_localization_flow "在线定位端到端流程"。

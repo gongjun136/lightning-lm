@@ -48,6 +48,7 @@
 - @subpage compute_budget "点数预算与回归"
 - @subpage timing_contracts "时间一致性检查"
 - @subpage map_alignment "新旧地图对齐"
+- @subpage ins_only_operation "CGI-430 纯组合导航、坐标与验收"
 - @subpage speed_smoothing_shadow "速度影子诊断"
 - @subpage incident_20260925 "当前失效保护相关的故障证据"
 - @subpage documentation_rules "随代码维护文档"
@@ -66,5 +67,6 @@
 | run_slam_online | SlamSystem | 回调驱动 LIO，后端 worker/HBA |
 | run_loc_offline | main 持有 LIO/LidarLoc/PGO | 离线直接编排 |
 | run_loc_online | LocSystem + Localization | sensor、定位、高频输出队列 |
+| run_loc_online（ins_only） | InsLocSystem | CGI 后轴导航解、严格门控、导航驱动的点云去畸变 |
 
 **代码依据：** @ref run_frontend_offline.cc "run_frontend_offline.cc"、@ref run_frontend_online.cc "run_frontend_online.cc"、@ref run_slam_offline.cc "run_slam_offline.cc"、@ref run_slam_online.cc "run_slam_online.cc"、@ref run_loc_offline.cc "run_loc_offline.cc"、@ref run_loc_online.cc "run_loc_online.cc"。

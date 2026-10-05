@@ -2,6 +2,8 @@
 
 # 读取规则
 
+CGI-430 的 `build_ins_only.sh`、`run_ins_only.sh`、`record_ins_only.sh`、`replay_ins_only.sh`，以及坐标迁移/测试 Python 工具的参数、环境和文件副作用见 @ref ins_only_operation "纯组合导航操作契约"。
+
 表中的“参数”指脚本自身消费的参数，不包含透传给二进制/子脚本的全部 flags；“环境”只列影响控制流、路径或资源的主要变量；cwd 指脚本是否主动改变工作目录；“副作用”包括文件写入、进程/ROS 图变化和包安装。精确默认值以脚本 `usage()` 与赋值语句为准。
 
 ## 运维与薄包装入口

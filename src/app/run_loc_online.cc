@@ -16,6 +16,7 @@
 
 #include "app/online_bag_player.h"
 #include "core/system/loc_system.h"
+#include "core/system/ins_loc_system.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 
@@ -76,6 +77,28 @@ int main(int argc, char** argv) {
     using namespace lightning;
 
     rclcpp::init(argc, argv);
+
+    try {
+        const auto config = YAML::LoadFile(FLAGS_config);
+        const std::string mode = config["system"] && config["system"]["localization_mode"]
+            ? config["system"]["localization_mode"].as<std::string>() : "lidar";
+        if (mode == "ins_only") {
+            if (!FLAGS_map.empty() || !FLAGS_bag.empty() || !FLAGS_output_tum.empty() || !FLAGS_output_high_frequency_tum.empty()) {
+                LOG(ERROR) << "ins_only: use scripts/replay_ins_only.sh for clocked input-only bag playback; "
+                           << "--output_published_tum is supported, map/PGO/LIO flags are not";
+                rclcpp::shutdown();
+                return 2;
+            }
+            InsLocSystem ins;
+            if (!ins.Init(FLAGS_config, FLAGS_output_published_tum)) { rclcpp::shutdown(); return 1; }
+            ins.Spin();
+            rclcpp::shutdown();
+            return 0;
+        }
+        if (mode != "lidar") throw std::invalid_argument("system.localization_mode must be lidar or ins_only");
+    } catch (const std::exception& error) {
+        LOG(ERROR) << error.what(); rclcpp::shutdown(); return 2;
+    }
 
     LocSystem::Options opt;
     LocSystem loc(opt);

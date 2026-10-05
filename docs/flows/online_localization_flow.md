@@ -2,6 +2,8 @@
 
 # 阅读目标与边界
 
+此页描述缺省 `lidar` 分支。启动配置 `system.localization_mode: ins_only` 时，入口改为独立 `InsLocSystem`，流程见 @ref ins_only_operation "CGI-430 导航解到业务输出"。
+
 本页沿生产入口 `run_loc_online` 跟踪一帧 IMU/LiDAR 数据，直到地图匹配、定位 PGO 和 ROS 2 输出。它回答“数据在哪条线程上、由谁持有、何时可能被丢弃、状态如何转换、进程如何退出”。算法公式和类成员细节留在 @ref laser_mapping_module "LaserMapping" 与 @ref localization_module "定位模块"，避免同一内容在多页重复。
 
 > 范围说明：本文描述 `src/app/run_loc_online.cc` 的在线模式。`--bag` 只是在进程内增加一个回放生产者，不会把算法切换为离线模式。标为 **推断** 的结论来自调用关系，尚未由运行时故障注入验证。

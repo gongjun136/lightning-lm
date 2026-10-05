@@ -4,6 +4,8 @@ English | [中文](./README_CN.md)
 
 Lightning-Speed Lidar Localization and Mapping
 
+SANY CGI-430: [INS-only localization, geographic frames and validation](./docs/operations/ins_only.md).
+
 Lightning-LM is a complete laser mapping and localization module.
 
 Features of Lightning-LM:
