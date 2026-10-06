@@ -29,10 +29,11 @@ CGI-430 模式新增 `cgi430_interfaces` 和 GeographicLib 依赖，以及 `ins_
 
 # 标准构建
 
-在工作区根目录（包含 `src/`、`build/`、`install/`）执行：
+在工作区根目录（包含 `src/`、`build/`、`install/`）执行。先将 `CGI430_SDK_WS` 设为已编译 `cgi430_interfaces` 的外部工作区绝对路径；首次构建可使用 @ref ins_only_operation 中的脚本准备接口：
 
 ```bash
 source /opt/ros/humble/setup.bash
+source "${CGI430_SDK_WS:?请先设置 CGI430_SDK_WS}/install/local_setup.bash"
 colcon build --packages-up-to lightning_lm --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
@@ -43,6 +44,21 @@ source install/setup.bash
 工作区还必须提供 `diagnostic_monitor_interfaces`、`lightning`、`geosun_msgs` 和 `livox_ros_driver2` 四个 ROS 接口包；本项目的配套布局是把 `common_msgs` 与 `lightning-lm` 两个仓库并列放在 `src/` 下。它们是源码包，不是通过 `apt install` 获得的系统库。
 
 **代码依据：** `cmake/packages.cmake` 的四个 `find_package()`；`package.xml` 的对应 `<depend>` 声明
+
+## 新终端与服务器构建环境
+
+`source` 只改变当前 shell 及其子进程的环境。在另一条 SSH 会话中编译成功，不代表新登录终端已加载 ROS。若多个接口包提示找不到 `ament_cmakeConfig.cmake`，先加载 `/opt/ros/humble/setup.bash`；无需重新安装已有的 `ament_cmake`。定位包还需要加载外部 `cgi430_interfaces` 安装空间。
+
+本次 `cloud-gongjun` 验证使用的完整工作区命令如下（CGI 接口源码单独放在构建验证工作区中）：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /data1/gongjun/code/cgi430_build_check_20261006/install/local_setup.bash
+cd /data1/gongjun/code/lightning_lm_ws
+MAKEFLAGS="-j16 -l16" CMAKE_BUILD_PARALLEL_LEVEL=16 colcon build --executor sequential
+```
+
+这里不带 `--packages-up-to`，会编译整个工作区；服务器的 16 线程配置不应直接照搬到内存较少的 WSL。需要运行程序时，再加载当前定位工作区的 `install/local_setup.bash`。不要在同一工作区同时运行两次构建。
 
 ## 源码目录改名后的缓存修复
 
