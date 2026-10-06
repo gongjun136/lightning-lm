@@ -73,9 +73,64 @@
     "manual_pages": 38,
     "link_navigation_errors": 0
   },
-  "limits": [
+  "original_workspace_followup": {
+    "date": "2026-10-06",
+    "cloud_gongjun": {
+      "workspace": "/data1/gongjun/code/lightning_lm_ws",
+      "architecture": "x86_64",
+      "revisions": {
+        "lightning-lm": "ada53ff64672239f4be9acd1e5fbca9fb9052b5a",
+        "common_msgs": "fdd5453a2a28b201fa3b7b04e4e7131ed5b75307",
+        "cgi430_driver": "74e311be8cf80a4720a6789c28f480abe6d8c82b",
+        "livox_ros_driver2": "fbbef2c45a8817279421d7edddae18c416404288",
+        "Livox-SDK2": "92a02baa44d87aa53562af4db60cfed684835d89"
+      },
+      "packages_finished": 16,
+      "build_elapsed": "3min 12s",
+      "build_log": "/tmp/company_sync_original_cloud_20261006.log",
+      "cgi_protocol_tests_passed": 1,
+      "localization_tests_passed": 7,
+      "interface_prefixes": {
+        "cgi430_interfaces": "/data1/gongjun/code/lightning_lm_ws/install/cgi430_interfaces",
+        "diagnostic_runtime_interfaces": "/data1/gongjun/code/lightning_lm_ws/install/diagnostic_runtime_interfaces",
+        "driving_evaluation_interfaces": "/data1/gongjun/code/lightning_lm_ws/install/driving_evaluation_interfaces"
+      },
+      "comm_header_generated": true,
+      "retired_interface_not_resolvable": true
+    },
+    "wsl_ubuntu_22_04": {
+      "workspace": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws",
+      "architecture": "x86_64",
+      "revisions": {
+        "lightning-lm": "ada53ff64672239f4be9acd1e5fbca9fb9052b5a",
+        "common_msgs": "fdd5453a2a28b201fa3b7b04e4e7131ed5b75307",
+        "cgi430_driver": "74e311be8cf80a4720a6789c28f480abe6d8c82b",
+        "livox_ros_driver2": "fbbef2c45a8817279421d7edddae18c416404288",
+        "Livox-SDK2": "92a02baa44d87aa53562af4db60cfed684835d89"
+      },
+      "packages_finished": 16,
+      "build_elapsed": "22min 43s",
+      "build_log": "/tmp/company_sync_original_wsl_20261006.log",
+      "cgi_protocol_tests_passed": 1,
+      "localization_tests_passed": 7,
+      "interface_prefixes": {
+        "cgi430_interfaces": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws/install/cgi430_interfaces",
+        "diagnostic_runtime_interfaces": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws/install/diagnostic_runtime_interfaces",
+        "driving_evaluation_interfaces": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws/install/driving_evaluation_interfaces"
+      },
+      "comm_header_generated": true,
+      "retired_interface_not_resolvable": true
+    },
+    "retired_package_handling": "Moved old domain_vcu_can_bridge build/install directories into timestamped retired_interfaces backups with COLCON_IGNORE",
+    "source_fixes_required": false
+  },
+  "initial_stage_limits": [
     "Current WSL and original cloud workspaces were not switched to synchronized revisions",
     "No new WSL build for company synchronization; previous 15-package validation remains historical",
     "No validation of old serialized bags, physical hardware, ARM64/Orin, or company Jenkins execution"
+  ],
+  "limits": [
+    "Build and regression checks do not validate physical CAN/LiDAR capture, positioning accuracy, old serialized bags, or ARM64/Orin deployment",
+    "Company Jenkins pipelines were not executed"
   ]
 }
