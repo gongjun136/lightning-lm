@@ -39,7 +39,7 @@ source /opt/ros/humble/setup.bash
 source install/local_setup.bash
 ```
 
-脚本自动加载 ROS，按依赖顺序编译全部 15 个包，缺省最多 2 个编译任务。`LIGHTNING_BUILD_JOBS=4` 可用于内存足够的 WSL；服务器可设为 16。`LIGHTNING_LM_BUILD_WS` 可指定工作区绝对路径。旧入口 `build_ins_only.sh` 转调同一脚本。
+脚本自动加载 ROS，按依赖顺序编译全部 16 个包，缺省最多 2 个编译任务。`LIGHTNING_BUILD_JOBS=4` 可用于内存足够的 WSL；服务器可设为 16。`LIGHTNING_LM_BUILD_WS` 可指定工作区绝对路径。旧入口 `build_ins_only.sh` 转调同一脚本。
 
 手动构建也只需要基础 ROS 环境：
 

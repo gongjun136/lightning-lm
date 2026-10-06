@@ -2,7 +2,9 @@
 
 # 统一定位与驱动工作区
 
-同一工作区包含 15 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 11 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
+同一工作区包含 16 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 12 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
+
+2026-10-06 同步公司 `main` 后新增 `diagnostic_runtime_interfaces` 与 `driving_evaluation_interfaces`；`CurrentGear` 迁入 `geosun_msgs`，旧 `domain_vcu_can_bridge` 接口包退出源码。部分现有 CAN 消息新增 `comm_header`，部署时需同步重编发布端和订阅端。旧录包兼容性不由本次编译验证保证。
 
 ```text
 lightning_lm_ws/src/
