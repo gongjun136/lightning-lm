@@ -29,54 +29,52 @@ CGI-430 模式新增 `cgi430_interfaces` 和 GeographicLib 依赖，以及 `ins_
 
 # 标准构建
 
-在工作区根目录（包含 `src/`、`build/`、`install/`）执行。先将 `CGI430_SDK_WS` 设为已编译 `cgi430_interfaces` 的外部工作区绝对路径；首次构建可使用 @ref ins_only_operation 中的脚本准备接口：
+定位、CGI 驱动、Livox 驱动和消息包现已放在同一个工作区。源码布局及导入清单见 @ref workspace_layout。无需加载外部 CGI SDK 安装空间。
+
+在工作区根目录执行：
+
+```bash
+bash src/lightning-lm/scripts/build_workspace.sh
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+```
+
+脚本自动加载 ROS，按依赖顺序编译全部 15 个包，缺省最多 2 个编译任务。`LIGHTNING_BUILD_JOBS=4` 可用于内存足够的 WSL；服务器可设为 16。`LIGHTNING_LM_BUILD_WS` 可指定工作区绝对路径。旧入口 `build_ins_only.sh` 转调同一脚本。
+
+手动构建也只需要基础 ROS 环境：
 
 ```bash
 source /opt/ros/humble/setup.bash
-source "${CGI430_SDK_WS:?请先设置 CGI430_SDK_WS}/install/local_setup.bash"
-colcon build --packages-up-to lightning_lm --symlink-install \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
+MAKEFLAGS="-j2 -l2" CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --executor sequential
+source install/local_setup.bash
 ```
 
-`--packages-up-to` 会构建包及其工作区依赖；链接关系的核心是所有业务程序链接 `lightning_lm.libs`，核心库再链接 `${third_party_libs}`、PCL、`miao.core` 和 `miao.utils`。
+迁移前缓存若显式设置过外部 `cgi430_interfaces_DIR`，第一次请使用统一脚本；它会取消这项旧缓存，使 CMake 通过 colcon 找到本工作区接口。无需 source `cgi430_build_check_20261006` 或旧 `sdk/cgi430_sdk/install`。
 
-工作区还必须提供 `diagnostic_monitor_interfaces`、`lightning`、`geosun_msgs` 和 `livox_ros_driver2` 四个 ROS 接口包；本项目的配套布局是把 `common_msgs` 与 `lightning-lm` 两个仓库并列放在 `src/` 下。它们是源码包，不是通过 `apt install` 获得的系统库。
-
-**代码依据：** `cmake/packages.cmake` 的四个 `find_package()`；`package.xml` 的对应 `<depend>` 声明
+`--packages-up-to lightning_lm` 只构建定位及其接口依赖，不包含独立的传感器驱动。完整交付应使用全工作区构建。
 
 ## 新终端与服务器构建环境
 
-`source` 只改变当前 shell 及其子进程的环境。在另一条 SSH 会话中编译成功，不代表新登录终端已加载 ROS。若多个接口包提示找不到 `ament_cmakeConfig.cmake`，先加载 `/opt/ros/humble/setup.bash`；无需重新安装已有的 `ament_cmake`。定位包还需要加载外部 `cgi430_interfaces` 安装空间。
+`source` 只改变当前 shell 及其子进程的环境。在另一条 SSH 会话中编译成功，不代表新登录终端已加载 ROS。若接口包提示找不到 `ament_cmakeConfig.cmake`，先加载 `/opt/ros/humble/setup.bash`；无需重新安装已有的 `ament_cmake`。
 
-本次 `cloud-gongjun` 验证使用的完整工作区命令如下（CGI 接口源码单独放在构建验证工作区中）：
+`cloud-gongjun` 的统一构建入口：
 
 ```bash
-source /opt/ros/humble/setup.bash
-source /data1/gongjun/code/cgi430_build_check_20261006/install/local_setup.bash
 cd /data1/gongjun/code/lightning_lm_ws
-MAKEFLAGS="-j16 -l16" CMAKE_BUILD_PARALLEL_LEVEL=16 colcon build --executor sequential
+LIGHTNING_BUILD_JOBS=16 bash src/lightning-lm/scripts/build_workspace.sh
 ```
 
-这里不带 `--packages-up-to`，会编译整个工作区；服务器的 16 线程配置不应直接照搬到内存较少的 WSL。需要运行程序时，再加载当前定位工作区的 `install/local_setup.bash`。不要在同一工作区同时运行两次构建。
+不要在同一工作区同时运行两次构建。服务器的二进制和 build/install 缓存不能直接复制到 WSL 复用。
 
 ## 源码目录改名后的缓存修复
 
-若 `src/lightning_lm_msgs` 已改为 `src/common_msgs`，旧 `build/<包名>/CMakeCache.txt` 仍可能记录原目录。出现 `The source ... does not match the source ... used to generate cache` 时，不能用普通重试或只加 `--cmake-force-configure` 解决；需要让受影响包重新创建 CMake cache。无需删除整个 build/install。
-
-在工作区根目录执行一次（以下适用于本项目两个源码仓库的布局）：
+若 `src/lightning_lm_msgs` 改为 `src/common_msgs`，或驱动源码从旧 SDK 工作区迁入当前工作区，旧 CMake cache 可能保留原绝对路径。出现 `The source ... does not match the source ... used to generate cache` 时，在完整统一工作区执行一次：
 
 ```bash
-source /opt/ros/humble/setup.bash
-# 修复所有公共消息包，包括定位本身不依赖的接口包；保留既有定位构建缓存。
-MAKEFLAGS="-j2 -l2" CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build \
-  --packages-skip lightning_lm --cmake-clean-cache --executor sequential \
-  --event-handlers desktop_notification- --cmake-args -DCMAKE_BUILD_TYPE=Release
-# 准备外部CGI消息环境并构建定位及其依赖。
-bash src/lightning-lm/scripts/build_ins_only.sh
+bash src/lightning-lm/scripts/build_workspace.sh --cmake-clean-cache
 ```
 
-`--cmake-clean-cache` 不清理源码，但会重置自定义缓存选项，需按原构建配置重新传入。完成后普通增量构建不再需要该参数。迁移到服务器时也不能复制 WSL 的 build/install 缓存来复用绝对路径。
+该参数重建全部包的 CMake cache，保留源码及 build/install 目录；自定义缓存选项需重新指定。完成后普通增量构建不再需要该参数。
 
 ## 仅构建文档
 

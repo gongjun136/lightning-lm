@@ -1,0 +1,17 @@
+repositories:
+  common_msgs:
+    type: git
+    url: https://github.com/gongjun136/common_msgs.git
+    version: 96a5a61124c4a4c5f1cb4e9e7c7a4f711a6597a1
+  cgi430_driver:
+    type: git
+    url: https://github.com/gongjun136/cgi430_sdk.git
+    version: 4abcd6e2b83f070daf3343a26fd9c1d22dc75933
+  livox_ros_driver2:
+    type: git
+    url: https://github.com/gongjun136/livox_ros_driver2.git
+    version: da44210305e2bf6443f6e9037bc45784f4e12cb4
+  Livox-SDK2:
+    type: git
+    url: https://github.com/gongjun136/Livox-SDK2.git
+    version: ccfdcb0a853c8b188ec0e5441807e0f5d9aec3aa
