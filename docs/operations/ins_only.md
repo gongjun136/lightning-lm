@@ -72,7 +72,7 @@ bash src/lightning-lm/scripts/build_workspace.sh
 
 可用 `LIGHTNING_LM_BUILD_WS`、`LIGHTNING_BUILD_JOBS` 覆盖工作区和并发数。旧 `build_ins_only.sh` 入口保留，但已转为统一构建。`CGI430_SDK_WS` 不再使用。安装目标包含 `ins_project_llh` 与 `georeference_map`。
 
-源码目录迁移引起缓存冲突时，可加 `--cmake-clean-cache`；该参数重置全部包的 CMake 缓存选项，详见 @ref build_and_run。脚本还会去掉旧外部 `cgi430_interfaces_DIR` 缓存。
+源码目录迁移引起缓存冲突时，可加 `--cmake-clean-cache`；该参数重置全部包的 CMake 缓存选项，详见 @ref build_and_run "构建与缓存修复"。脚本还会去掉旧外部 `cgi430_interfaces_DIR` 缓存。
 
 复制 `config/ins_only/sany_cgi430.yaml` 为现场配置，填入并确认原点、高程类型和主雷达到后轴的刚体外参。模板故意包含 null/confirmed:false，不能直接用于车辆。外部 `cloud.lidar_config` 相对**现场 YAML 所在目录**解析，移动配置后应改为正确绝对路径。纯位姿台架测试可设 `cloud.enabled:false`。
 

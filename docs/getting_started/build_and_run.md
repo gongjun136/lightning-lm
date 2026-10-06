@@ -29,7 +29,7 @@ CGI-430 模式新增 `cgi430_interfaces` 和 GeographicLib 依赖，以及 `ins_
 
 # 标准构建
 
-定位、CGI 驱动、Livox 驱动和消息包现已放在同一个工作区。源码布局及导入清单见 @ref workspace_layout。无需加载外部 CGI SDK 安装空间。
+定位、CGI 驱动、Livox 驱动和消息包现已放在同一个工作区。源码布局及导入清单见 @ref workspace_layout "统一工作区布局"。无需加载外部 CGI SDK 安装空间。
 
 在工作区根目录执行：
 

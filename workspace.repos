@@ -14,4 +14,4 @@ repositories:
   Livox-SDK2:
     type: git
     url: https://github.com/gongjun136/Livox-SDK2.git
-    version: ccfdcb0a853c8b188ec0e5441807e0f5d9aec3aa
+    version: 999c583af8cb84b1ca905c85dc33b0d649622ffe
