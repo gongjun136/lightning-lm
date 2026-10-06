@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-06",
+  "scope": "Company main to GitHub; preserve INS-only mode and unified workspace",
+  "repositories": {
+    "lightning-lm": {
+      "github_before": "d81fa5a0a32dcd465fb3a9dd8dbb421bb736a3a6",
+      "company_main": "6b7d8cd6137064639576511c843dbbd7bba12579",
+      "validated_revision": "09579aecfc71f94904d3bc6f72339b09e54e398d",
+      "github_target_branch": "feature/gj_change_2025.11.19",
+      "company_main_is_ancestor": true
+    },
+    "common_msgs": {
+      "github_before": "96a5a61124c4a4c5f1cb4e9e7c7a4f711a6597a1",
+      "company_main": "a39e3ce2e67c96417e1475a47abb22b1029283d6",
+      "validated_revision": "fdd5453a2a28b201fa3b7b04e4e7131ed5b75307",
+      "github_target_branch": "main",
+      "company_main_is_ancestor": true
+    },
+    "livox_ros_driver2": {
+      "github_before": "da44210305e2bf6443f6e9037bc45784f4e12cb4",
+      "company_main": "02cfee4137336d83abab0b5b4d8ff6791642b568",
+      "validated_revision": "fbbef2c45a8817279421d7edddae18c416404288",
+      "github_target_branch": "main",
+      "company_main_is_ancestor": true
+    },
+    "Livox-SDK2": {
+      "github_before": "999c583af8cb84b1ca905c85dc33b0d649622ffe",
+      "company_main": "92a02baa44d87aa53562af4db60cfed684835d89",
+      "validated_revision": "92a02baa44d87aa53562af4db60cfed684835d89",
+      "github_target_branch": "master",
+      "company_main_is_ancestor": true
+    }
+  },
+  "cgi430_driver": {
+    "revision": "74e311be8cf80a4720a6789c28f480abe6d8c82b",
+    "company_remote": null,
+    "github_main_matches_local": true
+  },
+  "excluded_unmerged_company_branches": {
+    "dev": [
+      "9cf89284791b856aa838bd558c4752bb09f04a48 feat(interfaces): add VCU fault stream and clarified recovery dictionary",
+      "477f62b5275fc42b0a373b2cd8dcf5576e3639c9 docs(interfaces): 诊断接口评审——车云接缝缺口与待裁定项",
+      "9cf085742588adce677b43faca2634a72404cc29 feat(interfaces): add v3 diagnostic dictionary with numeric DTC and severity",
+      "ef6ad3667a4051911559380f89155aa21d6f740c feat(interfaces): add diagnostic history filters and request expiry",
+      "ac1f268983ec01ef7987b13479f30b00202132b2 feat(interfaces)!: simplify diagnostic state payload"
+    ],
+    "main-toplevel": [
+      "8f6c95c27c1fe66bb6ca0804b8e553bd9284823e 添加TopLevel的common_header"
+    ]
+  },
+  "interface_changes": [
+    "Add diagnostic_runtime_interfaces and driving_evaluation_interfaces",
+    "Move CurrentGear from domain_vcu_can_bridge to geosun_msgs",
+    "Add comm_header to existing CAN messages; publishers/subscribers must rebuild together",
+    "Preserve cgi430_interfaces and message-only livox_ros_driver package unchanged"
+  ],
+  "server_validation": {
+    "workspace": "/data1/gongjun/code/company_sync_check_20261006",
+    "architecture": "x86_64",
+    "packages_finished": 16,
+    "build_elapsed": "4min 27s",
+    "build_log": "/tmp/company_sync_build_20261006.log",
+    "cgi_protocol_tests_passed": 1,
+    "localization_tests_passed": 7,
+    "interface_prefixes": {
+      "cgi430_interfaces": "/data1/gongjun/code/company_sync_check_20261006/install/cgi430_interfaces",
+      "diagnostic_runtime_interfaces": "/data1/gongjun/code/company_sync_check_20261006/install/diagnostic_runtime_interfaces",
+      "driving_evaluation_interfaces": "/data1/gongjun/code/company_sync_check_20261006/install/driving_evaluation_interfaces"
+    },
+    "comm_header_generated": true
+  },
+  "documentation": {
+    "manual_pages": 38,
+    "link_navigation_errors": 0
+  },
+  "limits": [
+    "Current WSL and original cloud workspaces were not switched to synchronized revisions",
+    "No new WSL build for company synchronization; previous 15-package validation remains historical",
+    "No validation of old serialized bags, physical hardware, ARM64/Orin, or company Jenkins execution"
+  ]
+}
