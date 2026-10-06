@@ -1,0 +1,71 @@
+{
+  "date": "2026-10-06",
+  "scope": "Unified colcon workspace build and package-layout migration",
+  "build_script_revision": "ffcd3a1a3c03428a31944f06dc09823733f3ac2d",
+  "dependency_revisions": {
+    "common_msgs": "96a5a61124c4a4c5f1cb4e9e7c7a4f711a6597a1",
+    "cgi430_driver": "74e311be8cf80a4720a6789c28f480abe6d8c82b",
+    "livox_ros_driver2": "da44210305e2bf6443f6e9037bc45784f4e12cb4",
+    "livox_sdk2": "999c583af8cb84b1ca905c85dc33b0d649622ffe"
+  },
+  "livox_sdk_equivalence": {
+    "local_checkout_revision": "ccfdcb0a853c8b188ec0e5441807e0f5d9aec3aa",
+    "published_revision": "999c583af8cb84b1ca905c85dc33b0d649622ffe",
+    "identical_git_tree": "89d0751598ba7a2ea2783fd38174fd75f835c364"
+  },
+  "migration": {
+    "cgi_interface_files_byte_identical": 18,
+    "duplicate_package_names": 0,
+    "external_cgi_overlay_required": false
+  },
+  "platforms": {
+    "cloud_gongjun": {
+      "architecture": "x86_64",
+      "workspace": "/data1/gongjun/code/lightning_lm_ws",
+      "jobs": 16,
+      "build_exit_code": 0,
+      "packages_finished": 15,
+      "build_elapsed": "3min 54s",
+      "log": "/tmp/lightning_unified_build_20261006.log"
+    },
+    "wsl_ubuntu_22_04": {
+      "architecture": "x86_64",
+      "workspace": "/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws",
+      "jobs": 4,
+      "build_exit_code": 0,
+      "packages_finished": 15,
+      "build_elapsed": "25min 16s",
+      "log": "/tmp/lightning_unified_wsl_20261006.log"
+    }
+  },
+  "tests_passed_on_both_platforms": {
+    "cgi430_driver": [
+      "protocol_test"
+    ],
+    "lightning_lm": [
+      "ins_navigation_test",
+      "lidar_tracking_health_test",
+      "multi_lidar_fusion_test",
+      "rear_axle_pose_test",
+      "sany_localization_output_test",
+      "pointcloud_preprocess_test",
+      "localization_pgo_test"
+    ]
+  },
+  "installation_checks_on_both_platforms": {
+    "cgi_interfaces_resolve_to_current_workspace": true,
+    "livox_sdk_resolves_to_current_workspace": true,
+    "cgi_and_livox_driver_shared_library_resolution": "no missing dependencies or unresolved symbols",
+    "run_loc_online_help_loads": true,
+    "setup_chain": "ROS Humble and current workspace only"
+  },
+  "documentation": {
+    "manual_pages": 38,
+    "link_navigation_errors": 0
+  },
+  "validation_limits": [
+    "No physical CAN or LiDAR acquisition test in this migration",
+    "No ARM64/Orin deployment verification",
+    "No new vehicle positioning accuracy or fusion-algorithm validation"
+  ]
+}

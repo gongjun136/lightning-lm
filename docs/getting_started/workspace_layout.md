@@ -16,7 +16,7 @@ lightning_lm_ws/src/
 └── Livox-SDK2/                    # 包 livox_sdk2
 ```
 
-先检出 Lightning 仓库，再从工作区根目录导入配套仓库：
+先检出 Lightning 仓库，再从工作区根目录导入配套仓库。清单使用 GitHub SSH 远端，开发机需已配置对应仓库的 SSH 访问：
 
 ```bash
 vcs import src < src/lightning-lm/workspace.repos
