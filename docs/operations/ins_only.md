@@ -71,6 +71,14 @@ bash scripts/build_ins_only.sh
 
 构建脚本先构建 SDK 消息，再构建 Lightning 工作区；默认查找同级 `sdk/cgi430_sdk` 和 `lightning_lm_ws`。可用 `CGI430_SDK_WS`、`LIGHTNING_LM_BUILD_WS`、`LIGHTNING_BUILD_JOBS` 覆盖。安装目标增加 `ins_project_llh` 与 `georeference_map`。
 
+`LIGHTNING_BUILD_JOBS` 缺省 2，脚本同时设置 Make 与 CMake 的并行上限，避免 colcon 根据主机核心数自动加入更大的 `-j`。包之间顺序构建。若源码目录从 `lightning_lm_msgs` 改为 `common_msgs` 后出现 `source ... does not match ... used to generate cache`，从仓库目录执行一次：
+
+```bash
+bash scripts/build_ins_only.sh --cmake-clean-cache
+```
+
+该参数清理所选包的 CMake cache 后重新配置，保留 build/install 和对象文件；自定义 CMake 缓存选项需要重新指定。它只处理 SDK 接口和定位依赖；工作区内其他消息包也有旧路径时，按 @ref build_and_run 的“源码目录改名后的缓存修复”执行全消息包修复。服务器构建不能修复本机缓存中的绝对路径。
+
 复制 `config/ins_only/sany_cgi430.yaml` 为现场配置，填入并确认原点、高程类型和主雷达到后轴的刚体外参。模板故意包含 null/confirmed:false，不能直接用于车辆。外部 `cloud.lidar_config` 相对**现场 YAML 所在目录**解析，移动配置后应改为正确绝对路径。纯位姿台架测试可设 `cloud.enabled:false`。
 
 ```bash

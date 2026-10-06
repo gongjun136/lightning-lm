@@ -44,6 +44,24 @@ source install/setup.bash
 
 **代码依据：** `cmake/packages.cmake` 的四个 `find_package()`；`package.xml` 的对应 `<depend>` 声明
 
+## 源码目录改名后的缓存修复
+
+若 `src/lightning_lm_msgs` 已改为 `src/common_msgs`，旧 `build/<包名>/CMakeCache.txt` 仍可能记录原目录。出现 `The source ... does not match the source ... used to generate cache` 时，不能用普通重试或只加 `--cmake-force-configure` 解决；需要让受影响包重新创建 CMake cache。无需删除整个 build/install。
+
+在工作区根目录执行一次（以下适用于本项目两个源码仓库的布局）：
+
+```bash
+source /opt/ros/humble/setup.bash
+# 修复所有公共消息包，包括定位本身不依赖的接口包；保留既有定位构建缓存。
+MAKEFLAGS="-j2 -l2" CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build \
+  --packages-skip lightning_lm --cmake-clean-cache --executor sequential \
+  --event-handlers desktop_notification- --cmake-args -DCMAKE_BUILD_TYPE=Release
+# 准备外部CGI消息环境并构建定位及其依赖。
+bash src/lightning-lm/scripts/build_ins_only.sh
+```
+
+`--cmake-clean-cache` 不清理源码，但会重置自定义缓存选项，需按原构建配置重新传入。完成后普通增量构建不再需要该参数。迁移到服务器时也不能复制 WSL 的 build/install 缓存来复用绝对路径。
+
 ## 仅构建文档
 
 Doxygen 与 Graphviz 是可选开发依赖。只更新文档时，在仓库根目录独立构建，无需 ROS、C++ 编译器或已有业务构建：
