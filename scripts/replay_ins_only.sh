@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# -ge 2 ]] || { echo "Usage: $0 site_replay.yaml bag [ros2 bag play options]; start run_ins_only.sh separately" >&2; exit 2; }
+[[ $# -ge 2 ]] || { echo "Usage: $0 site_replay.yaml bag [ros2 bag play options]; start run_sany_ins_only.sh separately" >&2; exit 2; }
 dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 config="$1"; bag="$2"; shift 2
 python3 - "$config" <<'PY'

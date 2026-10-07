@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
-# Run SANY multi-LiDAR localization with an optional raw-sensor MCAP
-# recorder and optional /localization/pose_vel watchdog incident snapshots.
-# Localization is never restarted by this script; the in-process global
-# relocalizer owns recovery.
+# SANY LiDAR localization: defaults, input checks, optional recording/diagnostics,
+# C++ run_loc_online launch, and process-group cleanup in one entry point.
+# Field entry: ${SANY_WS}/run.sh; development: bash scripts/run_sany_lidar_loc.sh [run_name].
+# production/diagnostic controls overhead; it does not change the localization algorithm.
+# Watchdog silence captures snapshots only; the in-process relocalizer owns recovery.
+# Detailed guide: docs/getting_started/shell_script_guide.md (SANY LiDAR section).
 set -euo pipefail
 
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+
+WS="${LIGHTNING_LM_WS:-/home/nvidia/project/gj_ws}"
+REPO="${LIGHTNING_LM_REPO_DIR:-${WS}/lightning-lm}"
+MAP_DIR="${WS}/maps/sany_4lidar_20260811_a4defa3_solid"
+
+export LIGHTNING_LM_INSTALL_SETUP="${LIGHTNING_LM_INSTALL_SETUP:-${REPO}/install/setup.bash}"
+export SANY_MAP_PATH="${SANY_MAP_PATH:-${MAP_DIR}}"
+export LIGHTNING_LM_OUT_ROOT="${LIGHTNING_LM_OUT_ROOT:-${WS}/runs}"
+export SANY_LIDAR_LAYOUT="${SANY_LIDAR_LAYOUT:-3}"
+export SANY_ENABLE_CAN_OBSERVATION="${SANY_ENABLE_CAN_OBSERVATION:-1}"
+export SANY_WHEEL_SPEED_TOPIC="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
+export SANY_RECORD_BAG="${SANY_RECORD_BAG:-0}"
+export SANY_POSE_VEL_TIMEOUT_SECONDS="${SANY_POSE_VEL_TIMEOUT_SECONDS:-5}"
+export SANY_MIN_FREE_GB="${SANY_MIN_FREE_GB:-20}"
+export SANY_ENABLE_POSE_VEL_WATCHDOG="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
+export LIGHTNING_LM_RUN_MODE="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd -- "${script_dir}/.." && pwd)}"
+repo_dir="${REPO}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 install_setup="${LIGHTNING_LM_INSTALL_SETUP:-${repo_dir}/install/setup.bash}"
-lidar_layout="${SANY_LIDAR_LAYOUT:-4}"
+lidar_layout="${SANY_LIDAR_LAYOUT:-3}"
 case "${lidar_layout}" in
   3)
     default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml"
@@ -25,16 +44,16 @@ esac
 config_path="${LIGHTNING_LM_CONFIG:-${default_config_path}}"
 map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
-run_name="${1:-sany_loc_diag_$(date +%Y%m%d_%H%M%S)}"
+run_name="${1:-sany_${lidar_layout}lidar_$(date +%Y%m%d_%H%M%S)}"
 qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_qos.yaml}"
-record_bag="${SANY_RECORD_BAG:-1}"
+record_bag="${SANY_RECORD_BAG:-0}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
 if [[ -n "${SANY_ENABLE_POSRES_WATCHDOG+x}" || -n "${SANY_POSRES_TIMEOUT_SECONDS+x}" ]]; then
   echo "ERROR: SANY_ENABLE_POSRES_WATCHDOG and SANY_POSRES_TIMEOUT_SECONDS are unsupported; use" \
     "SANY_ENABLE_POSE_VEL_WATCHDOG and SANY_POSE_VEL_TIMEOUT_SECONDS." >&2
   exit 1
 fi
-pose_vel_timeout_seconds="${SANY_POSE_VEL_TIMEOUT_SECONDS:-2}"
+pose_vel_timeout_seconds="${SANY_POSE_VEL_TIMEOUT_SECONDS:-5}"
 enable_pose_vel_watchdog="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
@@ -66,9 +85,11 @@ resource_interval_sec="${LIGHTNING_LM_RESOURCE_INTERVAL_SEC:-1}"
 usage() {
   cat <<'EOF'
 Usage:
+  Field operation: bash "${SANY_WS}/run.sh"
+  Development:
   LIGHTNING_LM_CONFIG=/absolute/config.yaml \
   SANY_MAP_PATH=/absolute/map/path \
-  scripts/run_sany_online_diagnostics.sh [run_name]
+  bash scripts/run_sany_lidar_loc.sh [run_name]
 
 Required before launch:
   1. Start every Livox driver configured by LIGHTNING_LM_CONFIG.
@@ -77,23 +98,30 @@ Required before launch:
      /SpeThrCAN4_topic.
 
 Useful environment variables:
-  SANY_LIDAR_LAYOUT           Select bundled localization YAML: 3 or 4 (default: 4)
+  SANY_MAP_PATH              Absolute map path; field entry must select the released map
+                              (legacy fallback: $LIGHTNING_LM_WS/maps/sany_4lidar_20260811_a4defa3_solid)
+  LIGHTNING_LM_CONFIG         Override the bundled localization YAML
+  LIGHTNING_LM_ROS_SETUP      ROS setup (default: /opt/ros/humble/setup.bash)
+  SANY_LIDAR_LAYOUT           Select bundled localization YAML: 3 or 4 (default: 3)
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
-  LIGHTNING_LM_OUT_ROOT       Run root (default: ~/project/gj_ws/runs)
-  SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 1)
+  LIGHTNING_LM_OUT_ROOT       Run root (default: $LIGHTNING_LM_WS/runs)
+  SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 0)
   SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
   SANY_ENABLE_POSE_VEL_WATCHDOG
                               Watch /localization/pose_vel and capture loss snapshots:
                               1=yes, 0=no (default: 0)
   SANY_POSE_VEL_TIMEOUT_SECONDS
-                              Declare loss after this silence (default: 2)
-  SANY_MIN_FREE_GB            Refuse to start below this free space (default: 20)
+                              Declare loss after this silence (default: 5)
+  SANY_MIN_FREE_GB            When recording, require this free space in GiB (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
-  LIGHTNING_LM_RUN_MODE       diagnostic or production (this entry defaults to diagnostic;
-                              scripts/run.sh fixes the normal field preset)
+  LIGHTNING_LM_WS             Workspace path used by legacy fallback defaults
+  LIGHTNING_LM_REPO_DIR       Repository path (default: $LIGHTNING_LM_WS/lightning-lm)
+  ROS_DOMAIN_ID              ROS domain (default: 42)
+  LIGHTNING_LM_RUN_MODE       diagnostic or production (default: diagnostic;
+                              ${SANY_WS}/run.sh selects the field release preset)
   LIGHTNING_LM_COMPUTE_PROFILE
                               Emit machine-readable compute timing: 1=yes, 0=no
                               (mode default: diagnostic=1, production=0)
@@ -184,6 +212,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 [[ "${run_name}" != */* ]] || fail "run_name must not contain '/'."
+cd -- "${repo_dir}" || fail "repository directory not found: ${repo_dir}"
 [[ -r "${ros_setup}" ]] || fail "ROS setup not found: ${ros_setup}"
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"

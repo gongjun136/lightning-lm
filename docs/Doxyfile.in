@@ -6,10 +6,15 @@ OUTPUT_LANGUAGE        = Chinese
 
 INPUT                  = "@LIGHTNING_SOURCE_DIR@/docs" \
                          "@LIGHTNING_SOURCE_DIR@/src"
-FILE_PATTERNS          = *.md *.h *.hpp *.cc *.cpp
+FILE_PATTERNS          = *.md *.dox *.h *.hpp *.cc *.cpp
 RECURSIVE              = YES
 EXCLUDE                = "@LIGHTNING_SOURCE_DIR@/src/core/miao/examples"
 USE_MDFILE_AS_MAINPAGE = "@LIGHTNING_SOURCE_DIR@/docs/index.md"
+# Shell files are shown verbatim as examples; Doxygen does not parse Bash symbols.
+EXAMPLE_PATH           = "@LIGHTNING_SOURCE_DIR@/scripts"
+EXAMPLE_PATTERNS       = *.sh
+EXAMPLE_RECURSIVE      = YES
+LAYOUT_FILE            = "@LIGHTNING_SOURCE_DIR@/docs/DoxygenLayout.xml"
 
 EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = YES

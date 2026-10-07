@@ -15,7 +15,7 @@
 
 # 采集与复现
 
-使用 `scripts/run_sany_online_diagnostics.sh` 和 @ref script_contracts "Shell 启动与实验脚本契约" 约定的环境，保存最终配置、源码/二进制身份、地图 metadata、传感器 bag 和完整日志。production 的低频日志不能重建每条实际发布消息；有需要时显式诊断采集并量化额外开销。
+使用 `scripts/run_sany_lidar_loc.sh` 和 @ref script_contracts "Shell 启动与实验脚本契约" 约定的环境，保存最终配置、源码/二进制身份、地图 metadata、传感器 bag 和完整日志。production 的低频日志不能重建每条实际发布消息；有需要时显式诊断采集并量化额外开销。
 回放只输入传感器话题，避免同时回放旧 PosRes/path。压缩点云须先经过匹配的解压节点；不要把类型不匹配误判为算法不处理。
 
 从 `analyze_localization_health_log.py` 检查失效时间线，再用 `analyze_localization_run.py` 和实际发布轨迹交叉核验。只有日志时标明缺少点云、CAN 或真值的证据限制。

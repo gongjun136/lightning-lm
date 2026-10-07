@@ -10,23 +10,71 @@ from urllib.parse import unquote, urlsplit
 
 def check_sources(root):
     errors = []
-    pages = list((root / 'docs').rglob('*.md'))
+    pages = sorted((root / 'docs').rglob('*.md'))
     ids = []
     references = []
+    navigation = {}
+    guide_ids = set()
+    index = root / 'docs/index.md'
     for page in pages:
         text = page.read_text(encoding='utf-8')
-        ids.extend(re.findall(r'^@page\s+(\w+)', text, re.M))
+        page_ids = re.findall(r'^@page\s+(\w+)', text, re.M)
+        ids.extend(page_ids)
+        if page.parent == root / 'docs/guide':
+            guide_ids.update(page_ids)
+        if page != index and len(page_ids) != 1:
+            errors.append(f'{page}: expected one stable page id')
         # Fenced and inline code are examples, not navigation instructions.
         prose = re.sub(r'```.*?```|`[^`\n]*`', '', text, flags=re.S)
         children = re.findall(r'@subpage\s+(\w+)', prose)
-        if children and page != root / 'docs/index.md':
-            errors.append(f'{page}: only index.md may declare subpages')
+        if children and page != index and page.parent != root / 'docs/guide':
+            errors.append(f'{page}: only index.md and guide pages may declare subpages')
+        if page == index or page_ids:
+            navigation['index' if page == index else page_ids[0]] = children
         references.extend(children)
     duplicate = [name for name, count in Counter(ids).items() if count > 1]
     errors.extend(f'duplicate page id: {name}' for name in duplicate)
+    if 'index' in ids:
+        errors.append('reserved main page id: index')
+    errors.extend(f'index subpage must be a guide page: {name}'
+                  for name in navigation.get('index', []) if name not in guide_ids)
     errors.extend(f'unknown subpage: {name}' for name in references if name not in ids)
-    errors.extend(f'page missing from index: {name}' for name in ids if name not in references)
+    errors.extend(f'page missing from navigation: {name}' for name in ids if name not in references)
     errors.extend(f'repeated subpage: {name}' for name,count in Counter(references).items() if count > 1)
+
+    reached = set()
+    def visit(name, ancestors):
+        if name in ancestors:
+            errors.append('navigation cycle: ' + ' -> '.join((*ancestors, name)))
+            return
+        if name in reached:
+            return
+        reached.add(name)
+        for child in navigation.get(name, []):
+            visit(child, (*ancestors, name))
+    visit('index', ())
+    unreachable = sorted(set(ids) - reached)
+    errors.extend(f'page unreachable from index: {name}' for name in unreachable)
+    # Inspect disconnected components too, so an orphaned cycle is diagnosed.
+    for name in unreachable:
+        visit(name, ())
+
+    # Shell examples include the real files at build time, without copying source.
+    registry = root / 'docs/shell_sources.dox'
+    if not registry.is_file():
+        errors.append('missing shell source registry: docs/shell_sources.dox')
+    else:
+        examples = re.findall(r'@example(?:\{[^}]*\})?\s+(\S+)',
+                              registry.read_text(encoding='utf-8'))
+        scripts = {path.relative_to(root / 'scripts').as_posix()
+                   for path in (root / 'scripts').rglob('*.sh')}
+        errors.extend(f'duplicate shell source: {name}'
+                      for name, count in Counter(examples).items() if count > 1)
+        errors.extend(f'shell source missing from registry: {name}'
+                      for name in sorted(scripts - set(examples)))
+        errors.extend(f'unknown shell source: {name}'
+                      for name in sorted(set(examples) - scripts))
+
     for page in pages + [root/'README.md', root/'README_CN.md']:
         text = re.sub(r'```.*?```', '', page.read_text(encoding='utf-8'), flags=re.S)
         for target in re.findall(r'!?\[[^\]]*\]\(([^\s)]+)\)', text):
@@ -60,8 +108,9 @@ def check_html(folder, page_ids):
             parser.feed(path.read_text(encoding='utf-8'))
             cache[path] = parser
         return cache[path]
-    # Audit all manual pages and every directly linked API/source/resource target.
-    for name in ['index', *page_ids]:
+    # Audit manual and shell pages, plus their API/source/resource targets.
+    source_pages = sorted(path.stem for path in folder.glob('*-example.html'))
+    for name in ['index', 'examples', *page_ids, *source_pages]:
         page = folder / (name + '.html')
         if not page.is_file():
             errors.append(f'missing rendered page: {page.name}')

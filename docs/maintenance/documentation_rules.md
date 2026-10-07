@@ -44,7 +44,7 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 3. 性能、线程安全、执行顺序若未由实现保证，前缀写 **推断：** 并说明依据。
 4. 不复制大段源码；写不变量、状态转换和失败边界，并链接 API/源码。
 5. 行号可能漂移，评审 diff 时应验证符号链接仍成立；重命名后运行 docs target 让断链变成构建失败。
-6. 只有 `index.md` 使用 `@subpage` 建立导航层级；其他页面之间使用 `@ref`。双向 `@subpage` 会形成页面父子环，并可能让 Doxygen 1.9.1 长时间停在符号解析阶段。
+6. `index.md` → `guide/` 章节页 → 专题页使用 `@subpage` 建立唯一父节点的导航树；跨章节与专题间跳转使用 `@ref`。所有页面必须能从首页到达。双向 `@subpage` 会形成页面父子环，并可能让 Doxygen 1.9.1 长时间停在符号解析阶段；生成前先运行源文件检查。
 
 # PR/提交检查
 
@@ -59,7 +59,7 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 
 # 分层维护与校验
 
-流程放在 `flows/`，模块职责放在 `modules/`，公式和参数化放在 `algorithms/`。ESKF 状态或噪声变化同时检查算法页；残差变更核对正负号、扰动方向、单位与信息权重。不要把所有细节塞回首页。
+流程放在 `flows/`，模块职责放在 `modules/`，公式和参数化放在 `algorithms/`；`guide/` 将相关专题组织到同一个学习章节。ESKF 状态或噪声变化同时检查算法页与章节中的代码对照表；残差变更核对正负号、扰动方向、单位与信息权重。首页保持章节入口和学习路线，细节留在专题。
 
 ```bash
 python3 docs/maintenance/check_links.py
@@ -69,5 +69,7 @@ python3 docs/maintenance/check_links.py --html build_docs/docs/html
 ```
 
 文档构建会拒绝手写页面的 Doxygen 告警；历史源码注释告警仍留在日志，不将其误报为本轮零告警。链接检查覆盖全部手册页、API 目标、锚点和图像资源；公式与图布局还需浏览器查看。
+
+Shell 源码通过 `shell_sources.dox` 的 `@example{lineno}` 直接引用真实文件，手册用 `@ref` 跳转。新增、删除或重命名脚本时同步注册与调用说明；检查器会拒绝注册遗漏、重复或不存在的脚本。生成的脚本源码页也参加 HTML 链接检查。
 
 源码注释变化检查非注释 token 不变。改动文档 CMake 时核验独立 docs 和 `BUILD_DOCS=ON` 两个入口；涉及业务代码或依赖变化时，再使用同一依赖环境验证业务构建。文档迁移之后检查整个仓库与工作区入口的路径，不只检查 Markdown。

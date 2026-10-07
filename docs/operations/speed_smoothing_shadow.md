@@ -7,7 +7,7 @@
 ```bash
 export LIGHTNING_LM_RUN_MODE=diagnostic
 export LIGHTNING_LM_SPEED_SMOOTHING_SHADOW=1
-bash lightning-lm/scripts/run.sh
+bash lightning-lm/scripts/run_sany_lidar_loc.sh
 ```
 
 默认关闭，只有显式diagnostic模式、开关为1且非精简诊断时启用；production始终禁用。取消开关或设为0即可关闭。运行清单记录请求值，启动日志的`SPEED_SMOOTHING_SHADOW enabled=`记录实际生效值。

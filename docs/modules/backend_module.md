@@ -36,20 +36,6 @@ digraph backend_flow {
 
 **代码依据：** `src/core/backend/backend_pipeline.cc`（`AddKeyframe()`、`HandleKeyframe()`、`OptimizePoseGraph()`、`HbaLoop()`、`UpdateMapToOdomAndNotify()`）
 
-# 生命周期、线程与锁
-
-| 资源 | 创建条件 | 保护/所有权 | 结束条件 |
-|---|---|---|---|
-| local BA、BTC、HBA 对象 | `Init()` 成功解析 YAML | `unique_ptr` 独占 | 随 pipeline 析构 |
-| worker 线程 | `online_mode=true` | `queue_mutex_` + `queue_cv_` | 队列 drain 后设置 `worker_stop_` 并 join |
-| HBA 线程 | `hba.enabled=true` | `hba_mutex_` + `hba_cv_` | 当前请求完成后设置 `hba_stop_` 并 join |
-| 关键帧/约束/统计 | 首个关键帧到达后 | `data_mutex_` | pipeline 释放 |
-| 优化器临界区 | BA/PGO/HBA 执行期间 | `optimization_mutex_` 串行化 | 单次优化返回 |
-
-析构函数调用 `Shutdown()`；`Shutdown()` 先 `WaitUntilIdle(false)`，再唤醒并 join 两类线程。调用者若需要输入结束时的全局优化，必须在关闭前显式调用 `WaitUntilIdle(true)`。
-
-**代码依据：** `src/core/backend/backend_pipeline.h`（成员所有权、锁和线程），`src/core/backend/backend_pipeline.cc`（析构、`WaitUntilIdle()`、`Shutdown()`）
-
 # 关键约束与失败边界
 
 - `AddKeyframe()` 对未初始化 pipeline 或空指针静默返回；调用者不能以返回值判断是否接收，因为接口返回 `void`。
@@ -70,7 +56,24 @@ digraph backend_flow {
 - @ref lightning::backend::HierarchicalBundleAdjuster "HierarchicalBundleAdjuster"
 - @ref lightning::miao::Optimizer "miao::Optimizer"
 
-
 # 深入阅读
 
 @ref backend_optimization "体素 BA、回环位姿图与分层优化"、@ref pose_graph_theory "位姿图、增量求解与高频平滑"、@ref backend_configuration "后端配置与评测协议"。
+
+# 按需参考：对象管理与并发
+
+修改对象初始化、线程或退出逻辑时核对本节；首次阅读优先掌握上面的主路径与算法对应。
+
+## 生命周期、线程与锁
+
+| 资源 | 创建条件 | 保护/所有权 | 结束条件 |
+|---|---|---|---|
+| local BA、BTC、HBA 对象 | `Init()` 成功解析 YAML | `unique_ptr` 独占 | 随 pipeline 析构 |
+| worker 线程 | `online_mode=true` | `queue_mutex_` + `queue_cv_` | 队列 drain 后设置 `worker_stop_` 并 join |
+| HBA 线程 | `hba.enabled=true` | `hba_mutex_` + `hba_cv_` | 当前请求完成后设置 `hba_stop_` 并 join |
+| 关键帧/约束/统计 | 首个关键帧到达后 | `data_mutex_` | pipeline 释放 |
+| 优化器临界区 | BA/PGO/HBA 执行期间 | `optimization_mutex_` 串行化 | 单次优化返回 |
+
+析构函数调用 `Shutdown()`；`Shutdown()` 先 `WaitUntilIdle(false)`，再唤醒并 join 两类线程。调用者若需要输入结束时的全局优化，必须在关闭前显式调用 `WaitUntilIdle(true)`。
+
+**代码依据：** `src/core/backend/backend_pipeline.h`（成员所有权、锁和线程），`src/core/backend/backend_pipeline.cc`（析构、`WaitUntilIdle()`、`Shutdown()`）

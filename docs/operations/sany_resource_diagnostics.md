@@ -58,7 +58,7 @@ RSS等轻量信息每次读取，PSS/smaps_rollup默认30秒一次。记录采�
 
 ## 域控运行
 
-源码更新后，在原ROS及驱动依赖环境重新编译lightning；代码含C++队列计时，不只更新脚本。外层脚本仍指向原正式三雷达YAML，入口应为 `bash lightning-lm/scripts/run.sh`（不是 `run.s`）。例如一组候选配置的启动打印如下；实际参数以所选配置为准：
+源码更新后，在原ROS及驱动依赖环境重新编译lightning；代码含C++队列计时，不只更新脚本。现场通过项目根入口 `bash "${SANY_WS}/run.sh"` 启动，LiDAR 分支进入 @ref run_sany_lidar_loc.sh "scripts/run_sany_lidar_loc.sh"；外层脚本选择正式三雷达YAML。例如一组候选配置的启动打印如下；实际参数以所选配置为准：
 
 ```text
 LIO point budgets: [2200, 1804, 1500]

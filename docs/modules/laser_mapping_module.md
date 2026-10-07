@@ -44,24 +44,6 @@ digraph laser_mapping {
 
 **代码依据：** `src/core/lio/laser_mapping.cc:566-1155、1266-1655`（输入、`RunDetailed`、关键帧、同步、地图与观测模型实现）
 
-# 生命周期与所有权
-
-- 构造时仅保存 `Options` 并建立成员默认值；`Init(yaml)` 才创建预处理器、IMU 处理器、IVox 并装配 ESKF 观测函数。
-- `LaserMapping` 独占自己的值状态（ESKF、队列、计数器），但通过 shared pointer 持有大对象与 UI；关键帧 shared pointer 会被入口和后端继续持有。
-- 析构只释放当前帧点云指针并记录日志；类本身没有后台线程需要 join。并发来自调用者、OpenMP 以及可选 UI，而不是 `LaserMapping` 自己创建的 `std::thread`。
-
-**代码依据：** `src/core/lio/laser_mapping.cc:29-69`、`src/core/lio/laser_mapping.h:119-126、335-478`（初始化、成员类型和析构体）
-
-# 线程与锁
-
-`mtx_buffer_` 保护 LiDAR、时间、IMU、帧统计和预处理耗时队列。`wheel_speed_mutex_` 单独保护轮速缓冲与统计。若在线调用者让 IMU 与 LiDAR 回调并发，这两个锁是输入一致性的边界；`RunDetailed()` 的算法状态不是为多个并发消费者设计的。
-
-点匹配可使用 OpenMP。观测 Hessian/gradient 采用固定块存储，使求和结果不依赖工作线程数；这既是性能设计也是数值可复现约束。
-
-**推断：** 公开 API 没有声明 `RunDetailed()` 可重入，且它修改大量无锁单帧成员，因此应由单一消费线程串行调用。在线定位以统一 sensor 队列串行消费；在线建图由当前 ROS executor 回调直接驱动，见 @ref online_slam_flow "在线建图：ROS 输入到地图服务"。
-
-**代码依据：** `src/core/lio/laser_mapping.h:374-478`、`src/core/system/slam.cc`、`src/core/system/async_message_process.h`（锁、共享临时状态和单线程处理队列）
-
 # 关键不变量
 
 1. `time_buffer_[i]` 与 `lidar_buffer_[i]` 表示同一帧；多雷达统计/预处理耗时也必须按相同顺序出队。
@@ -83,7 +65,28 @@ digraph laser_mapping {
 | 轨迹跳变 | 时间同步、外参、观测退化或轮速融合异常 | 最大 IMU gap、残差/有效特征、wheel stats |
 | 地图与轨迹不一致 | 导出时 pose 类型或 map-frame metadata 不一致 | `use_lio_pose`、metadata 传递 |
 
-
 # 深入算法
 
 @ref sensor_pipeline "传感器预处理、多雷达组帧与算力预算" → @ref imu_deskew "IMU 初始化、时间积分与点云去畸变" → @ref eskf_theory "18 维迭代 ESKF：从预测到观测注入" → @ref lidar_residuals "LiDAR 残差、信息矩阵与配准参数化"。
+
+# 按需参考：对象管理与并发
+
+修改对象初始化、线程或退出逻辑时核对本节；首次阅读优先掌握上面的主路径与算法对应。
+
+## 生命周期与所有权
+
+- 构造时仅保存 `Options` 并建立成员默认值；`Init(yaml)` 才创建预处理器、IMU 处理器、IVox 并装配 ESKF 观测函数。
+- `LaserMapping` 独占自己的值状态（ESKF、队列、计数器），但通过 shared pointer 持有大对象与 UI；关键帧 shared pointer 会被入口和后端继续持有。
+- 析构只释放当前帧点云指针并记录日志；类本身没有后台线程需要 join。并发来自调用者、OpenMP 以及可选 UI，而不是 `LaserMapping` 自己创建的 `std::thread`。
+
+**代码依据：** `src/core/lio/laser_mapping.cc:29-69`、`src/core/lio/laser_mapping.h:119-126、335-478`（初始化、成员类型和析构体）
+
+## 线程与锁
+
+`mtx_buffer_` 保护 LiDAR、时间、IMU、帧统计和预处理耗时队列。`wheel_speed_mutex_` 单独保护轮速缓冲与统计。若在线调用者让 IMU 与 LiDAR 回调并发，这两个锁是输入一致性的边界；`RunDetailed()` 的算法状态不是为多个并发消费者设计的。
+
+点匹配可使用 OpenMP。观测 Hessian/gradient 采用固定块存储，使求和结果不依赖工作线程数；这既是性能设计也是数值可复现约束。
+
+**推断：** 公开 API 没有声明 `RunDetailed()` 可重入，且它修改大量无锁单帧成员，因此应由单一消费线程串行调用。在线定位以统一 sensor 队列串行消费；在线建图由当前 ROS executor 回调直接驱动，见 @ref online_slam_flow "在线建图：ROS 输入到地图服务"。
+
+**代码依据：** `src/core/lio/laser_mapping.h:374-478`、`src/core/system/slam.cc`、`src/core/system/async_message_process.h`（锁、共享临时状态和单线程处理队列）

@@ -1,5 +1,7 @@
 @page architecture 模块地图与入口
 
+第一次阅读重点是模块输入输出与运行入口；再沿 @ref guide_online "在线定位主线" 进入 LIO、地图匹配和输出。对象所有权与关闭顺序用于修改编排逻辑时回查。
+
 # 逻辑模块导航
 
 `run_loc_online` 先按 `system.localization_mode` 选择编排者；缺省为 `lidar`。`ins_only` 由独立的 `InsLocSystem` 持有 ROS 订阅、坐标转换、门控与点云插值，不创建 `LocSystem/Localization`。见 @ref ins_only_operation "CGI-430 模式的数据流与生命周期"。

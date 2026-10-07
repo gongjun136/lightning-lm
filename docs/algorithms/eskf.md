@@ -4,6 +4,18 @@
 
 先读 @ref laser_mapping_module "LIO 前端：LaserMapping" 看一次扫描如何到达滤波器，再读 @ref geometry "坐标系、右扰动与李群雅可比" 确认右扰动。@ref lightning::ESKF "ESKF" 维护名义状态 `x_` 和误差协方差 `P_`；它不负责找最近邻，LiDAR 观测由 `LaserMapping::ObsModel` 回调提供，见 @ref lidar_residuals "LiDAR 残差、信息矩阵与配准参数化"。
 
+# 先抓住公式与代码的对应关系
+
+| 计算步骤 | 核心关系 | 实现入口与阅读重点 |
+|---|---|---|
+| 状态与增量 | 18 维误差，旋转右乘 | @ref lightning::NavState "NavState" 的 `get_f/boxplus/boxminus`；先核对分块索引 |
+| IMU 预测 | 名义状态积分与协方差传播 | @ref lightning::ESKF::Predict "Predict"、`NavState::df_dx/df_dw`；核对时间步、右雅可比与噪声尺度 |
+| 构造 LiDAR 观测 | 六维 `HTH/HTr` 正规方程 | @ref lightning::LaserMapping::ObsModel "ObsModel"；对应 @ref lidar_residuals "残差与雅可比" |
+| 迭代更新 | 同一个先验，在当前切空间反复线性化 | @ref lightning::ESKF::Update "Update"；对照 `start_x/P_propagated`、退化投影、LDLT 与 `boxplus` |
+| 轮速更新 | 前向速度观测与创新门控 | @ref lightning::ESKF::UpdateBodyForwardSpeed "UpdateBodyForwardSpeed"；核对观测参考点与 Joseph 协方差更新 |
+
+首次阅读重点是下文的状态、预测、迭代更新和轮速观测；工程门控要知道何时拒绝或降级。Anderson 加速和协方差数值修复可在修改求解器或排查数值问题时再细读。
+
 # 1. 状态不是早期版本的 12 维
 
 \f[

@@ -62,6 +62,8 @@
 
 # 构建和启动
 
+脚本源码：@ref build_workspace.sh "统一构建"、@ref build_ins_only.sh "兼容构建入口"、@ref run_sany_ins_only.sh "启动纯组合导航"、@ref record_ins_only.sh "采集数据"、@ref replay_ins_only.sh "回放数据"。点击可查看完整脚本与行号。
+
 Ubuntu 22.04 / ROS 2 Humble，系统需安装 `libgeographic-dev`。`cgi430_interfaces` 位于 `common_msgs`，CGI 与 Livox 驱动均在同一工作区。CMake 同时兼容 GeographicLib 库名 `Geographic` 和 `GeographicLib`。
 
 ```bash
@@ -77,7 +79,7 @@ bash src/lightning-lm/scripts/build_workspace.sh
 复制 `config/ins_only/sany_cgi430.yaml` 为现场配置，填入并确认原点、高程类型和主雷达到后轴的刚体外参。模板故意包含 null/confirmed:false，不能直接用于车辆。外部 `cloud.lidar_config` 相对**现场 YAML 所在目录**解析，移动配置后应改为正确绝对路径。纯位姿台架测试可设 `cloud.enabled:false`。
 
 ```bash
-bash scripts/run_ins_only.sh /absolute/site.yaml
+bash scripts/run_sany_ins_only.sh /absolute/site.yaml
 ```
 
 启动脚本只加载 ROS 与统一工作区安装环境，以仓库为 cwd；`ROS_DOMAIN_ID` 缺省 42，可显式覆盖。SDK 驱动和三雷达驱动分别启动。`LIGHTNING_LM_INSTALL_SETUP` 可覆盖 Lightning 安装环境脚本。支持 `--output_published_tum /new/file.tum`；拒绝 LIO/PGO 轨迹参数及内嵌 `--bag` 回放。
@@ -91,7 +93,7 @@ bash scripts/run_ins_only.sh /absolute/site.yaml
 ```bash
 bash scripts/record_ins_only.sh /absolute/site.yaml /new/bag_directory
 # 在单独复制的回放配置中设置 ins_only.use_sim_time: true，先启动定位节点
-bash scripts/run_ins_only.sh /absolute/site_replay.yaml
+bash scripts/run_sany_ins_only.sh /absolute/site_replay.yaml
 # 另一终端，仅回放输入 topic；不回放旧业务结果、TF、旧 /clock
 bash scripts/replay_ins_only.sh /absolute/site_replay.yaml /recorded/bag --rate 1
 ```

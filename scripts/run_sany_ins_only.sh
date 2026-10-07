@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# SANY CGI-430 navigation-solution entry; requires system.localization_mode: ins_only.
+# Field entry: ${SANY_WS}/run.sh; development: bash scripts/run_sany_ins_only.sh /absolute/site.yaml [flags].
+# Loads ROS/workspace, validates the mode, then execs C++ run_loc_online / InsLocSystem.
+# Start drivers separately; recording/replay use record_ins_only.sh and replay_ins_only.sh.
+# Detailed guide: docs/getting_started/shell_script_guide.md (SANY INS section).
 set -euo pipefail
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 [[ $# -ge 1 ]] || { echo "Usage: $0 /absolute/site.yaml [run_loc_online flags]" >&2; exit 2; }
@@ -19,7 +24,7 @@ python3 - "$config" <<'PY'
 import sys,yaml
 with open(sys.argv[1]) as f: c=yaml.safe_load(f)
 if c.get('system',{}).get('localization_mode')!='ins_only':
-    raise SystemExit('run_ins_only.sh requires system.localization_mode: ins_only')
+    raise SystemExit('run_sany_ins_only.sh requires system.localization_mode: ins_only')
 PY
 cd "$repo"
 exec ros2 run lightning_lm run_loc_online --config "$config" "$@"

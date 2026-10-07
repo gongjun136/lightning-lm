@@ -42,7 +42,23 @@ digraph localization_flow {
 
 **代码依据：** `src/core/localization/localization.cpp:28` 起的 `Init()`，`src/core/localization/lidar_loc/lidar_loc.cc`（`Init()`、构造/析构、`UpdateMapThread()`），`src/core/localization/global_relocalizer.h` 及 SOLiD/BTC 实现
 
-# 生命周期和并发检查表
+# 继续跳转
+
+- @ref lightning::loc::Localization::ProcessLidarMsg() "ProcessLidarMsg()"
+- @ref lightning::loc::Localization::ProcessIMUMsg() "ProcessIMUMsg()"
+- @ref lightning::loc::LidarLoc::ProcessCloud() "LidarLoc::ProcessCloud()"
+- @ref lightning::loc::GlobalRelocalizer "GlobalRelocalizer"
+- @ref lightning::loc::SolidRelocalizer "SolidRelocalizer"
+
+# 深入阅读
+
+@ref relocalization_theory "全局重定位：检索、几何验证与时间确认"、@ref lidar_residuals "LiDAR 残差、信息矩阵与配准参数化"、@ref pose_graph_theory "位姿图、增量求解与高频平滑"、@ref output_contracts "定位状态、车体参考点与 ROS 输出"。
+
+# 按需参考：对象管理与并发
+
+修改对象初始化、线程或退出逻辑时核对本节；首次阅读优先掌握上面的主路径与算法对应。
+
+## 生命周期和并发检查表
 
 | 对象/资源 | 拥有者 | 并发约束 |
 |---|---|---|
@@ -57,21 +73,9 @@ digraph localization_flow {
 
 **代码依据：** `src/core/localization/localization.h/.cpp`、`src/core/system/loc_system.cc`、`src/core/system/async_message_process.h`、`src/core/localization/lidar_loc/lidar_loc.cc`
 
-# 关键约束
+## 关键约束
 
 - 生命周期状态读写必须取得 `lifecycle_mutex_`；输入路径使用共享锁，重新初始化/停止路径使用独占锁。
 - 多生产者不能绕过统一 sensor 队列直接并发调用 LIO；源码注释明确要求保持 IMU/LiDAR 回调顺序。
 - 地图匹配结果、LIO 里程计和 DR 状态有独立互斥量，读取组合状态时要使用已有 getter，避免自行跨锁拼接。
 - 运行统计、时间戳回退检测和静止检测各有专用锁；它们不等同于定位主状态锁。
-
-# 继续跳转
-
-- @ref lightning::loc::Localization::ProcessLidarMsg() "ProcessLidarMsg()"
-- @ref lightning::loc::Localization::ProcessIMUMsg() "ProcessIMUMsg()"
-- @ref lightning::loc::LidarLoc::ProcessCloud() "LidarLoc::ProcessCloud()"
-- @ref lightning::loc::GlobalRelocalizer "GlobalRelocalizer"
-- @ref lightning::loc::SolidRelocalizer "SolidRelocalizer"
-
-# 深入阅读
-
-@ref relocalization_theory "全局重定位：检索、几何验证与时间确认"、@ref lidar_residuals "LiDAR 残差、信息矩阵与配准参数化"、@ref pose_graph_theory "位姿图、增量求解与高频平滑"、@ref output_contracts "定位状态、车体参考点与 ROS 输出"。

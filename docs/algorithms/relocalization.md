@@ -18,6 +18,16 @@ k^*=\arg\min_k\sum_i|d_a(c)_{(i+k)\bmod M}-d_a(q)_i|,
 \f]
 最终 shift 折回有符号半周区间。这个 yaw 是 `CandidateFromQuery` 方向，不要求逆两次。
 
+# SOLiD-KISS：候选检索后的粗配准
+
+`solid_kiss` 仍由 SOLiD 召回地点，在候选子图上用 KISS-Matcher 风格注册估计相对位姿。`MatchFeatures` 对 FPFH 做比例筛选和互匹配；`SolveCorrespondences` 根据成对距离的一致性建立兼容图：
+\f[
+\left|\|q_i-q_j\|-\|c_i-c_j\|\right|\leq\epsilon.
+\f]
+还要求点对间距达到最小值，再取 maximum k-core。保留的对应通过 GNC 更新权重，反复估计查询到候选的刚体变换；最终检查内点、RMSE 和空间覆盖。
+
+**代码对应：** @ref kiss_matcher_registration.cc "kiss_matcher_registration.cc" 的 `MatchFeatures/SolveCorrespondences/Align`；@ref solid_relocalizer.cc "solid_relocalizer.cc" 的 `RefineCandidateWithKissMatcher` 将 `T_target_source` 组合到地图位姿，并处理地图–里程计及 LiDAR–IMU 转换。这里的粗配准接受仍需经过下文 `LidarLoc` 的地图验证与时间确认，不能直接视为业务定位成功。
+
 # BTC 与位姿组合
 
 BTC 从平面结构、二进制特征和三角形描述建立候选，依据描述投票和几何验证搜索数据库。`BtcRelocalizer` 在多个查询子图尺度上调用 `SearchLoopTopK`，按 score 过滤并作空间/航向去重。它与建图的 `BtcLoopDetector` 复用描述算法，但查询历史、排除近邻和最终接受策略不同。

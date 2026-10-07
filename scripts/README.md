@@ -1,5 +1,7 @@
 # Lightning-LM 脚本说明
 
+详细阅读见 [Shell 脚本用途与定位入口详解](../docs/getting_started/shell_script_guide.md)，本地文档页面为 `shell_script_guide.html`。脚本源码页也提供用途说明和返回手册的链接。
+
 仓库沿用 `scripts/` 目录。根目录脚本是稳定运行入口和公共辅助工具；`reproduction/` 保存已交付实验的复现、审计和评价脚本。
 
 ## 稳定运行入口
@@ -12,7 +14,9 @@
 | `run_slam_offline.sh` | 运行完整离线 SLAM。 |
 | `run_slam_online.sh` | 运行完整在线 SLAM。 |
 | `run_loc_offline.sh` | 使用已有地图进行离线定位。 |
-| `run_loc_online.sh` | 使用已有地图进行在线定位。 |
+| `run_loc_online.sh` | 通用在线定位联调入口；透传算法参数，创建基本日志目录。 |
+| `run_sany_lidar_loc.sh` | SANY LiDAR 定位完整入口；默认参数、传感器预检、可选录包/诊断、定位进程和退出收尾。 |
+| `run_sany_ins_only.sh` | SANY CGI-430 纯组合导航入口；检查现场配置模式并启动 `InsLocSystem`。 |
 | `save_default_map.sh` | 调用保存地图服务。 |
 | `install_dep.sh` | 安装 Ubuntu 22.04 下的基础依赖。 |
 
@@ -184,7 +188,7 @@ bash scripts/run_frontend_offline_batch.sh \
 
 ### 记录并可视化在线 `/PosRes`
 
-`run_sany_online_diagnostics.sh` 会在运行期间实时写入三份定位轨迹：
+`run_sany_lidar_loc.sh` 会在运行期间实时写入三份定位轨迹：
 
 * `results/trajectory_global.tum`：PGO 全局校正轨迹。
 
@@ -193,29 +197,35 @@ bash scripts/run_frontend_offline_batch.sh \
 * `results/trajectory_published_rear_axle.tum`：经过后轴外参和固定地图变换后，实际发布到
   `/PosRes` 的位姿。该文件逐条刷新，可供下游联调时实时读取。
 
-诊断入口 `run_sany_online_diagnostics.sh` 默认使用 `LIGHTNING_LM_RUN_MODE=diagnostic` 和
+SANY LiDAR 入口 `run_sany_lidar_loc.sh` 默认使用 `LIGHTNING_LM_RUN_MODE=diagnostic` 和
 `LIGHTNING_LM_COMPUTE_PROFILE=1`，将 LIO、NDT/重定位、PGO、IMU/DR、ROS
 发布和诊断 I/O 等热点的墙钟/线程 CPU/进程 CPU 计时写入算法 stderr，并在退出后提取到
 `results/compute_profile.log`。高频链路按一秒窗口输出 count、mean、P50/P95/P99/max；LiDAR
 帧链路逐帧输出。`run_metadata.txt` 会记录开关值和计时记录条数。
 
-现场统一从 `scripts/run.sh` 启动；地图、雷达布局、CAN、bag、诊断计时和减负模式都固定在这一个
-入口中。该脚本中的现场值是默认值；上层部署脚本可在调用前通过环境变量覆盖地图、雷达布局、
-自定义 YAML、输出目录、CAN、bag、看门狗、运行模式、计算线程和 CPU 亲和性，不需要修改仓库内
-脚本。例如：
+现场统一从项目根目录的 `${SANY_WS}/run.sh` 启动。根入口选择 `lidar` 或 `ins_only`，
+LiDAR 分支调用仓库内的 `scripts/run_sany_lidar_loc.sh`，由它直接管理 C++ `run_loc_online`；
+纯组合导航分支调用 `scripts/run_sany_ins_only.sh`。
+根入口固定本次发布的地图、雷达布局和生产/诊断设置；仓库入口提供可由上层覆盖的默认值。
+例如，开发联调时可检查仓库入口的环境变量覆盖行为：
 
 ```bash
 export SANY_MAP_PATH=/home/nvidia/project/gj_ws/maps/current
 export LIGHTNING_LM_RUN_MODE=diagnostic
 export SANY_LIDAR_LAYOUT=3
 # 可选：export LIGHTNING_LM_CONFIG=/absolute/path/to/localization.yaml
-bash lightning-lm/scripts/run.sh
+bash lightning-lm/scripts/run_sany_lidar_loc.sh
 ```
 
-当前现场基线关闭 bag，保持
-`LIGHTNING_LM_RUN_MODE=diagnostic`、`LIGHTNING_LM_COMPUTE_PROFILE=1` 和
-`LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。需要生产减负时也只修改该入口，将运行模式设为
-`production`，并按现场验证结果关闭计时、开启非必要开销裁剪。
+仓库入口默认关闭 bag，缺省运行设置为 `diagnostic`，对应
+`LIGHTNING_LM_COMPUTE_PROFILE=1`、`LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。
+项目根入口可固定 `production`，对应默认关闭计时、开启非必要开销裁剪；实际设置以发布入口和
+`run_metadata.txt` 为准。生产/诊断设置与 `lidar`、`ins_only` 定位模式分别管理。
+
+更新车辆代码时须将根入口的 LiDAR 调用同步改为
+`exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_lidar_loc.sh"`。根入口的文件名继续使用 `run.sh`；纯组合导航调用同步改为
+`exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_ins_only.sh" "$SITE_CONFIG"`。
+原 SANY 诊断执行器已合入 LiDAR 入口，不再保留独立脚本。
 
 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` 只裁剪诊断输出；用于下次启动恢复的
 `recover_pose` 始终更新，不受该开关影响。

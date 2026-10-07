@@ -3,7 +3,7 @@
 ## 当前三雷达发布边界（2026-09-01）
 
 - 当前在线拓扑只使用主 Orin 的前 184、左 108、右 133 三台雷达；后 143 雷达不进入定位。
-- 现场唯一入口是 `bash scripts/run.sh`。`run_sany_online_diagnostics.sh` 仅为下层执行器，不是第二个操作入口。
+- 现场唯一入口是 `bash "${SANY_WS}/run.sh"`。其 LiDAR 分支调用仓库内 `scripts/run_sany_lidar_loc.sh`，在同一脚本内完成预检、可选采集、定位启动与收尾。
 - 正式配置是 `config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml`，默认 `relocalization.backend: solid_kiss`。
 - `solid_kiss` 没有替换 SOLiD：SOLiD 负责地点召回，KISS-Matcher 风格模块用 FPFH、距离兼容图、maximum k-core 和 GNC-TLS 估计候选子图相对位姿，随后仍执行地图预检、点到面精配准、最终地图一致性和两帧确认。
 - 当前生效预算为 Top-K 8、检索池 64、候选批次 8、每帧最多精配准一个候选。纯 `solid` Top-128 段保留为回退，不是默认参数。

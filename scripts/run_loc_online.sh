@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 通用在线定位运行模板，对应 src/app/run_loc_online.cc。
+# 详细说明：docs/getting_started/shell_script_guide.md；SANY 现场使用 run_sany_lidar_loc.sh。
 #
 # 适用场景：
 #   订阅实时 ROS2 话题并基于已有地图在线定位；用于接传感器、rosbag play 或定位联调。
