@@ -29,6 +29,7 @@ Defaults target the local SANY dataset layout under /mnt/f/datasets/SANY/mid360/
 EOF
 }
 
+# [sany-offline-settings]
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd "$script_dir/../../../.." && pwd)}"
 data_dir="${LIGHTNING_LM_SANY_DATA_DIR:-/mnt/f/datasets/SANY/mid360/data_20260701}"
@@ -48,6 +49,7 @@ cpu_set="0-7"
 allocated_cpus="8"
 watchdog_margin="300"
 wait_ui="false"
+# [sany-offline-settings]
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,6 +104,7 @@ if [[ -e "$slam_run_dir" || -e "$loc_run_dir" ]]; then
   exit 2
 fi
 
+# [sany-offline-shared]
 common_args=(
   --bag "$bag_dir"
   --sequence "$sequence"
@@ -114,7 +117,9 @@ common_args=(
   --watchdog-margin "$watchdog_margin"
   --wait-ui "$wait_ui"
 )
+# [sany-offline-shared]
 
+# [sany-offline-mapping]
 bash "$repo_dir/scripts/run_slam_offline.sh" \
   "${common_args[@]}" \
   --config "$mapping_config_path" \
@@ -126,13 +131,16 @@ if [[ ! -f "$map_path/index.txt" || ! -s "$reference_tum" ]]; then
   echo "SLAM stage did not produce required map/reference trajectory" >&2
   exit 4
 fi
+# [sany-offline-mapping]
 
+# [sany-offline-localization]
 bash "$repo_dir/scripts/run_loc_offline.sh" \
   "${common_args[@]}" \
   --config "$localization_config_path" \
   --map "$map_path" \
   --reference-tum "$reference_tum" \
   --output-dir "$loc_run_dir"
+# [sany-offline-localization]
 
 {
   echo "method=lightning_lm_sany_offline_slam_then_localization"

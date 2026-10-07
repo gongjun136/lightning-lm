@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# [phase-a-inputs]
 if [[ $# -lt 4 ]]; then
   echo "Usage: $0 BAG_ROOT CONFIG MAP OUTPUT_ROOT [DATASET ...]" >&2
   exit 2
@@ -20,6 +21,7 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 runner="$repo_dir/scripts/run_loc_offline.sh"
 offsets=(0 3 5 7 10 15 20 25 30 35)
 runner_failures=0
+# [phase-a-inputs]
 
 for dataset in "${datasets[@]}"; do
   bag="$bag_root/$dataset"
@@ -36,12 +38,15 @@ for dataset in "${datasets[@]}"; do
       exit 4
     fi
 
+# [phase-a-start-time]
     start_sensor_time="0"
     if [[ "$offset" -gt 0 ]]; then
       start_sensor_time="$(awk -v start="$first_sensor_time" -v delta="$offset" \
         'BEGIN { printf "%.6f", start + delta }')"
     fi
+# [phase-a-start-time]
 
+# [phase-a-launch]
     if bash "$runner" \
       --bag "$bag" \
       --config "$config" \
@@ -65,7 +70,9 @@ for dataset in "${datasets[@]}"; do
       runner_failures=$((runner_failures + 1))
       echo "trial ${dataset}/${tag}s runner_rc=$rc"
     fi
+# [phase-a-launch]
 
+# [phase-a-first-time]
     if [[ "$offset" -eq 0 ]]; then
       stats="$output/results/localization_stats.csv"
       first_sensor_time="$(awk -F, 'NR == 2 { print $2; exit }' "$stats")"
@@ -75,6 +82,7 @@ for dataset in "${datasets[@]}"; do
       fi
       echo "dataset ${dataset} first_localization_time=$first_sensor_time"
     fi
+# [phase-a-first-time]
   done
 done
 

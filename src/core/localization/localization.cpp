@@ -754,6 +754,8 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
 
     constexpr double kWindowSec = 1.0;
     constexpr double kMinWindowSec = 0.8;
+    constexpr double kMotionWindowSec = 0.1;
+    constexpr double kMinMotionWindowSec = 0.08;
     constexpr double kEnterGyroMean = 0.025;
     constexpr double kEnterGyroStd = 0.010;
     constexpr double kEnterMeanAngularRate = 0.025;
@@ -802,6 +804,23 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     const double accel_cv = accel_std / accel_scale;
     const double accel_delta_ratio = std::abs(sample.accel_norm - accel_mean) / accel_scale;
     const double window_span = sample.timestamp - static_imu_window_.front().timestamp;
+    // A long window confirms rest, but can hide steering onset or average out
+    // a direction reversal. Use a short vector mean for prompt motion vetoes;
+    // unlike individual gyro norms it still cancels engine vibration.
+    Vec3d motion_gyro_sum = Vec3d::Zero();
+    std::size_t motion_sample_count = 0;
+    double motion_window_span = 0.0;
+    for (auto it = static_imu_window_.rbegin(); it != static_imu_window_.rend(); ++it) {
+        const double age = sample.timestamp - it->timestamp;
+        if (age > kMotionWindowSec) break;
+        motion_gyro_sum += it->angular_velocity;
+        ++motion_sample_count;
+        motion_window_span = age;
+    }
+    const double motion_angular_rate = (motion_gyro_sum / static_cast<double>(motion_sample_count)).norm();
+    const bool sustained_rotation =
+        (window_span >= kMinWindowSec && mean_angular_rate >= kEnterMeanAngularRate) ||
+        (motion_window_span >= kMinMotionWindowSec && motion_angular_rate >= kEnterMeanAngularRate);
     const double lio_age = sample.timestamp - last_static_lio_stamp_;
     const double loc_age = sample.timestamp - last_valid_lidar_loc_stamp_;
     const bool fresh_lio = lio_age >= 0.0 && lio_age <= kMaxLioAgeSec;
@@ -863,14 +882,14 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         // debounced zero wheel speed as the stationary observation and retain
         // low-speed LIO plus a fresh map match as independent safeguards. Old
         // bags without CAN continue to require the strict IMU window.
-        // Zero wheel speed rules out translation, but not a slow in-place turn.
+        // Zero traction speed does not rule out articulated chassis motion.
         // The vector mean rejects sustained rotation while allowing zero-mean
         // engine vibration whose per-sample gyro norm can be relatively large.
         const bool stationary_observation =
             fresh_wheel_speed
                 ? wheel_reports_stationary && mean_angular_rate < kEnterMeanAngularRate
                 : stable_imu_window;
-        if (window_span >= kMinWindowSec && stationary_observation && fresh_lio &&
+        if (window_span >= kMinWindowSec && stationary_observation && !sustained_rotation && fresh_lio &&
             fresh_valid_loc &&
             last_static_lio_reliable_ &&
             last_static_lio_speed_ < kEnterLioSpeed) {
@@ -891,16 +910,18 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
 
     const bool inertial_motion = sample.gyro_norm > kExitGyro ||
                                  accel_delta_ratio > kExitAccelRatio;
-    // Fresh zero CAN suppresses engine-vibration false exits. A moving CAN
-    // sample or LIO motion still releases the hold within three IMU samples;
-    // if CAN becomes stale, the IMU fallback is active again.
+    // Zero traction CAN must not veto sustained rotation after parking: an
+    // articulated loader can steer with the drive motor stopped. The vector
+    // means reject zero-mean vibration; raw IMU spikes remain gated by CAN.
+    const bool imu_motion = sustained_rotation ||
+                            (!wheel_reports_stationary && inertial_motion);
     const double lio_exit_speed = wheel_reports_stationary
                                       ? kExitLioSpeedWithZeroCan
                                       : kExitLioSpeed;
     const bool moving = (fresh_wheel_speed &&
                          std::abs(wheel_speed_mps) > kExitWheelSpeed) ||
                         (fresh_lio && last_static_lio_speed_ > lio_exit_speed) ||
-                        (!wheel_reports_stationary && inertial_motion);
+                        imu_motion;
     static_exit_count_ = moving ? static_exit_count_ + 1 : 0;
     if (static_exit_count_ >= kExitSamples) {
         imu_static_hold_active_ = false;
@@ -908,11 +929,13 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
         // These flags describe the final decision sample, not all three debounce samples.
         const unsigned flags = (fresh_wheel_speed && std::abs(wheel_speed_mps) > kExitWheelSpeed ? 1u : 0u) |
             (fresh_lio && last_static_lio_speed_ > lio_exit_speed ? 2u : 0u) |
-            (!wheel_reports_stationary && inertial_motion ? 4u : 0u);
+            (imu_motion ? 4u : 0u);
         static const char* reasons[] = {"none", "can", "lio", "can+lio", "imu", "can+imu", "lio+imu", "can+lio+imu"};
         trace_decision(false, reasons[flags]);
         LOG(WARNING) << "exit conservative IMU static hold at " << std::setprecision(14)
                      << sample.timestamp << ", gyro=" << sample.gyro_norm
+                     << ", mean_angular_rate=" << mean_angular_rate
+                     << ", motion_angular_rate=" << motion_angular_rate
                      << ", accel_delta_ratio=" << accel_delta_ratio
                      << ", lio_speed=" << last_static_lio_speed_
                      << ", wheel_speed=" << wheel_speed_mps;

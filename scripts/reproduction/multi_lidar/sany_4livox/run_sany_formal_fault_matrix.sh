@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# [fault-matrix-scenarios]
 fault_root="${1:?usage: run_sany_formal_fault_matrix.sh FAULT_ROOT CONFIG OUTPUT_ROOT}"
 config="${2:?missing config}"
 output_root="${3:?missing output root}"
@@ -12,7 +13,9 @@ scenarios=(
   interrupt_lidar127_40_60
   interrupt_lidar114_40_60
 )
+# [fault-matrix-scenarios]
 
+# [fault-matrix-run]
 mkdir -p "$output_root"
 failures=0
 for scenario in "${scenarios[@]}"; do
@@ -30,3 +33,4 @@ for scenario in "${scenarios[@]}"; do
 done
 printf 'fault scenarios=%s failures=%s\n' "${#scenarios[@]}" "$failures"
 (( failures == 0 ))
+# [fault-matrix-run]

@@ -27,6 +27,7 @@
 #   scripts/run_slam_online.sh online_slam_test
 set -euo pipefail
 
+# [slam-online-environment]
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd "$script_dir/.." && pwd)}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
@@ -36,6 +37,7 @@ set +u
 source "$ros_setup"
 source "$install_setup"
 set -u
+# [slam-online-environment]
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exe_path="$(ros2 pkg prefix lightning_lm)/lib/lightning_lm/run_slam_online"
@@ -47,6 +49,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit "$help_status"
 fi
 
+# [slam-online-settings]
 config_path="${LIGHTNING_LM_CONFIG:-$repo_dir/config/default.yaml}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-$repo_dir/runs}"
 run_name="${LIGHTNING_LM_RUN_NAME:-run_slam_online_$(date +%Y%m%d_%H%M%S)}"
@@ -54,12 +57,14 @@ if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
   run_name="$1"
   shift
 fi
+# [slam-online-settings]
 
 if [[ ! -f "$config_path" ]]; then
   echo "config not found: $config_path" >&2
   exit 2
 fi
 
+# [slam-online-directory]
 config_path="$(realpath "$config_path")"
 out_root="$(mkdir -p "$out_root" && cd "$out_root" && pwd)"
 run_dir="$out_root/$run_name"
@@ -75,7 +80,9 @@ mkdir -p "$log_dir"
   echo "extra_args=$*"
   date --iso-8601=seconds
 } > "$run_dir/run_metadata.txt"
+# [slam-online-directory]
 
+# [slam-online-launch]
 (
   cd "$run_dir"
   ros2 run lightning_lm run_slam_online \
@@ -83,3 +90,4 @@ mkdir -p "$log_dir"
     "$@"
 ) > "$log_dir/run_slam_online.stdout.log" \
   2> "$log_dir/run_slam_online.stderr.log"
+# [slam-online-launch]

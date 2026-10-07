@@ -2,6 +2,7 @@
 # Canonical monitored runner for offline Lightning-LM SLAM map export.
 set -euo pipefail
 
+# [slam-offline-usage]
 usage() {
   cat <<'EOF'
 Usage:
@@ -38,6 +39,7 @@ Legacy environment variables are still accepted:
   LIGHTNING_LM_RUN_NAME, LIGHTNING_LM_WAIT_UI, LIGHTNING_LM_OUTPUT_TUM.
 EOF
 }
+# [slam-offline-usage]
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd "$script_dir/.." && pwd)}"
@@ -101,6 +103,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# [slam-offline-inputs]
 if [[ -z "$bag_dir" || -z "$config_path" ]]; then
   usage >&2
   exit 2
@@ -130,6 +133,7 @@ for owned in results logs data run_metadata.txt bag_contract.json watchdog_statu
   fi
 done
 mkdir -p "$run_dir/results" "$run_dir/logs" "$run_dir/data"
+# [slam-offline-inputs]
 
 resolve_output() {
   local configured="$1"
@@ -143,6 +147,7 @@ resolve_output() {
   fi
 }
 
+# [slam-offline-outputs]
 trajectory_tum="$(resolve_output "$trajectory_tum" "$run_dir/results/trajectory_slam.tum")"
 map_dir="$(resolve_output "$map_dir" "$run_dir/data/new_map")"
 global_map="$(resolve_output "$global_map" "$map_dir/global.pcd")"
@@ -150,7 +155,9 @@ frame_stats="$(resolve_output "$frame_stats" "$run_dir/results/frame_stats.csv")
 timing_csv="$run_dir/results/processing_timing.csv"
 timing_summary="$run_dir/results/processing_timing_summary.json"
 mkdir -p "$(dirname "$trajectory_tum")" "$map_dir" "$(dirname "$global_map")" "$(dirname "$frame_stats")"
+# [slam-offline-outputs]
 
+# [slam-offline-environment]
 set +u
 source "$ros_setup"
 source "$install_setup"
@@ -170,6 +177,7 @@ if [[ ! -x "$binary" || ! -f "$monitor" || ! -f "$inspector" || ! -f "$timing_ex
   echo "missing standard-build binary or runner helper; run colcon build first" >&2
   exit 2
 fi
+# [slam-offline-environment]
 
 python3 "$inspector" --bag "$bag_dir" --config "$config_path" --output "$run_dir/bag_contract.json"
 readarray -t contract < <(python3 -c 'import json,sys
@@ -222,6 +230,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# [slam-offline-launch]
 export OMP_NUM_THREADS="$allocated_cpus"
 export OPENBLAS_NUM_THREADS="$allocated_cpus"
 export MKL_NUM_THREADS="$allocated_cpus"
@@ -241,8 +250,10 @@ setsid taskset -c "$cpu_set" "$binary" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &
 algorithm_pid=$!
+# [slam-offline-launch]
 write_watchdog "running"
 
+# [slam-offline-monitor]
 rm -f "$run_dir/monitor.stop"
 setsid taskset -c "$cpu_set" python3 "$monitor" \
   --pid "$algorithm_pid" \
@@ -253,7 +264,9 @@ setsid taskset -c "$cpu_set" python3 "$monitor" \
   --interval 0.2 \
   >"$run_dir/logs/resource_monitor.log" 2>&1 &
 monitor_pid=$!
+# [slam-offline-monitor]
 
+# [slam-offline-watchdog]
 watchdog_status="completed"
 watchdog_deadline=$(( $(date +%s) + watchdog_timeout ))
 while true; do
@@ -278,6 +291,7 @@ touch "$run_dir/monitor.stop"
 wait "$monitor_pid" 2>/dev/null || true
 monitor_pid=""
 trap - EXIT
+# [slam-offline-watchdog]
 
 trajectory_lines=0
 last_stamp=0
@@ -420,6 +434,7 @@ fi
   echo "completed_at=$(date --iso-8601=seconds)"
 } >"$run_dir/run_metadata.txt"
 
+# [slam-offline-finish]
 expected_completion="reached_final_lidar"
 if [[ "$max_lidar_frames" -gt 0 ]]; then expected_completion="limited_frame_run"; fi
 missing_output=0
@@ -443,3 +458,4 @@ if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion
   exit 4
 fi
 echo "completed method=lightning_lm_offline_slam_map_export sequence=$sequence repeat=$repeat lines=$trajectory_lines map=$map_dir output=$run_dir"
+# [slam-offline-finish]

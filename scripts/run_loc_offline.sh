@@ -2,6 +2,7 @@
 # Canonical monitored runner for offline Lightning-LM localization.
 set -euo pipefail
 
+# [loc-offline-usage]
 usage() {
   cat <<'EOF'
 Usage:
@@ -41,6 +42,7 @@ Legacy environment variables are still accepted:
   LIGHTNING_LM_OUT_ROOT, LIGHTNING_LM_RUN_NAME, LIGHTNING_LM_REFERENCE_TUM.
 EOF
 }
+# [loc-offline-usage]
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd "$script_dir/.." && pwd)}"
@@ -112,6 +114,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# [loc-offline-inputs]
 if [[ -z "$bag_dir" || -z "$config_path" || -z "$map_path" ]]; then
   usage >&2
   exit 2
@@ -136,6 +139,7 @@ if [[ -n "$reference_tum" && ! -f "$reference_tum" ]]; then
   echo "reference trajectory not found: $reference_tum" >&2
   exit 2
 fi
+# [loc-offline-inputs]
 
 bag_dir="$(realpath "$bag_dir")"
 config_path="$(realpath "$config_path")"
@@ -225,6 +229,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# [loc-offline-outputs]
 trajectory_tum="$run_dir/results/trajectory_loc.tum"
 lidar_loc_tum="$run_dir/results/trajectory_lidar_loc.tum"
 localization_csv="$run_dir/results/localization_stats.csv"
@@ -233,7 +238,9 @@ timing_csv="$run_dir/results/processing_timing.csv"
 timing_summary="$run_dir/results/processing_timing_summary.json"
 analysis_summary="$run_dir/results/localization_summary.json"
 error_csv="$run_dir/results/trajectory_reference_errors.csv"
+# [loc-offline-outputs]
 
+# [loc-offline-launch]
 export OMP_NUM_THREADS="$allocated_cpus"
 export OPENBLAS_NUM_THREADS="$allocated_cpus"
 export MKL_NUM_THREADS="$allocated_cpus"
@@ -257,8 +264,10 @@ setsid taskset -c "$cpu_set" "$binary" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &
 algorithm_pid=$!
+# [loc-offline-launch]
 write_watchdog "running"
 
+# [loc-offline-monitor]
 rm -f "$run_dir/monitor.stop"
 setsid taskset -c "$cpu_set" python3 "$monitor" \
   --pid "$algorithm_pid" \
@@ -269,7 +278,9 @@ setsid taskset -c "$cpu_set" python3 "$monitor" \
   --interval 0.2 \
   >"$run_dir/logs/resource_monitor.log" 2>&1 &
 monitor_pid=$!
+# [loc-offline-monitor]
 
+# [loc-offline-watchdog]
 watchdog_status="completed"
 watchdog_deadline=$(( $(date +%s) + watchdog_timeout ))
 while true; do
@@ -294,6 +305,7 @@ touch "$run_dir/monitor.stop"
 wait "$monitor_pid" 2>/dev/null || true
 monitor_pid=""
 trap - EXIT
+# [loc-offline-watchdog]
 
 trajectory_lines=0
 last_stamp=0
@@ -347,6 +359,7 @@ python3 "$timing_extractor" \
   --playback-rate "$playback_rate" \
   --wait-ui "$wait_ui"
 
+# [loc-offline-analysis]
 analyzer_args=(--localization-csv "$localization_csv" --trajectory-tum "$trajectory_tum" \
   --lidar-loc-tum "$lidar_loc_tum" --summary-json "$analysis_summary" --errors-csv "$error_csv" \
   --max-speed "$max_trajectory_speed" --max-z-range "$max_trajectory_z_range" \
@@ -355,6 +368,7 @@ if [[ -n "$reference_tum" ]]; then analyzer_args+=(--reference-tum "$reference_t
 if [[ -s "$localization_csv" && -s "$trajectory_tum" ]]; then
   python3 "$analyzer" "${analyzer_args[@]}"
 fi
+# [loc-offline-analysis]
 
 readarray -t timing_checks < <(python3 -c 'import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -445,6 +459,7 @@ if [[ -s "$analysis_summary" ]]; then
 p=json.load(open(sys.argv[1],encoding="utf-8"))
 print(int(bool(p["trajectory"]["motion"]["passed"]) and bool(p["lidar_loc_trajectory"]["motion"]["passed"])))' "$analysis_summary")"
 fi
+# [loc-offline-finish]
 if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion" != "$expected_completion" || \
       "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || "$nonmonotonic_count" -ne 0 || \
       "$excessive_output_gap_count" -ne 0 || "$timing_status" != "ok" || "$timing_stage_count" -lt 1 || \
@@ -453,3 +468,4 @@ if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion
   exit 4
 fi
 echo "completed method=lightning_lm_offline_localization sequence=$sequence repeat=$repeat lines=$trajectory_lines physical_diagnostic=$physical_diagnostic_pass output=$run_dir"
+# [loc-offline-finish]

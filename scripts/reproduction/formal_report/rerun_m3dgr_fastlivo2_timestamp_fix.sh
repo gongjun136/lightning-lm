@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
+# [fastlivo-rerun-matrix]
 # Rerun only the FAST-LIVO2 cells invalidated by the odometry timestamp fix.
 # The order is the FAST-LIVO2 projection of the frozen 20260717 schedule.
 base="${1:-/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/formal_report_20260717/m3dgr_frontend_v2}"
@@ -13,6 +14,7 @@ items=(
   Dark01:2 Grass02:1 Grass02:2 Outdoor04:1
   Z-Rough-Road01:3 Grass02:3 Outdoor04:2 Outdoor04:3
 )
+# [fastlivo-rerun-matrix]
 
 metadata_value() {
   local path="$1"
@@ -28,6 +30,7 @@ for item in "${items[@]}"; do
   port=$((15500 + index))
   run_dir=$(printf '%s/%s/fastlivo2_lio/repeat_%02d' "$base" "$sequence" "$repeat")
   bag="$bag_root/$sequence/$sequence.bag"
+# [fastlivo-rerun-existing]
   if [[ -f "$run_dir/run_metadata.txt" ]]; then
     metadata="$run_dir/run_metadata.txt"
     completion=$(metadata_value "$metadata" completion)
@@ -45,7 +48,9 @@ for item in "${items[@]}"; do
     echo "existing run directory: $run_dir" >&2
     exit 2
   fi
+# [fastlivo-rerun-existing]
 
+# [fastlivo-rerun-launch]
   echo "START [$index/${#items[@]}] $sequence repeat=$repeat port=$port"
   /usr/bin/env \
     BENCH_PLAY_RATE=1.0 \
@@ -58,7 +63,9 @@ for item in "${items[@]}"; do
     BENCH_ROS_PORT="$port" \
     bash "$runner" "$bag" "$sequence" "$repeat" "$run_dir"
   runner_rc=$?
+# [fastlivo-rerun-launch]
 
+# [fastlivo-rerun-finish]
   metadata="$run_dir/run_metadata.txt"
   if [[ ! -f "$metadata" ]]; then
     echo "missing metadata: $metadata (runner rc=$runner_rc)" >&2
@@ -79,4 +86,5 @@ for item in "${items[@]}"; do
     echo "run contract failed: $sequence repeat=$repeat" >&2
     exit 4
   fi
+# [fastlivo-rerun-finish]
 done

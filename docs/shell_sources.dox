@@ -1,32 +1,32 @@
 /**
  * @example{lineno} align_maps_offline.sh
  * 离线估计新旧地图之间的刚体变换，所有参数交给已安装的 align_maps_offline 程序；不会启动在线定位。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref align_maps_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} build_ins_only.sh
  * 旧构建入口的兼容包装，将参数转交 build_workspace.sh；CGI 与 Lightning 现在由同一工作区构建。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref build_ins_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} build_workspace.sh
  * 检查工作区包、加载 ROS 并顺序执行 colcon build；可调整构建并发或清除 CMake 缓存。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref build_workspace_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} install_dep.sh
  * 安装 Ubuntu/ROS 基础开发依赖，执行 sudo apt；这是环境准备步骤，会修改系统软件包。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref install_dep_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} record_ins_only.sh
  * 从现场 YAML 获取 CGI/雷达输入并录制 MCAP，同时保存业务结果、状态和心跳；调用终端需先加载 ROS/消息环境。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref ins_record_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} replay_ins_only.sh
  * 核对 use_sim_time 后只回放配置指定的输入，生成新 /clock；定位节点需在另一终端先启动，不回放旧业务结果或 TF。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref ins_replay_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_sany_lidar_loc.sh
@@ -36,17 +36,17 @@
 /**
  * @example{lineno} run_frontend_offline.sh
  * 处理单个 ROS 2 bag 的离线前端；根据 YAML 选择单/多雷达，保存轨迹、点云、帧统计、耗时和资源证据。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref frontend_offline_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_frontend_offline_batch.sh
  * 对同一 bag 枚举配置和重复次数，逐个调用 run_frontend_offline.sh；每个子任务保留独立产物。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref frontend_batch_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_frontend_online.sh
  * 加载 ROS/安装环境并启动在线前端；输入来自实时话题或外部 rosbag play，不承担地图定位。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref frontend_online_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_sany_ins_only.sh
@@ -56,7 +56,7 @@
 /**
  * @example{lineno} run_loc_offline.sh
  * 以已有地图和 ROS 2 bag 进行离线定位，管理超时/资源监控并保存轨迹、误差和定位分析结果。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref loc_offline_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_loc_online.sh
@@ -66,60 +66,60 @@
 /**
  * @example{lineno} run_online_bag_regression.sh
  * 编排在线节点、输入回放和输出录制，用离线 bag 复现在线行为；可请求保存地图，退出时停止子进程。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref online_regression_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_slam_offline.sh
  * 处理 bag 的完整离线 SLAM，除前端结果外还导出分块/全局地图、后端结果和重定位数据库。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref slam_offline_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_slam_online.sh
  * 创建运行目录并启动在线 SLAM；地图保存由节点配置和保存服务控制，输入驱动另行启动。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref slam_online_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} run_voxel_slam_114_reference.sh
  * 运行 ROS 1 Voxel-SLAM 参考轨迹实验，管理独立 ROS master、回放、录制、资源采样与轨迹提取。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref voxel_reference_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} save_default_map.sh
  * 调用 /lightning/save_map 服务请求当前在线建图节点保存 new_map；不单独启动建图程序。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref save_map_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/formal_report/rerun_m3dgr_fastlivo2_timestamp_fix.sh
  * 按脚本内冻结的 M3DGR/FAST-LIVO2 矩阵重跑序列并记录指纹和汇总；依赖对应报告的数据和工具目录。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref fastlivo_rerun_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/multi_lidar/sany_4livox/create_sany_formal_fault_bags.sh
  * 从原始 SANY bag 批量构造已定义的丢包/中断场景，保存故障输入包与场景合同；不连接现场设备。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref fault_bags_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_matrix.sh
- * 按场景与初始偏移批量运行离线定位，比较重定位接受、恢复及轨迹结果。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 按数据集与传感器起始时间偏移批量运行离线定位，保留重定位任务结果并打印 runner 失败总数。
+ * 用途与阅读说明见 @ref phase_a_matrix_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/multi_lidar/sany_4livox/run_sany_formal_fault_matrix.sh
  * 遍历四个正式故障场景，逐个调用在线合同运行器并汇总成功/失败。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref fault_matrix_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/multi_lidar/sany_4livox/run_sany_offline_localization.sh
- * 编排 SANY 离线建图与地图定位两阶段，先生成/选定地图，再对定位 bag 运行离线定位。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 编排 SANY 离线建图与地图定位两阶段，先生成地图，再用该地图对同一 bag 运行离线定位。
+ * 用途与阅读说明见 @ref sany_offline_pipeline_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/multi_lidar/sany_4livox/run_sany_online_contract.sh
  * 管理在线前端、结果录制和输入回放，检查五个公开 Topic 及故障恢复；这是复现实验入口。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref sany_online_contract_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**
  * @example{lineno} reproduction/single_lidar/m3dgr/run_voxel_slam_full_backend.sh
  * 运行 ROS 1 Voxel-SLAM 完整后端对比实验，管理 roscore、回放、结果与资源采样；依赖对应 ROS 1 工作区。
- * 用途与阅读说明见 @ref shell_script_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
+ * 用途与阅读说明见 @ref voxel_backend_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */

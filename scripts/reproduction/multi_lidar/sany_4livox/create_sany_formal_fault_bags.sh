@@ -10,6 +10,7 @@ root="${2:?missing output root}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 creator="$script_dir/create_sany_fault_bag.py"
 
+# [fault-bags-creator]
 run() {
   local name="$1"
   local topic="$2"
@@ -21,9 +22,12 @@ run() {
     --scenario "$name" --target-topic "$topic" --mode "$mode" \
     --start-offset-s "$start" --duration-s "$duration"
 }
+# [fault-bags-creator]
 
+# [fault-bags-scenarios]
 mkdir -p "$root"
 run missing_imu114_all /livox/imu_192_168_1_114 drop_all 40 20
 run interrupt_imu114_40_50 /livox/imu_192_168_1_114 interrupt 40 10
 run interrupt_lidar127_40_60 /livox/lidar_192_168_1_127 interrupt 40 20
 run interrupt_lidar114_40_60 /livox/lidar_192_168_1_114 interrupt 40 20
+# [fault-bags-scenarios]

@@ -2,6 +2,7 @@
 # Canonical monitored runner for every offline Lightning-LM frontend dataset.
 set -euo pipefail
 
+# [frontend-offline-usage]
 usage() {
   cat <<'EOF'
 Usage:
@@ -38,6 +39,7 @@ Paths supplied to output options may be absolute or relative to --output-dir.
 Additional run_frontend_offline flags may be passed after `--`.
 EOF
 }
+# [frontend-offline-usage]
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
@@ -97,6 +99,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# [frontend-offline-inputs]
 if [[ -z "$bag_dir" || -z "$config_path" || -z "$run_dir" ]]; then
   usage >&2
   exit 2
@@ -127,6 +130,7 @@ for owned in results logs run_metadata.txt bag_contract.json watchdog_status.jso
 done
 mkdir -p "$run_dir/results" "$run_dir/logs"
 
+# [frontend-offline-inputs]
 resolve_output() {
   local configured="$1"
   local fallback="$2"
@@ -147,6 +151,7 @@ frame_stats="$(resolve_output "$frame_stats" "$run_dir/results/frame_stats.csv")
 mkdir -p "$(dirname "$imu_tum")" "$(dirname "$lidar_tum")" "$(dirname "$rear_tum")" \
   "$(dirname "$map_pcd")" "$(dirname "$frame_stats")"
 
+# [frontend-offline-environment]
 set +u
 source "$ros_setup"
 source "$repo_dir/install/setup.bash"
@@ -165,12 +170,15 @@ if [[ ! -x "$binary" || ! -f "$monitor" || ! -f "$inspector" || ! -f "$timing_ex
   echo "missing standard-build binary or runner helper; run colcon build first" >&2
   exit 2
 fi
+# [frontend-offline-environment]
 
+# [frontend-offline-bag-contract]
 inspect_args=(--bag "$bag_dir" --config "$config_path" --output "$run_dir/bag_contract.json")
 if [[ -n "$inventory_json" ]]; then
   inspect_args+=(--inventory "$inventory_json" --sequence "$sequence")
 fi
 python3 "$inspector" "${inspect_args[@]}"
+# [frontend-offline-bag-contract]
 readarray -t contract < <(python3 -c 'import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"))
 print(p["primary_lidar_topic"])
@@ -219,6 +227,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# [frontend-offline-launch]
 export OMP_NUM_THREADS="$allocated_cpus"
 export OPENBLAS_NUM_THREADS="$allocated_cpus"
 export MKL_NUM_THREADS="$allocated_cpus"
@@ -238,8 +247,10 @@ setsid taskset -c "$cpu_set" "$binary" \
   "${extra_args[@]}" \
   >"$run_dir/logs/algorithm.stdout.log" 2>"$run_dir/logs/algorithm.stderr.log" &
 algorithm_pid=$!
+# [frontend-offline-launch]
 write_watchdog "running"
 
+# [frontend-offline-monitor]
 rm -f "$run_dir/monitor.stop"
 setsid taskset -c "$cpu_set" python3 "$monitor" \
   --pid "$algorithm_pid" \
@@ -250,7 +261,9 @@ setsid taskset -c "$cpu_set" python3 "$monitor" \
   --interval 0.2 \
   >"$run_dir/logs/resource_monitor.log" 2>&1 &
 monitor_pid=$!
+# [frontend-offline-monitor]
 
+# [frontend-offline-watchdog]
 watchdog_status="completed"
 watchdog_deadline=$(( $(date +%s) + watchdog_timeout ))
 while true; do
@@ -275,6 +288,7 @@ touch "$run_dir/monitor.stop"
 wait "$monitor_pid" 2>/dev/null || true
 monitor_pid=""
 trap - EXIT
+# [frontend-offline-watchdog]
 
 trajectory_lines=0
 last_stamp=0
@@ -315,6 +329,7 @@ wall_ns=$((end_ns-start_ns))
 wall_time_s="$(awk -v value="$wall_ns" 'BEGIN { printf "%.6f", value/1000000000.0 }')"
 timing_csv="$run_dir/results/processing_timing.csv"
 timing_summary="$run_dir/results/processing_timing_summary.json"
+# [frontend-offline-timing]
 python3 "$timing_extractor" \
   --log "$run_dir/logs/algorithm.stderr.log" \
   --csv "$timing_csv" \
@@ -328,6 +343,7 @@ python3 "$timing_extractor" \
   --watchdog-status "$watchdog_status" \
   --playback-rate "$playback_rate" \
   --wait-ui "$wait_ui"
+# [frontend-offline-timing]
 readarray -t timing_checks < <(python3 -c 'import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"))
 e=p["end_to_end"]
@@ -398,6 +414,7 @@ processing_speed_x="${timing_checks[5]}"
   echo "completed_at=$(date --iso-8601=seconds)"
 } >"$run_dir/run_metadata.txt"
 
+# [frontend-offline-finish]
 expected_completion="reached_final_lidar"
 if [[ "$max_lidar_frames" -gt 0 ]]; then expected_completion="limited_frame_run"; fi
 missing_output=0
@@ -413,3 +430,4 @@ if [[ "$algorithm_rc" -ne 0 || "$watchdog_status" != "completed" || "$completion
   exit 4
 fi
 echo "completed method=lightning_lm sequence=$sequence repeat=$repeat lines=$trajectory_lines output=$run_dir"
+# [frontend-offline-finish]

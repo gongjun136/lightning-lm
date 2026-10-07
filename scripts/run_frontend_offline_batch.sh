@@ -2,6 +2,7 @@
 # Run one SQLite3 ROS2 bag with multiple Lightning-LM frontend YAML files.
 set -uo pipefail
 
+# [frontend-batch-usage]
 usage() {
   cat <<'EOF'
 Usage:
@@ -25,6 +26,7 @@ Without --config, every *.yaml file in --config-dir is run in filename order.
 Each run is written to OUTPUT_ROOT/<config-name>/repeat_NN/.
 EOF
 }
+# [frontend-batch-usage]
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
@@ -76,6 +78,7 @@ bag_dir="$(realpath "$bag_dir")"
 config_dir="$(realpath "$config_dir")"
 output_root="$(realpath -m "$output_root")"
 
+# [frontend-batch-configs]
 configs=()
 if [[ ${#selected_configs[@]} -eq 0 ]]; then
   shopt -s nullglob
@@ -101,6 +104,7 @@ if [[ ${#configs[@]} -eq 0 ]]; then
   echo "no YAML configurations found in: $config_dir" >&2
   exit 2
 fi
+# [frontend-batch-configs]
 
 mapfile -t configs < <(printf '%s\n' "${configs[@]}" | sort -u)
 declare -A seen_names=()
@@ -128,6 +132,7 @@ completed=0
 failures=0
 echo "batch plan: configs=${#configs[@]} repeats=$repeats runs=$total output=$output_root"
 
+# [frontend-batch-command]
 for ((repeat = 1; repeat <= repeats; repeat++)); do
   for config in "${configs[@]}"; do
     name="$(basename "$config" .yaml)"
@@ -148,7 +153,9 @@ for ((repeat = 1; repeat <= repeats; repeat++)); do
     if [[ "$dry_run" == "true" ]]; then
       continue
     fi
+# [frontend-batch-command]
 
+# [frontend-batch-results]
     if "${command[@]}"; then
       returncode=0
       status="passed"
@@ -162,7 +169,9 @@ for ((repeat = 1; repeat <= repeats; repeat++)); do
       "$name" "$config_sha256" "$repeat" "$status" "$returncode" "$run_dir" >>"$summary"
   done
 done
+# [frontend-batch-results]
 
+# [frontend-batch-finish]
 if [[ "$dry_run" == "true" ]]; then
   echo "dry-run complete: $total commands"
   exit 0
@@ -171,3 +180,4 @@ echo "batch complete: runs=$total failures=$failures summary=$summary"
 if (( failures > 0 )); then
   exit 4
 fi
+# [frontend-batch-finish]

@@ -2,6 +2,7 @@
 # Reproducible ROS1 full Voxel-SLAM baseline on normalized M3DGR bags.
 set -euo pipefail
 
+# [voxel-backend-inputs]
 bag="${1:?usage: run_voxel_slam_full_backend.sh BAG SEQUENCE OUTPUT_DIR}"
 sequence="${2:?missing sequence}"
 run_dir="${3:?missing output directory}"
@@ -24,6 +25,7 @@ finish_timeout="${BENCH_FINISH_TIMEOUT_S:-1800}"
 inventory="${BENCH_INVENTORY_JSON:-/mnt/f/SLAM_AI_KnowledgeBase/code/_m3dgr_work/bench/inventory/bag_inventory.json}"
 completion_tolerance="${BENCH_COMPLETION_TOLERANCE_S:-0.25}"
 maximum_allowed_output_gap="${BENCH_MAX_OUTPUT_GAP_S:-0.20}"
+# [voxel-backend-inputs]
 
 for required in "$bag" "$config" "$binary" "$monitor" "$extractor" "$inventory"; do
   [[ -e "$required" ]] || { echo "missing dependency: $required" >&2; exit 2; }
@@ -74,6 +76,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# [voxel-backend-master]
 setsid taskset -c "$cpu_set" roscore -p "$ros_port" >"$run_dir/logs/roscore.log" 2>&1 &
 core_pid=$!
 master_deadline=$(( $(date +%s) + 60 ))
@@ -92,7 +95,9 @@ if [[ -n "$loop_icp_eigval" ]]; then
   rosparam set /Loop/icp_eigval "$loop_icp_eigval"
 fi
 rosparam set /finish false
+# [voxel-backend-master]
 
+# [voxel-backend-launch]
 setsid taskset -c "$cpu_set" "$binary" >"$run_dir/logs/algorithm.log" 2>&1 &
 algorithm_pid=$!
 subscriber_deadline=$(( $(date +%s) + 90 ))
@@ -104,6 +109,7 @@ raise SystemExit(0 if s.get("/livox/mid360/lidar") and s.get("/livox/mid360/imu"
   (( $(date +%s) < subscriber_deadline )) || { echo "sensor subscriber timeout" >&2; exit 3; }
   sleep 1
 done
+# [voxel-backend-launch]
 
 rm -f "$run_dir/monitor.stop"
 setsid taskset -c "$cpu_set" python3 "$monitor" \
@@ -113,6 +119,7 @@ setsid taskset -c "$cpu_set" python3 "$monitor" \
   >"$run_dir/logs/resource_monitor.log" 2>&1 &
 monitor_pid=$!
 
+# [voxel-backend-playback]
 start_ns="$(date +%s%N)"
 setsid taskset -c "$cpu_set" rosbag play "$bag" --clock --quiet --wait-for-subscribers \
   --rate "$play_rate" --topics /livox/mid360/lidar /livox/mid360/imu \
@@ -121,7 +128,9 @@ play_pid=$!
 wait "$play_pid"
 play_pid=""
 rosparam set /finish true
+# [voxel-backend-playback]
 
+# [voxel-backend-optimization]
 deadline=$(( $(date +%s) + finish_timeout ))
 while [[ -z "$trajectory" ]]; do
   trajectory="$(find "$run_dir/voxel_output" -mindepth 2 -maxdepth 2 \
@@ -145,10 +154,13 @@ while (( stable_count < 3 )); do
   sleep 2
 done
 end_ns="$(date +%s%N)"
+# [voxel-backend-optimization]
 
+# [voxel-backend-extract]
 awk 'NF >= 8 {print $1,$2,$3,$4,$5,$6,$7,$8}' "$trajectory" >"$output_tum"
 python3 "$extractor" --log "$run_dir/logs/algorithm.log" --trajectory "$output_tum" \
   --output "$run_dir/data/new_map/backend_diagnostics/btc_loop_candidates.csv"
+# [voxel-backend-extract]
 
 readarray -t inventory_values < <(python3 -c 'import json,sys
 rows=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -188,6 +200,7 @@ if awk -v actual="$last_stamp" -v expected="$expected_last_lidar_end" -v tol="$c
 fi
 pcd_count="$(find "$(dirname "$trajectory")" -maxdepth 1 -type f -name '*.pcd' | wc -l)"
 
+# [voxel-backend-stop]
 touch "$run_dir/monitor.stop"
 wait "$monitor_pid" 2>/dev/null || true
 monitor_pid=""
@@ -198,6 +211,7 @@ cleanup_group "$core_pid"
 wait "$core_pid" 2>/dev/null || true
 core_pid=""
 trap - EXIT
+# [voxel-backend-stop]
 
 wall_s="$(awk -v ns="$((end_ns-start_ns))" 'BEGIN {printf "%.6f", ns/1e9}')"
 cat >"$run_dir/run_metadata.txt" <<EOF
@@ -235,6 +249,7 @@ excessive_output_gap_count=$excessive_output_gap_count
 pcd_count=$pcd_count
 completed_at=$(date --iso-8601=seconds)
 EOF
+# [voxel-backend-finish]
 if [[ "$completion" != "reached_final_lidar" || "$trajectory_lines" -lt 10 || "$invalid_count" -ne 0 || \
       "$nonmonotonic_count" -ne 0 || "$excessive_output_gap_count" -ne 0 || "$pcd_count" -ne "$trajectory_lines" || \
       ! -s "$run_dir/resource_summary.json" ]]; then
@@ -242,3 +257,4 @@ if [[ "$completion" != "reached_final_lidar" || "$trajectory_lines" -lt 10 || "$
   exit 4
 fi
 echo "completed method=voxel_slam_full_backend sequence=$sequence output=$run_dir"
+# [voxel-backend-finish]

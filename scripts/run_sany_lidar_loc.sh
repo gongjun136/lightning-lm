@@ -7,6 +7,7 @@
 # Detailed guide: docs/getting_started/shell_script_guide.md (SANY LiDAR section).
 set -euo pipefail
 
+# [sany-lidar-field-defaults]
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 
 WS="${LIGHTNING_LM_WS:-/home/nvidia/project/gj_ws}"
@@ -24,6 +25,7 @@ export SANY_POSE_VEL_TIMEOUT_SECONDS="${SANY_POSE_VEL_TIMEOUT_SECONDS:-5}"
 export SANY_MIN_FREE_GB="${SANY_MIN_FREE_GB:-20}"
 export SANY_ENABLE_POSE_VEL_WATCHDOG="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 export LIGHTNING_LM_RUN_MODE="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
+# [sany-lidar-field-defaults]
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${REPO}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
@@ -41,10 +43,12 @@ case "${lidar_layout}" in
     exit 1
     ;;
 esac
+# [sany-lidar-runtime-settings]
 config_path="${LIGHTNING_LM_CONFIG:-${default_config_path}}"
 map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
 run_name="${1:-sany_${lidar_layout}lidar_$(date +%Y%m%d_%H%M%S)}"
+# [sany-lidar-runtime-settings]
 qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_qos.yaml}"
 record_bag="${SANY_RECORD_BAG:-0}"
 topic_wait_seconds="${SANY_TOPIC_WAIT_SECONDS:-60}"
@@ -59,6 +63,7 @@ min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
 run_mode="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
+# [sany-lidar-mode-settings]
 case "${run_mode}" in
   diagnostic)
     default_compute_profile=1
@@ -81,6 +86,7 @@ cpu_affinity="${LIGHTNING_LM_CPU_AFFINITY:-}"
 resource_profile="${LIGHTNING_LM_RESOURCE_PROFILE:-${default_resource_profile}}"
 causal_trace="${LIGHTNING_LM_CAUSAL_TRACE:-${default_resource_profile}}"
 resource_interval_sec="${LIGHTNING_LM_RESOURCE_INTERVAL_SEC:-1}"
+# [sany-lidar-mode-settings]
 
 usage() {
   cat <<'EOF'
@@ -213,9 +219,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 [[ "${run_name}" != */* ]] || fail "run_name must not contain '/'."
 cd -- "${repo_dir}" || fail "repository directory not found: ${repo_dir}"
+# [sany-lidar-environment-files]
 [[ -r "${ros_setup}" ]] || fail "ROS setup not found: ${ros_setup}"
 [[ -r "${install_setup}" ]] || fail "workspace setup not found: ${install_setup}"
 [[ -r "${config_path}" ]] || fail "config not found: ${config_path}"
+# [sany-lidar-environment-files]
 [[ "${record_bag}" == "0" || "${record_bag}" == "1" ]] || fail "SANY_RECORD_BAG must be 0 or 1."
 [[ "${enable_pose_vel_watchdog}" == "0" || "${enable_pose_vel_watchdog}" == "1" ]] ||
   fail "SANY_ENABLE_POSE_VEL_WATCHDOG must be 0 or 1."
@@ -265,10 +273,12 @@ if [[ "${record_bag}" == "1" ]]; then
   [[ "${min_free_gb}" =~ ^[1-9][0-9]*$ ]] || fail "SANY_MIN_FREE_GB must be positive."
 fi
 
+# [sany-lidar-load-environment]
 set +u
 source "${ros_setup}"
 source "${install_setup}"
 set -u
+# [sany-lidar-load-environment]
 
 command -v ros2 >/dev/null 2>&1 || fail "ros2 is unavailable after sourcing the workspace."
 command -v timeout >/dev/null 2>&1 || fail "timeout is unavailable."
@@ -368,15 +378,19 @@ if [[ "${record_bag}" == "1" ]]; then
     /rosout
   )
 fi
+# [sany-lidar-required-inputs]
 required_topics=("${lidar_topics[@]}" "${required_imu_topics[@]}")
 if [[ "${enable_can_observation}" == "1" ]]; then
   required_topics+=("${wheel_speed_topic}")
 fi
+# [sany-lidar-required-inputs]
 
+# [sany-lidar-run-directory]
 mkdir -p "${out_root}"
 out_root="$(cd -- "${out_root}" && pwd)"
 run_dir="${out_root}/${run_name}"
 [[ ! -e "${run_dir}" ]] || fail "run directory already exists: ${run_dir}"
+# [sany-lidar-run-directory]
 if [[ "${record_bag}" == "1" ]]; then
   available_kb="$(df -Pk "${out_root}" | awk 'NR==2 {print $4}')"
   required_kb=$((min_free_gb * 1024 * 1024))
@@ -392,11 +406,13 @@ fi
 if [[ "${record_bag}" == "1" ]]; then
   mkdir -p "${run_dir}/bag"
 fi
+# [sany-lidar-config-snapshot]
 config_path="$(realpath "${config_path}")"
 cp -- "${config_path}" "${run_dir}/config.yaml"
 python3 "${script_dir}/summarize_run_config.py" \
   --config "${run_dir}/config.yaml" --output "${run_dir}/launch_compute_config.json" \
   | tee "${run_dir}/logs/launch_compute_config.log"
+# [sany-lidar-config-snapshot]
 
 wait_for_inputs() {
   local deadline=$((SECONDS + topic_wait_seconds))
@@ -569,8 +585,10 @@ stop_children() {
   done
   extract_compute_profile
 }
+# [sany-lidar-register-cleanup]
 trap 'stop_children; exit 130' INT TERM
 trap stop_children EXIT
+# [sany-lidar-register-cleanup]
 
 if [[ "${record_bag}" == "1" ]]; then
   if [[ "${enable_can_observation}" == "1" ]]; then
@@ -585,6 +603,7 @@ else
     echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU; CAN observation is disabled."
   fi
 fi
+# [sany-lidar-check-inputs]
 wait_for_inputs || fail "required sensor inputs did not appear."
 for topic in "${lidar_topics[@]}"; do
   actual_type="$(ros2 topic type "${topic}")"
@@ -601,6 +620,7 @@ if [[ "${enable_can_observation}" == "1" ]]; then
   [[ "${wheel_speed_type}" == "geosun_msgs/msg/SpeThrCAN4" ]] ||
     fail "${wheel_speed_topic} has type ${wheel_speed_type}, expected geosun_msgs/msg/SpeThrCAN4"
 fi
+# [sany-lidar-check-inputs]
 
 {
   echo "started_at=$(date --iso-8601=ns)"
@@ -637,6 +657,7 @@ fi
 git -C "${repo_dir}" status --short >"${run_dir}/git_status.txt" 2>&1 || true
 ros2 topic list -t >"${run_dir}/topics_at_start.txt" 2>&1 || true
 
+# [sany-lidar-start-recording]
 if [[ "${record_bag}" == "1" ]]; then
   setsid ros2 bag record \
     --storage mcap \
@@ -659,7 +680,9 @@ if [[ "${record_bag}" == "1" ]]; then
     fail "rosbag recorder exited during startup with status ${recorder_status}."
   fi
 fi
+# [sany-lidar-start-recording]
 
+# [sany-lidar-start-watchdog]
 if [[ "${enable_pose_vel_watchdog}" == "1" ]]; then
   echo "wall_time,event,incident,silence_sec" >"${run_dir}/logs/pose_vel_watchdog.csv"
   python3 -c 'import rclpy; from lightning.msg import VehiclePose'
@@ -668,6 +691,7 @@ if [[ "${enable_pose_vel_watchdog}" == "1" ]]; then
   watchdog_pid=$!
   child_pids+=("${watchdog_pid}")
 fi
+# [sany-lidar-start-watchdog]
 
 if command -v tegrastats >/dev/null 2>&1; then
   tegrastats --interval 1000 >"${run_dir}/logs/tegrastats.log" 2>&1 &
@@ -675,6 +699,7 @@ if command -v tegrastats >/dev/null 2>&1; then
   child_pids+=("${tegrastats_pid}")
 fi
 
+# [sany-lidar-launch-arguments]
 algorithm_args=(
   ros2 run lightning_lm run_loc_online
   --config="${config_path}"
@@ -685,12 +710,14 @@ algorithm_args=(
 if [[ -n "${map_path}" ]]; then
   algorithm_args+=(--map="${map_path}")
 fi
+# [sany-lidar-launch-arguments]
 
 if [[ "${record_bag}" == "1" ]]; then
   echo "Running ${run_mode} mode with background bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
 else
   echo "Running ${run_mode} mode without bag recording in ${run_dir}; Ctrl-C stops the run cleanly."
 fi
+# [sany-lidar-launch-localization]
 algorithm_launcher=()
 if [[ -n "${cpu_affinity}" ]]; then
   algorithm_launcher+=(taskset --cpu-list "${cpu_affinity}")
@@ -702,6 +729,8 @@ setsid "${algorithm_launcher[@]}" "${algorithm_args[@]}" \
   2>"${run_dir}/logs/run_loc_online.stderr.log" &
 algorithm_pid=$!
 child_pids+=("${algorithm_pid}")
+# [sany-lidar-launch-localization]
+# [sany-lidar-resource-monitor]
 if [[ "${resource_profile}" == "1" ]]; then
   python3 "${script_dir}/monitor_process_resources.py" \
     --process-group "${algorithm_pid}" --interval-sec "${resource_interval_sec}" \
@@ -710,10 +739,14 @@ if [[ "${resource_profile}" == "1" ]]; then
   resource_pid=$!
   child_pids+=("${resource_pid}")
 fi
+# [sany-lidar-resource-monitor]
+# [sany-lidar-wait-localization]
 wait "${algorithm_pid}"
 algorithm_status=$?
 set -e
+# [sany-lidar-wait-localization]
 
+# [sany-lidar-finish-run]
 echo "algorithm_exit_code=${algorithm_status}" >>"${run_dir}/run_metadata.txt"
 echo "finished_at=$(date --iso-8601=ns)" >>"${run_dir}/run_metadata.txt"
 extract_compute_profile
@@ -721,3 +754,4 @@ stop_children
 trap - EXIT
 echo "${run_mode^} run artifacts saved to ${run_dir}"
 exit "${algorithm_status}"
+# [sany-lidar-finish-run]

@@ -259,6 +259,57 @@ int main() {
         return 1;
     }
 
+    // Steering can rotate an articulated loader after it has already parked,
+    // while its traction CAN and LIO velocity both still report zero. Test
+    // release as well as entry, for both yaw directions and engine vibration.
+    for (const double turn_rate : {-0.04, 0.04}) {
+        Localization steering_localization;
+        LocalizationLockingTestPeer::EnableImuStaticHold(steering_localization);
+        const auto observe = [&](int index, double yaw_rate) {
+            const double timestamp = 270.0 + 0.01 * index;
+            lightning::NavState lio_state;
+            lio_state.timestamp_ = timestamp;
+            lio_state.lidar_odom_reliable_ = true;
+            LocalizationLockingTestPeer::ObserveLio(steering_localization, lio_state);
+            lightning::loc::LocalizationResult match;
+            match.timestamp_ = timestamp;
+            match.lidar_loc_valid_ = true;
+            LocalizationLockingTestPeer::ObserveLidarLoc(steering_localization, match);
+            steering_localization.ProcessWheelSpeed(timestamp, 0.0);
+            auto imu = std::make_shared<lightning::IMU>();
+            imu->timestamp = timestamp;
+            const double sign = index % 2 == 0 ? 1.0 : -1.0;
+            imu->angular_velocity = sign * lightning::Vec3d(0.09, 0.01, -0.02) +
+                                    lightning::Vec3d(0.0, 0.0, yaw_rate);
+            imu->linear_acceleration = lightning::Vec3d(0.0, 0.0, 1.0);
+            return LocalizationLockingTestPeer::UpdateImuStaticState(steering_localization, imu);
+        };
+        for (int i = 0; i <= 120; ++i) static_active = observe(i, 0.0);
+        if (!static_active) {
+            std::cerr << "steering regression did not establish initial static hold" << std::endl;
+            return 1;
+        }
+        int release_index = 0;
+        for (int i = 121; i <= 240; ++i) {
+            static_active = observe(i, turn_rate);
+            if (!static_active && release_index == 0) release_index = i;
+            if (release_index != 0 && static_active) {
+                std::cerr << "continuous steering reentered static hold" << std::endl;
+                return 1;
+            }
+        }
+        if (release_index == 0 || release_index > 140) {
+            std::cerr << "zero CAN masked sustained steering after static hold: rate="
+                      << turn_rate << std::endl;
+            return 1;
+        }
+        for (int i = 241; i <= 380; ++i) static_active = observe(i, 0.0);
+        if (!static_active) {
+            std::cerr << "stationary hold did not recover after steering stopped" << std::endl;
+            return 1;
+        }
+    }
+
     Localization offset_can_localization;
     LocalizationLockingTestPeer::EnableImuStaticHold(offset_can_localization);
     for (int index = 0; index <= 120; ++index) {

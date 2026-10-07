@@ -24,6 +24,7 @@ if [[ -n "$map_path" ]]; then
   map_path="$(realpath "$map_path")"
 fi
 
+# [online-regression-settings]
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${LIGHTNING_LM_REPO_DIR:-$(cd "$script_dir/.." && pwd)}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-$repo_dir/runs/online_regression}"
@@ -33,6 +34,7 @@ discovery_delay="${LIGHTNING_LM_DISCOVERY_DELAY_SECONDS:-10}"
 embedded_playback="${LIGHTNING_LM_EMBEDDED_PLAYBACK:-1}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 install_setup="${LIGHTNING_LM_INSTALL_SETUP:-$repo_dir/install/setup.bash}"
+# [online-regression-settings]
 
 mkdir -p "$run_dir/logs"
 run_dir="$(realpath "$run_dir")"
@@ -79,6 +81,7 @@ trap cleanup EXIT INT TERM
 
 cd "$run_dir"
 exe_prefix="$(ros2 pkg prefix lightning_lm)/lib/lightning_lm"
+# [online-regression-embedded]
 if [[ "$embedded_playback" == "1" ]]; then
   if [[ "$mode" == "slam" ]]; then
     /usr/bin/time -f 'elapsed_seconds=%e\nmax_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S' \
@@ -99,7 +102,9 @@ if [[ "$embedded_playback" == "1" ]]; then
   echo "online regression complete: $run_dir"
   exit 0
 fi
+# [online-regression-embedded]
 
+# [online-regression-node]
 if [[ "$mode" == "slam" ]]; then
   "$exe_prefix/run_slam_online" --config "$config_path" \
     > logs/node.stdout.log 2> logs/node.stderr.log &
@@ -122,7 +127,9 @@ if [[ "$mode" == "loc" ]]; then
   recorder_pid=$!
   sleep 2
 fi
+# [online-regression-node]
 
+# [online-regression-playback]
 playback_start="$(date +%s.%N)"
 /usr/bin/time -f 'elapsed_seconds=%e\nmax_rss_kb=%M\nuser_seconds=%U\nsystem_seconds=%S' \
   -o playback_resource.txt \
@@ -134,7 +141,9 @@ playback_end="$(date +%s.%N)"
   echo "playback_wall_start=$playback_start"
   echo "playback_wall_end=$playback_end"
 } >> run_metadata.txt
+# [online-regression-playback]
 
+# [online-regression-finish]
 sleep "$post_wait"
 if [[ "$mode" == "slam" ]]; then
   timeout 240 ros2 service call /lightning/save_map lightning/srv/SaveMap "{map_id: online_map}" \
@@ -155,5 +164,6 @@ if [[ "$mode" == "loc" ]]; then
     --bag output_pose_bag --topic /slamPoseRaw_topic --output trajectory_loc_online.tum \
     > logs/extract_pose.log 2>&1
 fi
+# [online-regression-finish]
 
 echo "online regression complete: $run_dir"

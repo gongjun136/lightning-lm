@@ -31,6 +31,7 @@ cpu_set="${BENCH_CPUSET:-0-7}"
 ros_domain_id="${SANY_ROS_DOMAIN_ID:-217}"
 record_dir="$output_dir/topic_record"
 logs="$output_dir/logs"
+# [sany-contract-selector]
 analyzer="$repo/scripts/analyze_frontend_topic_bag.py"
 fault_analyzer="$script_dir/analyze_sany_fault_recovery.py"
 selected_analyzer="$analyzer"
@@ -41,6 +42,7 @@ fi
 template="$repo/scripts/run_frontend_online.sh"
 binary="$repo/install/lightning_lm/lib/lightning_lm/run_frontend_online"
 source_file="$repo/src/app/run_frontend_online.cc"
+# [sany-contract-selector]
 
 if [[ ! -f "$bag/metadata.yaml" || ! -f "$config" || ! -x "$template" || ! -f "$selected_analyzer" || ! -x "$binary" ]]; then
   echo "missing bag, config, online template, analyzer, or installed binary" >&2
@@ -70,6 +72,7 @@ case "$output_dir/" in
 esac
 mkdir -p "$logs"
 
+# [sany-contract-environment]
 set +u
 source /opt/ros/humble/setup.bash
 source "$repo/install/setup.bash"
@@ -93,6 +96,7 @@ fi
 export ROS_LOG_DIR="$output_dir/ros_logs"
 mkdir -p "$ROS_LOG_DIR"
 cd "$output_dir"
+# [sany-contract-environment]
 {
   printf 'ros_distro=%s\n' "${ROS_DISTRO:-}"
   printf 'package_prefix=%s\n' "$(ros2 pkg prefix lightning_lm)"
@@ -217,6 +221,7 @@ at_least_one() {
   [[ "$value" =~ ^[0-9]+$ ]] && (( value >= 1 ))
 }
 
+# [sany-contract-record]
 setsid taskset -c "$cpu_set" ros2 bag record \
   --storage sqlite3 --output "$record_dir" \
   /slamPoseRaw_topic /final_points_topic /slamSafety_topic /slamState_topic /SystemState /clock \
@@ -228,7 +233,9 @@ if ! kill -0 "$recorder_pid" 2>/dev/null; then
   wait "$recorder_pid" || true
   exit 3
 fi
+# [sany-contract-record]
 
+# [sany-contract-node]
 setsid taskset -c "$cpu_set" /usr/bin/time -v -o "$output_dir/node_time.txt" \
   env LIGHTNING_LM_REPO_DIR="$repo" \
       LIGHTNING_LM_INSTALL_SETUP="$repo/install/setup.bash" \
@@ -236,6 +243,8 @@ setsid taskset -c "$cpu_set" /usr/bin/time -v -o "$output_dir/node_time.txt" \
       "$template" \
   >"$logs/node.stdout.log" 2>"$logs/node.stderr.log" &
 node_pid=$!
+# [sany-contract-node]
+# [sany-contract-readiness]
 ready=false
 readiness_deadline=$((SECONDS + 30))
 while (( SECONDS < readiness_deadline )); do
@@ -263,7 +272,9 @@ if [[ "$ready" != true ]]; then
   echo "frontend/recorder ROS graph did not become ready before playback" >&2
   exit 4
 fi
+# [sany-contract-readiness]
 
+# [sany-contract-playback]
 setsid taskset -c "$cpu_set" timeout --signal=INT --kill-after=10s "${player_timeout_s}s" \
   ros2 bag play "$bag" --rate 1.0 --clock 100.0 --read-ahead-queue-size 1000 \
   >"$logs/player.stdout.log" 2>"$logs/player.stderr.log" &
@@ -274,7 +285,9 @@ player_rc=$?
 set -e
 player_pid=""
 sleep 3
+# [sany-contract-playback]
 
+# [sany-contract-stop]
 stop_group "$node_pid"
 set +e
 wait "$node_pid"
@@ -288,7 +301,9 @@ wait "$recorder_pid"
 recorder_rc=$?
 set -e
 recorder_pid=""
+# [sany-contract-stop]
 
+# [sany-contract-analysis]
 set +e
 if [[ -n "$fault_contract" ]]; then
   python3 "$fault_analyzer" "$record_dir" \
@@ -304,6 +319,7 @@ else
   analyzer_rc=$?
 fi
 set -e
+# [sany-contract-analysis]
 
 python3 - "$output_dir/run_metadata.json" "$output_dir/artifact_manifest.json" "$output_dir" \
   "$player_rc" "$node_rc" "$recorder_rc" "$analyzer_rc" <<'PY'
@@ -344,8 +360,10 @@ manifest={
 atomic(manifest_path,manifest)
 PY
 
+# [sany-contract-finish]
 if [[ "$player_rc" -ne 0 || "$node_rc" -ne 0 || "$recorder_rc" -ne 0 || "$analyzer_rc" -ne 0 ]]; then
   echo "online contract failed: player=$player_rc node=$node_rc recorder=$recorder_rc analyzer=$analyzer_rc" >&2
   exit 5
 fi
 echo "online contract passed: $output_dir"
+# [sany-contract-finish]

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+# [voxel-reference-usage]
 usage() {
   cat <<'EOF'
 Usage:
@@ -26,6 +27,7 @@ Options:
   -h, --help             Show this help
 EOF
 }
+# [voxel-reference-usage]
 
 bag=""
 output_dir=""
@@ -137,6 +139,7 @@ bag_end_s="${bag_contract[3]}"
 lidar_first_s="${bag_contract[4]}"
 lidar_last_s="${bag_contract[5]}"
 
+# [voxel-reference-environment]
 # shellcheck disable=SC1091
 source "$setup"
 set -u
@@ -148,6 +151,7 @@ export OMP_NUM_THREADS="$cpu_count"
 export OPENBLAS_NUM_THREADS="$cpu_count"
 export MKL_NUM_THREADS="$cpu_count"
 mkdir -p "$ROS_HOME" "$ROS_LOG_DIR"
+# [voxel-reference-environment]
 
 core_pid=""
 launch_pid=""
@@ -172,6 +176,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# [voxel-reference-master]
 setsid taskset -c "$cpu_set" roscore -p "$ros_port" >"$output_dir/logs/roscore.log" 2>&1 &
 core_pid=$!
 for _ in $(seq 1 100); do
@@ -180,11 +185,14 @@ for _ in $(seq 1 100); do
 done
 rosparam list >/dev/null 2>&1 || { echo "ROS master did not start" >&2; exit 1; }
 rosparam set /use_sim_time true
+# [voxel-reference-master]
 
+# [voxel-reference-launch]
 setsid taskset -c "$cpu_set" roslaunch "$launch_file" \
   rviz:=false save_path:="$output_dir/data/" bagname:="$sequence" \
   >"$output_dir/logs/voxel_slam.log" 2>&1 &
 launch_pid=$!
+# [voxel-reference-launch]
 for _ in $(seq 1 300); do
   rosnode list 2>/dev/null | grep -qx /voxelslam && break
   kill -0 "$launch_pid" 2>/dev/null || {
@@ -198,6 +206,7 @@ rosnode list 2>/dev/null | grep -qx /voxelslam || {
   exit 1
 }
 
+# [voxel-reference-record]
 setsid taskset -c "$cpu_set" python3 "$recorder" \
   --mode tf --topic /tf --parent-frame camera_init --child-frame aft_mapped \
   --tx -0.011 --ty -0.02329 --tz 0.04412 \
@@ -213,7 +222,9 @@ setsid taskset -c "$cpu_set" python3 "$monitor" \
   --allocated-cpus "$cpu_count" --interval 0.2 \
   >"$output_dir/logs/resource_monitor.log" 2>&1 &
 monitor_pid=$!
+# [voxel-reference-record]
 
+# [voxel-reference-playback]
 start_ns="$(date +%s%N)"
 setsid taskset -c "$cpu_set" rosbag play "$bag" --clock --quiet --wait-for-subscribers \
   --rate "$play_rate" \
@@ -226,7 +237,9 @@ play_pid=""
 # Let subscriber queues drain before requesting the final global optimization.
 sleep 5
 rosparam set /finish true
+# [voxel-reference-playback]
 
+# [voxel-reference-optimization]
 optimized_state="$output_dir/data/$sequence/alidarState.txt"
 deadline=$((SECONDS + shutdown_wait))
 stable_size=-1
@@ -251,6 +264,7 @@ while ((stable_checks < 5)); do
   fi
   sleep 1
 done
+# [voxel-reference-optimization]
 end_ns="$(date +%s%N)"
 
 # Voxel-SLAM writes the final trajectory and then enters ros::spin().  Shut
@@ -273,6 +287,7 @@ if kill -0 "$recorder_pid" 2>/dev/null; then
 fi
 recorder_pid=""
 
+# [voxel-reference-tum]
 optimized_tum="$output_dir/results/trajectory_voxel_opt.tum"
 [[ -s "$optimized_state" ]] || {
   echo "optimized Voxel-SLAM trajectory was not written: $optimized_state" >&2
@@ -285,6 +300,7 @@ opt_lines=$(wc -l <"$optimized_tum")
 frontend_lines=$(wc -l <"$output_dir/results/trajectory_voxel_frontend.tum")
 ((opt_lines >= 3)) || { echo "optimized trajectory has only $opt_lines poses" >&2; exit 1; }
 ((frontend_lines >= 3)) || { echo "front-end trajectory has only $frontend_lines poses" >&2; exit 1; }
+# [voxel-reference-tum]
 
 readarray -t trajectory_contract < <(python3 -c 'import math,sys
 last=-math.inf; valid=invalid=nonmono=0
@@ -357,6 +373,7 @@ wall_time_s=$wall_time_s
 completed_at=$(date --iso-8601=seconds)
 EOF
 
+# [voxel-reference-finish]
 if ((valid_lines < 3 || invalid_lines != 0 || nonmonotonic_lines != 0)) || \
    [[ "$completion" != "reached_final_lidar" ]] || \
    ! awk -v ratio="$output_ratio" 'BEGIN {exit !(ratio >= 0.80 && ratio <= 1.01)}' || \
@@ -368,3 +385,4 @@ fi
 trap - EXIT INT TERM
 cleanup
 echo "completed method=ws_voxel_slam_114 sequence=$sequence optimized_lines=$opt_lines frontend_lines=$frontend_lines output=$output_dir"
+# [voxel-reference-finish]
