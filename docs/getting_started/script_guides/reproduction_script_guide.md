@@ -36,8 +36,10 @@
 
 @snippet{lineno} reproduction/multi_lidar/sany_4livox/run_sany_offline_localization.sh sany-offline-settings
 
+@htmlonly[block]
 <details>
 <summary>共享参数与结果解释</summary>
+@endhtmlonly
 
 @snippet{lineno} reproduction/multi_lidar/sany_4livox/run_sany_offline_localization.sh sany-offline-shared
 
@@ -45,7 +47,9 @@
 
 参考轨迹来自同一建图阶段，用于两阶段结果对照，不是独立真值。进入 C++ 的位置分别在两个子脚本的核心调用。完整源码：@ref reproduction/multi_lidar/sany_4livox/run_sany_offline_localization.sh "run_sany_offline_localization.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor phase_a_matrix_guide
 # run_phase_a_relocalization_matrix.sh：改变传感器起始时间
@@ -84,14 +88,18 @@
 
 尽管基准时间的读取在首个任务之后，后续循环会先完成这段时间换算，再进入核心调用。输出目录按数据集和 `offset_NNs` 分开。
 
+@htmlonly[block]
 <details>
 <summary>失败与汇总行为</summary>
+@endhtmlonly
 
 脚本使用 `set -uo pipefail`，runner 放在 `if` 条件中；单次失败增加 `runner_failures`，矩阵继续。缺 bag、已有输出或无法取得基准时间会立即退出；正常走到末尾只打印失败总数，没有据该计数返回非零，也没有自动生成跨任务分析报告。
 
 进入 C++ 继续跟踪离线定位程序的起始时间过滤与重定位初始化。完整源码：@ref reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_matrix.sh "run_phase_a_relocalization_matrix.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor fault_bags_guide
 # create_sany_formal_fault_bags.sh：生成四个故障输入
@@ -110,12 +118,16 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 后续阅读进入同目录的 `create_sany_fault_bag.py`；生成的数据由 @ref fault_matrix_guide "故障矩阵" 交给在线合同运行器。`drop_all` 与 `interrupt` 的实际处理规则以 Python 实现和生成合同为准，不能仅用函数参数中的 duration 推断丢弃范围。
 
+@htmlonly[block]
 <details>
 <summary>输入、输出与退出</summary>
+@endhtmlonly
 
 输入是完整 SANY 原始 bag，输出根下按四个场景名分目录。严格模式下任一次 Python 生成失败就停止后续场景。话题与时间条件是这组正式实验的固定定义。完整源码：@ref reproduction/multi_lidar/sany_4livox/create_sany_formal_fault_bags.sh "create_sany_formal_fault_bags.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor fault_matrix_guide
 # run_sany_formal_fault_matrix.sh：遍历四个故障场景
@@ -132,12 +144,16 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 消费 `FAULT_ROOT CONFIG OUTPUT_ROOT` → 建立输出根 → 遍历固定场景 → 调子脚本 → 在终端汇总成功/失败。算法进程、回放、录制与报告由子 runner 管理，矩阵脚本只负责调度。
 
+@htmlonly[block]
 <details>
 <summary>数据与结果目录</summary>
+@endhtmlonly
 
 四个场景对应 @ref fault_bags_guide "故障 bag 生成器"。每个输出目录保存在线合同 runner 的原始日志、录制 bag、恢复合同和 metadata；矩阵层的总计写到终端。完整源码：@ref reproduction/multi_lidar/sany_4livox/run_sany_formal_fault_matrix.sh "run_sany_formal_fault_matrix.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor sany_online_contract_guide
 # run_sany_online_contract.sh：在线前端接口与故障恢复实验
@@ -183,12 +199,16 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 等待四路 LiDAR 和主 IMU 的订阅，以及公开输出与 recorder 的连接；30 秒内未就绪则结束。详细条件按需展开：
 
+@htmlonly[block]
 <details>
 <summary>查看就绪条件的真实源码</summary>
+@endhtmlonly
 
 @snippet{lineno} reproduction/multi_lidar/sany_4livox/run_sany_online_contract.sh sany-contract-readiness
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 通过后执行核心 playback，1 倍播放并发布 100 Hz 时钟，播放器有时长加余量的 timeout。`wait` 获取 `player_rc` 后额外等待 3 秒。
 
@@ -208,14 +228,18 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 @snippet{lineno} reproduction/multi_lidar/sany_4livox/run_sany_online_contract.sh sany-contract-finish
 
+@htmlonly[block]
 <details>
 <summary>输入、固定条件与产物</summary>
+@endhtmlonly
 
 调用方式是 `BAG CONFIG OUTPUT_DIR [FAULT_CONTRACT]`。默认 CPU `0-7`、`SANY_ROS_DOMAIN_ID=217`，固定 localhost 通信。ready 条件使用此四雷达场景的固定话题，不能当作任意 YAML 的通用入口。
 
 录制位于 topic_record/，包含五个公开前端 topic 与时钟。普通任务输出 topic contract/timing，故障任务输出 fault recovery contract；两者都保存环境身份、原始日志、运行指纹和产物清单。完整源码：@ref reproduction/multi_lidar/sany_4livox/run_sany_online_contract.sh "run_sany_online_contract.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor fastlivo_rerun_guide
 # rerun_m3dgr_fastlivo2_timestamp_fix.sh：重跑冻结实验中的受影响单元
@@ -237,8 +261,10 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 @snippet{lineno} reproduction/formal_report/rerun_m3dgr_fastlivo2_timestamp_fix.sh fastlivo-rerun-matrix
 
+@htmlonly[block]
 <details>
 <summary>已有结果与失败判定</summary>
+@endhtmlonly
 
 @snippet{lineno} reproduction/formal_report/rerun_m3dgr_fastlivo2_timestamp_fix.sh fastlivo-rerun-existing
 
@@ -246,7 +272,9 @@ Shell 中的 `run()` 把场景名、目标话题、模式、相对开始时间�
 
 runner 返回码会显示；是否继续的条件主要来自 metadata 合同，不直接以 `runner_rc` 判定。脚本的固定路径、指纹和单元顺序属于对应报告的恢复计划。完整源码：@ref reproduction/formal_report/rerun_m3dgr_fastlivo2_timestamp_fix.sh "rerun_m3dgr_fastlivo2_timestamp_fix.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor voxel_backend_guide
 # run_voxel_slam_full_backend.sh：M3DGR 完整后端基线
@@ -293,12 +321,16 @@ runner 返回码会显示；是否继续的条件主要来自 metadata 合同，
 
 请求 finish 后，脚本寻找非空 `alidarState.txt`，随后等文件大小连续稳定。等待逻辑按需展开：
 
+@htmlonly[block]
 <details>
 <summary>查看优化结果等待过程</summary>
+@endhtmlonly
 
 @snippet{lineno} reproduction/single_lidar/m3dgr/run_voxel_slam_full_backend.sh voxel-backend-optimization
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 取得结果后导出优化 TUM，并从算法日志提取回环候选：
 
@@ -315,9 +347,13 @@ runner 返回码会显示；是否继续的条件主要来自 metadata 合同，
 
 @snippet{lineno} reproduction/single_lidar/m3dgr/run_voxel_slam_full_backend.sh voxel-backend-finish
 
+@htmlonly[block]
 <details>
 <summary>产物与固定话题</summary>
+@endhtmlonly
 
 输入固定 `/livox/mid360/lidar` 与 `/livox/mid360/imu`。优化轨迹在 results/，回环事件在 data/new_map/backend_diagnostics/，Voxel 原始输出在 voxel_output/，资源记录与 metadata 在运行根目录。完整源码：@ref reproduction/single_lidar/m3dgr/run_voxel_slam_full_backend.sh "run_voxel_slam_full_backend.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

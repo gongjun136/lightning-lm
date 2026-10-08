@@ -44,14 +44,18 @@
 
 两次 `source` 后，核心调用启动安装空间中的可执行文件。接着读 @ref run_frontend_online.cc "run_frontend_online.cc 的 main()"：构造 `FrontendNode`，初始化 `LaserMapping`，进入 `rclcpp::spin`。算法主线见 @ref guide_lio "传感器与 LIO"。
 
+@htmlonly[block]
 <details>
 <summary>运行设置与输出</summary>
+@endhtmlonly
 
 `LIGHTNING_LM_REPO_DIR`、`LIGHTNING_LM_ROS_SETUP` 和 `LIGHTNING_LM_INSTALL_SETUP` 可覆盖仓库和环境路径。驱动/回放需另行启动，并与前端处于同一 ROS domain。输出 topic、UI 与诊断由配置和程序 flags 决定。
 
 完整源码：@ref run_frontend_online.sh "run_frontend_online.sh"；精确边界：@ref script_contracts "脚本契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor frontend_offline_guide
 # run_frontend_offline.sh：处理一次离线数据并归档
@@ -114,8 +118,10 @@ bag 必须有 `metadata.yaml`，配置必须存在。目录中若已有脚本拥
 
 因此退出码同时反映算法运行与 runner 的结果合同。限帧任务允许 `limited_frame_run`；完整任务要求到达最后 LiDAR。进入 C++ 时读 @ref run_frontend_offline.cc "main()"，沿 `LaserMapping::Init → rosbag.Go → 最后一帧 flush → 地图导出` 继续。
 
+@htmlonly[block]
 <details>
 <summary>参数、计时与产物：需要调整实验时展开</summary>
+@endhtmlonly
 
 @snippet{lineno} run_frontend_offline.sh frontend-offline-usage
 
@@ -127,7 +133,9 @@ bag 必须有 `metadata.yaml`，配置必须存在。目录中若已有脚本拥
 
 完整源码：@ref run_frontend_offline.sh "run_frontend_offline.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor frontend_batch_guide
 # run_frontend_offline_batch.sh：重复调度单次前端
@@ -154,8 +162,10 @@ bag 必须有 `metadata.yaml`，配置必须存在。目录中若已有脚本拥
 
 @snippet{lineno} run_frontend_offline_batch.sh frontend-batch-finish
 
+@htmlonly[block]
 <details>
 <summary>配置选择与运行参数</summary>
+@endhtmlonly
 
 @snippet{lineno} run_frontend_offline_batch.sh frontend-batch-configs
 
@@ -165,4 +175,6 @@ bag 必须有 `metadata.yaml`，配置必须存在。目录中若已有脚本拥
 
 完整源码：@ref run_frontend_offline_batch.sh "run_frontend_offline_batch.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

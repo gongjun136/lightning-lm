@@ -11,6 +11,7 @@
 5. @subpage compute_budget "点数预算与计算回归"：理解观测点选择、负载降级与恢复条件。
 6. @subpage speed_smoothing_shadow "速度平滑影子诊断"：区分记录的候选输出和实际业务输出。
 7. @subpage incident_20260925 "定位失效案例与修复证据"：按记录日期学习当前失效保护的来源和回归边界。
+8. @subpage incident_20261008_can_schema_startup "CAN 消息版本冲突与启动静默退出"：查看接口冲突、输入预检与现场验证范围。
 
 先记录配置、提交、地图版本、输入时间和实际发布结果，再用 @ref online_localization_flow "在线定位流程" 定位边界。公式对应模块仍从 @ref guide_lio "LIO" 和 @ref guide_localization "地图定位" 回查，故障专题保存运行证据与方法。
 

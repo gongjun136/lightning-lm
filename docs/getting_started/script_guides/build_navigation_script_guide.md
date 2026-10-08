@@ -42,12 +42,16 @@
 
 这份清单要求 CGI 消息、CGI 驱动、Livox 驱动/SDK 与 Lightning 共用工作区。`-Ucgi430_interfaces_DIR` 清除旧外部 CGI 消息包的 CMake 缓存指向，让 colcon 使用本工作区依赖。
 
+@htmlonly[block]
 <details>
 <summary>产物与副作用</summary>
+@endhtmlonly
 
 构建在所选工作区写 build/install/log，`--cmake-clean-cache` 要求清理 CMake 缓存。安装环境之后由启动脚本加载；构建工具本身不启动导航或定位节点。布局见 @ref workspace_layout "工作区说明"，完整源码见 @ref build_workspace.sh "build_workspace.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor build_ins_guide
 # build_ins_only.sh：兼容入口转交统一构建
@@ -90,14 +94,18 @@
 
 输入列表使用数组展开，每个话题保持独立参数。算法入口仍由 @ref sany_ins_launcher_guide "run_sany_ins_only.sh" 启动；此处继续深入应读 `ins_topics.py` 与 rosbag 命令，而不是 C++ 入口。
 
+@htmlonly[block]
 <details>
 <summary>环境、cwd 与结果</summary>
+@endhtmlonly
 
 调用终端先加载 ROS/消息工作区环境，并设置与节点一致的 domain；本脚本没有 `source`。它不改变 cwd，相对 YAML 与 output_bag 路径相对调用终端。结果是包含配置输入及业务输出的 MCAP bag。
 
 完整源码：@ref record_ins_only.sh "record_ins_only.sh"；导航运行边界见 @ref ins_only_operation "纯组合导航操作契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor ins_replay_guide
 # replay_ins_only.sh：只回放输入，重新生成结果
@@ -131,11 +139,15 @@ YAML 必须开启 `ins_only.use_sim_time: true`。`shift 2` 后，其余 flags �
 
 得到数组后进入核心调用。对照录制工具可以看到：录制包含输入和输出，回放只选择输入；这是重新运行算法的关键边界。
 
+@htmlonly[block]
 <details>
 <summary>环境、节点与参数</summary>
+@endhtmlonly
 
 调用方式为 `site_replay.yaml bag [ros2 bag play options]`。先加载 ROS/消息工作区环境，保证 domain 一致，再单独启动 @ref sany_ins_launcher_guide "INS 定位节点"。脚本不改变 cwd、也不自动建立结果目录；导航输出按节点 YAML/flags 保存。
 
 完整源码：@ref replay_ins_only.sh "replay_ins_only.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

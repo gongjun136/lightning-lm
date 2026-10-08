@@ -72,8 +72,10 @@ runner 根据算法状态、超时、完成程度、轨迹/计时和必需产物
 
 进入 @ref run_loc_offline.cc "main()" 后，重点读 `LaserMapping`、`LidarLoc` 的初始化、bag 回调连接与 `rosbag.Go()`，然后跟踪最后一帧 flush 和结果保存。它有自己的离线编排；理解算法约束时可对照 @ref online_localization_flow "在线定位数据流"。
 
+@htmlonly[block]
 <details>
 <summary>参数、资源采样与输出</summary>
+@endhtmlonly
 
 @snippet{lineno} run_loc_offline.sh loc-offline-usage
 
@@ -83,4 +85,6 @@ runner 根据算法状态、超时、完成程度、轨迹/计时和必需产物
 
 算法原始日志在 logs/；轨迹、CSV、计时与分析摘要在 results/；bag 合同、watchdog、资源和 metadata 在运行根目录。完整源码：@ref run_loc_offline.sh "run_loc_offline.sh"；精确参数见 @ref script_contracts "脚本契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

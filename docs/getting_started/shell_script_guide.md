@@ -203,8 +203,10 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 @anchor sany_lidar_reference
 ## 按需参考：参数、诊断分支与输出
 
+@htmlonly[block]
 <details>
 <summary>参数与默认值：需要调整启动设置时展开</summary>
+@endhtmlonly
 
 可选第一个参数是 run name，省略为 `sany_<布局>lidar_YYYYmmdd_HHMMSS`。`-h / --help` 显示脚本用法。此入口按环境变量组装算法 flags，不提供通用脚本那样的剩余 flags 透传。
 
@@ -233,10 +235,14 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-field-defaults
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
+@htmlonly[block]
 <details>
 <summary>production / diagnostic：需要调整采集开销时展开</summary>
+@endhtmlonly
 
 | 开关 | diagnostic 缺省 | production 缺省 | 作用 |
 |---|---|---|---|
@@ -253,10 +259,14 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-mode-settings
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
+@htmlonly[block]
 <details>
 <summary>录包、watchdog 与资源监测：需要诊断现场时展开</summary>
+@endhtmlonly
 
 **后台 MCAP：** 在定位启动前录制原始输入和指定输出，先等待一秒并确认录包进程仍在运行，失败时结束启动。
 
@@ -270,10 +280,14 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-resource-monitor
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
+@htmlonly[block]
 <details>
 <summary>运行目录与输出文件：需要查看结果或排障时展开</summary>
+@endhtmlonly
 
 | 产物 | 用途 |
 |---|---|
@@ -288,7 +302,9 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 | `bag/` | 开启录包时保存的 MCAP |
 | `snapshots/`、`logs/pose_vel_watchdog.csv` | 开启 watchdog 时的静默现场与事件时间线 |
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor sany_ins_launcher_guide
 # run_sany_ins_only.sh：SANY 纯组合导航入口
@@ -334,8 +350,10 @@ ROS 环境固定为 Humble，domain 缺省 42；驱动和下游必须使用一�
 
 Python 段只核对 YAML 的模式，成功后进入核心调用。接着读 @ref run_loc_online.cc "main() 的 ins_only 分支"，沿 `InsLocSystem::Init → Spin` 继续；坐标转换、质量门控、点云去畸变和输出审核见 @ref ins_only_operation "纯组合导航操作契约"。
 
+@htmlonly[block]
 <details>
 <summary>驱动、录包、回放与输出</summary>
+@endhtmlonly
 
 ```bash
 bash scripts/run_sany_ins_only.sh /absolute/site.yaml [run_loc_online flags]
@@ -345,7 +363,9 @@ CGI 与所需雷达驱动分别启动。节点按 YAML 的 `audit_root` 保存�
 
 现场配置需固定 ENU 原点、高程类型、后轴外参和质量条件。完整源码：@ref run_sany_ins_only.sh "run_sany_ins_only.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor generic_online_launcher_guide
 # run_loc_online.sh：通用在线定位联调入口
@@ -392,8 +412,10 @@ CGI 与所需雷达驱动分别启动。节点按 YAML 的 `audit_root` 保存�
 
 从 @ref run_loc_online.cc "run_loc_online.cc 的 main()" 开始，LiDAR 模式沿 `LocSystem::Init → SetInitPose → Spin`，后续见 @ref online_localization_flow "在线定位数据流"。Shell 只处理环境和运行目录，算法与可选内嵌 bag 回放在 C++ 中执行。
 
+@htmlonly[block]
 <details>
 <summary>调用示例、默认值与产物</summary>
+@endhtmlonly
 
 ```bash
 LIGHTNING_LM_CONFIG=/absolute/localization.yaml \
@@ -405,4 +427,6 @@ bash scripts/run_loc_online.sh online_test --map /absolute/map
 
 基本产物为 `run_metadata.txt` 与 `logs/run_loc_online.{stdout,stderr}.log`；轨迹等产物由算法 flags 决定。完整参数边界见 @ref script_contracts "通用运行契约"，完整源码见 @ref run_loc_online.sh "run_loc_online.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

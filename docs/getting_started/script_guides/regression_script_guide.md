@@ -53,14 +53,18 @@
 
 进入 C++ 读 @ref run_slam_online.cc "在线 SLAM main()" 或 @ref run_loc_online.cc "在线定位 main()"，重点区分 ROS 事件循环与可选 bag player。
 
+@htmlonly[block]
 <details>
 <summary>调用参数与结果目录</summary>
+@endhtmlonly
 
 调用方式：`<slam|loc> <run-name> <config.yaml> <bag-dir> [map-dir]`，loc 必须提供地图。输出根缺省 `$repo_dir/runs/online_regression`，脚本在 run dir 内执行。基本目录可复用，日志/metadata 可能被截断，rosbag 自身另有输出目录约束。
 
 `LIGHTNING_LM_EMBEDDED_PLAYBACK=0` 选择外部流程；`LIGHTNING_LM_POST_WAIT_SECONDS` 和 `LIGHTNING_LM_DISCOVERY_DELAY_SECONDS` 控制收尾/发现等待。完整源码：@ref run_online_bag_regression.sh "run_online_bag_regression.sh"；契约见 @ref script_contracts "脚本契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor voxel_reference_guide
 # run_voxel_slam_114_reference.sh：ROS 1 参考轨迹实验
@@ -115,8 +119,10 @@ master 使用指定端口，ROS 日志与 home 归入输出目录，`/use_sim_ti
 
 汇总检查有效轨迹、时间单调性、末帧接近程度、输出比例和资源摘要；成功后关闭 trap 并显式 cleanup。
 
+@htmlonly[block]
 <details>
 <summary>参数、TF 录制与资源采样</summary>
+@endhtmlonly
 
 @snippet{lineno} run_voxel_slam_114_reference.sh voxel-reference-usage
 
@@ -126,4 +132,6 @@ TF 录制的 frame 与平移修正是此参考实验的固定条件：
 
 默认话题为 Livox 114 LiDAR/IMU，private master 端口 11331，CPU `0-7`，播放 1 倍。结果在 results/，算法原始文件在 data/，指纹与运行信息写 metadata。完整源码：@ref run_voxel_slam_114_reference.sh "run_voxel_slam_114_reference.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly

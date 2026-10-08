@@ -1,4 +1,4 @@
-# 2026-10-08 SANY CAN 消息版本冲突与启动静默退出
+@page incident_20261008_can_schema_startup 2026-10-08 SANY CAN 消息版本冲突与启动静默退出
 
 ## 现场证据
 

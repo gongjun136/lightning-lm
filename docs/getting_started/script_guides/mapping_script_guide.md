@@ -52,14 +52,18 @@
 
 从 @ref run_slam_online.cc "main()" 沿 `SlamSystem::Init → StartSLAM → 可选内嵌 bag 播放 → Spin` 继续。前端和后端之间的交接见 @ref guide_mapping "建图与后端"。传感器或外部回放需另行启动；显式 `--bag` 的播放由 C++ 负责。
 
+@htmlonly[block]
 <details>
 <summary>参数、地图保存与源码</summary>
+@endhtmlonly
 
 默认 YAML 是 `$repo_dir/config/default.yaml`，输出根是 `$repo_dir/runs`。配置、仓库、ROS/overlay、输出根和 run name 可分别通过 `LIGHTNING_LM_*` 变量覆盖。轨迹、地图等由 YAML、程序 flags 和保存服务决定；脚本自身保存 metadata 与 stdout/stderr。
 
 服务请求见 @ref save_map_guide "保存地图脚本"。完整源码：@ref run_slam_online.sh "run_slam_online.sh"；参数边界见 @ref script_contracts "脚本契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor slam_offline_guide
 # run_slam_offline.sh：离线 SLAM 与地图导出
@@ -118,8 +122,10 @@
 
 从 @ref run_slam_offline.cc "main()" 继续：初始化 LIO 与后端 → `rosbag.Go()` → 最后一帧 flush → 等待后端 → 地图导出。配置可选择新 `BackendPipeline`、legacy 或关闭后端，不能仅凭脚本名判断用了哪一种。
 
+@htmlonly[block]
 <details>
 <summary>参数与资源采样</summary>
+@endhtmlonly
 
 @snippet{lineno} run_slam_offline.sh slam-offline-usage
 
@@ -129,7 +135,9 @@
 
 轨迹和计时在 results/，地图在 data/new_map/，原始日志在 logs/，资源与 metadata 在运行根目录。完整源码：@ref run_slam_offline.sh "run_slam_offline.sh"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
 
 @anchor save_map_guide
 # save_default_map.sh：请求保存当前地图
@@ -153,9 +161,13 @@
 
 `"$@"` 把全部 flags 原样交给对齐程序，Shell 不解析地图或输出参数；相对路径沿用调用终端的 cwd。进入 @ref align_maps_offline.cc "align_maps_offline.cc 的 main()"，再读候选搜索、匹配和刚体变换输出。
 
+@htmlonly[block]
 <details>
 <summary>路径与参数边界</summary>
+@endhtmlonly
 
 这个入口按仓库本地 install/bin 布局找二进制，没有通过 `ros2 pkg prefix` 解析当前 overlay。具体地图、搜索配置和结果路径由 C++ flags 指定。完整源码：@ref align_maps_offline.sh "align_maps_offline.sh"；参数与副作用见 @ref script_contracts "脚本契约"。
 
+@htmlonly[block]
 </details>
+@endhtmlonly
