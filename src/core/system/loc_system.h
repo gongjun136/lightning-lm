@@ -167,7 +167,7 @@ class LocSystem {
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
-    rclcpp::Subscription<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_sub_ = nullptr;
+    rclcpp::GenericSubscription::SharedPtr wheel_speed_sub_ = nullptr;
 
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;
 

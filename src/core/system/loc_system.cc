@@ -4,6 +4,7 @@
 
 #include "core/system/loc_system.h"
 #include "common/imu_body_velocity.h"
+#include "common/sany_wheel_speed_wire.h"
 
 #include <algorithm>
 #include <chrono>
@@ -301,11 +302,21 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         wheel_speed_input_stats_.topic = wheel_speed_topic_;
     }
     if (wheel_speed_observation_enabled_) {
-        wheel_speed_sub_ = node_->create_subscription<geosun_msgs::msg::SpeThrCAN4>(
-            wheel_speed_topic_, rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile(),
-            [this](geosun_msgs::msg::SpeThrCAN4::SharedPtr message) {
-                const double sensor_stamp = ToSec(message->header.stamp);
-                ObserveWheelSpeedInput(sensor_stamp, message->x, message->y);
+        wheel_speed_sub_ = node_->create_generic_subscription(
+            wheel_speed_topic_, "geosun_msgs/msg/SpeThrCAN4",
+            rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile(),
+            [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+                const auto& bytes = message->get_rcl_serialized_message();
+                SanyWheelSpeedWire sample;
+                if (!DecodeSanyWheelSpeed(bytes.buffer, bytes.buffer_length, sample)) {
+                    LOG_EVERY_N(ERROR, 200) << "Rejected malformed/unsupported SpeThrCAN4 wire layout; bytes="
+                                            << bytes.buffer_length;
+                    return;
+                }
+                LOG_FIRST_N(INFO, 1) << "CAN wire layout="
+                                    << (sample.has_comm_header ? "comm_header+Header+x+y" : "Header+x+y")
+                                    << ", stamp=" << std::setprecision(16) << sample.stamp;
+                ObserveWheelSpeedInput(sample.stamp, sample.rpm, sample.torque);
             });
         LOG(INFO) << "wheel-speed observation enabled: topic=" << wheel_speed_topic_
                   << ", scale=" << std::setprecision(16)

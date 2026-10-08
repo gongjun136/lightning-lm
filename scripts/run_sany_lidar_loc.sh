@@ -5,7 +5,8 @@
 # production/diagnostic controls overhead; it does not change the localization algorithm.
 # Watchdog silence captures snapshots only; the in-process relocalizer owns recovery.
 # Detailed guide: docs/getting_started/shell_script_guide.md (SANY LiDAR section).
-set -euo pipefail
+set -Eeuo pipefail
+trap 'status=$?; printf "ERROR: localization launcher failed (exit=%s, line=%s): %s\nRun directory: %s\n" "$status" "$LINENO" "$BASH_COMMAND" "${run_dir:-<not created>}" >&2' ERR
 
 # [sany-lidar-field-defaults]
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
@@ -112,7 +113,7 @@ Useful environment variables:
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
   LIGHTNING_LM_OUT_ROOT       Run root (default: $LIGHTNING_LM_WS/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 0)
-  SANY_TOPIC_WAIT_SECONDS     Sensor-input discovery timeout (default: 60)
+  SANY_TOPIC_WAIT_SECONDS     Sensor delivery and timestamp check timeout (default: 60)
   SANY_ENABLE_POSE_VEL_WATCHDOG
                               Watch /localization/pose_vel and capture loss snapshots:
                               1=yes, 0=no (default: 0)
@@ -415,23 +416,22 @@ python3 "${script_dir}/summarize_run_config.py" \
 # [sany-lidar-config-snapshot]
 
 wait_for_inputs() {
-  local deadline=$((SECONDS + topic_wait_seconds))
-  local listed topic missing
-  while ((SECONDS < deadline)); do
-    listed="$(ros2 topic list)"
-    missing=0
-    for topic in "${required_topics[@]}"; do
-      grep -Fqx "${topic}" <<<"${listed}" || missing=$((missing + 1))
-    done
-    ((missing == 0)) && return 0
-    sleep 1
+  local topic
+  local args=(--timeout "${topic_wait_seconds}")
+  for topic in "${lidar_topics[@]}"; do
+    args+=(--lidar "${topic}")
   done
-  echo "Missing required topics:" >&2
-  listed="$(ros2 topic list)"
-  for topic in "${required_topics[@]}"; do
-    grep -Fqx "${topic}" <<<"${listed}" || echo "  ${topic}" >&2
+  # Put the primary IMU first: its timestamps are compared with CAN.
+  args+=(--imu "${imu_topic}")
+  for topic in "${required_imu_topics[@]}"; do
+    [[ "${topic}" == "${imu_topic}" ]] || args+=(--imu "${topic}")
   done
-  return 1
+  if [[ "${enable_can_observation}" == "1" ]]; then
+    args+=(--wheel-speed "${wheel_speed_topic}")
+  fi
+  timeout --signal=TERM --kill-after=3 "$((topic_wait_seconds + 5))" \
+    ros2 run lightning_lm check_localization_inputs "${args[@]}" \
+    2>&1 | tee "${run_dir}/logs/input_check.log"
 }
 
 snapshot_incident() {
@@ -604,22 +604,7 @@ else
   fi
 fi
 # [sany-lidar-check-inputs]
-wait_for_inputs || fail "required sensor inputs did not appear."
-for topic in "${lidar_topics[@]}"; do
-  actual_type="$(ros2 topic type "${topic}")"
-  [[ "${actual_type}" == "sensor_msgs/msg/PointCloud2" ]] ||
-    fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/PointCloud2"
-done
-for topic in "${required_imu_topics[@]}"; do
-  actual_type="$(ros2 topic type "${topic}")"
-  [[ "${actual_type}" == "sensor_msgs/msg/Imu" ]] ||
-    fail "${topic} has type ${actual_type}, expected sensor_msgs/msg/Imu"
-done
-if [[ "${enable_can_observation}" == "1" ]]; then
-  wheel_speed_type="$(ros2 topic type "${wheel_speed_topic}")"
-  [[ "${wheel_speed_type}" == "geosun_msgs/msg/SpeThrCAN4" ]] ||
-    fail "${wheel_speed_topic} has type ${wheel_speed_type}, expected geosun_msgs/msg/SpeThrCAN4"
-fi
+wait_for_inputs || fail "required sensor deliveries are unavailable; see ${run_dir}/logs/input_check.log"
 # [sany-lidar-check-inputs]
 
 {
@@ -741,9 +726,13 @@ if [[ "${resource_profile}" == "1" ]]; then
 fi
 # [sany-lidar-resource-monitor]
 # [sany-lidar-wait-localization]
-wait "${algorithm_pid}"
-algorithm_status=$?
+algorithm_status=0
+wait "${algorithm_pid}" || algorithm_status=$?
 set -e
+if ((algorithm_status != 0)); then
+  echo "ERROR: localization exited with status ${algorithm_status}; see ${run_dir}/logs/run_loc_online.stderr.log" >&2
+  tail -n 20 "${run_dir}/logs/run_loc_online.stderr.log" >&2 || true
+fi
 # [sany-lidar-wait-localization]
 
 # [sany-lidar-finish-run]

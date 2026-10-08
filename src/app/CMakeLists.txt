@@ -47,6 +47,10 @@ add_executable(run_loc_online
         run_loc_online.cc
 )
 
+add_executable(check_localization_inputs check_localization_inputs.cc)
+ament_target_dependencies(check_localization_inputs rclcpp sensor_msgs)
+install(TARGETS check_localization_inputs DESTINATION lib/${PROJECT_NAME})
+
 target_link_libraries(run_loc_online
         ${PROJECT_NAME}.libs
         ${third_party_libs}
