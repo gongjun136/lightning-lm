@@ -1,0 +1,173 @@
+schema_version: 1
+success: true
+old_map: /mnt/f/datasets/SANY/sites/bauma_2026_replica/derived/lightning-lm/maps/sany_3lidar_baoma_sim_20260901
+new_map: /mnt/f/datasets/SANY/sites/bauma_2026_replica/derived/lightning-lm/maps/bauma_3lidar_20261009_113953
+input_bag: /mnt/f/datasets/SANY/sites/bauma_2026_replica/raw/rig_3lidar/mapping/rosbag2_2026_10_09-11_39_53
+config: /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml
+transform_convention: T_old_from_new; left-multiply online output poses only
+transform:
+  translation_xyz:
+    - 2.3441667556762695
+    - -3.1178596019744873
+    - -0.060484126210212708
+  quaternion_xyzw:
+    - 0.0004699768015488608
+    - -0.0010871356252046696
+    - 0.023805222874642613
+    - 0.99971591395847414
+quality: 0.92557006762748695
+candidate_support:
+  solid: 54
+  btc: 0
+  strong_geometry_fallback: true
+ambiguous: false
+bag_time_range:
+  - 1791517195.7419484
+  - 1791517413.3226211
+static_window:
+  start: 1791517198.9003165
+  end: 1791517213.9000106
+  duration: 14.999694108963013
+  selected_submaps: 8
+global_metrics:
+  new_to_old:
+    points: 63445
+    overlap_0_5m: 0.85585940578453779
+    overlap_1_0m: 0.94376231381511544
+    overlap_2_0m: 0.97240129245803453
+    rmse_within_1_0m: 0.29814332343540684
+    median_within_1_0m: 0.19072148203849792
+    p95_within_1_0m: 0.66251027584075928
+  old_to_new:
+    points: 78892
+    overlap_0_5m: 0.79997971910966892
+    overlap_1_0m: 0.91337524717335095
+    overlap_2_0m: 0.95426659230340216
+    rmse_within_1_0m: 0.33446039812818285
+    median_within_1_0m: 0.21692100167274475
+    p95_within_1_0m: 0.7113642692565918
+  symmetric_overlap_0_5m: 0.79997971910966892
+  symmetric_overlap_1_0m: 0.91337524717335095
+  symmetric_overlap_2_0m: 0.95426659230340216
+  symmetric_rmse_within_1_0m: 0.33446039812818285
+  regional_p10_overlap_1_0m: 0.5821727019498607
+static_metrics:
+  mean_overlap_0_5m: 0.95393683254226114
+  mean_overlap_1_0m: 0.99813277529283451
+  min_overlap_1_0m: 0.997162173441282
+  mean_rmse_within_1_0m: 0.24603890245945267
+  median_icp_correction_m: 0.059572404366304517
+  median_icp_correction_deg: 0.1443821276324074
+  max_transform_spread_m: 0.070759929690349915
+  max_transform_spread_deg: 0.10475828149051532
+static_windows:
+  - descriptor_id: 0
+    timestamp: 1791517198.9003165
+    metrics:
+      points: 12001
+      overlap_0_5m: 0.95325389550870765
+      overlap_1_0m: 0.99808349304224653
+      overlap_2_0m: 0.99908340971585696
+      rmse_within_1_0m: 0.24540795645878535
+      median_within_1_0m: 0.19130733609199524
+      p95_within_1_0m: 0.47262337803840637
+    icp_correction_m: 0.037959296670539572
+    icp_correction_deg: 0.1443821276324074
+  - descriptor_id: 11
+    timestamp: 1791517201.1001828
+    metrics:
+      points: 11915
+      overlap_0_5m: 0.95543432647922788
+      overlap_1_0m: 0.99865715484683171
+      overlap_2_0m: 0.99916072177926984
+      rmse_within_1_0m: 0.24593051037005564
+      median_within_1_0m: 0.19162774085998535
+      p95_within_1_0m: 0.46640858054161072
+    icp_correction_m: 0.059572404366304517
+    icp_correction_deg: 0.17738544286017965
+  - descriptor_id: 21
+    timestamp: 1791517203.1003695
+    metrics:
+      points: 11994
+      overlap_0_5m: 0.9531432382858096
+      overlap_1_0m: 0.99833249958312487
+      overlap_2_0m: 0.99874937468734371
+      rmse_within_1_0m: 0.2456521039470243
+      median_within_1_0m: 0.18909868597984314
+      p95_within_1_0m: 0.47157618403434753
+    icp_correction_m: 0.058833597452925671
+    icp_correction_deg: 0.12517312799223951
+  - descriptor_id: 32
+    timestamp: 1791517205.3002365
+    metrics:
+      points: 11943
+      overlap_0_5m: 0.95470149878589972
+      overlap_1_0m: 0.9980741857154819
+      overlap_2_0m: 0.9989952273298166
+      rmse_within_1_0m: 0.24626573758184003
+      median_within_1_0m: 0.19072903692722321
+      p95_within_1_0m: 0.46744087338447571
+    icp_correction_m: 0.057680881347679562
+    icp_correction_deg: 0.20432042851057988
+  - descriptor_id: 43
+    timestamp: 1791517207.5001106
+    metrics:
+      points: 12063
+      overlap_0_5m: 0.95482052557406949
+      overlap_1_0m: 0.99834203763574569
+      overlap_2_0m: 0.99908812069966013
+      rmse_within_1_0m: 0.24579630148112611
+      median_within_1_0m: 0.19064275920391083
+      p95_within_1_0m: 0.46794995665550232
+    icp_correction_m: 0.063172548140998958
+    icp_correction_deg: 0.10699652489253084
+  - descriptor_id: 54
+    timestamp: 1791517209.7000904
+    metrics:
+      points: 11937
+      overlap_0_5m: 0.95392477171818713
+      overlap_1_0m: 0.99849208343804974
+      overlap_2_0m: 0.99941358800368607
+      rmse_within_1_0m: 0.24657536839068073
+      median_within_1_0m: 0.18986120820045471
+      p95_within_1_0m: 0.46747636795043945
+    icp_correction_m: 0.06422926480564653
+    icp_correction_deg: 0.13809525926156171
+  - descriptor_id: 64
+    timestamp: 1791517211.7001507
+    metrics:
+      points: 11981
+      overlap_0_5m: 0.95217427593690007
+      overlap_1_0m: 0.997162173441282
+      overlap_2_0m: 0.99824722477255656
+      rmse_within_1_0m: 0.24641543193127841
+      median_within_1_0m: 0.18982498347759247
+      p95_within_1_0m: 0.47567352652549744
+    icp_correction_m: 0.077589173975733006
+    icp_correction_deg: 0.18949027832122289
+  - descriptor_id: 75
+    timestamp: 1791517213.9000106
+    metrics:
+      points: 12011
+      overlap_0_5m: 0.95404212804928812
+      overlap_1_0m: 0.9979185746399134
+      overlap_2_0m: 0.99900091582715844
+      rmse_within_1_0m: 0.24626780951483077
+      median_within_1_0m: 0.19059032201766968
+      p95_within_1_0m: 0.4724268913269043
+    icp_correction_m: 0.10419391711709497
+    icp_correction_deg: 0.19700110691912834
+thresholds:
+  global_symmetric_overlap_0_5m: 0.34999999999999998
+  global_symmetric_overlap_1_0m: 0.55000000000000004
+  global_rmse_1_0m: 0.45000000000000001
+  static_mean_overlap_0_5m: 0.55000000000000004
+  static_mean_overlap_1_0m: 0.75
+artifacts:
+  - alignment_birdseye.png
+  - alignment_overlay_rgb.pcd
+  - old_map_review.pcd
+  - new_map_aligned_review.pcd
+  - static_window_aligned.pcd
+  - alignment_candidates.csv
+config_updated: true

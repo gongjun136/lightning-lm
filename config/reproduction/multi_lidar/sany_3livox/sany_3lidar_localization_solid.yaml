@@ -532,16 +532,19 @@ offline_localization:
     - 1.0
 
 output:
-  map_frame: map
   fixed_map_transform:
-    # Current site uses this localization map directly; no legacy-map alignment.
-    enabled: false
+    enabled: true
     convention: target_from_localization
     source_frame: localization_map
     target_frame: map
-    translation_xyz: [-2.41949081420898, 18.3118782043457, -0.130619361996651]
-    quaternion_xyzw: [0.00079188585717829, -0.0124272375022884, -0.305301087578141, 0.952174449672147]
+    translation_xyz: [2.34416675567627, -3.11785960197449, -0.0604841262102127]
+    quaternion_xyzw: [0.000469976801548861, -0.00108713562520467, 0.0238052228746426, 0.999715913958474]
     provenance:
       generated_by: align_maps_offline
-      report: '/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/sany_map_alignment_3lidar_old_4lidar_new_20260813/alignment_report.yaml'
-      quality: 0.989856910679774
+      report: 'docs/operations/map_alignment/bauma_20261009/alignment_report.yaml'
+      source_map_version: bauma_3lidar_20261009_113953
+      target_map_version: sany_3lidar_baoma_sim_20260901
+      source_global_pcd_sha256: 59d717bca14929c275cfbeef72e2c1285319428cd3c715561697803873149de1
+      target_global_pcd_sha256: 0463386c579b11513b4a962ec0c7e157e96a7687e986225298a7f93672fadc99
+      quality: 0.925570067627487
+  map_frame: map
