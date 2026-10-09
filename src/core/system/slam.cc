@@ -3,6 +3,7 @@
 //
 
 #include "core/system/slam.h"
+#include "common/pcd_io.h"
 #include "core/backend/backend_pipeline.h"
 #include "core/g2p5/g2p5.h"
 #include "core/lio/laser_mapping.h"
@@ -319,7 +320,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
         return false;
     }
 
-    if (pcl::io::savePCDFileBinaryCompressed(
+    if (pcd_io::SaveWorldCloudBinaryCompressed(
             save_path + "/global.pcd", *global_map) != 0) {
         LOG(ERROR) << "failed to save global map";
         return false;

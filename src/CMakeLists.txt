@@ -101,6 +101,10 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(world_pcd_export_test test/world_pcd_export_test.cc)
+    target_link_libraries(world_pcd_export_test ${PCL_LIBRARIES})
+    add_test(NAME world_pcd_export_test COMMAND $<TARGET_FILE:world_pcd_export_test>)
+
     add_executable(sany_wheel_speed_wire_test test/sany_wheel_speed_wire_test.cc)
     ament_target_dependencies(sany_wheel_speed_wire_test rclcpp geosun_msgs)
     add_test(NAME sany_wheel_speed_wire_test COMMAND $<TARGET_FILE:sany_wheel_speed_wire_test>)

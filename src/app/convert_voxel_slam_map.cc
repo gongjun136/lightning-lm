@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/pcd_io.h"
 #include "common/point_def.h"
 #include "core/lightning_math.hpp"
 #include "core/maps/tiled_map.h"
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
         return 4;
     }
     const std::filesystem::path global_path = output_dir / "global.pcd";
-    if (pcl::io::savePCDFileBinaryCompressed(global_path.string(), *filtered_map) != 0) {
+    if (lightning::pcd_io::SaveWorldCloudBinaryCompressed(global_path.string(), *filtered_map) != 0) {
         LOG(ERROR) << "failed to save reconstructed global map";
         return 4;
     }

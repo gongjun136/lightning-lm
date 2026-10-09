@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "common/eigen_types.h"
+#include "common/pcd_io.h"
 #include "common/point_def.h"
 #include "core/localization/btc_relocalizer.h"
 #include "core/localization/solid_relocalizer.h"
@@ -553,9 +554,12 @@ void SaveReviewClouds(const fs::path& output_dir, const CloudPtr& old_map,
     CloudPtr aligned_new(new Cloud), aligned_static(new Cloud);
     pcl::transformPointCloud(*new_map, *aligned_new, transform.matrix().cast<float>());
     pcl::transformPointCloud(*static_new, *aligned_static, transform.matrix().cast<float>());
-    pcl::io::savePCDFileBinaryCompressed((output_dir / "old_map_review.pcd").string(), *old_map);
-    pcl::io::savePCDFileBinaryCompressed((output_dir / "new_map_aligned_review.pcd").string(), *aligned_new);
-    pcl::io::savePCDFileBinaryCompressed((output_dir / "static_window_aligned.pcd").string(), *aligned_static);
+    lightning::pcd_io::SaveWorldCloudBinaryCompressed(
+        (output_dir / "old_map_review.pcd").string(), *old_map);
+    lightning::pcd_io::SaveWorldCloudBinaryCompressed(
+        (output_dir / "new_map_aligned_review.pcd").string(), *aligned_new);
+    lightning::pcd_io::SaveWorldCloudBinaryCompressed(
+        (output_dir / "static_window_aligned.pcd").string(), *aligned_static);
 
     pcl::PointCloud<pcl::PointXYZRGB> overlay;
     overlay.reserve(old_map->size() + aligned_new->size() + aligned_static->size());
@@ -570,7 +574,8 @@ void SaveReviewClouds(const fs::path& output_dir, const CloudPtr& old_map,
     append(old_map, 180, 180, 180);
     append(aligned_new, 230, 70, 55);
     append(aligned_static, 30, 160, 255);
-    pcl::io::savePCDFileBinaryCompressed((output_dir / "alignment_overlay_rgb.pcd").string(), overlay);
+    lightning::pcd_io::SaveWorldCloudBinaryCompressed(
+        (output_dir / "alignment_overlay_rgb.pcd").string(), overlay);
 
     float min_x = std::numeric_limits<float>::infinity(), min_y = min_x;
     float max_x = -min_x, max_y = -min_x;

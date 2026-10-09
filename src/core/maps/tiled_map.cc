@@ -3,6 +3,7 @@
 //
 
 #include "core/maps/tiled_map.h"
+#include "common/pcd_io.h"
 #include "io/file_io.h"
 
 #include <limits>
@@ -65,8 +66,8 @@ void TiledMap::SaveToBin(bool only_dynamic) {
             }
 
             std::string filename = options_.map_path_ + "/" + std::to_string(cp.second->id_) + ".pcd";
-            pcl::io::savePCDFileBinaryCompressed(filename,
-                                                 *math::VoxelGrid(cp.second->cloud_, options_.voxel_size_in_chunk_));
+            pcd_io::SaveWorldCloudBinaryCompressed(
+                filename, *math::VoxelGrid(cp.second->cloud_, options_.voxel_size_in_chunk_));
             fout << cp.second->id_ << " " << cp.first[0] << " " << cp.first[1] << " " << filename << std::endl;
         }
 
@@ -88,8 +89,8 @@ void TiledMap::SaveToBin(bool only_dynamic) {
         if (cp.second->cloud_ != nullptr && !cp.second->cloud_->empty()) {
             std::string filename = options_.map_path_ + "/" + std::to_string(cp.second->id_) + "_dyn.pcd";
             cp.second->cloud_->width = cp.second->cloud_->size();
-            pcl::io::savePCDFileBinaryCompressed(filename,
-                                                 *math::VoxelGrid(cp.second->cloud_, options_.voxel_size_in_chunk_));
+            pcd_io::SaveWorldCloudBinaryCompressed(
+                filename, *math::VoxelGrid(cp.second->cloud_, options_.voxel_size_in_chunk_));
         }
     }
 }
@@ -359,7 +360,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
                 if (options_.save_dyn_when_unload_) {
                     std::string filename = options_.map_path_ + "/" + std::to_string(d->second->id_) + "_dyn.pcd";
                     d->second->cloud_->width = d->second->cloud_->size();
-                    pcl::io::savePCDFileBinaryCompressed(filename, *d->second->cloud_);
+                    pcd_io::SaveWorldCloudBinaryCompressed(filename, *d->second->cloud_);
                 }
 
                 if (options_.delete_when_unload_) {

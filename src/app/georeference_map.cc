@@ -1,4 +1,5 @@
 #include "core/maps/tiled_map.h"
+#include "common/pcd_io.h"
 #include <pcl/io/pcd_io.h>
 #include <filesystem>
 #include <fstream>
@@ -48,7 +49,7 @@ int main(int argc,char** argv) {
             p.getVector3fMap()=(transform*p.getVector3fMap().cast<double>()).cast<float>();
         }
         fs::create_directories(output/"tiled");
-        if (pcl::io::savePCDFileBinaryCompressed((output/"map.pcd").string(),*cloud)<0)
+        if (lightning::pcd_io::SaveWorldCloudBinaryCompressed((output/"map.pcd").string(),*cloud)<0)
             throw std::runtime_error("cannot write transformed PCD");
         lightning::TiledMap map;
         if (!map.ConvertFromFullPCD(cloud,transform*lightning::SE3(start_q,start_t),(output/"tiled").string()) ||

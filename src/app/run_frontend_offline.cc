@@ -13,6 +13,7 @@
 #include <thread>
 
 #include "common/options.h"
+#include "common/pcd_io.h"
 #include "core/lio/laser_mapping.h"
 #include "core/lio/rear_axle_pose.h"
 #include "io/yaml_io.h"
@@ -295,7 +296,7 @@ int main(int argc, char** argv) {
         Timer::Evaluate(
             [&]() {
                 const auto map = lio.GetGlobalMap(true);
-                map_saved = pcl::io::savePCDFileBinaryCompressed(FLAGS_output_map, *map) == 0;
+                map_saved = lightning::pcd_io::SaveWorldCloudBinaryCompressed(FLAGS_output_map, *map) == 0;
             },
             "Offline Map Export");
         if (!map_saved) {

@@ -10,6 +10,7 @@
 
 #include "common/debug_event.h"
 #include "common/options.h"
+#include "common/pcd_io.h"
 #include "core/lightning_math.hpp"
 #include "laser_mapping.h"
 
@@ -1983,7 +1984,7 @@ void LaserMapping::SaveMap() {
     /// 保存地图
     auto global_map = GetGlobalMap(true);
 
-    pcl::io::savePCDFileBinaryCompressed("./data/lio.pcd", *global_map);
+    pcd_io::SaveWorldCloudBinaryCompressed("./data/lio.pcd", *global_map);
 
     LOG(INFO) << "lio map is saved to ./data/lio.pcd";
 }

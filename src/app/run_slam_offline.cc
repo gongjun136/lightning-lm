@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "common/options.h"
+#include "common/pcd_io.h"
 #include "core/backend/backend_pipeline.h"
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
@@ -468,7 +469,7 @@ int main(int argc, char** argv) {
                         global_map, start_pose, map_dir.string())) {
                     return;
                 }
-                if (pcl::io::savePCDFileBinaryCompressed(global_map_path, *global_map) != 0) {
+                if (lightning::pcd_io::SaveWorldCloudBinaryCompressed(global_map_path, *global_map) != 0) {
                     return;
                 }
                 if (map_export_options.export_pgm) {

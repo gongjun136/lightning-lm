@@ -20,6 +20,8 @@ LIO 的 IVox 是最近邻查询用局部结构；`TiledMap` 是持久地图的�
 \f$p_{export}=T_{export,slam}p_{slam},\quad T_{export,i}=T_{export,slam}T_{slam,i}.\f$
 metadata 的 transform id/矩阵引用用于核对数据库与地图是否来自同一次导出。仅移动点云但保留旧关键帧数据库会制造表面“匹配成功”的错误坐标。
 
+全局地图、分块地图和对齐预览 PCD 的 XYZ 已经位于其目标坐标系中，因此通过 `pcd_io::SaveWorldCloudBinaryCompressed` 写出单位 `VIEWPOINT 0 0 0 1 0 0 0`。CloudCompare 导入 PCD 时会应用 `VIEWPOINT`；若再写入地面归一化或地图对齐位姿，就会造成重复变换。此写出接口保留 XYZ、强度、时间、雷达编号等点属性，以及内存中的传感器元数据。传感器局部坐标系的 BTC/SOLiD 子地图仍由原有写出流程和 manifest 位姿定义其坐标。
+
 `EstimateStartGroundFrame` 利用起点附近点、高度预期、内点和倾角等约束估计地面；它有明确失败分支，不是任意场景都能可靠归零。先检查地面估计再创建/清理输出目录。
 
 # 二维栅格的几何含义

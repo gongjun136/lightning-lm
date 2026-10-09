@@ -21,6 +21,7 @@
 #include "core/localization/lidar_loc/lidar_loc.h"
 #include "core/lio/multi_lidar_fusion.h"
 #include "common/debug_event.h"
+#include "common/pcd_io.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -1270,8 +1271,8 @@ void LidarLoc::SaveRelocalizationBirdseye(const CloudPtr& static_map, const Clou
         const int index = ++relocalization_debug_index_;
         std::ostringstream stem;
         stem << "map_consistency_" << std::setw(4) << std::setfill('0') << index;
-        pcl::io::savePCDFileBinaryCompressed((directory / (stem.str() + "_scan_world.pcd")).string(),
-                                             *scan_world);
+        pcd_io::SaveWorldCloudBinaryCompressed(
+            (directory / (stem.str() + "_scan_world.pcd")).string(), *scan_world);
 
         Vec3d view_min = map_min;
         Vec3d view_max = map_max;
