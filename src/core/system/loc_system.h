@@ -53,7 +53,45 @@ class LocSystem {
     explicit LocSystem(Options options);
     ~LocSystem();
 
-    /// 初始化，地图路径在yaml里配置
+    /**
+     * @brief 根据配置与地图路径装配在线定位系统，连接 ROS 输入输出与底层定位算法。
+     *
+     * @details
+     * 由 @ref run_loc_online.cc "run_loc_online" 入口调用；成功后，入口通过 SetInitPose()
+     * 设置初始位姿，再由 Spin() 开始处理输入。
+     *
+     * 主要步骤：
+     *
+     * 1. <b>读取配置</b>：确定地图路径、输出坐标及输入和发布约束。
+     * 2. <b>初始化算法</b>：创建 ROS 节点与心跳，调用
+     *    @ref lightning::loc::Localization::Init() "Localization::Init()"
+     *    准备 LIO、地图匹配、PGO 和处理线程。
+     * 3. <b>连接输入</b>：按单雷达或多雷达配置订阅 IMU、点云，并按需接入 CAN 轮速。
+     * 4. <b>连接输出</b>：创建业务发布器和定时器，通过结果回调连接算法输出、业务发布与轨迹记录。
+     *
+     * @htmlonly[block]
+     * <details>
+     * <summary>关键代码：在线算法对象与实时结果回调</summary>
+     * @endhtmlonly
+     *
+     * <b>在线算法对象</b>：创建并设置在线模式的 Localization 对象。
+     *
+     * @snippet{trimleft} loc_system.cc loc-system-init-online-object
+     *
+     * <b>实时结果回调</b>：算法产生结果后，交回本层 PublishLocalizationResult() 发布。
+     *
+     * @snippet{trimleft} loc_system.cc loc-system-init-live-result
+     *
+     * @htmlonly[block]
+     * </details>
+     * @endhtmlonly
+     *
+     * @param yaml_path 定位配置文件路径。
+     * @param map_path_override 非空时覆盖 YAML 中的 `system.map_path`。
+     * @return 装配成功返回 true，显式校验或初始化失败返回 false；有效定位结果由后续输入产生。
+     * @note YAML 读取或字段转换异常可向调用方传播。
+     * 后续处理流程见 @ref online_localization_flow "在线定位数据流"。
+     */
     bool Init(const std::string& yaml_path, const std::string& map_path_override = "");
 
     /// 设置初始化位姿

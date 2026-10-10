@@ -86,9 +86,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     last_localization_stamp_ = 0.0;
     last_posres_stamp_ = 0.0;
     localization_ever_good_ = false;
+    // [loc-system-init-online-object]
     loc::Localization::Options opt;
     opt.online_mode_ = true;
     loc_ = std::make_shared<loc::Localization>(opt);
+    // [loc-system-init-online-object]
 
     YAML_IO yaml(yaml_path);
 
@@ -206,7 +208,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         return false;
     }
 
-    /// subscribers
+    // 配置并注册 IMU / LiDAR 输入订阅。
     imu_topic_ = yaml.GetValue<std::string>("common", "imu_topic");
     cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
     livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
@@ -374,9 +376,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 sany_output::TransformTfForOutput(pose, fixed_map_transform_));
         });
     }
+    // [loc-system-init-live-result]
     loc_->SetLocalizationResultCallback([this](const loc::LocalizationResult& result) {
         PublishLocalizationResult(result);
     });
+    // [loc-system-init-live-result]
     loc_->SetGlobalLocalizationResultCallback([this](const loc::LocalizationResult& result) {
         CaptureGlobalLocalizationResult(result);
     });

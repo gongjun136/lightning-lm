@@ -45,4 +45,5 @@ reproduction/
 - `sany_4lidar_mapping.yaml` 是 184/108/133/143 四雷达建图与地图数据库导出的正式配置。
 - `sany_4lidar_localization_solid.yaml` 是与上述地图配对的 SOLiD 定位配置。正式 YAML 保存在 `config/` 下；`runs/` 只保存实验输出、快照和临时变体。
 - `matrix/` 中的 C0—C6 用于单 114 基线、四雷达、噪声模型消融和单路 LiDAR 缺失实验。
+- 新车测试场地使用新增的 `multi_lidar/sany_4livox/sany_4lidar_new_vehicle_test_ground_mapping.yaml` 与 `multi_lidar/sany_4livox/sany_4lidar_new_vehicle_test_ground_localization_solid.yaml`。旧默认 YAML 不变；部署时通过 `LIGHTNING_LM_CONFIG` 手动覆盖，详见 [新车配置与部署](multi_lidar/sany_4livox/NEW_VEHICLE_TEST_GROUND.md)。
 - `scripts/run_frontend_offline_batch.sh` 默认读取 `matrix/`，不需要再传 `--config-dir`。

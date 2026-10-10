@@ -10,9 +10,10 @@ FILE_PATTERNS          = *.md *.dox *.h *.hpp *.cc *.cpp
 RECURSIVE              = YES
 EXCLUDE                = "@LIGHTNING_SOURCE_DIR@/src/core/miao/examples"
 USE_MDFILE_AS_MAINPAGE = "@LIGHTNING_SOURCE_DIR@/docs/index.md"
-# Shell files are shown verbatim as examples; Doxygen does not parse Bash symbols.
-EXAMPLE_PATH           = "@LIGHTNING_SOURCE_DIR@/scripts"
-EXAMPLE_PATTERNS       = *.sh
+# Shell examples and selected C++ snippets are extracted from the real files.
+EXAMPLE_PATH           = "@LIGHTNING_SOURCE_DIR@/scripts" \
+                         "@LIGHTNING_SOURCE_DIR@/src/core/system"
+EXAMPLE_PATTERNS       = *.sh *.cc
 EXAMPLE_RECURSIVE      = YES
 LAYOUT_FILE            = "@LIGHTNING_SOURCE_DIR@/docs/DoxygenLayout.xml"
 

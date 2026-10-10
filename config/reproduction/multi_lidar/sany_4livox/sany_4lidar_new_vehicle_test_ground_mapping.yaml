@@ -1,0 +1,418 @@
+# New vehicle test ground, four LiDARs: primary 184 / left 108 / right 133 / rear 143.
+# Exact user-provided calibration user_provided_20261010_v1; no extrinsic refinement.
+# Vehicle ID new_vehicle_20260922 is provisional; VIN and serial numbers pending.
+# Validated with map new_vehicle_4lidar_20260922_201743_calib_user_20261010_v1.
+# Explicit selection only; the existing SANY_LIDAR_LAYOUT=3/4 defaults are unchanged.
+# Source YAML SHA-256: 56171ef56090084a6f51375269648690432939b4e0cda85cb8439ccdab1a1df4
+# LiDAR/IMU, body geometry and CAN calibration remain inherited/unverified.
+backend:
+  btc:
+    allow_degenerate_plane_icp: true
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    degenerate_min_loop_score: 0.6
+    degenerate_min_matches: 60
+    descriptor:
+      candidate_count: 50
+      descriptor_max_length: 50.0
+      descriptor_min_length: 2.0
+      descriptor_near_count: 15
+      internal_icp_threshold: 0.15
+      line_filter: 1
+      non_max_suppression_radius: 2.0
+      normal_threshold: 0.2
+      plane_detection_threshold: 0.01
+      plane_distance_threshold: 0.5
+      plane_merge_distance_threshold: 0.3
+      plane_merge_normal_threshold: 0.1
+      projection_height_increment: 0.1
+      projection_max_distance: 5.0
+      projection_min_distance: 0.0
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.5
+      skip_near_descriptors: 30
+      summary_min_threshold: 10.0
+      touch_filter: 0
+      triangle_side_resolution: 0.2
+      useful_corner_num: 200
+      verification_threads: 4
+      voxel_init_points: 10
+      voxel_size: 1.0
+    descriptor_submap_size: 10
+    descriptor_submap_stride: 2
+    downsample_leaf_size: 0.2
+    enabled: true
+    icp_batch_size: 8
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_iterations: 30
+    icp_max_translation_correction: 10.0
+    icp_workers: 8
+    loop_cooldown_descriptors: 10
+    max_drift_ratio: 0.03
+    max_odom_revisit_distance: 0.0
+    max_points_per_submap: 50000
+    max_rotation_correction_deg: 45.0
+    min_loop_score: 0.6
+    min_optimization_rotation_deg: 2.0
+    min_optimization_translation: 0.2
+    min_points_per_submap: 100
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    refine_with_icp: true
+    refine_with_plane_icp: true
+  hba:
+    enabled: false
+  local_ba:
+    enabled: false
+  mode: ba_btc_hba
+  pose_graph:
+    iterations: 20
+    loop_outlier_chi2: 25.0
+    loop_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.2
+    motion_rotation_noise_deg: 3.0
+    motion_translation_noise: 0.1
+    outlier_iterations: 10
+    robust_kernel_delta: 1.0
+  verbose: true
+common:
+  dataset: sany
+  imu_topic: /livox/imu_192_168_3_184
+  lidar_topic: /livox/lidar_192_168_3_184
+  livox_lidar_topic: ''
+fasterlio:
+  acc_cov: 1.0
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  blind: 0.5
+  enable_icp_part: false
+  esti_plane_threshold: 0.1
+  extrinsic_R:
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  extrinsic_T:
+  - -0.011
+  - -0.02329
+  - 0.04412
+  extrinsic_est_en: false
+  filter_size_map: 0.5
+  filter_size_scan: 0.5
+  gyr_cov: 0.1
+  imu_filter: false
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  keep_first_imu_estimation: false
+  kf_angle_th: 0.0
+  kf_dis_th: -1.0
+  lidar_type: 1
+  lidar_update_inertial_states: true
+  lidar_update_pose_only: false
+  livox_point_time_scale: 1.0e-09
+  max_iteration: 4
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  max_update_gyro_bias_step: 0.05
+  max_update_velocity_step: 0.5
+  min_pts: 300
+  plane_icp_weight: 300.0
+  point_filter_num: 3
+  proj_kfs: false
+  propagate_velocity: true
+  scan_line: 4
+  skip_lidar_num: 0
+  time_scale: 1e-3
+  use_aa: false
+imu_initialization:
+  initial_yaw_deg: 0.0
+  max_acc_std: 0.5
+  max_gyro_std: 0.1
+  max_mean_acc_norm: 1.5
+  max_mean_gyro_norm: 0.2
+  min_duration: 2.0
+  min_mean_acc_norm: 0.5
+  min_samples: 300
+lidar_loc:
+  enable_dynamic_polygon: false
+  enable_icp_adjust: false
+  enable_parking_static: false
+  filter_intensity_max: 100.0
+  filter_intensity_min: 0.0
+  filter_z_max: 100.0
+  filter_z_min: -100.0
+  force_2d: false
+  grid_search_angle_range: 20.0
+  grid_search_angle_step: 20
+  init_with_fp: false
+  lidar_loc_odom_th: 1.0
+  loc_on_kf: false
+  min_init_confidence: 0.5
+  min_tracking_confidence: 0.4
+  try_self_extrap: false
+  update_dynamic_cloud: false
+  update_err_h: 0.2
+  update_err_v: 0.2
+  update_kf_dis: 2.0
+  update_lidar_loc_score: 2.5
+lidar_noise_model:
+  angular_sigma_deg: 0.05
+  enabled: true
+  max_information_scale: 4.0
+  min_information_scale: 0.25
+  range_sigma: 0.02
+  reference_sigma: 0.05
+localization_pgo:
+  enable_dr_extrapolation: true
+  enable_dr_smoothing: true
+loop_closing:
+  with_height: false
+map_export:
+  expected_height_tolerance: 0.8
+  expected_sensor_height: 3.56
+  export_pgm: true
+  histogram_bin_size: 0.05
+  inlier_tolerance: 0.2
+  max_ground_tilt_deg: 10.0
+  max_median_absolute_deviation: 0.1
+  min_ground_inliers: 100
+  normalize_start_ground_z: true
+  pgm_max_height: 100.0
+  pgm_min_height: 0.3
+  pgm_min_observation_frames: 3
+  pgm_obstacle_dilation_radius: 0.0
+  pgm_resolution: 0.05
+  self_point_filter:
+    enabled: true
+    max_body:
+    - 5.4
+    - 4.8
+    - 1.0
+    min_body:
+    - 1.0
+    - -4.8
+    - -0.75
+    padding: 0.1
+  start_ground_search_radius: 10.0
+maps:
+  delete_when_unload: false
+  dyn_cloud_policy: persistent
+  load_dyn_cloud: false
+  load_map_size: 2
+  max_pts_dyn_chunk: 100000
+  save_dyn_when_quit: false
+  save_dyn_when_unload: false
+  unload_map_size: 4
+  with_dyn_area: false
+multi_lidar:
+  enabled: true
+  extrinsics:
+    lidar0:
+      T:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    lidar1:
+      T:
+      - 0.46549289008765604
+      - -0.8681906242025259
+      - -0.1719343168906945
+      - -0.758476
+      - 0.34161787700296403
+      - -0.0029591101370609607
+      - 0.9398342778273118
+      - 0.838821
+      - -0.8164640808938438
+      - -0.4962220105094345
+      - 0.2952119931441568
+      - -0.465699
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar2:
+      T:
+      - 0.46609239148437687
+      - 0.870693294051361
+      - -0.15700659315571625
+      - -0.749705
+      - -0.3098619860802809
+      - -0.005572677858235453
+      - -0.9507652154153896
+      - -0.85648
+      - -0.8286998444447533
+      - 0.49179480777604656
+      - 0.26719737061161974
+      - -0.468532
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar3:
+      T:
+      - -0.5117237564511263
+      - 0.006977338098379928
+      - -0.8591217107235789
+      - -1.54192
+      - -0.013819775193281876
+      - -0.9999044962022094
+      - 0.00011085220863877102
+      - -0.00924621
+      - -0.8590388878841022
+      - 0.011929594614483143
+      - 0.5117713101329332
+      - -0.876691
+      - 0
+      - 0
+      - 0
+      - 1
+  frame_period: 0.1
+  match_tolerance: 0.02
+  min_lidars: 4
+  online_extrinsic_estimation: false
+  primary_lidar_id: 0
+  reorder_window: 0.5
+  topics:
+    imu_0: /livox/imu_192_168_3_184
+    imu_1: /livox/imu_192_168_1_108
+    imu_2: /livox/imu_192_168_2_133
+    imu_3: /livox/imu_192_168_4_143
+    lidar_0: /livox/lidar_192_168_3_184
+    lidar_1: /livox/lidar_192_168_1_108
+    lidar_2: /livox/lidar_192_168_2_133
+    lidar_3: /livox/lidar_192_168_4_143
+offline_localization:
+  initial_pose:
+    enabled: false
+    frame: map
+    quaternion_xyzw:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+relocalization:
+  backend: btc
+  candidate_dedup_radius: 2.0
+  candidate_dedup_yaw_deg: 15.0
+  confirmation_count: 2
+  confirmation_max_interval: 1.0
+  confirmation_max_rotation_deg: 5.0
+  confirmation_max_translation: 1.0
+  database_subdirectory: btc_relocalization
+  downsample_leaf_size: 0.2
+  enable_map_consistency: true
+  enabled: true
+  lost_frame_threshold: 5
+  map_bounds_margin: 0.5
+  map_consistency_max_points: 50000
+  map_min_gravity_alignment_cos: 0.95
+  map_min_inside_xy_ratio: 0.9
+  map_min_overlap_ratio: 0.95
+  map_nearest_neighbor_distance: 0.5
+  max_points_per_submap: 50000
+  min_btc_score: 0.16
+  min_points_per_submap: 100
+  query_stride: 1
+  query_submap_sizes:
+  - 5
+  - 10
+  - 20
+  solid:
+    candidate_dedup_radius: 2.0
+    candidate_dedup_yaw_deg: 15.0
+    compute_backend: cpu
+    database_subdirectory: solid_relocalization
+    debug_candidate_ids: []
+    descriptor:
+      angle_bins: 60
+      elevation_bins: 32
+      elevation_max_deg: 90.0
+      elevation_min_deg: -90.0
+      max_distance: 80.0
+      min_distance: 3.0
+      range_bins: 40
+    downsample_leaf_size: 0.2
+    icp_batch_size: 8
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_iterations: 30
+    icp_max_translation_correction: 10.0
+    icp_workers: 12
+    icp_yaw_hypothesis_offsets_deg:
+    - 0.0
+    - 90.0
+    - -90.0
+    - 180.0
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    min_similarity: 0.55
+    query_stride: 1
+    query_submap_sizes:
+    - 1
+    - 3
+    - 5
+    - 10
+    refine_with_icp: true
+    retrieval_pool_size: 200
+    source_database_subdirectory: btc_relocalization
+    top_k: 20
+  top_k: 10
+  validation_workers: 2
+roi:
+  height_max: 100.0
+  height_min: -100.0
+self_point_filter:
+  back: 4.4582
+  bottom: 3.577
+  enabled: true
+  front: 4.2218
+  left: 1.543
+  padding: 0.1
+  right: 1.543
+  top: 0.05
+system:
+  step_on_kf: false
+  with_2dui: false
+  with_g2p5: false
+  with_loop_closing: true
+  with_ui: false
+calibration_reference:
+  vehicle_id: new_vehicle_20260922
+  vehicle_identity_status: provisional_capture_label
+  calibration_id: user_provided_20261010_v1
+  extrinsics_sha256: 76515008fb29d64bbd026cb941ff06ae3b7cc6dbf98db86b1e83f33e4c7b12a4
+  vehicle_profile_sha256: 8a3bbfc387ee1544d64e7346612c848d8fc14aab4e603c4f617ff36cb534bc4d
+  metadata_sha256: 3f3474f8749b2f7048ee0b3a6235cce056c5936681b5e59a956df4c844872361
+  base_config_sha256: ca43b105ad5f843ae80a2745abdb1651eac413f9352fe16948f846b96d824e00
+  registry_revision: /mnt/f/datasets/SANY/vehicles/new_vehicle_20260922/calibrations/user_provided_20261010_v1
+  transform_convention: T_primary_from_lidar_row_major
+  translation_unit: m
+  scope: relative_lidar_extrinsics_only
+  other_vehicle_parameters: inherited_unverified

@@ -1,0 +1,523 @@
+# New vehicle test ground, four LiDARs: primary 184 / left 108 / right 133 / rear 143.
+# Exact user-provided calibration user_provided_20261010_v1; no extrinsic refinement.
+# Vehicle ID new_vehicle_20260922 is provisional; VIN and serial numbers pending.
+# Validated with map new_vehicle_4lidar_20260922_201743_calib_user_20261010_v1.
+# Explicit selection only; the existing SANY_LIDAR_LAYOUT=3/4 defaults are unchanged.
+# Source YAML SHA-256: 4001f393c087d79620e2caa688c3f93c71da6b377fd8a051f73ebaf4ae0f1e24
+# LiDAR/IMU, body geometry and CAN calibration remain inherited/unverified.
+common:
+  dataset: sany
+  lidar_topic: /livox/lidar_192_168_3_184
+  livox_lidar_topic: ''
+  imu_topic: /livox/imu_192_168_3_184
+  benchmark_variant: relocalization_solid_cpu
+compute_budget:
+  lio_threads: 6
+  ndt_threads: 4
+  solid_icp_workers: 12
+  solid_worker_nice: 5
+multi_lidar:
+  enabled: true
+  primary_lidar_id: 0
+  frame_period: 0.1
+  match_tolerance: 0.02
+  reorder_window: 0.5
+  min_lidars: 3
+  adaptive_load:
+    enabled: true
+    tracking_min_lidars: 3
+    relocalization_min_lidars: 3
+    cloud_publish_min_lidars: 3
+    cloud_publish_require_primary: true
+    target_latency_sec: 0.2
+    hard_latency_sec: 0.3
+    degrade_processing_ratio: 0.8
+    recover_processing_ratio: 0.6
+    degrade_consecutive_frames: 3
+    recover_consecutive_frames: 20
+    point_strides:
+    - 1
+    - 2
+    - 3
+  online_extrinsic_estimation: false
+  topics:
+    lidar_0: /livox/lidar_192_168_3_184
+    lidar_1: /livox/lidar_192_168_1_108
+    lidar_2: /livox/lidar_192_168_2_133
+    lidar_3: /livox/lidar_192_168_4_143
+    imu_0: /livox/imu_192_168_3_184
+    imu_1: /livox/imu_192_168_1_108
+    imu_2: /livox/imu_192_168_2_133
+    imu_3: /livox/imu_192_168_4_143
+  extrinsics:
+    lidar0:
+      T:
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    lidar1:
+      T:
+      - 0.46549289008765604
+      - -0.8681906242025259
+      - -0.1719343168906945
+      - -0.758476
+      - 0.34161787700296403
+      - -0.0029591101370609607
+      - 0.9398342778273118
+      - 0.838821
+      - -0.8164640808938438
+      - -0.4962220105094345
+      - 0.2952119931441568
+      - -0.465699
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar2:
+      T:
+      - 0.46609239148437687
+      - 0.870693294051361
+      - -0.15700659315571625
+      - -0.749705
+      - -0.3098619860802809
+      - -0.005572677858235453
+      - -0.9507652154153896
+      - -0.85648
+      - -0.8286998444447533
+      - 0.49179480777604656
+      - 0.26719737061161974
+      - -0.468532
+      - 0
+      - 0
+      - 0
+      - 1
+    lidar3:
+      T:
+      - -0.5117237564511263
+      - 0.006977338098379928
+      - -0.8591217107235789
+      - -1.54192
+      - -0.013819775193281876
+      - -0.9999044962022094
+      - 0.00011085220863877102
+      - -0.00924621
+      - -0.8590388878841022
+      - 0.011929594614483143
+      - 0.5117713101329332
+      - -0.876691
+      - 0
+      - 0
+      - 0
+      - 1
+imu_initialization:
+  initial_yaw_deg: 0.0
+  min_duration: 2.0
+  min_samples: 300
+  max_mean_gyro_norm: 0.2
+  max_gyro_std: 0.1
+  max_acc_std: 0.5
+  min_mean_acc_norm: 0.5
+  max_mean_acc_norm: 1.5
+lidar_noise_model:
+  enabled: true
+  range_sigma: 0.02
+  angular_sigma_deg: 0.05
+  reference_sigma: 0.05
+  min_information_scale: 0.25
+  max_information_scale: 4.0
+self_point_filter:
+  enabled: true
+  front: 4.2218
+  back: 4.4582
+  left: 1.543
+  right: 1.543
+  bottom: 3.577
+  top: 0.05
+  padding: 0.1
+map_export:
+  normalize_start_ground_z: true
+  start_ground_search_radius: 10.0
+  expected_sensor_height: 3.56
+  expected_height_tolerance: 0.8
+  histogram_bin_size: 0.05
+  inlier_tolerance: 0.2
+  max_median_absolute_deviation: 0.1
+  min_ground_inliers: 100
+  max_ground_tilt_deg: 10.0
+  self_point_filter:
+    enabled: true
+    min_body:
+    - 1.0
+    - -4.8
+    - -0.75
+    max_body:
+    - 5.4
+    - 4.8
+    - 1.0
+    padding: 0.1
+  export_pgm: true
+  pgm_resolution: 0.05
+  pgm_min_height: 0.3
+  pgm_max_height: 100.0
+  pgm_obstacle_dilation_radius: 0.0
+  pgm_min_observation_frames: 3
+fasterlio:
+  lidar_type: 1
+  scan_line: 4
+  blind: 0.5
+  time_scale: 1e-3
+  skip_lidar_num: 0
+  point_filter_num: 3
+  max_iteration: 4
+  filter_size_scan: 0.5
+  filter_size_map: 0.5
+  ivox_grid_resolution: 0.5
+  ivox_nearby_type: 18
+  esti_plane_threshold: 0.1
+  use_aa: false
+  propagate_velocity: true
+  lidar_update_pose_only: false
+  lidar_update_inertial_states: true
+  max_update_velocity_step: 0.5
+  max_update_gyro_bias_step: 0.05
+  max_update_acc_bias_step: 0.5
+  max_update_gravity_step: 0.05
+  acc_cov: 1.0
+  gyr_cov: 0.1
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T:
+  - -0.011
+  - -0.02329
+  - 0.04412
+  extrinsic_R:
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  keep_first_imu_estimation: false
+  kf_dis_th: -1.0
+  kf_angle_th: 0.0
+  enable_icp_part: false
+  plane_icp_weight: 300.0
+  min_pts: 300
+  imu_filter: false
+  proj_kfs: false
+  livox_point_time_scale: 1.0e-09
+roi:
+  height_max: 100.0
+  height_min: -100.0
+system:
+  with_ui: false
+  with_loop_closing: true
+  pub_tf: false
+  online_sensor_queue_size: 200
+  online_sensor_max_lag_sec: 0.5
+  online_sensor_resume_lag_sec: 0.1
+  online_lidar_loc_queue_size: 1
+  enable_lidar_loc_skip: false
+  online_lidar_input_max_timestamp_lag_sec: 0.3
+  localization_output_max_lidar_age_sec: 0.5
+  enable_imu_static_hold: true
+  enable_wheel_speed_observation: true
+  wheel_speed_topic: /SpeThrCAN4_topic
+  wheel_speed_scale_mps_per_rpm: 0.00120639253574024
+  enable_wheel_speed_dr_observation: true
+  wheel_speed_dr_base_std_mps: 0.35
+  wheel_speed_dr_stationary_std_mps: 0.08
+  wheel_speed_dr_stationary_threshold_mps: 0.03
+  wheel_speed_dr_max_age_sec: 0.25
+  wheel_speed_dr_future_tolerance_sec: 0.03
+  wheel_speed_dr_max_acceleration_mps2: 4.0
+  wheel_speed_dr_max_abs_innovation_mps: 1.5
+  wheel_speed_dr_nis_gate: 9.0
+  wheel_speed_dr_torque_reference_nm: 1000.0
+  wheel_speed_dr_torque_std_scale: 3.0
+  wheel_speed_dr_max_velocity_step_mps: 0.35
+  lidar_qos:
+    reliability: reliable
+    depth: 16
+backend:
+  mode: ba_btc_hba
+  verbose: true
+  local_ba:
+    enabled: false
+  btc:
+    enabled: true
+    descriptor_submap_size: 10
+    descriptor_submap_stride: 2
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.2
+    refine_with_icp: true
+    icp_max_iterations: 30
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_translation_correction: 10.0
+    icp_batch_size: 8
+    icp_workers: 8
+    min_loop_score: 0.6
+    max_drift_ratio: 0.005
+    max_rotation_correction_deg: 45.0
+    refine_with_plane_icp: true
+    plane_icp_iterations: 20
+    plane_icp_min_matches: 20
+    plane_icp_min_observability: 3.0
+    allow_degenerate_plane_icp: true
+    degenerate_min_loop_score: 0.6
+    degenerate_min_matches: 60
+    confirmation_count: 2
+    confirmation_max_current_gap: 10
+    confirmation_max_history_gap: 10
+    loop_cooldown_descriptors: 10
+    max_odom_revisit_distance: 0.0
+    min_optimization_translation: 0.2
+    min_optimization_rotation_deg: 2.0
+    descriptor:
+      useful_corner_num: 200
+      plane_merge_normal_threshold: 0.1
+      plane_merge_distance_threshold: 0.3
+      plane_detection_threshold: 0.01
+      voxel_size: 1.0
+      voxel_init_points: 10
+      projection_plane_count: 2
+      projection_resolution: 0.5
+      projection_height_increment: 0.1
+      projection_min_distance: 0.0
+      projection_max_distance: 5.0
+      summary_min_threshold: 10.0
+      line_filter: 1
+      touch_filter: 0
+      descriptor_near_count: 15
+      descriptor_min_length: 2.0
+      descriptor_max_length: 50.0
+      non_max_suppression_radius: 2.0
+      triangle_side_resolution: 0.2
+      skip_near_descriptors: 30
+      candidate_count: 50
+      verification_threads: 4
+      rough_distance_threshold: 0.03
+      similarity_threshold: 0.5
+      internal_icp_threshold: 0.15
+      normal_threshold: 0.2
+      plane_distance_threshold: 0.5
+  pose_graph:
+    iterations: 20
+    outlier_iterations: 10
+    motion_translation_noise: 0.1
+    motion_rotation_noise_deg: 3.0
+    loop_translation_noise: 0.2
+    loop_rotation_noise_deg: 3.0
+    robust_kernel_delta: 1.0
+    loop_outlier_chi2: 25.0
+  hba:
+    enabled: false
+loop_closing:
+  with_height: false
+localization_pgo:
+  enable_dr_extrapolation: true
+  enable_dr_smoothing: true
+lidar_loc:
+  enable_dynamic_polygon: false
+  enable_parking_static: false
+  enable_icp_adjust: false
+  filter_intensity_max: 100.0
+  filter_intensity_min: 0.0
+  filter_z_max: 100.0
+  filter_z_min: -100.0
+  force_2d: false
+  grid_search_angle_range: 20.0
+  grid_search_angle_step: 20
+  lidar_loc_odom_th: 1.0
+  init_with_fp: false
+  min_init_confidence: 0.5
+  min_tracking_confidence: 0.4
+  update_dynamic_cloud: false
+  update_err_h: 0.2
+  update_err_v: 0.2
+  update_kf_dis: 2.0
+  update_lidar_loc_score: 2.5
+  loc_on_kf: false
+  try_self_extrap: false
+relocalization:
+  enabled: true
+  backend: solid
+  database_subdirectory: btc_relocalization
+  lost_frame_threshold: 5
+  query_submap_sizes:
+  - 5
+  - 10
+  - 20
+  query_stride: 1
+  top_k: 10
+  candidate_dedup_radius: 2.0
+  candidate_dedup_yaw_deg: 15.0
+  max_points_per_submap: 50000
+  min_points_per_submap: 100
+  downsample_leaf_size: 0.2
+  min_btc_score: 0.16
+  enable_map_consistency: true
+  validation_workers: 2
+  map_bounds_margin: 0.5
+  map_nearest_neighbor_distance: 0.5
+  map_min_inside_xy_ratio: 0.9
+  map_min_overlap_ratio: 0.95
+  map_min_gravity_alignment_cos: 0.95
+  map_consistency_max_points: 50000
+  confirmation_count: 2
+  confirmation_max_translation: 1.0
+  confirmation_max_rotation_deg: 5.0
+  confirmation_max_interval: 1.0
+  kiss_matcher:
+    map_precheck_min_overlap_ratio: 0.55
+    map_min_overlap_ratio: 0.75
+    query_submap_sizes:
+    - 1
+    - 3
+    query_stride: 3
+    max_points_per_submap: 50000
+    min_points_per_submap: 500
+    voxel_size: 0.5
+    normal_radius: 1.75
+    feature_radius: 2.5
+    descriptor_ratio: 0.9
+    max_feature_points: 60000
+    max_correspondences: 800
+    compatibility_tolerance: 1.0
+    minimum_pair_distance: 1.0
+    minimum_core_degree: 4
+    minimum_inliers: 12
+    inlier_threshold: 0.75
+    maximum_rmse: 0.5
+    gnc_max_iterations: 50
+    gnc_factor: 1.4
+    spatial_cell_size: 5.0
+    minimum_spatial_cells: 4
+    feature_threads: 8
+  solid_kiss:
+    map_precheck_min_overlap_ratio: 0.55
+    map_min_overlap_ratio: 0.75
+    map_precheck_max_points: 5000
+    max_refinement_candidates: 1
+    top_k: 8
+    retrieval_pool_size: 64
+    candidate_batch_size: 8
+    plane_icp:
+      coarse_max_correspondence_distance: 2.5
+      coarse_max_iterations: 25
+      fine_max_iterations: 20
+      max_translation_correction: 3.0
+      max_rmse: 0.25
+  solid:
+    database_subdirectory: solid_relocalization
+    source_database_subdirectory: btc_relocalization
+    compute_backend: cpu
+    query_submap_sizes:
+    - 1
+    - 3
+    - 5
+    - 10
+    query_stride: 1
+    top_k: 20
+    retrieval_pool_size: 200
+    min_similarity: 0.55
+    candidate_dedup_radius: 2.0
+    candidate_dedup_yaw_deg: 15.0
+    max_points_per_submap: 50000
+    min_points_per_submap: 100
+    downsample_leaf_size: 0.2
+    refine_with_icp: true
+    icp_max_iterations: 30
+    icp_max_correspondence_distance: 5.0
+    icp_max_fitness_score: 2.0
+    icp_max_translation_correction: 10.0
+    icp_batch_size: 8
+    icp_yaw_hypothesis_offsets_deg:
+    - 0.0
+    - 90.0
+    - -90.0
+    - 180.0
+    debug_candidate_ids: []
+    descriptor:
+      range_bins: 40
+      angle_bins: 60
+      elevation_bins: 32
+      min_distance: 3.0
+      max_distance: 80.0
+      elevation_min_deg: -90.0
+      elevation_max_deg: 90.0
+maps:
+  delete_when_unload: false
+  dyn_cloud_policy: persistent
+  load_dyn_cloud: false
+  load_map_size: 2
+  max_pts_dyn_chunk: 100000
+  save_dyn_when_quit: false
+  save_dyn_when_unload: false
+  unload_map_size: 4
+  with_dyn_area: false
+offline_localization:
+  initial_pose:
+    enabled: false
+    frame: map
+    translation:
+    - 0.0
+    - 0.0
+    - 0.0
+    quaternion_xyzw:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+output:
+  map_frame: map
+  fixed_map_transform:
+    enabled: false
+    convention: target_from_localization
+    source_frame: localization_map
+    target_frame: map
+    translation_xyz:
+    - -2.41949081420898
+    - 18.3118782043457
+    - -0.130619361996651
+    quaternion_xyzw:
+    - 0.00079188585717829
+    - -0.0124272375022884
+    - -0.305301087578141
+    - 0.952174449672147
+    provenance:
+      generated_by: align_maps_offline
+      report: /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/sany_map_alignment_3lidar_old_4lidar_new_20260813/alignment_report.yaml
+      quality: 0.989856910679774
+calibration_reference:
+  vehicle_id: new_vehicle_20260922
+  vehicle_identity_status: provisional_capture_label
+  calibration_id: user_provided_20261010_v1
+  extrinsics_sha256: 76515008fb29d64bbd026cb941ff06ae3b7cc6dbf98db86b1e83f33e4c7b12a4
+  vehicle_profile_sha256: 8a3bbfc387ee1544d64e7346612c848d8fc14aab4e603c4f617ff36cb534bc4d
+  metadata_sha256: 3f3474f8749b2f7048ee0b3a6235cce056c5936681b5e59a956df4c844872361
+  base_config_sha256: e76e3c66c24f8746892e472b46cffd2aca36de4928648cd7ac3de3a0149f5412
+  registry_revision: /mnt/f/datasets/SANY/vehicles/new_vehicle_20260922/calibrations/user_provided_20261010_v1
+  transform_convention: T_primary_from_lidar_row_major
+  translation_unit: m
+  scope: relative_lidar_extrinsics_only
+  other_vehicle_parameters: inherited_unverified

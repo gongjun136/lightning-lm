@@ -177,16 +177,30 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 @anchor sany_lidar_collectors
 ### 6. 保存运行信息并按条件启动辅助采集
 
-输入检查通过后，记录版本、配置、最终开关和启动时 ROS 图。随后按下表启动辅助采集；主线继续进入 @ref sany_lidar_launch "定位程序启动"。
+输入检查通过后，将版本、配置路径与哈希、最终开关写入 `run_metadata.txt`，将未提交改动清单和启动时话题名称/类型分别写入 `git_status.txt`、`topics_at_start.txt`，用于确认本次运行使用了什么代码、配置和输入。随后按下表启动辅助采集；主线继续进入 @ref sany_lidar_launch "定位程序启动"。以下输出路径均相对于本次 `run_dir`。
 
-| 辅助采集 | 什么情况下启动 | 与定位启动的先后关系 |
-|---|---|---|
-| MCAP 录包 | `SANY_RECORD_BAG=1` | 算法之前；检查录包进程已启动 |
-| 位姿静默 watchdog | `SANY_ENABLE_POSE_VEL_WATCHDOG=1` | 算法之前；静默时保存快照，恢复由算法内部重定位器负责 |
-| `tegrastats` | 当前环境安装了该命令 | 算法之前；记录 Orin 资源信息 |
-| 算法进程组资源采样 | `LIGHTNING_LM_RESOURCE_PROFILE=1` | 算法之后，因为需要 `algorithm_pid` |
+| 辅助采集 | 采集对象与用途 | 启动条件与顺序 | 主要产物 |
+|---|---|---|---|
+| MCAP 录包 | 保存传感器原始输入、定位输出与状态，供回放和事后对照 | `SANY_RECORD_BAG=1`；算法之前启动并检查录包进程仍在运行 | `bag/localization_incident/`、`logs/rosbag.stdout.log` / `.stderr.log` |
+| 位姿静默 watchdog | 检测 `/localization/pose_vel` 消息接收是否中断，记录中断/恢复事件并保存中断现场 | `SANY_ENABLE_POSE_VEL_WATCHDOG=1`；算法之前启动 | `logs/pose_vel_watchdog.csv`、`snapshots/loss_*.txt` |
+| `tegrastats` | 记录 Jetson/Orin 整机 CPU/GPU、内存、温度和功耗等，辅助排查机器资源压力 | 当前环境能找到该命令；算法之前启动，每 1000 ms 采样 | `logs/tegrastats.log` |
+| 定位进程与线程资源采样 | 在本次算法进程组中找到真实 `run_loc_online`，记录该进程及线程的 CPU、调度等待、内存和 I/O | `LIGHTNING_LM_RESOURCE_PROFILE=1`；算法之后启动，因为需要 `algorithm_pid` | `results/process_resources.jsonl`、`logs/resource_monitor.stderr.log` |
 
-录包与 watchdog 缺省关闭；切到 diagnostic 不会自动开启它们。辅助采集的具体代码见下方折叠参考。
+录包与 watchdog 缺省关闭；切到 diagnostic 不会自动开启它们。进程资源采样缺省在 diagnostic 开启、production 关闭；显式子开关优先。`tegrastats` 只按命令是否可用决定启动，当前脚本没有独立开关，因此安装了该工具时，production 也会采集。
+
+**watchdog 具体监测什么？** `watch_pose_vel()` 调用 `scripts/monitor_pose_vel_silence.py`，持续订阅 `/localization/pose_vel`（`lightning/msg/VehiclePose`）。`PoseVelSilenceMonitor.check_silence()` 根据本机单调时钟计算距上次消息接收的时间，不检查消息内的坐标、速度或 Header 时间戳。收到首条消息前不触发静默告警；收到首条后，达到 `SANY_POSE_VEL_TIMEOUT_SECONDS`（缺省 5 秒）且再经过缺省 0.25 秒确认窗口仍未收到消息，才报告 `LOST`。实际报告时刻还受定时器和进程调度影响。
+
+`FIRST_POSE`、`LOST`、`RECOVERED` 写入 CSV，字段为墙钟时间、事件、事件编号和静默秒数。一次持续中断只记录一次 `LOST` 并抓取一次快照；再次收到消息时记录 `RECOVERED`，后续新的中断再增加编号。`snapshot_incident()` 抓取流水线诊断、故障状态、ROS 节点/话题与输入发布订阅信息，以及进程、内存、磁盘、网卡和时钟同步状态，便于回查中断时的现场。诊断/故障话题各等待最多 3 秒，快照各项依次采集，不是同一瞬间的原子快照。
+
+`LOST` 表示监测端没有收到输出，可能涉及输入中断、输出门控、DDS 通信或调度延迟，不能直接等同于算法已定位失败；`RECOVERED` 也只表示消息恢复接收。输出持续到达但位姿错误、速度异常或时间戳陈旧，不会触发此静默检测。watchdog 只留存证据，不停止/重启定位，也不调用重定位；定位恢复由 C++ 内部逻辑负责。
+
+**tegrastats 有什么作用？** 它是 NVIDIA Jetson 的整机资源统计工具。脚本执行 `tegrastats --interval 1000` 并保存原始输出，用来观察 CPU 各核负载/频率、RAM/SWAP、GPU 活跃度/频率（`GR3D_FREQ`）、内存控制器带宽使用率/频率（`EMC`），以及温度和各供电轨功耗；实际字段随设备和 Jetson Linux 版本变化。字段口径见 [NVIDIA tegrastats 官方说明](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/AT/JetsonLinuxDevelopmentTools/TegrastatsUtility.html)。例如，输出变慢时可检查是否同时出现整机高负载、温度升高或频率下降，再结合进程采样与算法日志验证原因。它统计整台设备，包含驱动和其他业务进程，不能将全部 CPU/GPU 占用归给定位，也不能用它衡量定位精度或单个函数耗时。
+
+**进程资源采样与 `tegrastats` 怎么配合？** `scripts/monitor_process_resources.py` 的 `discover_target()` 通过进程组定位真实 `run_loc_online`，而不是汇总进程组中所有进程；之后从 Linux `/proc` 读取该进程及各线程的 CPU、内存、读写增量、上下文切换和调度等待，并附带整机各核忙碌率及区间 CPU 消耗最高的 20 个进程作为背景。默认每 1 秒采样，间隔由 `LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 控制（0.5–60 秒）。`tegrastats` 回答“整机是否繁忙”，进程采样帮助判断“定位自身及哪些线程消耗了 CPU、是否等待调度”。
+
+采样中的 `cpu_core_equivalents=3.2` 表示区间平均消耗约 3.2 个逻辑核的计算时间，对应单核口径 `320%`；线程 `sched_wait_ns_delta` 是等待 CPU 调度的时间，不是互斥锁或算法队列等待，内核未启用相应统计时零值也不能证明没有等待。逐帧/模块耗时查 `results/compute_profile.log`，异步速度、队列与锁事件查 `results/causal_trace.csv`，分别受 `LIGHTNING_LM_COMPUTE_PROFILE` 和 `LIGHTNING_LM_CAUSAL_TRACE` 控制。详细口径见 @ref resource_diagnostics "资源与端到端延迟"、@ref causal_diagnostics "因果链与时间关联"。
+
+以上启动与快照逻辑可对照 @ref run_sany_lidar_loc.sh "完整脚本" 中的 `watch_pose_vel()`、`snapshot_incident()` 和辅助采集调用点；具体启动片段见下方折叠参考。
 
 @anchor sany_lidar_cpp_entry
 ## 到这里进入 C++，接下来读哪里？
@@ -248,7 +262,7 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 |---|---|---|---|
 | `LIGHTNING_LM_COMPUTE_PROFILE` | `1` | `0` | 算法热点计时，退出后提取 `COMPUTE_BENCH_*` |
 | `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` | `0` | `1` | 裁剪非必要的高频诊断 I/O |
-| `LIGHTNING_LM_RESOURCE_PROFILE` | `1` | `0` | 对算法进程组进行 CPU、内存、I/O 等采样 |
+| `LIGHTNING_LM_RESOURCE_PROFILE` | `1` | `0` | 在本次进程组中找到定位进程，对其进程/线程进行 CPU、内存、I/O 等采样 |
 | `LIGHTNING_LM_CAUSAL_TRACE` | `1` | `0` | 采集有限的异步速度、队列与锁事件 |
 
 `LIGHTNING_LM_RUN_MODE` 缺省 `diagnostic`；显式子开关优先于模式默认值。录包与 watchdog 有独立开关，切到 diagnostic 不会自动开启它们。安装了 `tegrastats` 时，脚本还会记录 Orin 资源信息。
@@ -272,11 +286,11 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-start-recording
 
-**位姿静默 watchdog：** 启用时后台执行 `watch_pose_vel`，记录它的 PID，退出时由 `stop_children` 管理。
+**位姿静默 watchdog：** 启用时后台执行 `watch_pose_vel`，记录它的 PID，退出时由 `stop_children` 管理；消息静默的判定、事件与快照内容见 @ref sany_lidar_collectors "第 6 步辅助采集说明"。
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-start-watchdog
 
-**算法资源采样：** 算法已启动，使用 `algorithm_pid` 采样整个进程组，并将采样进程加入清理列表。
+**算法资源采样：** 算法已启动，使用 `algorithm_pid` 作为进程组标识，找到并采样其中真实的 `run_loc_online` 进程及线程，并将采样进程加入清理列表。
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-resource-monitor
 
@@ -298,9 +312,11 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 | `results/trajectory_high_frequency.tum` | 定位器内部高频轨迹 |
 | `results/trajectory_published_rear_axle.tum` | 实际发布边界后的后轴轨迹 |
 | `results/compute_profile.log` | 从 stderr 提取的计时记录；采集开关决定内容 |
-| `results/process_resources.jsonl` / `causal_trace.csv` | 开启对应采样时保存的资源与事件记录 |
+| `results/process_resources.jsonl` | 定位进程/线程资源采样，以及整机 CPU 和其他进程的背景统计 |
+| `results/causal_trace.csv` | 开启追踪时保存的异步速度、队列与锁事件 |
+| `logs/tegrastats.log` | 工具可用时每秒记录的 Jetson/Orin 整机资源、温度和功耗 |
 | `bag/` | 开启录包时保存的 MCAP |
-| `snapshots/`、`logs/pose_vel_watchdog.csv` | 开启 watchdog 时的静默现场与事件时间线 |
+| `snapshots/loss_*.txt`、`logs/pose_vel_watchdog.csv` | 开启 watchdog 时的输出中断现场与首次接收/中断/恢复时间线 |
 
 @htmlonly[block]
 </details>
