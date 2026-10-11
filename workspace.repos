@@ -5,8 +5,8 @@ repositories:
     version: fdd5453a2a28b201fa3b7b04e4e7131ed5b75307
   cgi430_driver:
     type: git
-    url: git@github.com:gongjun136/cgi430_sdk.git
-    version: 74e311be8cf80a4720a6789c28f480abe6d8c82b
+    url: git@github.com:gongjun136/cgi430_driver.git
+    version: 6bdedcaf317aca7d0f74119005871dc8a4989271
   livox_ros_driver2:
     type: git
     url: git@github.com:gongjun136/livox_ros_driver2.git

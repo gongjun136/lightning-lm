@@ -13,7 +13,7 @@ lightning_lm_ws/src/
 │   ├── cgi430_interfaces/
 │   ├── livox_ros_driver/          # 消息包 livox_ros_driver2
 │   └── ...                       # 其他共享接口
-├── cgi430_driver/                 # 仓库 URL 仍为 gongjun136/cgi430_sdk
+├── cgi430_driver/                 # 仓库 gongjun136/cgi430_driver
 ├── livox_ros_driver2/             # 实际驱动包 livox_ros_driver2_core
 └── Livox-SDK2/                    # 包 livox_sdk2
 ```
@@ -27,7 +27,7 @@ bash src/lightning-lm/scripts/build_workspace.sh
 
 `workspace.repos` 固定配套源码版本；`common_msgs.repos` 仍保留仅导入消息仓库的用途。不要把旧 `livox_sdk/src/common_msgs` 再复制进来，每个包名在工作区中只能出现一次。
 
-`cgi430_sdk` 仓库保留原 Git 历史，根目录现在直接是 `cgi430_driver` 包，协议库与运行脚本随驱动维护。`common_msgs` 只存接口；定位与驱动分别声明对接口的依赖，由 colcon 确定构建顺序。不再加载外部 CGI 安装空间。
+`cgi430_driver` 仓库保留原 Git 历史，根目录直接是 `cgi430_driver` 包，协议库与运行脚本随驱动维护。`common_msgs` 只存接口；定位与驱动分别声明对接口的依赖，由 colcon 确定构建顺序。不再加载外部 CGI 安装空间。
 
 ## Local compatibility mapping
 

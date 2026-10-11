@@ -68,7 +68,7 @@ LIGHTNING_BUILD_JOBS=16 bash src/lightning-lm/scripts/build_workspace.sh
 
 ## 源码目录改名后的缓存修复
 
-若 `src/lightning_lm_msgs` 改为 `src/common_msgs`，或驱动源码从旧 SDK 工作区迁入当前工作区，旧 CMake cache 可能保留原绝对路径。出现 `The source ... does not match the source ... used to generate cache` 时，在完整统一工作区执行一次：
+若 `src/lightning_lm_msgs` 改为 `src/common_msgs`、`src/cgi430_sdk` 改为 `src/cgi430_driver`，或驱动源码从旧 SDK 工作区迁入当前工作区，旧 CMake cache 可能保留原绝对路径。出现 `The source ... does not match the source ... used to generate cache` 时，在完整统一工作区执行一次：
 
 ```bash
 bash src/lightning-lm/scripts/build_workspace.sh --cmake-clean-cache
