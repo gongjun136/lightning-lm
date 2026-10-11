@@ -29,7 +29,7 @@ constexpr int PairToIndex(const int i, const int j) { return j * (j - 1) / 2 + i
  * std::pair in C++11 has not a constexpr c'tor.
  */
 struct TrivialPair {
-    int first_ = 0, second_ = 0;
+    int first_ = 0 /**< 该 Hessian 顶点对的第一个顶点索引。 */, second_ = 0 /**< 该 Hessian 顶点对的第二个顶点索引。 */;
 
     constexpr TrivialPair(int f, int s) : first_(f), second_(s) {}
 
@@ -118,7 +118,7 @@ class BaseFixedSizedEdge : public BaseEdge<D, E> {
         return (VertexXnType<VertexN> *)(vertices_[VertexN]);
     }
 
-    static const int Dimension = BaseEdge<D, E>::Dimension;
+    static const int Dimension = BaseEdge<D, E>::Dimension;  ///< 该固定大小边的残差维度。
     using Measurement = typename BaseEdge<D, E>::Measurement;
     using ErrorVector = typename BaseEdge<D, E>::ErrorVector;
     using InformationType = typename BaseEdge<D, E>::InformationType;
@@ -128,8 +128,8 @@ class BaseFixedSizedEdge : public BaseEdge<D, E> {
 
     template <int DN, int DM>
     struct HessianType {
-        double *hessian_in_solver_ = nullptr;    // 远程地址
-        Eigen::Matrix<double, DN, DM> hessian_;  // 本地地址
+        double *hessian_in_solver_ = nullptr;    ///< 远程地址
+        Eigen::Matrix<double, DN, DM> hessian_;  ///< 本地地址
     };
 
     //! it requires quite some ugly code to get the type of hessians...
@@ -151,8 +151,8 @@ class BaseFixedSizedEdge : public BaseEdge<D, E> {
         using typeTransposed = std::tuple<HessianBlockTypeKTransposed<Ints>...>;
     };
 
-    static const std::size_t nr_of_vertices_ = sizeof...(VertexTypes);
-    static const std::size_t nr_of_vertex_pairs_ = internal::PairToIndex(0, nr_of_vertices_);
+    static const std::size_t nr_of_vertices_ = sizeof...(VertexTypes);  ///< 该边连接的顶点数量。
+    static const std::size_t nr_of_vertex_pairs_ = internal::PairToIndex(0, nr_of_vertices_);  ///< 该边对应的不同顶点对数量。
 
     using HessianTuple = typename HessianTupleType<std::make_index_sequence<nr_of_vertex_pairs_>>::type;
 
@@ -239,11 +239,11 @@ class BaseFixedSizedEdge : public BaseEdge<D, E> {
     using BaseEdge<D, E>::vertices_;
     using BaseEdge<D, E>::dimension_;
 
-    HessianRowMajorStorage hessian_row_major_;
-    HessianTuple hessian_tuple_;
-    HessianTupleTransposed hessian_tuple_trans_;
+    HessianRowMajorStorage hessian_row_major_;  ///< 记录各顶点对 Hessian 块的内存布局。
+    HessianTuple hessian_tuple_;  ///< 各顶点对交叉 Hessian 块的映射。
+    HessianTupleTransposed hessian_tuple_trans_;  ///< 交叉 Hessian 块的转置映射。
 
-    std::tuple<JacobianType<D, VertexTypes::Dimension>...> jacobian_oplus_;  // 以tuple存储的jacobian，注意这是个map
+    std::tuple<JacobianType<D, VertexTypes::Dimension>...> jacobian_oplus_;  ///< 以tuple存储的jacobian，注意这是个map
 };
 
 }  // namespace lightning::miao

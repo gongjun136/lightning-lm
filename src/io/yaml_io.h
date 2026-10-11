@@ -60,9 +60,9 @@ class YAML_IO {
     }
 
    private:
-    std::string path_;
-    bool is_opened_ = false;
-    YAML::Node yaml_node_;
+    std::string path_;  ///< 已打开 YAML 配置文件的路径。
+    bool is_opened_ = false;  ///< 配置文件是否成功打开并解析。
+    YAML::Node yaml_node_;  ///< 持有解析后配置树的根节点。
 };
 
 }  // namespace lightning

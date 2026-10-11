@@ -38,9 +38,9 @@ digraph online_loc_overview {
 2. @ref run_loc_online.cc "run_loc_online.cc" 的 `main()`：创建 `LocSystem`、设置初始位姿、进入 ROS spin、最后保存轨迹并关闭。
 3. @ref lightning::LocSystem::Init() "LocSystem::Init()"：加载地图/输出约束，建立订阅、发布和回调桥接。
 4. @ref lightning::loc::Localization::ProcessIMUMsg() "ProcessIMUMsg()" 与 @ref lightning::loc::Localization::ProcessLidarMsg() "ProcessLidarMsg()"：把输入统一送入传感器队列。
-5. @ref lightning::loc::Localization "Localization" 的 `ProcessSensorInput()`、`LidarOdomProcCloud()` 与 `DrainLioOutputs()`：保持时序并驱动 LIO。
+5. @ref lightning::loc::Localization::ProcessSensorInput() "ProcessSensorInput()"、@ref lightning::loc::Localization::LidarOdomProcCloud() "LidarOdomProcCloud()" 与 @ref lightning::loc::Localization::DrainLioOutputs() "DrainLioOutputs()"：保持时序并驱动 LIO。
 6. @ref lightning::loc::LidarLoc::ProcessCloud() "LidarLoc::ProcessCloud()"：在活动地图上跟踪，必要时转入全局重定位。
-7. `Localization::LidarLocProcCloud()`：将定位结果交给 PGO，并通过回调回到 `LocSystem` 发布。
+7. @ref lightning::loc::Localization::LidarLocProcCloud() "LidarLocProcCloud()"：将定位结果交给 PGO，并通过回调回到 @ref lightning::LocSystem::PublishLocalizationResult() "PublishLocalizationResult()" 发布。
 
 # 学习重点：关键计算与代码入口
 

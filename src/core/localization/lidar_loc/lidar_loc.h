@@ -40,18 +40,18 @@ class LidarLoc {
     struct Options {
         Options() {}
 
-        bool display_realtime_cloud_ = false;          // 是否显示实时点云
-        bool debug_ = false;                           // 是否使用单测模式
-        LocMethod match_method_ = LocMethod::NDT_OMP;  // 匹配方式
-        bool try_self_extrap_ = false;                 // 是否尝试自己的外推pose
-        bool with_height_ = true;                      // 建图期间是否带有高度约束？
-        bool force_2d_ = true;                         // 强制在2D空间
-        float min_init_confidence_ = 0.1;              // 初始化时要求的最小分值
-        float min_tracking_confidence_ = 0.1;
-        int relocalization_lost_frame_threshold_ = 5;
-        bool init_with_fp_ = true;                     // 是否使用功能点进行初始化
-        bool enable_parking_static_ = false;           // 是否在静止时输出固定位置
-        bool enable_icp_adjust_ = false;               // 是否使用icp调整ndt匹配结果提高定位精度
+        bool display_realtime_cloud_ = false;          ///< 是否显示实时点云
+        bool debug_ = false;                           ///< 是否使用单测模式
+        LocMethod match_method_ = LocMethod::NDT_OMP;  ///< 匹配方式
+        bool try_self_extrap_ = false;                 ///< 是否尝试自己的外推pose
+        bool with_height_ = true;                      ///< 建图期间是否带有高度约束？
+        bool force_2d_ = true;                         ///< 强制在2D空间
+        float min_init_confidence_ = 0.1;              ///< 初始化时要求的最小分值
+        float min_tracking_confidence_ = 0.1;  ///< 正常跟踪接受匹配结果的最低置信度。
+        int relocalization_lost_frame_threshold_ = 5;  ///< 触发失锁状态的连续匹配失败帧数。
+        bool init_with_fp_ = true;                     ///< 是否使用功能点进行初始化
+        bool enable_parking_static_ = false;           ///< 是否在静止时输出固定位置
+        bool enable_icp_adjust_ = false;               ///< 是否使用icp调整ndt匹配结果提高定位精度
 
         /// 点云过滤
         // float filter_z_min_ = -1.0;
@@ -63,57 +63,57 @@ class LidarLoc {
         TiledMap::Options map_option_ = TiledMap::Options();
 
         // 动态图层更新相关
-        bool update_dynamic_cloud_ = true;     // 是否使用定位后的点云来更新动态图层
-        double update_kf_dis_ = 5.0;           // 每隔多少米更新一次
-        double update_kf_time_ = 10.0;         // 每隔多少时间更新一次
-        double update_lidar_loc_score_ = 2.2;  // 更新时激光定位匹配分值阈值
-        double lidar_loc_odom_th_ = 0.3;       // 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
+        bool update_dynamic_cloud_ = true;     ///< 是否使用定位后的点云来更新动态图层
+        double update_kf_dis_ = 5.0;           ///< 每隔多少米更新一次
+        double update_kf_time_ = 10.0;         ///< 每隔多少时间更新一次
+        double update_lidar_loc_score_ = 2.2;  ///< 更新时激光定位匹配分值阈值
+        double lidar_loc_odom_th_ = 0.3;       ///< 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
 
-        double max_update_cache_dis_ = 30.0;  // 更新动态图层的缓冲距离
-        std::string recover_pose_path_ = "./data/recover_pose.txt";
-        bool enable_relocalization_map_consistency_ = true;
-        double relocalization_bounds_margin_ = 0.5;
-        double relocalization_nearest_neighbor_distance_ = 0.5;
-        double relocalization_min_inside_xy_ratio_ = 0.90;
-        double relocalization_min_overlap_ratio_ = 0.20;
-        double relocalization_precheck_min_overlap_ratio_ = 0.20;
-        double relocalization_min_gravity_alignment_cos_ = 0.95;
-        int relocalization_map_consistency_max_points_ = 50000;
-        int relocalization_precheck_max_points_ = 50000;
-        int relocalization_validation_workers_ = 2;
-        int relocalization_max_refinement_candidates_ = 0;
-        int relocalization_confirmation_count_ = 2;
-        double relocalization_confirmation_max_translation_ = 1.0;
-        double relocalization_confirmation_max_rotation_deg_ = 5.0;
-        double relocalization_confirmation_max_interval_ = 1.0;
-        std::string relocalization_refinement_backend_ = "ndt";
-        PointToPlaneRegistration::Options relocalization_plane_icp_options_;
-        std::string relocalization_debug_dir_;
+        double max_update_cache_dis_ = 30.0;  ///< 更新动态图层的缓冲距离
+        std::string recover_pose_path_ = "./data/recover_pose.txt";  ///< 定位恢复位姿记录文件的路径。
+        bool enable_relocalization_map_consistency_ = true;  ///< 是否对重定位候选执行地图一致性验证。
+        double relocalization_bounds_margin_ = 0.5;  ///< 地图空间包围范围的外扩余量（m）。
+        double relocalization_nearest_neighbor_distance_ = 0.5;  ///< 计算地图重合率使用的最大近邻距离（m）。
+        double relocalization_min_inside_xy_ratio_ = 0.90;  ///< 接受候选所需的最小水平范围内点比例。
+        double relocalization_min_overlap_ratio_ = 0.20;  ///< 接受候选所需的最小静态地图重合率。
+        double relocalization_precheck_min_overlap_ratio_ = 0.20;  ///< 候选预检查的最小地图重合率。
+        double relocalization_min_gravity_alignment_cos_ = 0.95;  ///< 接受候选所需的最小重力方向一致性余弦。
+        int relocalization_map_consistency_max_points_ = 50000;  ///< 精配后地图一致性检查的采样点数上限。
+        int relocalization_precheck_max_points_ = 50000;  ///< 候选预检查的采样点数上限。
+        int relocalization_validation_workers_ = 2;  ///< 候选验证使用的并行工作线程数。
+        int relocalization_max_refinement_candidates_ = 0;  ///< 一次重定位允许精配的候选数配置。
+        int relocalization_confirmation_count_ = 2;  ///< 接受候选所需的连续确认次数。
+        double relocalization_confirmation_max_translation_ = 1.0;  ///< 连续确认之间允许的最大平移差（m）。
+        double relocalization_confirmation_max_rotation_deg_ = 5.0;  ///< 连续确认之间允许的最大旋转差（deg）。
+        double relocalization_confirmation_max_interval_ = 1.0;  ///< 连续确认之间允许的最大时间间隔（s）。
+        std::string relocalization_refinement_backend_ = "ndt";  ///< 候选精配后端名称。
+        PointToPlaneRegistration::Options relocalization_plane_icp_options_;  ///< 点面 ICP 候选精配参数。
+        std::string relocalization_debug_dir_;  ///< 候选验证的调试产物输出目录。
     };
 
     struct MatchStats {
-        double confidence = 0.0;
-        int iterations = 0;
-        bool success = false;
-        int active_map_chunks = 0;
-        bool relocalization_attempted = false;
-        bool relocalization_candidate_found = false;
-        bool relocalization_accepted = false;
-        int relocalization_candidate_id = -1;
-        double relocalization_score = 0.0;
-        int relocalization_candidate_count = 0;
-        int relocalization_candidates_prechecked = 0;
-        int relocalization_confirmation_count = 0;
-        int relocalization_query_submap_size = 0;
-        double relocalization_search_time_ms = 0.0;
-        std::string relocalization_reason;
-        bool map_consistency_evaluated = false;
-        bool map_consistency_passed = false;
-        std::size_t map_consistency_points = 0;
-        double map_inside_xy_ratio = 0.0;
-        double map_inside_xyz_ratio = 0.0;
-        double map_overlap_ratio = 0.0;
-        double map_gravity_alignment_cos = 0.0;
+        double confidence = 0.0;  ///< 本次匹配得到的置信度。
+        int iterations = 0;  ///< 本次匹配使用的迭代次数。
+        bool success = false;  ///< 本次地图定位是否成功。
+        int active_map_chunks = 0;  ///< 本次匹配加载的地图块数量。
+        bool relocalization_attempted = false;  ///< 本帧是否尝试全局重定位。
+        bool relocalization_candidate_found = false;  ///< 本次重定位是否检索到候选。
+        bool relocalization_accepted = false;  ///< 本次重定位是否接受候选。
+        int relocalization_candidate_id = -1;  ///< 本次重定位候选的数据库 ID。
+        double relocalization_score = 0.0;  ///< 本次重定位候选检索分值。
+        int relocalization_candidate_count = 0;  ///< 本次检索返回的候选数量。
+        int relocalization_candidates_prechecked = 0;  ///< 本次完成预检查的候选数量。
+        int relocalization_confirmation_count = 0;  ///< 当前候选连续确认的次数。
+        int relocalization_query_submap_size = 0;  ///< 本次查询使用的子地图帧数。
+        double relocalization_search_time_ms = 0.0;  ///< 本次候选检索耗时（ms）。
+        std::string relocalization_reason;  ///< 本次重定位的接受或拒绝原因。
+        bool map_consistency_evaluated = false;  ///< 是否执行地图一致性验证。
+        bool map_consistency_passed = false;  ///< 是否通过地图一致性验证。
+        std::size_t map_consistency_points = 0;  ///< 地图一致性验证使用的点数。
+        double map_inside_xy_ratio = 0.0;  ///< 候选点落在地图水平边界内的比例。
+        double map_inside_xyz_ratio = 0.0;  ///< 候选点落在地图三维边界内的比例。
+        double map_overlap_ratio = 0.0;  ///< 候选点与静态地图近邻重合的比例。
+        double map_gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
 
     explicit LidarLoc(Options options = Options());
@@ -241,13 +241,13 @@ class LidarLoc {
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
     bool TryGlobalRelocalization(const CloudPtr& input);
     struct MapConsistencyResult {
-        bool evaluated = false;
-        bool passed = false;
-        std::size_t points = 0;
-        double inside_xy_ratio = 0.0;
-        double inside_xyz_ratio = 0.0;
-        double overlap_ratio = 0.0;
-        double gravity_alignment_cos = 0.0;
+        bool evaluated = false;  ///< 是否执行了地图一致性检查。
+        bool passed = false;  ///< 候选是否通过地图一致性检查。
+        std::size_t points = 0;  ///< 一致性检查实际使用的点数。
+        double inside_xy_ratio = 0.0;  ///< 落在地图水平包围范围内的点比例。
+        double inside_xyz_ratio = 0.0;  ///< 落在地图三维包围范围内的点比例。
+        double overlap_ratio = 0.0;  ///< 在配置距离内找到静态地图近邻的点比例。
+        double gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
     bool BuildRelocalizationMapCache();
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
@@ -260,123 +260,123 @@ class LidarLoc {
                                     const MatchStats& stats);
 
     struct FrameProfiling {
-        profiling::TimingSample assign_pose;
-        profiling::TimingSample map_load;
-        profiling::TimingSample ndt_align;
-        profiling::TimingSample icp_adjust;
-        profiling::TimingSample state_update;
-        profiling::TimingSample dynamic_map;
-        profiling::TimingSample recover_pose_io;
-        profiling::TimingSample relocalization_poll;
-        int ndt_calls = 0;
-        std::size_t ndt_input_points = 0;
+        profiling::TimingSample assign_pose;  ///< 本帧分派 LIO/DR 位姿的耗时。
+        profiling::TimingSample map_load;  ///< 本帧加载活动地图的耗时。
+        profiling::TimingSample ndt_align;  ///< 本帧 NDT 匹配的耗时。
+        profiling::TimingSample icp_adjust;  ///< 本帧 ICP 调整的耗时。
+        profiling::TimingSample state_update;  ///< 本帧更新定位状态的耗时。
+        profiling::TimingSample dynamic_map;  ///< 本帧更新动态图层的耗时。
+        profiling::TimingSample recover_pose_io;  ///< 本帧记录恢复位姿的 I/O 耗时。
+        profiling::TimingSample relocalization_poll;  ///< 本帧检查重定位任务结果的耗时。
+        int ndt_calls = 0;  ///< 本帧调用 NDT 的次数。
+        std::size_t ndt_input_points = 0;  ///< 本帧送入 NDT 的点数。
     } frame_profiling_;
 
     // 成员变量  ==========================================================================
-    Options options_;
-    int ndt_threads_ = 4;
-    std::size_t ndt_max_points_ = 0;
+    Options options_;  ///< 跟踪、地图更新与重定位配置。
+    int ndt_threads_ = 4;  ///< NDT 匹配使用的并行线程上限。
+    std::size_t ndt_max_points_ = 0;  ///< NDT 输入点数上限，0 表示不限制。
 
-    std::mutex match_mutex_;  // 锁定pcl_ndt指针
+    std::mutex match_mutex_;  ///< 锁定pcl_ndt指针
 
     using NDTType = pclomp::NormalDistributionsTransform<PointType, PointType>;
-    NDTType::Ptr pcl_ndt_ = nullptr;
-    NDTType::Ptr pcl_ndt_rough_ = nullptr;  // 粗分辨率
+    NDTType::Ptr pcl_ndt_ = nullptr;  ///< 正常跟踪使用的 NDT 匹配器。
+    NDTType::Ptr pcl_ndt_rough_ = nullptr;  ///< 粗分辨率
 
     using ICPType = pcl::IterativeClosestPoint<PointType, PointType>;
-    ICPType::Ptr pcl_icp_ = nullptr;
+    ICPType::Ptr pcl_icp_ = nullptr;  ///< 可选的匹配结果 ICP 调整器。
 
-    CloudPtr current_scan_ = nullptr;                   // 当前扫描
-    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  // ui
-    SE3 last_loc_pose_;
+    CloudPtr current_scan_ = nullptr;                   ///< 当前扫描
+    std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  ///< 可选的定位点云与匹配状态显示窗口。
+    SE3 last_loc_pose_;  ///< 最近一次保存的地图定位位姿。
 
-    std::mutex initial_pose_mutex_;  // 初始定位锁
-    bool initial_pose_set_ = false;  // 定位是否被手动设置
-    SE3 initial_pose_;               // 手动设置的初始位姿
-    bool loc_inited_ = false;        // 定位是否初始化成功
+    std::mutex initial_pose_mutex_;  ///< 初始定位锁
+    bool initial_pose_set_ = false;  ///< 定位是否被手动设置
+    SE3 initial_pose_;               ///< 手动设置的初始位姿
+    bool loc_inited_ = false;        ///< 定位是否初始化成功
 
-    double current_timestamp_ = 0;  // 本次输入的时间戳
-    double last_timestamp_ = 0;     // 上次输入的时间戳
+    double current_timestamp_ = 0;  ///< 本次输入的时间戳
+    double last_timestamp_ = 0;     ///< 上次输入的时间戳
 
-    bool last_lo_pose_set_ = false;
-    bool current_lo_pose_set_ = false;
-    SE3 last_lo_pose_;     // 上一次相对位置，相对位置来自LO
-    SE3 current_lo_pose_;  // 本次的LO相对位置
+    bool last_lo_pose_set_ = false;  ///< 是否已有上一帧 LIO 相对位姿。
+    bool current_lo_pose_set_ = false;  ///< 当前帧是否找到对应 LIO 位姿。
+    SE3 last_lo_pose_;     ///< 上一次相对位置，相对位置来自LO
+    SE3 current_lo_pose_;  ///< 本次的LO相对位置
 
-    bool last_dr_pose_set_ = false;
-    bool current_dr_pose_set_ = false;
-    SE3 last_dr_pose_;     // 上一次相对位置，相对位置来自DR
-    SE3 current_dr_pose_;  // 本次的DR相对位置
-    bool parking_ = false;
+    bool last_dr_pose_set_ = false;  ///< 是否已有上一帧 DR 相对位姿。
+    bool current_dr_pose_set_ = false;  ///< 当前帧是否找到对应 DR 位姿。
+    SE3 last_dr_pose_;     ///< 上一次相对位置，相对位置来自DR
+    SE3 current_dr_pose_;  ///< 本次的DR相对位置
+    bool parking_ = false;  ///< 当前地图匹配是否处于静止保持状态。
 
-    double try_other_guess_trans_th_ = 0.3;               // 在初始估计相差多少时，尝试其他的解
-    double try_other_guess_rot_th_ = 0.5 * M_PI / 180.0;  // 在初始估计相差多少时，尝试其他的解
+    double try_other_guess_trans_th_ = 0.3;               ///< 在初始估计相差多少时，尝试其他的解
+    double try_other_guess_rot_th_ = 0.5 * M_PI / 180.0;  ///< 在初始估计相差多少时，尝试其他的解
     // double low_vel_th_ = 1.0;                             // 低速阈值m/s
     // double update_cache_dis_ = 0;                         // 动态图层的更新缓冲距离
 
-    std::deque<double> ave_scores_;  // 近期匹配的分值情况
+    std::deque<double> ave_scores_;  ///< 近期匹配的分值情况
 
-    Vec3d current_vel_b_ = Vec3d::Zero();  // 本次的车体系下的速度
-    Vec3d current_vel_ = Vec3d::Zero();    // 本次dr的速度
+    Vec3d current_vel_b_ = Vec3d::Zero();  ///< 本次的车体系下的速度
+    Vec3d current_vel_ = Vec3d::Zero();    ///< 本次dr的速度
 
-    std::deque<TimedPose> lidar_loc_pose_queue_;  // lidar odom pose 轨迹
+    std::deque<TimedPose> lidar_loc_pose_queue_;  ///< lidar odom pose 轨迹
 
-    bool lo_reliable_ = true;
-    int lo_reliable_cnt_ = 0;
+    bool lo_reliable_ = true;  ///< 当前 LIO 相对运动是否可信。
+    int lo_reliable_cnt_ = 0;  ///< LIO 可靠性判定的累计计数。
 
-    SE3 last_abs_pose_;            // 上一次绝对定位，绝对定位来自于地图匹配得到的位姿
-    TimedPose last_dyn_upd_pose_;  // 上次更新动态图层时使用的位姿
-    SE3 current_abs_pose_;         // 本次的绝对定位
-    bool last_abs_pose_set_ = false;
-    double current_score_ = 1e5;  /// 设一个大分值，若定位一开始就匹配失败，则可以直接用GPS重置
-    MatchStats last_match_stats_;
-    int match_fail_count_ = 0;
-    int static_count_ = 0;
+    SE3 last_abs_pose_;            ///< 上一次绝对定位，绝对定位来自于地图匹配得到的位姿
+    TimedPose last_dyn_upd_pose_;  ///< 上次更新动态图层时使用的位姿
+    SE3 current_abs_pose_;         ///< 本次的绝对定位
+    bool last_abs_pose_set_ = false;  ///< 是否已有上一帧地图绝对位姿。
+    double current_score_ = 1e5;  ///< 最近地图匹配的原始分值。
+    MatchStats last_match_stats_;  ///< 最近一帧地图匹配与重定位的诊断汇总。
+    int match_fail_count_ = 0;  ///< 连续地图匹配失败的次数。
+    int static_count_ = 0;  ///< 静止判定的累计次数。
 
-    int rtk_reset_cnt_ = 0;  // RTK重置计数
+    int rtk_reset_cnt_ = 0;  ///< RTK重置计数
 
-    std::mutex result_mutex_;
-    LocalizationResult localization_result_;  // 输出结果
+    std::mutex result_mutex_;  ///< 保护最近输出的定位结果。
+    LocalizationResult localization_result_;  ///< 输出结果
 
     // 相对运动观测队列
-    std::mutex lo_pose_mutex_;
-    std::deque<NavState> lo_pose_queue_;
+    std::mutex lo_pose_mutex_;  ///< 保护 LIO 状态历史队列。
+    std::deque<NavState> lo_pose_queue_;  ///< 按时间保存的 LIO 状态，用于匹配对应扫描。
 
-    std::mutex dr_pose_mutex_;
-    std::deque<NavState> dr_pose_queue_;
+    std::mutex dr_pose_mutex_;  ///< 保护 DR 状态历史队列。
+    std::deque<NavState> dr_pose_queue_;  ///< 按时间保存的 DR 状态，用于位姿猜测。
 
     /// 功能点初始化的记录
     std::vector<SE3> fp_init_fail_pose_vec_;
-    double fp_last_tried_time_ = 0;
+    double fp_last_tried_time_ = 0;  ///< 最近尝试功能点初始化的时间戳（s）。
 
-    bool update_map_quit_ = false;
-    std::thread update_map_thread_;            // 地图更新
-    std::shared_ptr<TiledMap> map_ = nullptr;  // 地图
-    std::unique_ptr<GlobalRelocalizer> global_relocalizer_;
-    std::string relocalization_backend_name_ = "btc";
-    std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;
-    CloudPtr relocalization_static_map_;
-    Vec3d relocalization_map_min_ = Vec3d::Zero();
-    Vec3d relocalization_map_max_ = Vec3d::Zero();
-    std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;
+    bool update_map_quit_ = false;  ///< 请求地图更新线程退出的标志。
+    std::thread update_map_thread_;            ///< 地图更新
+    std::shared_ptr<TiledMap> map_ = nullptr;  ///< 按位姿加载活动块并管理动态层的分块地图。
+    std::unique_ptr<GlobalRelocalizer> global_relocalizer_;  ///< 当前选择的全局候选检索后端。
+    std::string relocalization_backend_name_ = "btc";  ///< 全局检索后端名称，如 BTC 或 SOLiD。
+    std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;  ///< 重定位候选的点面精配验证器。
+    CloudPtr relocalization_static_map_;  ///< 重定位一致性验证使用的静态地图点云。
+    Vec3d relocalization_map_min_ = Vec3d::Zero();  ///< 静态地图空间包围盒下界（m）。
+    Vec3d relocalization_map_max_ = Vec3d::Zero();  ///< 静态地图空间包围盒上界（m）。
+    std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;  ///< 按验证工作线程保存的静态地图最近邻索引。
     struct PendingRelocalization {
-        bool valid = false;
-        SE3 T_map_odom;
-        SE3 pose;
-        int candidate_id = -1;
-        int query_submap_size = 0;
-        double score = 0.0;
-        double ndt_confidence = 0.0;
-        double timestamp = 0.0;
-        int confirmation_count = 0;
+        bool valid = false;  ///< 当前待确认的重定位候选是否有效。
+        SE3 T_map_odom;  ///< 候选对应的里程计坐标系到地图坐标系变换。
+        SE3 pose;  ///< 候选精配后的地图定位位姿。
+        int candidate_id = -1;  ///< 待确认候选的数据库 ID。
+        int query_submap_size = 0;  ///< 待确认候选使用的查询子地图帧数。
+        double score = 0.0;  ///< 待确认候选的检索分值。
+        double ndt_confidence = 0.0;  ///< 待确认候选精配后的 NDT 置信度。
+        double timestamp = 0.0;  ///< 当前候选对应的传感器时间戳（s）。
+        int confirmation_count = 0;  ///< 当前候选已通过的连续确认次数。
     } pending_relocalization_;
-    bool relocalization_event_active_ = false;
-    double map_height_ = 0;
-    int relocalization_debug_index_ = 0;
+    bool relocalization_event_active_ = false;  ///< 是否已发出本轮重定位开始事件。
+    double map_height_ = 0;  ///< 地图高度约束使用的参考高度（m）。
+    int relocalization_debug_index_ = 0;  ///< 重定位调试产物的编号。
 
-    bool has_set_pose_ = false;  // 外部set_pose标志位，若存在则本次动态图层不落盘
+    bool has_set_pose_ = false;  ///< 外部set_pose标志位，若存在则本次动态图层不落盘
 
-    std::ofstream recover_pose_out_;
+    std::ofstream recover_pose_out_;  ///< 记录定位恢复位姿的输出文件流。
 };
 
 }  // namespace lightning::loc

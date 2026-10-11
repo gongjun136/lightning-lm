@@ -8,10 +8,10 @@
 namespace lightning {
 
 struct SanyWheelSpeedWire {
-    double stamp = 0.0;
-    double rpm = 0.0;
-    double torque = 0.0;
-    bool has_comm_header = false;
+    double stamp = 0.0;  ///< CAN 轮速消息的传感器时间戳（s）。
+    double rpm = 0.0;  ///< 解码后的电机转速（rpm）。
+    double torque = 0.0;  ///< 解码后的电机扭矩值。
+    bool has_comm_header = false;  ///< 消息是否携带通信头，决定解码布局。
 };
 
 // Two released geosun_msgs/SpeThrCAN4 definitions share a DDS type name:

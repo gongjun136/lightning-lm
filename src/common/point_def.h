@@ -18,8 +18,8 @@
 struct PointXYZIT {
     PCL_ADD_POINT4D
     PCL_ADD_INTENSITY
-    double time = 0.0;
-    std::uint8_t lidar_id = 0;
+    double time = 0.0;  ///< 点相对当前扫描起始时刻的时间偏移（ms），用于去畸变。
+    std::uint8_t lidar_id = 0;  ///< 点所属的原始雷达 ID，降采样时保留实际来源。
     PointXYZIT() = default;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

@@ -23,8 +23,8 @@ class Timer {
             func_name_ = name;
             time_usage_in_ms_.emplace_back(time_usage);
         }
-        std::string func_name_;
-        std::deque<double> time_usage_in_ms_;
+        std::string func_name_;  ///< 该条耗时记录对应的函数或阶段名称。
+        std::deque<double> time_usage_in_ms_;  ///< 该函数历次记录的耗时样本（ms）。
     };
 
     /**
@@ -67,6 +67,6 @@ class Timer {
     static void Clear() { records_.clear(); }
 
    private:
-    static std::map<std::string, TimerRecord> records_;
+    static std::map<std::string, TimerRecord> records_;  ///< 按函数名称保存的全局耗时记录表。
 };
 }  // namespace lightning

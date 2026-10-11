@@ -212,6 +212,8 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 3. @ref lightning::LocSystem::SetInitPose() "LocSystem::SetInitPose()"：设置初始位姿。
 4. @ref lightning::LocSystem::Spin() "LocSystem::Spin()"：进入 ROS 事件循环，开始沿传感器回调处理在线数据。
 
+进入算法层后，先读 @ref lightning::loc::Localization::Init() "Localization::Init()" 的模块和队列装配，再沿 @ref lightning::loc::Localization::ProcessSensorInput() "ProcessSensorInput()"、@ref lightning::loc::Localization::DrainLioOutputs() "DrainLioOutputs()" 与 @ref lightning::loc::Localization::LidarLocProcCloud() "LidarLocProcCloud()" 继续。结果发布回到 @ref lightning::LocSystem::PublishLocalizationResult() "PublishLocalizationResult()"；积压和退出行为见 @ref lightning::sys::AsyncMessageProcess "异步消息队列"。
+
 接着转入 @ref online_localization_flow "在线定位端到端流程"，跟踪 `LIO → 地图匹配 → 定位 PGO → 业务输出`。Shell 继续负责运行管理，估计与地图匹配由 C++ 实现。
 
 @anchor sany_lidar_reference

@@ -25,11 +25,11 @@ class OptimizationAlgorithmDogleg : public OptimizationAlgorithm {
 
    protected:
     // parameters
-    int max_trail_after_failure_ = 100;
-    double user_delta_init_ = 1e4;
+    int max_trail_after_failure_ = 100;  ///< 一次优化失败后允许的试探次数。
+    double user_delta_init_ = 1e4;  ///< 用户指定的初始信赖域半径。
     // damping to enforce positive definite matrix
-    double init_lambda_ = 1e-7;
-    double lambda_factor_ = 10.0;
+    double init_lambda_ = 1e-7;  ///< 使线性系统稳定的初始阻尼。
+    double lambda_factor_ = 10.0;  ///< 调整阻尼时使用的倍率。
 
     lightning::VectorX hsd_;         ///< steepest decent step
     lightning::VectorX hdl_;         ///< final dogleg step
@@ -39,7 +39,7 @@ class OptimizationAlgorithmDogleg : public OptimizationAlgorithm {
     double delta_ = 1e4;           ///< trust region
     bool was_pd_in_all_iterations_ =
         true;  ///< the matrix we Solve was positive definite in all iterations -> if not apply damping
-    int last_num_tries_ = 0;
+    int last_num_tries_ = 0;  ///< 最近一次迭代实际试探的次数。
 };
 }  // namespace lightning::miao
 

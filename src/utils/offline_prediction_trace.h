@@ -49,8 +49,8 @@ class OfflinePredictionTrace {
         std::fprintf(file_, "# rows=%llu errors=%llu\n", rows_, errors_);
         if (std::fclose(file_) != 0) std::perror("offline prediction trace close");
     }
-    FILE* file_ = nullptr;
-    std::mutex mutex_;
-    unsigned long long rows_ = 0, errors_ = 0;
+    FILE* file_ = nullptr;  ///< 记录离线预测轨迹的输出文件。
+    std::mutex mutex_;  ///< 保护并发记录、行计数与错误计数。
+    unsigned long long rows_ = 0 /**< 已记录的轨迹数据行数。 */, errors_ = 0 /**< 轨迹记录遇到的错误次数。 */;
 };
 }  // namespace lightning::profiling

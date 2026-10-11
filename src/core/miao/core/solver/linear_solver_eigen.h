@@ -91,9 +91,9 @@ class LinearSolverEigen : public LinearSolverCCS<MatrixType> {
     }
 
    protected:
-    bool init_ = true;
-    SparseMatrix sparse_matrix_;
-    CholeskyDecomposition cholesky_;
+    bool init_ = true;  ///< 下一次求解是否需要初始化稀疏结构。
+    SparseMatrix sparse_matrix_;  ///< 传给 Eigen 分解器的稀疏矩阵。
+    CholeskyDecomposition cholesky_;  ///< Eigen 稀疏 Cholesky 分解器。
 
     // compute the cholesky factor
     bool ComputeCholesky(const SparseBlockMatrix<MatrixType> &A) {

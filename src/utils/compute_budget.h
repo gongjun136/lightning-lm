@@ -18,12 +18,12 @@ constexpr const char* kSolidCpuAffinityEnv = "LIGHTNING_LM_SOLID_CPU_AFFINITY";
 // A single configuration object owns every high-cost online localization
 // worker pool. Callers may seed legacy-compatible defaults before loading it.
 struct ComputeBudget {
-    int lio_threads = 1;
-    int ndt_threads = 4;
-    int solid_icp_workers = 8;
-    int solid_worker_nice = 0;
-    std::string solid_cpu_affinity;
-    int ndt_max_points = 0;  // 0: uncapped; tracking only, never global initialization
+    int lio_threads = 1;  ///< LIO 与预处理允许使用的并行线程数。
+    int ndt_threads = 4;  ///< NDT 地图匹配允许使用的并行线程数。
+    int solid_icp_workers = 8;  ///< SOLiD 候选粗配准的工作线程数。
+    int solid_worker_nice = 0;  ///< SOLiD 候选工作线程的 nice 优先级。
+    std::string solid_cpu_affinity;  ///< SOLiD 候选工作线程的 CPU 亲和性配置文本。
+    int ndt_max_points = 0;  ///< 0: uncapped; tracking only, never global initialization
 };
 
 // Read optional compute_budget.* values and then apply environment overrides.

@@ -2,6 +2,21 @@
 // Created by xiang on 25-3-18.
 //
 
+/**
+ * @file run_loc_online.cc
+ * @brief 在线定位程序入口，选择定位模式并管理系统的启动、运行与退出。
+ * @details 由运行脚本启动；LiDAR 模式使用 lightning::LocSystem，纯组合导航模式使用
+ * lightning::InsLocSystem。传感器处理和业务发布由相应系统对象完成。
+ * @par 主要流程
+ * 1. <b>选择模式</b>：解析 flags、初始化 ROS，并读取 YAML 中的定位模式。
+ * 2. <b>准备系统</b>：初始化相应系统；LiDAR 分支还设置初始位姿与可选轨迹记录。
+ * 3. <b>处理输入</b>：进入 ROS 事件循环；LiDAR 分支可启动进程内 bag 回放。
+ * 4. <b>结束运行</b>：LiDAR 分支等待回放线程，停止算法并按需导出轨迹，最后关闭 ROS。
+ * @see lightning::LocSystem::Init(), lightning::LocSystem::SetInitPose(),
+ *      lightning::LocSystem::Spin(), lightning::LocSystem::Finish(),
+ *      @ref online_localization_flow "在线定位数据流"
+ */
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <yaml-cpp/yaml.h>
@@ -68,6 +83,13 @@ bool ReadInitialPose(const std::string& config_path, lightning::SE3& pose) {
 
 }  // namespace
 
+/**
+ * @brief 按配置启动在线定位系统，并在 ROS 关闭后完成运行收尾。
+ * @details LiDAR 分支沿 LocSystem::Init()、LocSystem::SetInitPose()、LocSystem::Spin()
+ * 执行；退出时调用 LocSystem::Finish() 并按 flags 保存轨迹。
+ * @return 正常结束返回 0；模式、初始化、回放或输出设置失败返回非零值。
+ * @see lightning::LocSystem, lightning::InsLocSystem
+ */
 int main(int argc, char** argv) {
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;

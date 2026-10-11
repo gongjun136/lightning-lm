@@ -163,8 +163,8 @@ class SparseBlockMatrix {
     //! array of maps of blocks. The index of the array represent a Block column
     //! of the matrix and the Block column is stored as a map row_block ->
     //! matrix_block_ptr.
-    std::vector<IntBlockMap> block_cols_;  // vector 索引为列，内部map索引为行
-    bool has_storage_;
+    std::vector<IntBlockMap> block_cols_;  ///< vector 索引为列，内部map索引为行
+    bool has_storage_;  ///< 是否由本矩阵拥有并释放块内存。
 
    private:
     template <class MatrixTransposedType>

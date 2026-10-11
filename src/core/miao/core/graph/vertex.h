@@ -143,15 +143,15 @@ class Vertex {
     virtual void ClearQuadraticForm() = 0;
 
    protected:
-    int id_ = 0;                 // 顶点的id
-    std::vector<Edge *> edges_;  // 关联的edges 由于edges所属权在graph
+    int id_ = 0;                 ///< 顶点的id
+    std::vector<Edge *> edges_;  ///< 关联的edges 由于edges所属权在graph
 
     /// 优化参数
     bool fixed_ = false;         // 顶点是否固定
-    bool marginalized_ = false;  // 顶点是否被边缘化
-    int dimension_ = 0;          // 顶点的维度，在base_vertex中使用模板参数固定
-    int col_in_hessian_ = -1;    // 顶点在整个Hessian矩阵中占第几列（含维度）
-    int hessian_index_ = -1;
+    bool marginalized_ = false;  ///< 顶点是否被边缘化
+    int dimension_ = 0;          ///< 顶点的维度，在base_vertex中使用模板参数固定
+    int col_in_hessian_ = -1;    ///< 顶点在整个Hessian矩阵中占第几列（含维度）
+    int hessian_index_ = -1;  ///< 该顶点在活动 Hessian 系统中的块索引。
 };
 }  // namespace lightning::miao
 

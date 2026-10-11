@@ -158,18 +158,18 @@ class MessageSync {
         return true;
     }
 
-    std::mutex scan_mutex_;
-    std::mutex imu_mutex_;
-    std::mutex odom_mutex_;
-    Callback callback_;                 // 同步数据后的回调函数
-    std::deque<CloudPtr> scan_buffer_;  // scan 数据缓冲
-    std::deque<IMUPtr> imu_buffer_;     // odom imu cache
-    std::deque<OdomPtr> odom_buffer_;   // odom (enc) cache
+    std::mutex scan_mutex_;  ///< 保护点云输入缓冲队列。
+    std::mutex imu_mutex_;  ///< 保护 IMU 输入缓冲队列。
+    std::mutex odom_mutex_;  ///< 保护里程计输入缓冲队列。
+    Callback callback_;                 ///< 同步数据后的回调函数
+    std::deque<CloudPtr> scan_buffer_;  ///< scan 数据缓冲
+    std::deque<IMUPtr> imu_buffer_;     ///< odom imu cache
+    std::deque<OdomPtr> odom_buffer_;   ///< odom (enc) cache
 
-    double last_timestamp_scan_ = -1.0;  // 最近scan时间
-    double last_timestamp_imu_ = 0;      // nearest odom imu timestamp
-    double last_timestamp_odom_ = 0;     // nearest odom (enc) timestamp
-    const double max_time_diff_ = 0.5;   // 同步之允许的时间误差
+    double last_timestamp_scan_ = -1.0;  ///< 最近scan时间
+    double last_timestamp_imu_ = 0;      ///< nearest odom imu timestamp
+    double last_timestamp_odom_ = 0;     ///< nearest odom (enc) timestamp
+    const double max_time_diff_ = 0.5;   ///< 同步之允许的时间误差
 };
 }  // namespace lightning
 

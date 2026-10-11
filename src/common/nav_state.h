@@ -15,17 +15,17 @@ namespace lightning {
 /** @see @ref geometry */
 struct NavState {
     // Error-state layout: position, rotation, velocity, gyro bias, accel bias, gravity.
-    constexpr static int dim = 18;
-    constexpr static int full_dim = 18;
-    constexpr static int kBlockDim = 3;
-    constexpr static int kPosIdx = 0;
-    constexpr static int kRotIdx = 3;
-    constexpr static int kVelIdx = 6;
-    constexpr static int kBgIdx = 9;
-    constexpr static int kBaIdx = 12;
-    constexpr static int kGravIdx = 15;
-    constexpr static double kGravityNorm = 9.81;
-    constexpr static double kMaxGravityDelta = 0.02;
+    constexpr static int dim = 18;  ///< 误差状态维度，按位置、姿态、速度、两种偏置和重力排列。
+    constexpr static int full_dim = 18;  ///< 状态向量表示的总维度。
+    constexpr static int kBlockDim = 3;  ///< 各三维状态块的维度。
+    constexpr static int kPosIdx = 0;  ///< 位置块在误差状态向量中的起始索引。
+    constexpr static int kRotIdx = 3;  ///< 旋转误差块在状态向量中的起始索引。
+    constexpr static int kVelIdx = 6;  ///< 速度块在误差状态向量中的起始索引。
+    constexpr static int kBgIdx = 9;  ///< 陀螺仪偏置块的起始索引。
+    constexpr static int kBaIdx = 12;  ///< 加速度计偏置块的起始索引。
+    constexpr static int kGravIdx = 15;  ///< 重力块在误差状态向量中的起始索引。
+    constexpr static double kGravityNorm = 9.81;  ///< 状态约束使用的重力模长（m/s²）。
+    constexpr static double kMaxGravityDelta = 0.02;  ///< 一次重力状态修正的幅度上限。
 
     using VectState = Eigen::Matrix<double, dim, 1>;
     using FullVectState = Eigen::Matrix<double, full_dim, 1>;
@@ -143,13 +143,13 @@ struct NavState {
 
     struct MetaInfo {
         MetaInfo(int idx, int vdim, int dof) : idx_(idx), dim_(vdim), dof_(dof) {}
-        int idx_ = 0;
-        int dim_ = 0;
-        int dof_ = 0;
+        int idx_ = 0;  ///< 状态块在整体向量中的起始索引。
+        int dim_ = 0;  ///< 该状态块的向量表示维度。
+        int dof_ = 0;  ///< 该状态块的有效自由度。
     };
 
-    static const std::vector<MetaInfo> vect_states_;
-    static const std::vector<MetaInfo> SO3_states_;
+    static const std::vector<MetaInfo> vect_states_;  ///< 用于状态分块遍历的欧氏向量块元信息。
+    static const std::vector<MetaInfo> SO3_states_;  ///< 用于流形状态遍历的旋转块元信息。
 
     friend inline std::ostream& operator<<(std::ostream& os, const NavState& s) {
         os << std::setprecision(18) << s.pos_.transpose() << " " << s.rot_.unit_quaternion().coeffs().transpose()
@@ -170,22 +170,22 @@ struct NavState {
     inline Vec3d GetVel() const { return vel_; }
     void SetVel(const Vec3d& v) { vel_ = v; }
 
-    double timestamp_ = 0.0;
-    double confidence_ = 0.0;
-    bool pose_is_ok_ = true;
-    bool lidar_odom_reliable_ = true;
-    bool is_parking_ = false;
+    double timestamp_ = 0.0;  ///< 该状态对应的传感器时间戳（s）。
+    double confidence_ = 0.0;  ///< 与该状态关联的定位置信度。
+    bool pose_is_ok_ = true;  ///< 当前位姿是否可用。
+    bool lidar_odom_reliable_ = true;  ///< 前端是否认为当前里程计结果可信。
+    bool is_parking_ = false;  ///< 当前状态是否处于静止保持。
 
-    Vec3d pos_ = Vec3d::Zero();
-    SO3 rot_;
-    Vec3d vel_ = Vec3d::Zero();
+    Vec3d pos_ = Vec3d::Zero();  ///< IMU 原点在世界坐标系中的位置（m）。
+    SO3 rot_;  ///< 将 IMU 坐标旋转到世界坐标的姿态。
+    Vec3d vel_ = Vec3d::Zero();  ///< 世界坐标系中的线速度（m/s）。
     // Prediction-input metadata, not additional error-state dimensions.
-    Vec3d prediction_gyro_ = Vec3d::Zero();
-    double prediction_gyro_timestamp_ = -1.0;
-    double rear_axle_speed_offset_ = 0.0;
-    Vec3d bg_ = Vec3d::Zero();
-    Vec3d ba_ = Vec3d::Zero();
-    Vec3d grav_ = Vec3d(0.0, 0.0, -kGravityNorm);
+    Vec3d prediction_gyro_ = Vec3d::Zero();  ///< 最近预测使用的角速度（rad/s），属于预测元数据。
+    double prediction_gyro_timestamp_ = -1.0;  ///< 预测角速度对应的时间戳（s），负值表示尚不可用。
+    double rear_axle_speed_offset_ = 0.0;  ///< 从主雷达速度换算到后轴纵向速度的修正（m/s）。
+    Vec3d bg_ = Vec3d::Zero();  ///< 陀螺仪偏置（rad/s）。
+    Vec3d ba_ = Vec3d::Zero();  ///< 加速度计偏置（m/s²）。
+    Vec3d grav_ = Vec3d(0.0, 0.0, -kGravityNorm);  ///< 世界坐标系的重力向量（m/s²）。
 };
 
 }  // namespace lightning

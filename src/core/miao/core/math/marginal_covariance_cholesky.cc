@@ -7,7 +7,7 @@
 namespace lightning::miao {
 
 struct MatrixElem {
-    int r, c;
+    int r /**< 待查询协方差元素的行索引。 */, c /**< 待查询协方差元素的列索引。 */;
     MatrixElem(int r_, int c_) : r(r_), c(c_) {}
     bool operator<(const MatrixElem& other) const { return c > other.c || (c == other.c && r > other.r); }
 };

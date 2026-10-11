@@ -28,9 +28,9 @@ namespace lightning {
 /** @see @ref eskf_theory */
 class ESKF {
    public:
-    static constexpr int process_noise_dim_ = 12;     // IMU预测噪声维度，通常包含陀螺仪、加速度计及零偏噪声
-    static constexpr int pose_obs_dim_ = 6;           // 位姿观测维度，前三维平移，后三维旋转
-    static constexpr int state_dim_ = NavState::dim;  // 误差状态维度，由NavState统一定义
+    static constexpr int process_noise_dim_ = 12;     ///< IMU预测噪声维度，通常包含陀螺仪、加速度计及零偏噪声
+    static constexpr int pose_obs_dim_ = 6;           ///< 位姿观测维度，前三维平移，后三维旋转
+    static constexpr int state_dim_ = NavState::dim;  ///< 误差状态维度，由NavState统一定义
     using StateVecType = NavState::VectState;         // 误差状态向量类型
     using CovType = Eigen::Matrix<double, state_dim_, state_dim_>;  // 误差状态协方差矩阵
     using ProcessNoiseType = Eigen::Matrix<double, process_noise_dim_, process_noise_dim_>;
@@ -76,18 +76,18 @@ class ESKF {
      * ESKF::Update()再把它和先验协方差组合求解。
      */
     struct CustomObservationModel {
-        bool valid_ = true;     // 观测模型是否有效；例如有效匹配点太少时会置false并放弃本次更新
-        bool converge_ = true;  // 当前迭代是否收敛，由ESKF::Update()根据dx阈值更新
+        bool valid_ = true;     ///< 观测模型是否有效；例如有效匹配点太少时会置false并放弃本次更新
+        bool converge_ = true;  ///< 当前迭代是否收敛，由ESKF::Update()根据dx阈值更新
 
-        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> R_;  // 预留的观测噪声矩阵，当前Update主流程未直接使用
+        Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> R_;  ///< 预留的观测噪声矩阵，当前Update主流程未直接使用
 
         /// 信息矩阵近似：累加每个残差项的H_j^T H_j，当前只约束6维位姿。
         Eigen::Matrix<double, pose_obs_dim_, pose_obs_dim_> HTH_;
         /// 信息向量：累加每个残差项的H_j^T r_j，符号约定由观测函数中的残差定义决定。
         Eigen::Matrix<double, pose_obs_dim_, 1> HTr_;
 
-        double lidar_residual_mean_ = 0;  // Lidar残差统计值，当前用平方残差中位数衡量本轮匹配质量
-        double lidar_residual_max_ = 0;   // Lidar最大平方残差，用于调试和异常观测分析
+        double lidar_residual_mean_ = 0;  ///< Lidar残差统计值，当前用平方残差中位数衡量本轮匹配质量
+        double lidar_residual_max_ = 0;   ///< Lidar最大平方残差，用于调试和异常观测分析
     };
 
     /// 用户定义的观测函数：输入当前线性化状态，输出CustomObservationModel中的矩阵和残差信息。
@@ -100,34 +100,34 @@ class ESKF {
      * 时对应ObsType的函数必须已经配置。
      */
     struct Options {
-        CustomObsFunction lidar_obs_func_;           // 雷达观测函数
-        CustomObsFunction wheelspeed_obs_func_;      // 轮速观测函数
-        CustomObsFunction acc_as_gravity_obs_func_;  // 加计观测函数
-        CustomObsFunction gps_obs_func_;             // GPS/RTK观测函数
-        CustomObsFunction bias_obs_func_;            // 零偏观测函数
-        int max_iterations_ = 4;                     // 单次Update最多迭代次数
-        StateVecType epsi_;                          // 每个误差状态维度的收敛阈值
-        bool use_aa_ = false;                        // 是否使用Anderson Acceleration加速收敛
+        CustomObsFunction lidar_obs_func_;  ///< 激光点面观测的构建回调。
+        CustomObsFunction wheelspeed_obs_func_;  ///< 轮速观测的构建回调。
+        CustomObsFunction acc_as_gravity_obs_func_;  ///< 将加速度作为重力约束的观测回调。
+        CustomObsFunction gps_obs_func_;  ///< GPS 观测的构建回调。
+        CustomObsFunction bias_obs_func_;  ///< 偏置约束的观测构建回调。
+        int max_iterations_ = 4;                     ///< 单次Update最多迭代次数
+        StateVecType epsi_;                          ///< 每个误差状态维度的收敛阈值
+        bool use_aa_ = false;                        ///< 是否使用Anderson Acceleration加速收敛
 
         /// 速度增量裁剪参数，目前实现里相关逻辑处于注释状态。
         double vel_clip_norm_ = 1.0;  // 速度更新量范数上限
-        double dv_ratio_ = 0.5;       // 速度更新量缩放比例
+        double dv_ratio_ = 0.5;       ///< 速度更新量缩放比例
 
         // Process noise already grows covariance according to dt. A fixed factor per IMU
         // sample makes uncertainty grow exponentially and makes results depend on IMU rate.
-        double predict_cov_inflation_ = 1.0;
-        double min_cov_diag_ = 1e-9;                 // 协方差对角线下限，防止数值退化到非正定
-        double degeneracy_threshold_ratio_ = 1e-3;   // 退化方向判定阈值，相对最大特征值设置
-        bool propagate_velocity_ = false;            // 是否在名义状态中传播速度；SANY MID360需打开以匹配Voxel-SLAM。
-        double degeneracy_cov_inflation_ = 1.02;     // 发现退化方向后，对位姿协方差的膨胀系数
-        double max_update_translation_step_ = 0.5;   // 单次迭代允许的最大平移修正量
-        double max_update_rotation_step_deg_ = 5.0;  // 单次迭代允许的最大旋转修正量，单位deg
-        double max_update_velocity_step_ = 2.0;      // <= 0 disables velocity-step rejection for full-state ESKF.
-        double max_update_gyro_bias_step_ = 0.05;    // rad/s, <= 0 disables lidar inertial-step fallback.
-        double max_update_acc_bias_step_ = 0.5;      // m/s^2, <= 0 disables lidar inertial-step fallback.
-        double max_update_gravity_step_ = 0.05;      // m/s^2, <= 0 disables lidar inertial-step fallback.
-        bool lidar_update_pose_only_ = false;        // Lidar pose observations do not directly update vel/bias/gravity.
-        bool lidar_update_inertial_states_ = true;   // Lidar pose observations may update bg/ba/gravity via covariance.
+        double predict_cov_inflation_ = 1.0;  ///< 预测协方差膨胀系数。
+        double min_cov_diag_ = 1e-9;                 ///< 协方差对角线下限，防止数值退化到非正定
+        double degeneracy_threshold_ratio_ = 1e-3;   ///< 退化方向判定阈值，相对最大特征值设置
+        bool propagate_velocity_ = false;            ///< 是否在名义状态中传播速度；SANY MID360需打开以匹配Voxel-SLAM。
+        double degeneracy_cov_inflation_ = 1.02;     ///< 发现退化方向后，对位姿协方差的膨胀系数
+        double max_update_translation_step_ = 0.5;   ///< 单次迭代允许的最大平移修正量
+        double max_update_rotation_step_deg_ = 5.0;  ///< 单次迭代允许的最大旋转修正量，单位deg
+        double max_update_velocity_step_ = 2.0;      ///< <= 0 disables velocity-step rejection for full-state ESKF.
+        double max_update_gyro_bias_step_ = 0.05;    ///< rad/s, <= 0 disables lidar inertial-step fallback.
+        double max_update_acc_bias_step_ = 0.5;      ///< m/s^2, <= 0 disables lidar inertial-step fallback.
+        double max_update_gravity_step_ = 0.05;      ///< m/s^2, <= 0 disables lidar inertial-step fallback.
+        bool lidar_update_pose_only_ = false;        ///< Lidar pose observations do not directly update vel/bias/gravity.
+        bool lidar_update_inertial_states_ = true;   ///< Lidar pose observations may update bg/ba/gravity via covariance.
     };
 
     /**
@@ -167,12 +167,12 @@ class ESKF {
     bool PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce);
 
     struct ForwardSpeedUpdateResult {
-        bool accepted = false;
-        const char* reason = "invalid_measurement";
-        double predicted_speed_mps = 0.0;
-        double innovation_mps = 0.0;
-        double innovation_variance = 0.0;
-        double normalized_innovation_squared = 0.0;
+        bool accepted = false;  ///< 本次轮速更新是否被接受。
+        const char* reason = "invalid_measurement";  ///< 轮速更新的接受或拒绝原因。
+        double predicted_speed_mps = 0.0;  ///< 更新前预测的车体纵向速度（m/s）。
+        double innovation_mps = 0.0;  ///< 轮速量测与预测之差（m/s）。
+        double innovation_variance = 0.0;  ///< 速度新息的方差（(m/s)²）。
+        double normalized_innovation_squared = 0.0;  ///< 速度新息按其方差归一化后的平方。
     };
 
     /// Fuse a scalar body-forward speed observation while changing only the velocity state.
@@ -227,28 +227,28 @@ class ESKF {
     bool PropagateVelocity() const { return options_.propagate_velocity_; }
 
    private:
-    double stamp_ = 0.0;
+    double stamp_ = 0.0;  ///< 当前滤波状态的传感器时间戳（s）。
 
-    NavState x_;                       // 名义状态，包含位置、姿态、速度、零偏等
-    CovType P_ = CovType::Identity();  // 误差状态协方差矩阵
-    CovType F_x1_ = CovType::Identity();  // Predict阶段使用的离散误差状态转移矩阵
-    CovType L_ = CovType ::Identity();    // Update末尾做流形协方差映射时的临时矩阵
+    NavState x_;                       ///< 名义状态，包含位置、姿态、速度、零偏等
+    CovType P_ = CovType::Identity();  ///< 误差状态协方差矩阵
+    CovType F_x1_ = CovType::Identity();  ///< Predict阶段使用的离散误差状态转移矩阵
+    CovType L_ = CovType ::Identity();    ///< Update末尾做流形协方差映射时的临时矩阵
 
-    CustomObservationModel custom_obs_model_;
-    CustomObsFunction lidar_obs_func_, wheelspeed_obs_func_, acc_as_gravity_obs_func_, gps_obs_func_, bias_obs_func_;
+    CustomObservationModel custom_obs_model_;  ///< 观测模型填充的残差、信息和观测矩阵缓存。
+    CustomObsFunction lidar_obs_func_ /**< 激光点面观测的构建回调。 */, wheelspeed_obs_func_ /**< 轮速观测的构建回调。 */, acc_as_gravity_obs_func_ /**< 将加速度作为重力约束的观测回调。 */, gps_obs_func_ /**< GPS 观测的构建回调。 */, bias_obs_func_ /**< 偏置约束的观测构建回调。 */;
 
-    int maximum_iter_ = 0;  // 最大迭代次数
-    StateVecType limit_;    // 收敛阈值，每一维误差增量都小于对应阈值时认为收敛
+    int maximum_iter_ = 0;  ///< 最大迭代次数
+    StateVecType limit_;    ///< 收敛阈值，每一维误差增量都小于对应阈值时认为收敛
 
-    int iterations_ = 0;        // 最近一次Update实际使用的迭代次数
-    double final_res_ = 0.0;    // 最近一次Update的相对残差
-    bool last_update_accepted_ = false;
+    int iterations_ = 0;        ///< 最近一次Update实际使用的迭代次数
+    double final_res_ = 0.0;    ///< 最近一次Update的相对残差
+    bool last_update_accepted_ = false;  ///< 最近一次观测更新是否通过安全门控。
 
     /// 是否使用Anderson Acceleration加速迭代收敛。
     bool use_aa_ = false;
-    AndersonAcceleration<double, state_dim_, 10> aa_;
+    AndersonAcceleration<double, state_dim_, 10> aa_;  ///< 加速迭代观测更新的 Anderson 历史状态。
 
-    Options options_;  // 保存完整选项，供Predict/Update中的数值保护逻辑使用
+    Options options_;  ///< 保存完整选项，供Predict/Update中的数值保护逻辑使用
 };
 
 }  // namespace lightning

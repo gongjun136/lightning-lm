@@ -18,7 +18,7 @@ class BaseUnaryEdge : public BaseFixedSizedEdge<D, E, VertexXi> {
 
    protected:
     typename BaseFixedSizedEdge<D, E, VertexXi>::template JacobianType<D, VertexXi::Dimension> &jacobian_oplus_xi_ =
-        std::get<0>(this->jacobian_oplus_);
+        std::get<0>(this->jacobian_oplus_);  ///< 边误差对唯一顶点局部增量的 Jacobian 引用。
 };
 
 }  // namespace lightning::miao

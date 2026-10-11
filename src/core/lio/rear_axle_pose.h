@@ -31,11 +31,11 @@ class RearAxlePoseTransformer {
     }
 
    private:
-    SE3 T_imu_lidar_;
-    Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
-    SE3 T_lidar_body_;
-    SE3 T_estimator_body_initial_;
-    bool initialized_ = false;
+    SE3 T_imu_lidar_;  ///< 将雷达坐标变换到 IMU 坐标的固定外参。
+    Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();  ///< 主雷达在后轴车体坐标系中的安装位置（m）。
+    SE3 T_lidar_body_;  ///< 将后轴车体坐标变换到主雷达坐标的外参。
+    SE3 T_estimator_body_initial_;  ///< 初始后轴在估计器坐标系中的位姿，用于归一化轨迹。
+    bool initialized_ = false;  ///< 是否已经记录初始后轴位姿。
 };
 
 }  // namespace lightning

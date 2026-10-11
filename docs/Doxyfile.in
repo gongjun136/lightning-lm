@@ -12,8 +12,8 @@ EXCLUDE                = "@LIGHTNING_SOURCE_DIR@/src/core/miao/examples"
 USE_MDFILE_AS_MAINPAGE = "@LIGHTNING_SOURCE_DIR@/docs/index.md"
 # Shell examples and selected C++ snippets are extracted from the real files.
 EXAMPLE_PATH           = "@LIGHTNING_SOURCE_DIR@/scripts" \
-                         "@LIGHTNING_SOURCE_DIR@/src/core/system"
-EXAMPLE_PATTERNS       = *.sh *.cc
+                         "@LIGHTNING_SOURCE_DIR@/src"
+EXAMPLE_PATTERNS       = *.sh *.cc *.cpp *.h *.hpp
 EXAMPLE_RECURSIVE      = YES
 LAYOUT_FILE            = "@LIGHTNING_SOURCE_DIR@/docs/DoxygenLayout.xml"
 
@@ -33,11 +33,15 @@ TOC_INCLUDE_HEADINGS   = 4
 GENERATE_HTML          = YES
 GENERATE_LATEX         = NO
 HTML_OUTPUT            = html
+HTML_EXTRA_FILES       = "@LIGHTNING_SOURCE_DIR@/docs/operations/map_alignment/bauma_20261009/alignment_report.yaml"
 HTML_DYNAMIC_MENUS     = YES
 GENERATE_TREEVIEW      = YES
 DISABLE_INDEX          = NO
 SOURCE_BROWSER         = YES
 INLINE_SOURCES         = NO
+# API prose comes from declarations; body comments remain visible in source pages.
+HIDE_IN_BODY_DOCS      = YES
+STRIP_CODE_COMMENTS    = NO
 # API 页面和源码浏览器已经提供文档 → 符号 → 定义跳转。全仓库双向
 # “谁引用谁”列表计算代价很高，且会淹没手写的数据流说明，因此不生成。
 REFERENCED_BY_RELATION = NO

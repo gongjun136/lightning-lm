@@ -78,9 +78,9 @@ class LinearSolverDense : public LinearSolver<MatrixType> {
     }
 
    protected:
-    bool reset_ = true;
-    MatrixX H_;
-    Eigen::LDLT<MatrixX> cholesky_;
+    bool reset_ = true;  ///< 下一次求解是否需要重建矩阵缓存。
+    MatrixX H_;  ///< 转换后的稠密正规方程矩阵。
+    Eigen::LDLT<MatrixX> cholesky_;  ///< 稠密矩阵的 LDLT 分解缓存。
 };
 
 }  // namespace lightning::miao

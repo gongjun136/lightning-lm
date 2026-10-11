@@ -72,8 +72,8 @@ class PGO {
     void LogWindowState();
 
    public:
-    bool localization_unusual_tag_ = false;  // 定位失效标志位
-    bool imu_interruption_tag_ = false;      // imu断流标志位
+    bool localization_unusual_tag_ = false;  ///< 定位失效标志位
+    bool imu_interruption_tag_ = false;      ///< imu断流标志位
 
    private:
     inline bool RelativePoseQueueEmpty() {
@@ -91,32 +91,32 @@ class PGO {
      */
     bool ExtrapolateLocResult(LocalizationResult& output_result);
 
-    std::unique_ptr<PGOImpl> impl_;
+    std::unique_ptr<PGOImpl> impl_;  ///< 维护滑动窗口及优化约束的 PGO 实现。
 
     // 在本层放一个extrapolator，被三个地方访问：DR，lidarOdom，LidarLoc，RTK
-    std::unique_ptr<PoseExtrapolator> pose_extrapolator_;
-    std::function<void(const LocalizationResult& output_result)> high_freq_output_func_;
-    LocalizationResult high_freq_result_;
-    LocalizationResult parking_result_;
+    std::unique_ptr<PoseExtrapolator> pose_extrapolator_;  ///< 根据近期 PGO 校正与里程计生成高频位姿。
+    std::function<void(const LocalizationResult& output_result)> high_freq_output_func_;  ///< 高频融合结果的输出回调。
+    LocalizationResult high_freq_result_;  ///< 最近生成的高频融合结果。
+    LocalizationResult parking_result_;  ///< 静止保持期间复用的定位结果。
 
-    std::shared_ptr<PoseSmoother> smoother_;
+    std::shared_ptr<PoseSmoother> smoother_;  ///< 用于抑制输出跳变的位姿平滑器。
 
-    float imu_interruption_time_thd_ = 1.0;  // imu数据断流时间阈值 s
-    float lidar_loc_score_thd_ = 0.5;        // 激光定位分值阈值
-    int localization_unusual_thd_ = 10;      // 激光定位失效次数阈值
-    int localization_unusual_count_ = 0;     // 定位异常次数
-    double last_lidar_loc_time_ = 0.;        // 上次激光定位时间戳
-    double last_lidar_loc_input_time_ = -1.;
+    float imu_interruption_time_thd_ = 1.0;  ///< imu数据断流时间阈值 s
+    float lidar_loc_score_thd_ = 0.5;        ///< 激光定位分值阈值
+    int localization_unusual_thd_ = 10;      ///< 激光定位失效次数阈值
+    int localization_unusual_count_ = 0;     ///< 定位异常次数
+    double last_lidar_loc_time_ = 0.;        ///< 上次激光定位时间戳
+    double last_lidar_loc_input_time_ = -1.;  ///< 最近收到的地图匹配输入时间戳（s）。
     // LidarLoc is asynchronous. Results sampled no later than the most recent
     // DR hold release still belong to the parked epoch even if they arrive
     // after is_parking_ becomes false.
-    double static_hold_release_watermark_ = -1.;
-    double static_hold_start_stamp_ = -1.;
-    bool is_parking_ = false;
-    bool dr_is_parking_ = false;
-    bool lidar_loc_is_parking_ = false;
-    bool dr_smoothing_enabled_ = true;
-    bool dr_extrapolation_enabled_ = true;
+    double static_hold_release_watermark_ = -1.;  ///< 静止保持释放后拒绝旧结果的时间戳水位（s）。
+    double static_hold_start_stamp_ = -1.;  ///< 本轮静止保持开始的传感器时间戳（s）。
+    bool is_parking_ = false;  ///< PGO 综合判定的静止状态。
+    bool dr_is_parking_ = false;  ///< DR 输入报告的静止状态。
+    bool lidar_loc_is_parking_ = false;  ///< 地图匹配输入报告的静止状态。
+    bool dr_smoothing_enabled_ = true;  ///< 是否使用 DR 约束位姿平滑。
+    bool dr_extrapolation_enabled_ = true;  ///< 是否使用 DR 外推高频位姿。
 };
 
 }  // namespace lightning::loc

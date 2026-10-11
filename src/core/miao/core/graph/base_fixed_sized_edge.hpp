@@ -218,9 +218,9 @@ void BaseFixedSizedEdge<D, E, VertexTypes...>::ConstructOffDiagonalQuadraticForm
  * We have to pass the size at runtime to allow dynamically sized verices.
  */
 struct MapHessianMemoryK {
-    double *d;
-    int rows;
-    int cols;
+    double *d;  ///< 求解器分配给当前 Hessian 块的内存地址。
+    int rows;  ///< 当前 Hessian 块的行数。
+    int cols;  ///< 当前 Hessian 块的列数。
 
     template <typename HessianT>
     void operator()(HessianT &hessian) {

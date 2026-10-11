@@ -21,36 +21,36 @@ BackendMode ReadBackendMode(const std::string& yaml_path);
 const char* BackendModeName(BackendMode mode);
 
 struct BackendPipelineOptions {
-    bool online_mode = false;
-    bool verbose = true;
-    int pose_graph_iterations = 20;
-    int pose_graph_outlier_iterations = 10;
-    double motion_translation_noise = 0.10;
-    double motion_rotation_noise_deg = 3.0;
-    double loop_translation_noise = 0.20;
-    double loop_rotation_noise_deg = 3.0;
-    double robust_kernel_delta = 1.0;
-    double loop_outlier_chi2 = 25.0;
-    BundleAdjustmentOptions local_ba;
-    BtcLoopDetectorOptions btc;
-    HierarchicalBundleAdjustmentOptions hba;
+    bool online_mode = false;  ///< 是否通过后台队列异步处理关键帧。
+    bool verbose = true;  ///< 是否输出详细后端日志。
+    int pose_graph_iterations = 20;  ///< 位姿图优化的迭代次数。
+    int pose_graph_outlier_iterations = 10;  ///< 剔除异常约束后再次优化的迭代次数。
+    double motion_translation_noise = 0.10;  ///< 里程计相邻位姿约束的平移噪声（m）。
+    double motion_rotation_noise_deg = 3.0;  ///< 里程计相邻位姿约束的旋转噪声（deg）。
+    double loop_translation_noise = 0.20;  ///< 回环约束的平移噪声（m）。
+    double loop_rotation_noise_deg = 3.0;  ///< 回环约束的旋转噪声（deg）。
+    double robust_kernel_delta = 1.0;  ///< 位姿图鲁棒核的尺度参数。
+    double loop_outlier_chi2 = 25.0;  ///< 回环约束的卡方异常判定阈值。
+    BundleAdjustmentOptions local_ba;  ///< 局部体素 BA 配置。
+    BtcLoopDetectorOptions btc;  ///< BTC 回环检测配置。
+    HierarchicalBundleAdjustmentOptions hba;  ///< 分层体素 BA 配置。
 };
 
 struct BackendRuntimeSummary {
-    std::size_t keyframes = 0;
-    std::size_t local_ba_attempts = 0;
-    std::size_t local_ba_accepted = 0;
-    std::size_t btc_descriptors = 0;
-    std::size_t btc_candidates = 0;
-    std::size_t loops_accepted = 0;
-    std::size_t loops_applied = 0;
-    std::size_t loops_graph_inliers = 0;
-    std::size_t hba_runs = 0;
-    std::size_t hba_accepted = 0;
-    double local_ba_time_ms = 0.0;
-    double btc_time_ms = 0.0;
-    double pose_graph_time_ms = 0.0;
-    double hba_time_ms = 0.0;
+    std::size_t keyframes = 0;  ///< 已进入后端的关键帧数。
+    std::size_t local_ba_attempts = 0;  ///< 局部 BA 尝试次数。
+    std::size_t local_ba_accepted = 0;  ///< 局部 BA 接受结果的次数。
+    std::size_t btc_descriptors = 0;  ///< 已生成的 BTC 描述子数量。
+    std::size_t btc_candidates = 0;  ///< BTC 检索得到的回环候选数。
+    std::size_t loops_accepted = 0;  ///< 通过几何与连续确认的回环数。
+    std::size_t loops_applied = 0;  ///< 已加入优化的回环数。
+    std::size_t loops_graph_inliers = 0;  ///< 位姿图保留的回环内点数。
+    std::size_t hba_runs = 0;  ///< HBA 执行次数。
+    std::size_t hba_accepted = 0;  ///< HBA 接受结果的次数。
+    double local_ba_time_ms = 0.0;  ///< 局部 BA 耗时统计（ms）。
+    double btc_time_ms = 0.0;  ///< BTC 检索与验证耗时统计（ms）。
+    double pose_graph_time_ms = 0.0;  ///< 位姿图优化耗时统计（ms）。
+    double hba_time_ms = 0.0;  ///< 分层优化耗时统计（ms）。
 };
 
 class BackendPipeline {
@@ -79,9 +79,9 @@ class BackendPipeline {
 
    private:
     struct LoopConstraint {
-        BtcLoopResult detection;
-        SE3 T_history_imu_current_imu;
-        bool graph_inlier = true;
+        BtcLoopResult detection;  ///< 该图约束对应的回环检测结果。
+        SE3 T_history_imu_current_imu;  ///< 将当前 IMU 坐标变换到历史 IMU 坐标的回环相对位姿。
+        bool graph_inlier = true;  ///< 该回环约束是否被位姿图判为内点。
     };
 
     void HandleKeyframe(const Keyframe::Ptr& keyframe);
@@ -91,42 +91,42 @@ class BackendPipeline {
     bool OptimizePoseGraph();
     void UpdateMapToOdomAndNotify();
 
-    BackendPipelineOptions options_;
-    SE3 T_imu_lidar_;
-    std::unique_ptr<VoxelBundleAdjuster> local_ba_;
-    std::unique_ptr<BtcLoopDetector> btc_;
-    std::unique_ptr<HierarchicalBundleAdjuster> hba_;
+    BackendPipelineOptions options_;  ///< 后端运行、图约束与各优化模块的配置。
+    SE3 T_imu_lidar_;  ///< 将雷达坐标变换到 IMU 坐标的固定外参。
+    std::unique_ptr<VoxelBundleAdjuster> local_ba_;  ///< 局部滑动窗口体素 BA 优化器。
+    std::unique_ptr<BtcLoopDetector> btc_;  ///< 全局回环候选检索与几何验证器。
+    std::unique_ptr<HierarchicalBundleAdjuster> hba_;  ///< 多层子地图的全局 BA 优化器。
 
-    mutable std::mutex data_mutex_;
-    std::vector<Keyframe::Ptr> keyframes_;
-    std::vector<BtcLoopResult> loop_results_;
-    std::vector<LoopConstraint> loop_constraints_;
-    BackendRuntimeSummary runtime_;
-    SE3 T_map_odom_;
-    OptimizedCallback optimized_callback_;
+    mutable std::mutex data_mutex_;  ///< 保护关键帧、回环约束、输出变换与统计。
+    std::vector<Keyframe::Ptr> keyframes_;  ///< 后端持有的全部关键帧。
+    std::vector<BtcLoopResult> loop_results_;  ///< 已记录的回环检测与验证结果。
+    std::vector<LoopConstraint> loop_constraints_;  ///< 交给位姿图优化的回环约束。
+    BackendRuntimeSummary runtime_;  ///< 各优化阶段的运行计数与耗时。
+    SE3 T_map_odom_;  ///< 里程计坐标系到优化后地图坐标系的变换。
+    OptimizedCallback optimized_callback_;  ///< 完成后端优化后的通知回调。
 
-    std::mutex optimization_mutex_;
+    std::mutex optimization_mutex_;  ///< 防止局部、图优化与分层优化并发修改位姿。
 
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
-    std::condition_variable queue_idle_cv_;
-    std::deque<Keyframe::Ptr> queue_;
-    std::thread worker_thread_;
-    bool worker_processing_ = false;
-    bool worker_stop_ = false;
+    std::mutex queue_mutex_;  ///< 保护关键帧工作队列与工作线程状态。
+    std::condition_variable queue_cv_;  ///< 新关键帧或停止请求到达时唤醒工作线程。
+    std::condition_variable queue_idle_cv_;  ///< 通知等待者关键帧处理队列已空闲。
+    std::deque<Keyframe::Ptr> queue_;  ///< 在线模式等待后端处理的关键帧队列。
+    std::thread worker_thread_;  ///< 执行关键帧处理的在线工作线程。
+    bool worker_processing_ = false;  ///< 工作线程是否正在处理关键帧。
+    bool worker_stop_ = false;  ///< 请求关键帧工作线程退出的标志。
 
-    std::mutex hba_mutex_;
-    std::condition_variable hba_cv_;
-    std::condition_variable hba_idle_cv_;
-    std::thread hba_thread_;
-    bool hba_requested_ = false;
-    bool hba_rerun_pose_graph_ = false;
-    bool hba_running_ = false;
-    bool hba_stop_ = false;
-    std::string hba_reason_;
+    std::mutex hba_mutex_;  ///< 保护 HBA 请求、执行及退出状态。
+    std::condition_variable hba_cv_;  ///< 唤醒 HBA 线程执行新的优化请求。
+    std::condition_variable hba_idle_cv_;  ///< 通知等待者 HBA 已结束。
+    std::thread hba_thread_;  ///< 执行全局分层优化的线程。
+    bool hba_requested_ = false;  ///< 是否有尚未处理的 HBA 请求。
+    bool hba_rerun_pose_graph_ = false;  ///< 本次 HBA 请求是否需要先重跑位姿图。
+    bool hba_running_ = false;  ///< HBA 线程是否正在执行优化。
+    bool hba_stop_ = false;  ///< 请求 HBA 线程退出的标志。
+    std::string hba_reason_;  ///< 当前 HBA 请求的触发原因。
 
-    bool initialized_ = false;
-    std::size_t last_local_ba_keyframe_count_ = 0;
+    bool initialized_ = false;  ///< 后端配置和模块是否初始化完成。
+    std::size_t last_local_ba_keyframe_count_ = 0;  ///< 最近触发局部 BA 时的关键帧总数。
 };
 
 }  // namespace lightning::backend

@@ -51,10 +51,10 @@ class IVox {
     };
 
     struct Options {
-        float resolution_ = 0.2;                        // ivox resolution
-        float inv_resolution_ = 10.0;                   // inverse resolution
-        NearbyType nearby_type_ = NearbyType::NEARBY6;  // nearby range
-        std::size_t capacity_ = 1000000;                // capacity
+        float resolution_ = 0.2;                        ///< ivox resolution
+        float inv_resolution_ = 10.0;                   ///< inverse resolution
+        NearbyType nearby_type_ = NearbyType::NEARBY6;  ///< nearby range
+        std::size_t capacity_ = 1000000;                ///< capacity
     };
 
     /**
@@ -97,11 +97,11 @@ class IVox {
     /// position to grid
     KeyType Pos2Grid(const PtType& pt) const;
 
-    Options options_;
+    Options options_;  ///< 体素分辨率、邻域类型与缓存容量配置。
     std::unordered_map<KeyType, typename std::list<std::pair<KeyType, NodeType>>::iterator, math::hash_vec<dim>>
-        grids_map_;                                        // voxel hash map
-    std::list<std::pair<KeyType, NodeType>> grids_cache_;  // voxel cache
-    std::vector<KeyType> nearby_grids_;                    // nearbys
+        grids_map_;                                        ///< voxel hash map
+    std::list<std::pair<KeyType, NodeType>> grids_cache_;  ///< voxel cache
+    std::vector<KeyType> nearby_grids_;                    ///< nearbys
 };
 
 template <int dim, IVoxNodeType node_type, typename PointType>

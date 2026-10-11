@@ -22,7 +22,7 @@ class BaseEdge : public Edge {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    static constexpr int Dimension = D;
+    static constexpr int Dimension = D;  ///< 该边观测残差的维度。
     using Measurement = E;
     using ErrorVector = Eigen::Matrix<double, D, 1>;
     using InformationType = Eigen::Matrix<double, D, D>;

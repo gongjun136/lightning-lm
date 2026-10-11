@@ -64,7 +64,7 @@ class SparseBlockMatrixDiagonal {
    protected:
     const std::vector<int>& block_indices_;  ///< vector of the indices of the
     ///< blocks along the Diagonal
-    DiagonalVector diagonal_;
+    DiagonalVector diagonal_;  ///< 按块保存的对角矩阵。
 };
 
 }  // namespace lightning::miao

@@ -156,15 +156,15 @@ class OnlineBagPlayer {
     }
 
    private:
-    double playback_rate_ = 1.0;
-    std::unique_ptr<RosbagIO> bag_;
-    rclcpp::Node::SharedPtr node_;
-    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
-    rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_pub_;
-    rclcpp::Publisher<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_pub_;
-    rclcpp::Serialization<geosun_msgs::msg::SpeThrCAN4> wheel_speed_serialization_;
-    std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_pubs_;
+    double playback_rate_ = 1.0;  ///< bag 传感器时间相对实际播放时间的倍率。
+    std::unique_ptr<RosbagIO> bag_;  ///< 读取 bag 并分派消息的输入对象。
+    rclcpp::Node::SharedPtr node_;  ///< 将 bag 消息重新发布到在线流程的 ROS 节点。
+    rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;  ///< 回放 IMU 消息的发布器。
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;  ///< 单雷达 PointCloud2 回放发布器。
+    rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_pub_;  ///< Livox CustomMsg 回放发布器。
+    rclcpp::Publisher<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_pub_;  ///< 回放 CAN 轮速与扭矩消息的发布器。
+    rclcpp::Serialization<geosun_msgs::msg::SpeThrCAN4> wheel_speed_serialization_;  ///< CAN bag 消息的反序列化器。
+    std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_pubs_;  ///< 多雷达模式按话题保存的点云回放发布器。
 };
 
 }  // namespace lightning

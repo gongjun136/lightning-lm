@@ -37,13 +37,13 @@ struct MapChunk {
     /// 卸载本区块
     void Unload();
 
-    int id_ = 0;                  // 该区块ID
-    Vec2i grid_ = Vec2i::Zero();  // 网格中心
-    std::string filename_;        // 地图文件名
-    bool loaded_ = false;         // 该区域是否已经被载入
+    int id_ = 0;                  ///< 该区块ID
+    Vec2i grid_ = Vec2i::Zero();  ///< 网格中心
+    std::string filename_;        ///< 地图文件名
+    bool loaded_ = false;         ///< 该区域是否已经被载入
 
-    std::mutex data_mutex_;     // 数据锁
-    CloudPtr cloud_ = nullptr;  // 该区块的点云
+    std::mutex data_mutex_;  ///< 保护地图块载入状态与点云数据。
+    CloudPtr cloud_ = nullptr;  ///< 该区块的点云
 };
 
 }  // namespace lightning

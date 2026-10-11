@@ -135,16 +135,16 @@ class RosbagIO {
     void GoRealtime(double playback_rate = 1.0);
 
    private:
-    std::map<std::string, MessageProcessFunction> process_func_;
+    std::map<std::string, MessageProcessFunction> process_func_;  ///< 按 ROS 话题注册的消息处理回调表。
 
     /// 序列化
     rclcpp::Serialization<nav_msgs::msg::Odometry> seri_odom_;
-    rclcpp::Serialization<sensor_msgs::msg::Imu> seri_imu_;
-    rclcpp::Serialization<sensor_msgs::msg::PointCloud2> seri_cloud2_;
-    rclcpp::Serialization<livox_ros_driver2::msg::CustomMsg> seri_livox_;
+    rclcpp::Serialization<sensor_msgs::msg::Imu> seri_imu_;  ///< IMU bag 消息的反序列化器。
+    rclcpp::Serialization<sensor_msgs::msg::PointCloud2> seri_cloud2_;  ///< PointCloud2 bag 消息的反序列化器。
+    rclcpp::Serialization<livox_ros_driver2::msg::CustomMsg> seri_livox_;  ///< Livox CustomMsg bag 消息的反序列化器。
 
-    std::string bag_file_;
-    DatasetType dataset_type_ = DatasetType::NCLT;
+    std::string bag_file_;  ///< 输入 rosbag 文件或目录路径。
+    DatasetType dataset_type_ = DatasetType::NCLT;  ///< 影响话题与消息解释的数据集类型。
 };
 }  // namespace lightning
 

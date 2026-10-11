@@ -14,14 +14,14 @@ namespace lightning::loc {
 struct RelocalizationCandidate {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    int candidate_id = -1;
-    double score = 0.0;
-    int query_submap_size = 0;
-    std::size_t point_count = 0;
-    std::size_t descriptor_count = 0;
-    std::size_t rough_match_count = 0;
-    double spatial_coverage = 0.0;
-    SE3 T_world_imu;
+    int candidate_id = -1;  ///< 候选在地图描述子数据库中的 ID。
+    double score = 0.0;  ///< 后端给出的候选检索分值。
+    int query_submap_size = 0;  ///< 查询子地图使用的点云帧数。
+    std::size_t point_count = 0;  ///< 查询子地图的有效点数。
+    std::size_t descriptor_count = 0;  ///< 查询生成的描述子数量。
+    std::size_t rough_match_count = 0;  ///< 粗配准建立的对应关系数。
+    double spatial_coverage = 0.0;  ///< 粗配准内点的空间覆盖指标。
+    SE3 T_world_imu;  ///< 候选 IMU 在地图世界坐标系中的位姿。
 };
 
 using RelocalizationCandidateVector =
@@ -31,18 +31,18 @@ using RelocalizationCandidateVector =
 struct RelocalizationResult {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    bool attempted = false;
-    bool candidate_found = false;
-    bool accepted = false;
-    int candidate_id = -1;
-    double score = 0.0;
-    double timestamp = 0.0;
-    std::size_t point_count = 0;
-    std::size_t descriptor_count = 0;
-    double search_time_ms = 0.0;
-    SE3 T_world_imu;
-    RelocalizationCandidateVector candidates;
-    std::string reason;
+    bool attempted = false;  ///< 是否执行了候选检索。
+    bool candidate_found = false;  ///< 是否检索到有效候选。
+    bool accepted = false;  ///< 当前后端是否接受候选。
+    int candidate_id = -1;  ///< 候选在地图描述子数据库中的 ID。
+    double score = 0.0;  ///< 后端给出的候选检索分值。
+    double timestamp = 0.0;  ///< 查询末帧的传感器时间戳（s）。
+    std::size_t point_count = 0;  ///< 查询子地图的有效点数。
+    std::size_t descriptor_count = 0;  ///< 查询生成的描述子数量。
+    double search_time_ms = 0.0;  ///< 本次全局候选检索耗时（ms）。
+    SE3 T_world_imu;  ///< 候选 IMU 在地图世界坐标系中的位姿。
+    RelocalizationCandidateVector candidates;  ///< 供后续精配与地图一致性验证的候选列表。
+    std::string reason;  ///< 检索成功或未能返回候选的原因。
 };
 
 class GlobalRelocalizer {

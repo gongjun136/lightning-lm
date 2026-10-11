@@ -17,19 +17,19 @@ namespace detail {
 using Clock = std::chrono::steady_clock;
 
 struct TransitionState {
-    bool initialized = false;
-    bool published = false;
-    bool pending = false;
-    Clock::time_point pending_since{};
-    std::string active_message;
-    std::string recovery_message;
+    bool initialized = false;  ///< 该状态变化事件是否已有初始状态。
+    bool published = false;  ///< 该事件的当前状态是否已经发出。
+    bool pending = false;  ///< 是否正在等待新的状态通过确认窗口。
+    Clock::time_point pending_since{};  ///< 待确认状态首次出现的单调时钟时刻。
+    std::string active_message;  ///< 进入异常或活动状态时发布的事件文本。
+    std::string recovery_message;  ///< 退出异常或恢复状态时发布的事件文本。
 };
 
 struct Dispatcher {
-    std::mutex mutex;
-    Sink sink;
-    std::map<std::string, Clock::time_point> last_emit;
-    std::map<std::string, TransitionState> transitions;
+    std::mutex mutex;  ///< 保护事件回调、限频记录与状态转移表。
+    Sink sink;  ///< 接收已通过门控的调试事件的回调。
+    std::map<std::string, Clock::time_point> last_emit;  ///< 各事件最近一次发出的单调时钟时刻。
+    std::map<std::string, TransitionState> transitions;  ///< 按事件名称维护的状态变化确认记录。
 };
 
 inline Dispatcher& GetDispatcher() {

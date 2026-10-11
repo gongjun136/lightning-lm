@@ -67,7 +67,7 @@ bash scripts/align_maps_offline.sh \
 全局双向 0.5 m / 1 m 重叠率分别为 80.0% / 91.3%；起始静止段的 0.5 m
 平均重叠率为 95.4%。8 个静止子图的变换最大差异为 0.07076 m 和 0.10476 度。
 全部自动门限通过，用户已复核叠加图。以上是点云配准指标，不是测量真值精度。
-完整算法报告见 [2026-10-09 对齐报告](map_alignment/bauma_20261009/alignment_report.yaml)。
+完整算法报告见 <a href="alignment_report.yaml">2026-10-09 对齐报告</a>。
 
 新地图来自 `sany-03-master:~/data_gj/rosbag2_2026_10_09-11_39_53`，
 数据与新旧地图已按场地归档在

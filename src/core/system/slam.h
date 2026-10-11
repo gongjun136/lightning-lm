@@ -163,14 +163,14 @@ class SlamSystem {
     Options options_;                  ///< 系统运行选项。
     std::atomic_bool running_ = false;  ///< 系统是否处于建图运行状态。
 
-    map_frame::ExportOptions map_export_options_;
+    map_frame::ExportOptions map_export_options_;  ///< 地图坐标归一化与导航栅格导出配置。
     rclcpp::Service<SaveMapService>::SharedPtr savemap_service_ = nullptr;  ///< ROS2保存地图服务。
 
     std::string map_name_;  ///< 当前地图名。
 
     std::shared_ptr<LaserMapping> lio_ = nullptr;       ///< LIO前端。
     std::shared_ptr<LoopClosing> lc_ = nullptr;         ///< 回环检测模块。
-    std::shared_ptr<backend::BackendPipeline> backend_ = nullptr;
+    std::shared_ptr<backend::BackendPipeline> backend_ = nullptr;  ///< 可选的新式 BA、BTC 与 HBA 后端。
     std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  ///< 3D可视化UI。
     std::shared_ptr<g2p5::G2P5> g2p5_ = nullptr;        ///< 2.5D/2D栅格地图模块。
 
@@ -183,10 +183,10 @@ class SlamSystem {
     std::string livox_topic_;       ///< Livox CustomMsg订阅话题名。
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;  ///< IMU订阅器。
-    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
+    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;  ///< 多雷达模式下的点云订阅器集合。
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;  ///< Livox点云订阅器。
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr optimize_backend_service_ = nullptr;
-    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr optimize_backend_service_ = nullptr;  ///< 触发后端全局优化的 ROS 服务。
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;  ///< 发布建图位姿坐标关系的 TF 广播器。
 };
 }  // namespace lightning
 

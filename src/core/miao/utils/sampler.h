@@ -53,8 +53,8 @@ class GaussianSampler {
     }
 
    protected:
-    CovarianceType cholesky_;
-    std::unique_ptr<std::mt19937> generator_;
+    CovarianceType cholesky_;  ///< 采样协方差的 Cholesky 因子。
+    std::unique_ptr<std::mt19937> generator_;  ///< 生成高斯采样基础随机数的引擎。
 };
 
 class Sampler {

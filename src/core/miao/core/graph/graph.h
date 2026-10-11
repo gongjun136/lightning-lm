@@ -83,9 +83,9 @@ class Graph {
     double Chi2() const;
 
    protected:
-    VertexIDMap vertices_;                   // 所有顶点
-    std::set<std::shared_ptr<Edge>> edges_;  // 所有边
-    long long next_edge_id_ = 0;             // edge内部id
+    VertexIDMap vertices_;                   ///< 所有顶点
+    std::set<std::shared_ptr<Edge>> edges_;  ///< 图持有的所有观测边。
+    long long next_edge_id_ = 0;             ///< edge内部id
 };
 
 }  // namespace lightning::miao

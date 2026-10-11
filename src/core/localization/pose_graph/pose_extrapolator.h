@@ -47,30 +47,30 @@ class PoseExtrapolator {
     bool GetCurrentLoc(NavState& output_nav_state);
 
    private:
-    std::mutex data_mutex_;  // 全局数据锁
+    std::mutex data_mutex_;  ///< 全局数据锁
 
     // 原始数据
-    NavState last_lo_loc_;
-    LocalizationResult last_pgo_loc_;
-    bool initialized = false;  // 只能被PGOLoc初始化。
+    NavState last_lo_loc_;  ///< 最近用于外推的 LIO 状态。
+    LocalizationResult last_pgo_loc_;  ///< 最近用于校正高频输出的 PGO 结果。
+    bool initialized = false;  ///< 只能被PGOLoc初始化。
 
     // 当前状态
-    double current_time_;
-    SE3 current_pose_;
+    double current_time_;  ///< 当前外推位姿的时间戳（s）。
+    SE3 current_pose_;  ///< 当前高频外推位姿。
 
     // 历史上向外发布的pose
-    std::deque<NavState> output_pose_queue_;
+    std::deque<NavState> output_pose_queue_;  ///< 供查询或输出使用的近期外推状态队列。
 
     // 当前平移误差
     // 当前旋转误差
-    bool pgo_compensate_trans_needed_ = false;
-    bool pgo_compensate_rot_needed_ = false;
-    Vec3d pgo_curr_trans_gap_;  // local系
-    Vec3d pgo_curr_rot_gap_;    // 轴角旋转
+    bool pgo_compensate_trans_needed_ = false;  ///< 是否还有待渐进补偿的 PGO 平移修正。
+    bool pgo_compensate_rot_needed_ = false;  ///< 是否还有待渐进补偿的 PGO 旋转修正。
+    Vec3d pgo_curr_trans_gap_;  ///< local系
+    Vec3d pgo_curr_rot_gap_;    ///< 轴角旋转
 
-    bool lo_compensation_needed_ = false;
-    Vec3d lo_curr_trans_gap_;  // 绝对系
-    Vec3d lo_curr_rot_gap_;    // 轴角旋转
+    bool lo_compensation_needed_ = false;  ///< 是否需要补偿里程计与当前输出之间的差值。
+    Vec3d lo_curr_trans_gap_;  ///< 当前输出与里程计之间的世界坐标系平移差（m）。
+    Vec3d lo_curr_rot_gap_;    ///< 轴角旋转
 
     // 当前平移误差补偿速度（随DR更新，取DR平移速度的1/2；限定下限）
     // 当前旋转误差补偿速度（固定）
@@ -78,9 +78,9 @@ class PoseExtrapolator {
     double rot_velo();    // 轴角标量速度
 
     // 固定参数
-    const double kTimeForCompensate = 0.5;  // 规定释放补偿所用的时间
-    const double kMinTransVelocity = 0.5;   // 0.5米每秒，0.01米每20ms
-    const double kMinRotVelocity = 0.0873;  // 5度每秒，0.1度每20ms
+    const double kTimeForCompensate = 0.5;  ///< 规定释放补偿所用的时间
+    const double kMinTransVelocity = 0.5;   ///< 0.5米每秒，0.01米每20ms
+    const double kMinRotVelocity = 0.0873;  ///< 5度每秒，0.1度每20ms
 };
 
 }  // namespace lightning::loc

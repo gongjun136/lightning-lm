@@ -17,6 +17,6 @@ class InsLocSystem {
     void Spin();
  private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::unique_ptr<Impl> impl_;  ///< INS 输入、质量门控、点云投影与业务发布的实现对象。
 };
 }  // namespace lightning

@@ -46,7 +46,7 @@ class RobustKernel {
     double Delta() const { return delta_; }
 
    protected:
-    double delta_ = 1.0;
+    double delta_ = 1.0;  ///< 鲁棒核从小残差区间转入降权区间的尺度。
 };
 
 typedef std::shared_ptr<RobustKernel> RobustKernelPtr;

@@ -13,7 +13,7 @@ namespace lightning::g2p5 {
 /// 子网格定义，坐标系与MapToGrid类似
 class SubGrid {
    public:
-    static inline constexpr int SUB_GRID_SIZE = 4;
+    static inline constexpr int SUB_GRID_SIZE = 4;  ///< 子栅格边长的二进制指数，边长为 1 << SUB_GRID_SIZE。
 
     SubGrid(int num_x = 0, int num_y = 0);
 
@@ -84,10 +84,10 @@ class SubGrid {
 
     /// 子网格的大小
     static inline constexpr int width_ = (1 << SUB_GRID_SIZE);
-    static inline constexpr int width_2_ = (1 << SUB_GRID_SIZE) * (1 << SUB_GRID_SIZE);
+    static inline constexpr int width_2_ = (1 << SUB_GRID_SIZE) * (1 << SUB_GRID_SIZE);  ///< 一个子栅格包含的栅格单元数。
 
-    std::mutex data_mutex_;
-    GridData *grid_data_ = nullptr;
+    std::mutex data_mutex_;  ///< 保护子栅格单元的统计数据。
+    GridData *grid_data_ = nullptr;  ///< 该子栅格存储的连续单元数据。
 };
 
 }  // namespace lightning::g2p5

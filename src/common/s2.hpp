@@ -17,10 +17,10 @@ namespace lightning {
 struct S2 {
     using SO3 = Sophus::SO3d;
 
-    static constexpr int den_ = 98090;
-    static constexpr int num_ = 10000;
-    static constexpr double length_ = double(den_) / double(num_);
-    Vec3d vec_;
+    static constexpr int den_ = 98090;  ///< 固定球面模长的有理数分子。
+    static constexpr int num_ = 10000;  ///< 固定球面模长的有理数分母。
+    static constexpr double length_ = double(den_) / double(num_);  ///< 球面向量的固定模长。
+    Vec3d vec_;  ///< 固定模长球面上的三维向量表示。
 
    public:
     S2() { vec_ = length_ * Vec3d(1, 0, 0); }

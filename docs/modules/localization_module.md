@@ -8,6 +8,19 @@
 
 **代码依据：** `src/core/localization/localization.h`、`src/core/system/loc_system.h`（公开接口、成员所有权）
 
+# 按主链路阅读 API
+
+这些接口页先说明职责与调用关系，复杂入口再列主要步骤；关键代码按需展开。
+
+| 阅读阶段 | 直接入口 |
+|---|---|
+| ROS 与算法装配 | @ref lightning::LocSystem::Init() "LocSystem::Init()" → @ref lightning::loc::Localization::Init() "Localization::Init()" |
+| 接收 IMU 与点云 | @ref lightning::loc::Localization::ProcessIMUMsg() "ProcessIMUMsg()"、@ref lightning::loc::Localization::ProcessLidarMsg() "ProcessLidarMsg()" |
+| 驱动前端 | @ref lightning::loc::Localization::ProcessSensorInput() "ProcessSensorInput()" → @ref lightning::loc::Localization::DrainLioOutputs() "DrainLioOutputs()" |
+| 连接地图匹配与融合 | @ref lightning::loc::Localization::LidarLocProcCloud() "LidarLocProcCloud()" |
+| 业务结果与退出 | @ref lightning::LocSystem::PublishLocalizationResult() "PublishLocalizationResult()"、@ref lightning::loc::Localization::Finish() "Localization::Finish()" |
+| 理解积压与丢弃 | @ref lightning::sys::AsyncMessageProcess "AsyncMessageProcess" 的入队、消费与统计接口 |
+
 # 数据路径与有序性
 
 @dot
@@ -40,7 +53,7 @@ digraph localization_flow {
 3. 初始化位姿可由外部设置；未初始化时点云路径可进入全局重定位，成功后转入连续地图匹配。
 4. `LidarLoc` 自有 `update_map_thread_`，根据当前位姿更新活动 tile；析构负责结束并 join 该线程。
 
-**代码依据：** `src/core/localization/localization.cpp:28` 起的 `Init()`，`src/core/localization/lidar_loc/lidar_loc.cc`（`Init()`、构造/析构、`UpdateMapThread()`），`src/core/localization/global_relocalizer.h` 及 SOLiD/BTC 实现
+**代码依据：** @ref lightning::loc::Localization::Init() "Localization::Init()"，`src/core/localization/lidar_loc/lidar_loc.cc`（`Init()`、构造/析构、`UpdateMapThread()`），`src/core/localization/global_relocalizer.h` 及 SOLiD/BTC 实现
 
 # 继续跳转
 

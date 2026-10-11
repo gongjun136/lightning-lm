@@ -37,10 +37,10 @@ class SpeedSmoothingShadow {
     bool ResetLast() const { return reset_last_; }
 
  private:
-    bool initialized_ = false;
-    bool reset_last_ = true;
-    double stamp_ = 0.0;
-    double value_ = 0.0;
+    bool initialized_ = false;  ///< 速度平滑影子状态是否已初始化。
+    bool reset_last_ = true;  ///< 最近一次观测是否重置了平滑状态。
+    double stamp_ = 0.0;  ///< 最近参与平滑的传感器时间戳（s）。
+    double value_ = 0.0;  ///< 当前影子平滑速度（m/s），用于诊断对照。
 };
 
 }  // namespace lightning::sany_output

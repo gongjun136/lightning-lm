@@ -41,14 +41,14 @@ namespace lightning {
 class ImuProcess {
    public:
     struct InitializationOptions {
-        double min_duration = 0.05;
-        int min_samples = 20;
-        double max_mean_gyro_norm = std::numeric_limits<double>::infinity();
-        double max_gyro_std = std::numeric_limits<double>::infinity();
-        double max_acc_std = std::numeric_limits<double>::infinity();
-        double min_mean_acc_norm = 0.0;
-        double max_mean_acc_norm = std::numeric_limits<double>::infinity();
-        double initial_yaw_deg = 0.0;
+        double min_duration = 0.05;  ///< 初始化窗口覆盖的最短时间（s）。
+        int min_samples = 20;  ///< 完成初始化所需的最少样本数。
+        double max_mean_gyro_norm = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的平均角速度模长上限（rad/s）。
+        double max_gyro_std = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的角速度标准差上限（rad/s）。
+        double max_acc_std = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的加速度标准差上限（m/s²）。
+        double min_mean_acc_norm = 0.0;  ///< 初始化允许的平均加速度模长下限（m/s²）。
+        double max_mean_acc_norm = std::numeric_limits<double>::infinity();  ///< 初始化允许的平均加速度模长上限（m/s²）。
+        double initial_yaw_deg = 0.0;  ///< 初始化使用的航向角（deg）。
     };
 
     /// Eigen固定大小矩阵成员需要对齐分配，避免在容器或new对象时出现内存对齐问题。
@@ -102,13 +102,13 @@ class ImuProcess {
     Vec3d ScaleAccelerationForPrediction(const Vec3d &acc) const { return acc * acc_scale_factor_; }
 
     // 这些噪声参数会在IMU初始化和ESKF预测中使用，保持public是为了兼容原框架的配置方式。
-    Eigen::Matrix<double, 12, 12> Q_;  // ESKF过程噪声协方差矩阵，顺序需与NavState::df_dw()的噪声定义一致
-    Vec3d cov_acc_;                    // 加速度计噪声协方差（从IMU初始化中估计）
-    Vec3d cov_gyr_;                    // 陀螺仪噪声协方差（从IMU初始化中估计）
-    Vec3d cov_acc_scale_;              // 加速度计噪声协方差缩放因子（配置参数）
-    Vec3d cov_gyr_scale_;              // 陀螺仪噪声协方差缩放因子（配置参数）
-    Vec3d cov_bias_gyr_;               // 陀螺仪偏置不稳定性的协方差（配置参数）
-    Vec3d cov_bias_acc_;               // 加速度计偏置不稳定性的协方差（配置参数）
+    Eigen::Matrix<double, 12, 12> Q_;  ///< ESKF过程噪声协方差矩阵，顺序需与NavState::df_dw()的噪声定义一致
+    Vec3d cov_acc_;                    ///< 加速度计噪声协方差（从IMU初始化中估计）
+    Vec3d cov_gyr_;                    ///< 陀螺仪噪声协方差（从IMU初始化中估计）
+    Vec3d cov_acc_scale_;              ///< 加速度计噪声协方差缩放因子（配置参数）
+    Vec3d cov_gyr_scale_;              ///< 陀螺仪噪声协方差缩放因子（配置参数）
+    Vec3d cov_bias_gyr_;               ///< 陀螺仪偏置不稳定性的协方差（配置参数）
+    Vec3d cov_bias_acc_;               ///< 加速度计偏置不稳定性的协方差（配置参数）
 
    private:
     /// 静止初始化：估计加速度/角速度均值、噪声方差、初始重力方向和陀螺零偏。
@@ -118,30 +118,30 @@ class ImuProcess {
 
     bool InitializationReady() const;
 
-    PostPredictCallback post_predict_callback_;
-    PointCloudType::Ptr cur_pcl_un_ = nullptr;  // 当前帧去畸变点云缓存，Reset时重新分配
-    lightning::IMUPtr last_imu_ = nullptr;      // 上一帧最后一条IMU，用于和当前帧第一条IMU形成连续积分区间
-    std::deque<lightning::IMUPtr> imu_queue_;   // IMU队列缓存，当前实现主要在Reset中维护
+    PostPredictCallback post_predict_callback_;  ///< 每次状态预测后调用的可选回调。
+    PointCloudType::Ptr cur_pcl_un_ = nullptr;  ///< 当前帧去畸变点云缓存，Reset时重新分配
+    lightning::IMUPtr last_imu_ = nullptr;      ///< 上一帧最后一条IMU，用于和当前帧第一条IMU形成连续积分区间
+    std::deque<lightning::IMUPtr> imu_queue_;   ///< IMU队列缓存，当前实现主要在Reset中维护
 
-    std::vector<Pose6D> imu_pose_;            // 当前Lidar帧内的IMU位姿序列，用于按时间段补偿点云
-    Mat3d R_lidar_imu_ = Mat3d ::Identity();  // Lidar到IMU的旋转外参，点云先转到IMU系再做运动补偿
-    Vec3d t_lidar_mu_ = Vec3d ::Zero();       // Lidar到IMU的平移外参，变量名保留原拼写
-    Vec3d mean_acc_ = Vec3d::Zero();          // 初始化阶段累积的加速度计均值，用于估计重力方向
-    Vec3d mean_gyr_ = Vec3d::Zero();          // 初始化阶段累积的陀螺仪均值，用作初始陀螺零偏
-    Vec3d angvel_last_ = Vec3d ::Zero();      // 上一积分区间去零偏后的角速度，保存给下一帧起点使用
-    Vec3d acc_s_last_ = Vec3d ::Zero();       // 上一积分区间转到世界系并去重力后的加速度
-    double acc_scale_factor_ = 1.0;           // IMU加速度计缩放因子，初始化后用于修正加速度量测尺度
+    std::vector<Pose6D> imu_pose_;            ///< 当前Lidar帧内的IMU位姿序列，用于按时间段补偿点云
+    Mat3d R_lidar_imu_ = Mat3d ::Identity();  ///< Lidar到IMU的旋转外参，点云先转到IMU系再做运动补偿
+    Vec3d t_lidar_mu_ = Vec3d ::Zero();       ///< Lidar到IMU的平移外参，变量名保留原拼写
+    Vec3d mean_acc_ = Vec3d::Zero();          ///< 初始化阶段累积的加速度计均值，用于估计重力方向
+    Vec3d mean_gyr_ = Vec3d::Zero();          ///< 初始化阶段累积的陀螺仪均值，用作初始陀螺零偏
+    Vec3d angvel_last_ = Vec3d ::Zero();      ///< 上一积分区间去零偏后的角速度，保存给下一帧起点使用
+    Vec3d acc_s_last_ = Vec3d ::Zero();       ///< 上一积分区间转到世界系并去重力后的加速度
+    double acc_scale_factor_ = 1.0;           ///< IMU加速度计缩放因子，初始化后用于修正加速度量测尺度
 
-    double last_lidar_end_time_ = 0;  // 上一帧Lidar扫描结束时刻，用于避免跨帧IMU重复积分
-    int init_iter_num_ = 1;           // IMU初始化累计次数，达到max_init_count_后结束初始化
-    bool b_first_frame_ = true;       // 标记是否为第一帧，第一帧通常只用于建立初始时间和缓存
-    bool imu_need_init_ = true;       // 是否仍处于IMU初始化阶段
+    double last_lidar_end_time_ = 0;  ///< 上一帧Lidar扫描结束时刻，用于避免跨帧IMU重复积分
+    int init_iter_num_ = 1;           ///< IMU初始化累计次数，达到max_init_count_后结束初始化
+    bool b_first_frame_ = true;       ///< 标记是否为第一帧，第一帧通常只用于建立初始时间和缓存
+    bool imu_need_init_ = true;       ///< 是否仍处于IMU初始化阶段
 
-    bool use_imu_filter_ = true;  // 是否对参与积分的IMU量测做滤波
-    IMUFilter filter_;            // IMU滤波器实例，仅处理当前帧IMU拷贝
-    InitializationOptions init_options_;
-    std::deque<lightning::IMUPtr> init_samples_;
-    SO3 initial_rotation_;
+    bool use_imu_filter_ = true;  ///< 是否对参与积分的IMU量测做滤波
+    IMUFilter filter_;            ///< IMU滤波器实例，仅处理当前帧IMU拷贝
+    InitializationOptions init_options_;  ///< 静止 IMU 初始化的样本与噪声约束。
+    std::deque<lightning::IMUPtr> init_samples_;  ///< 等待完成初始化判定的 IMU 样本窗口。
+    SO3 initial_rotation_;  ///< 由初始重力和配置航向得到的初始姿态。
 };
 
 inline ImuProcess::ImuProcess() : b_first_frame_(true), imu_need_init_(true) {

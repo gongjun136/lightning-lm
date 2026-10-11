@@ -56,19 +56,20 @@ class PointCloudPreprocess {
     void RoboSenseHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
     void VelodyneHandler(const sensor_msgs::msg::PointCloud2 ::SharedPtr &msg);
 
-    PointCloudType cloud_full_, cloud_out_;
+    PointCloudType cloud_full_ /**< 保留的完整预处理点云缓存。 */,
+        cloud_out_ /**< 经过有效性、距离和点采样过滤的输出点云缓存。 */;
 
-    LidarType lidar_type_ = LidarType::AVIA;
-    int point_filter_num_ = 1;
-    int num_scans_ = 6;
-    double blind_ = 0.01;
-    float time_scale_ = 1e-3;
-    double livox_point_time_scale_ = 1.0;
-    int parallel_threads_ = 1;
-    bool given_offset_time_ = false;
+    LidarType lidar_type_ = LidarType::AVIA;  ///< 选择点格式与时间戳解释方式的雷达类型。
+    int point_filter_num_ = 1;  ///< 点序列的采样步长。
+    int num_scans_ = 6;  ///< 雷达扫描线数量。
+    double blind_ = 0.01;  ///< 丢弃近距离盲区点的距离阈值（m）。
+    float time_scale_ = 1e-3;  ///< 标准点云时间字段到内部时间单位的换算系数。
+    double livox_point_time_scale_ = 1.0;  ///< Livox 点时间偏移到内部时间单位的换算系数。
+    int parallel_threads_ = 1;  ///< 预处理允许使用的并行线程数。
+    bool given_offset_time_ = false;  ///< 输入是否提供逐点时间偏移。
 
-    float height_max_ = 1.0;
-    float height_min_ = -1.0;
+    float height_max_ = 1.0;  ///< 预处理高度 ROI 的上界（m）。
+    float height_min_ = -1.0;  ///< 预处理高度 ROI 的下界（m）。
 };
 }  // namespace lightning
 

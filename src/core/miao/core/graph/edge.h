@@ -114,12 +114,12 @@ class Edge {
     void SetInternalId(long long internal_id) { internal_id_ = internal_id; }
 
    protected:
-    VertexContainer vertices_;                               // 顶点
-    int dimension_ = -1;                                     // edge的维度
-    int level_ = 0;                                          // 优化层级，默认0级的边才参与优化
-    std::shared_ptr<RobustKernel> robust_kernel_ = nullptr;  // 核函数
-    int id_ = 0;                                             // id
-    long long internal_id_ = -1;                             // 内部id
+    VertexContainer vertices_;  ///< 该边连接并持有的顶点。
+    int dimension_ = -1;                                     ///< edge的维度
+    int level_ = 0;                                          ///< 优化层级，默认0级的边才参与优化
+    std::shared_ptr<RobustKernel> robust_kernel_ = nullptr;  ///< 用于抑制异常残差的可选鲁棒核。
+    int id_ = 0;  ///< 该边的外部标识。
+    long long internal_id_ = -1;                             ///< 内部id
 };
 
 }  // namespace lightning::miao

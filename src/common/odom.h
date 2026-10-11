@@ -11,11 +11,11 @@ namespace lightning {
 
 /// 内部定义的里程计观测，如果需要ROS，则从odom的消息转换过来
 struct Odom {
-    double timestamp_ = 0;
-    SE3 pose;
+    double timestamp_ = 0;  ///< 里程计观测的时间戳（s）。
+    SE3 pose;  ///< 该条里程计观测的位姿。
 
-    Vec3d linear;   // 线速度
-    Vec3d angular;  // 角速度（若有）
+    Vec3d linear;  ///< 里程计线速度（m/s）。
+    Vec3d angular;  ///< 角速度（若有）
 };
 
 using OdomPtr = std::shared_ptr<Odom>;

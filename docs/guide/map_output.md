@@ -9,6 +9,7 @@
 3. @subpage output_contracts "定位状态、参考点与 ROS 输出"：对照后轴位姿、杆臂速度补偿和发布门控。
 4. @subpage map_alignment "新旧地图对齐"：完整学习一次性对齐、人工复核及固定输出变换。
 5. @subpage map_and_support_modules "地图与运行支撑实现参考"：按需查 I/O、ROS/bag 适配、UI 和优化器等支撑代码。
+6. @subpage vehicle_calibration_management "车辆标定档案与验收"：关联车辆、外参版本与地图，核对配置生成和验收记录。
 
 **先核对两条关系**
 

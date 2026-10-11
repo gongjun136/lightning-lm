@@ -33,15 +33,15 @@ struct OptimizerConfig {
         : algo_type_(algo_type), is_dense_(is_dense), linear_solver_type_(linear_type) {}
 
     // 优化方法,从Gauss-newton, Levenberg-marquardt, dogleg中选
-    AlgorithmType algo_type_ = AlgorithmType::LEVENBERG_MARQUARDT;
+    AlgorithmType algo_type_ = AlgorithmType::LEVENBERG_MARQUARDT;  ///< 图优化使用的非线性迭代算法。
 
     // 线性方程求解方法,从eigen, dense, pcg中选
-    LinearSolverType linear_solver_type_ = LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN;
+    LinearSolverType linear_solver_type_ = LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN;  ///< 求解正规方程使用的线性求解器类型。
 
     // 稀疏还是稠密
     // 稠密问题不允许有marg
     // 稀疏问题可以有marg, 也可以没有marg
-    bool is_dense_ = true;
+    bool is_dense_ = true;  ///< 是否选择稠密矩阵求解方式。
 
     /// 增量模式下配置
     /// ==============================================================================
@@ -54,13 +54,13 @@ struct OptimizerConfig {
 
     // 最大顶点数量限制，为-1时，不会限制最大vertex size,可用于在线slam模式下pose graph之类的应用
     // 不为-1时，optimizer会用新的顶点替换掉最旧的顶点，保持block solver不变
-    int max_vertex_size_ = -1;
+    int max_vertex_size_ = -1;  ///< 求解器为顶点预留的容量配置。
 
     // 并发策略
     // 打开并发时，求解器会使用最快的并发进行求解
-    bool parallel_ = true;
+    bool parallel_ = true;  ///< 是否启用并行线性化或求解流程。
 
-    double eps_chi2_ = 1e-4;  // 允许的退出chi2误差
+    double eps_chi2_ = 1e-4;  ///< 允许的退出chi2误差
 };
 
 }  // namespace lightning::miao

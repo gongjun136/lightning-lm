@@ -168,25 +168,25 @@ class PoseSmoother {
     }
 
    private:
-    std::mutex data_mutex_;
+    std::mutex data_mutex_;  ///< 保护输入位姿、DR 历史与平滑输出。
 
-    bool motion_effective_ = true;  // DR的运动是否有效
-    size_t max_size_ = 10;
-    double smooth_factor_ = 0.1;            // 平滑因子
-    double smoother_trans_limit_ = 5.0;     // 平滑器从输入到输出允许的最大平移量
-    double smoother_trans_limit2_ = 2.0;    // 平滑器从输入到输出允许的最大平移量
-    double smoother_dr_limit_trans_ = 0.3;  // 平滑器允许的DR跳变量
-    double smoother_dr_speed_scale_ = 1.5;
-    double smoother_dr_distance_margin_ = 0.1;
-    SE3 output_pose_;
+    bool motion_effective_ = true;  ///< DR的运动是否有效
+    size_t max_size_ = 10;  ///< 平滑位姿窗口的最大样本数。
+    double smooth_factor_ = 0.1;            ///< 平滑因子
+    double smoother_trans_limit_ = 5.0;     ///< 平滑器从输入到输出允许的最大平移量
+    double smoother_trans_limit2_ = 2.0;    ///< 平滑器从输入到输出允许的最大平移量
+    double smoother_dr_limit_trans_ = 0.3;  ///< 平滑器允许的DR跳变量
+    double smoother_dr_speed_scale_ = 1.5;  ///< 由 DR 速度估计允许平移幅度的倍率。
+    double smoother_dr_distance_margin_ = 0.1;  ///< DR 平移幅度门控的附加距离余量（m）。
+    SE3 output_pose_;  ///< 最近一次平滑后的输出位姿。
 
     struct TimedDrPose {
-        SE3 pose;
-        double timestamp = 0.0;
-        double speed_mps = 0.0;
+        SE3 pose;  ///< 该条 DR 记录的位姿。
+        double timestamp = 0.0;  ///< 该条 DR 记录的传感器时间戳（s）。
+        double speed_mps = 0.0;  ///< 该条 DR 记录的速度模长（m/s）。
     };
-    std::deque<SE3> pose_queue_;  // 平滑之后的
-    std::deque<TimedDrPose> dr_queue_;  // 带时间和速度的DR观测
+    std::deque<SE3> pose_queue_;  ///< 平滑之后的
+    std::deque<TimedDrPose> dr_queue_;  ///< 带时间和速度的DR观测
 };
 
 }  // namespace lightning::loc

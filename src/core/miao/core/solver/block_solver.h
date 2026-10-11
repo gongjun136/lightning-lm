@@ -25,8 +25,8 @@ namespace lightning::miao {
  */
 template <int _PoseDim, int _LandmarkDim>
 struct BlockSolverTraits {
-    static const int PoseDim = _PoseDim;
-    static const int LandmarkDim = _LandmarkDim;
+    static const int PoseDim = _PoseDim;  ///< 位姿块的维度，动态配置时为 Eigen::Dynamic。
+    static const int LandmarkDim = _LandmarkDim;  ///< 路标块的维度，动态配置时为 Eigen::Dynamic。
     typedef Eigen::Matrix<double, PoseDim, PoseDim> PoseMatrixType;
     typedef Eigen::Matrix<double, LandmarkDim, LandmarkDim> LandmarkMatrixType;
     typedef Eigen::Matrix<double, PoseDim, LandmarkDim> PoseLandmarkMatrixType;
@@ -46,8 +46,8 @@ struct BlockSolverTraits {
  */
 template <>
 struct BlockSolverTraits<Eigen::Dynamic, Eigen::Dynamic> {
-    static const int PoseDim = Eigen::Dynamic;
-    static const int LandmarkDim = Eigen::Dynamic;
+    static const int PoseDim = Eigen::Dynamic;  ///< 位姿块的维度，动态配置时为 Eigen::Dynamic。
+    static const int LandmarkDim = Eigen::Dynamic;  ///< 路标块的维度，动态配置时为 Eigen::Dynamic。
     typedef lightning::MatrixX PoseMatrixType;
     typedef lightning::MatrixX LandmarkMatrixType;
     typedef lightning::MatrixX PoseLandmarkMatrixType;
@@ -69,8 +69,8 @@ struct BlockSolverTraits<Eigen::Dynamic, Eigen::Dynamic> {
 template <typename Traits>
 class BlockSolver : public Solver {
    public:
-    static const int PoseDim = Traits::PoseDim;
-    static const int LandmarkDim = Traits::LandmarkDim;
+    static const int PoseDim = Traits::PoseDim;  ///< 位姿块的维度，动态配置时为 Eigen::Dynamic。
+    static const int LandmarkDim = Traits::LandmarkDim;  ///< 路标块的维度，动态配置时为 Eigen::Dynamic。
     typedef typename Traits::PoseMatrixType PoseMatrixType;
     typedef typename Traits::LandmarkMatrixType LandmarkMatrixType;
     typedef typename Traits::PoseLandmarkMatrixType PoseLandmarkMatrixType;
@@ -123,32 +123,32 @@ class BlockSolver : public Solver {
 
     void Deallocate();
 
-    OptimizerConfig config_;
+    OptimizerConfig config_;  ///< 块求解器的运行配置。
 
     /// pose to pose 的矩阵块，解稠密问题，只求解这一部分的计算
     std::unique_ptr<SparseBlockMatrix<PoseMatrixType>> Hpp_;  // pose to pose
 
-    std::unique_ptr<SparseBlockMatrix<LandmarkMatrixType>> Hll_;      // landmark to landmark
-    std::unique_ptr<SparseBlockMatrix<PoseLandmarkMatrixType>> Hpl_;  // pose to landmark
+    std::unique_ptr<SparseBlockMatrix<LandmarkMatrixType>> Hll_;      ///< landmark to landmark
+    std::unique_ptr<SparseBlockMatrix<PoseLandmarkMatrixType>> Hpl_;  ///< pose to landmark
 
-    std::unique_ptr<SparseBlockMatrix<PoseMatrixType>> Hschur_;
-    std::unique_ptr<SparseBlockMatrixDiagonal<LandmarkMatrixType>> D_inv_schur_;
+    std::unique_ptr<SparseBlockMatrix<PoseMatrixType>> Hschur_;  ///< 消去路标后构建的位姿 Schur 补矩阵。
+    std::unique_ptr<SparseBlockMatrixDiagonal<LandmarkMatrixType>> D_inv_schur_;  ///< 路标对角 Hessian 块的逆，用于 Schur 消元。
 
-    std::unique_ptr<SparseBlockMatrixCCS<PoseLandmarkMatrixType>> Hpl_CCS_;
-    std::unique_ptr<SparseBlockMatrixCCS<PoseMatrixType>> H_schur_transpose_CCS_;
+    std::unique_ptr<SparseBlockMatrixCCS<PoseLandmarkMatrixType>> Hpl_CCS_;  ///< 位姿与路标交叉块的压缩列索引。
+    std::unique_ptr<SparseBlockMatrixCCS<PoseMatrixType>> H_schur_transpose_CCS_;  ///< 构建 Schur 补使用的转置压缩列索引。
 
-    std::unique_ptr<LinearSolverType> linear_solver_;
+    std::unique_ptr<LinearSolverType> linear_solver_;  ///< 实际求解块正规方程的线性求解器。
 
-    std::vector<PoseVectorType> diagonal_backup_pose_;
-    std::vector<LandmarkVectorType> diagonal_backup_landmark_;
+    std::vector<PoseVectorType> diagonal_backup_pose_;  ///< 施加阻尼前备份的位姿对角块。
+    std::vector<LandmarkVectorType> diagonal_backup_landmark_;  ///< 施加阻尼前备份的路标对角块。
 
-    bool do_schur_ = true;
+    bool do_schur_ = true;  ///< 是否使用 Schur 消元。
 
-    lightning::VecXd coeffs_;
-    lightning::VecXd b_schur_;
+    lightning::VecXd coeffs_;  ///< 求解过程使用的临时系数向量。
+    lightning::VecXd b_schur_;  ///< Schur 消元后的位姿右端项。
 
-    int num_poses_ = 0, num_landmarks_ = 0;
-    int size_poses_ = 0, size_landmarks_ = 0;
+    int num_poses_ = 0 /**< 参与求解的位姿顶点数量。 */, num_landmarks_ = 0 /**< 参与求解的路标顶点数量。 */;
+    int size_poses_ = 0 /**< 位姿变量的总向量维度。 */, size_landmarks_ = 0 /**< 路标变量的总向量维度。 */;
 };
 
 template <int p, int l>

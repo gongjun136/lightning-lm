@@ -30,25 +30,25 @@ class IMUFilter {
    private:
     /// 滤波参数。窗口越大越平滑，但会引入更明显的滞后。
     struct Config {
-        int median_window_size = 5;    // 中值滤波窗口大小，必须为不小于3的奇数
-        int moving_avg_window = 3;     // 移动平均窗口，取最近N个角速度求平均
-        double rate_limit = 3.0;       // 角速度变化率限制，单位 rad/s^2
-        double spike_threshold = 3.0;  // 毛刺检测阈值，按角速度标准差倍数设置
-        bool enable_adaptive = true;   // 是否根据在线统计的标准差调整毛刺阈值
+        int median_window_size = 5;    ///< 中值滤波窗口大小，必须为不小于3的奇数
+        int moving_avg_window = 3;     ///< 移动平均窗口，取最近N个角速度求平均
+        double rate_limit = 3.0;       ///< 角速度变化率限制，单位 rad/s^2
+        double spike_threshold = 3.0;  ///< 毛刺检测阈值，按角速度标准差倍数设置
+        bool enable_adaptive = true;   ///< 是否根据在线统计的标准差调整毛刺阈值
     } config_;
 
     // 角速度历史缓存。滤波按轴独立处理，因此这里只保存三轴标量历史。
-    std::deque<IMU> buffer_;             // 预留的整条IMU缓存，当前实现未实际写入
-    std::deque<double> gyro_x_history_;  // x轴角速度历史
-    std::deque<double> gyro_y_history_;  // y轴角速度历史
-    std::deque<double> gyro_z_history_;  // z轴角速度历史
+    std::deque<IMU> buffer_;             ///< 预留的整条IMU缓存，当前实现未实际写入
+    std::deque<double> gyro_x_history_;  ///< x轴角速度历史
+    std::deque<double> gyro_y_history_;  ///< y轴角速度历史
+    std::deque<double> gyro_z_history_;  ///< z轴角速度历史
 
-    IMU prev_filtered_;  // 上一条滤波后的IMU，用于计算dt并限制角速度突变
+    IMU prev_filtered_;  ///< 上一条滤波后的IMU，用于计算dt并限制角速度突变
 
     // 在线统计信息，用于自适应毛刺检测。这里的std是绝对偏差的指数滑动估计，并非严格方差开根号。
-    double gyro_mean_[3] = {0};  // 三轴角速度指数滑动均值
-    double gyro_std_[3] = {0};   // 三轴角速度波动尺度估计
-    int sample_count_ = 0;       // 已处理样本数，前期统计未稳定时不做毛刺替换
+    double gyro_mean_[3] = {0};  ///< 三轴角速度指数滑动均值
+    double gyro_std_[3] = {0};   ///< 三轴角速度波动尺度估计
+    int sample_count_ = 0;       ///< 已处理样本数，前期统计未稳定时不做毛刺替换
 
    public:
     /// 构造时把上一帧时间戳置为无效值，第一条数据不会进行变化率限制。

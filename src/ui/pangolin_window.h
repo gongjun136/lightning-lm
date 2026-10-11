@@ -63,6 +63,6 @@ class PangolinWindow {
     void SetCurrentScanSize(int current_scan_size);
 
    private:
-    std::shared_ptr<PangolinWindowImpl> impl_ = nullptr;
+    std::shared_ptr<PangolinWindowImpl> impl_ = nullptr;  ///< 持有渲染线程、显示缓存与 Pangolin 对象的实现。
 };
 }  // namespace lightning::ui

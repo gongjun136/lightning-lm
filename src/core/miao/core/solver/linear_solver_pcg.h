@@ -33,23 +33,23 @@ class LinearSolverPCG : public LinearSolver<MatrixType> {
     using MatrixVector = std::vector<MatrixType>;
     using MatrixPtrVector = std::vector<const MatrixType*>;
 
-    double tolerance_ = cst(1e-6);
-    double residual_ = -1.0;
-    bool abs_tolerance_ = true;
-    int max_iter_ = 100;
+    double tolerance_ = cst(1e-6);  ///< 共轭梯度迭代的收敛容差。
+    double residual_ = -1.0;  ///< 最近求解记录的残差量。
+    bool abs_tolerance_ = true;  ///< 是否使用绝对残差容差。
+    int max_iter_ = 100;  ///< 共轭梯度迭代次数上限。
 
     /// A的对角线部分
     MatrixPtrVector diag_;  // A阵的对角线部分
-    MatrixVector J_;        // A阵对角线部分之逆
+    MatrixVector J_;        ///< A阵对角线部分之逆
 
     /// A的非对角线部分
     struct MatAndIdx {
-        int idx_ = 0;  // 索引为行时，此处填列的id,索引为列时，此处填行
-        MatrixType* mat_;
+        int idx_ = 0;  ///< 索引为行时，此处填列的id,索引为列时，此处填行
+        MatrixType* mat_;  ///< 当前用于迭代求解的矩阵块地址。
     };
 
-    std::map<int, std::vector<MatAndIdx>> indices_by_row_;  // 以行为索引的稀疏矩阵块
-    std::map<int, std::vector<MatAndIdx>> indices_by_col_;  // 以列为索引的稀疏矩阵块
+    std::map<int, std::vector<MatAndIdx>> indices_by_row_;  ///< 以行为索引的稀疏矩阵块
+    std::map<int, std::vector<MatAndIdx>> indices_by_col_;  ///< 以列为索引的稀疏矩阵块
 
     void MultDiag(const std::vector<int>& colBlockIndices, MatrixVector& A, const VectorX& src, VectorX& dest);
     void MultDiag(const std::vector<int>& colBlockIndices, MatrixPtrVector& A, const VectorX& src, VectorX& dest);

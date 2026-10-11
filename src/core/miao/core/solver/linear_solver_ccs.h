@@ -31,8 +31,8 @@ class LinearSolverCCS : public LinearSolver<MatrixType> {
         A.FillSparseBlockMatrixCCS(*ccs_matrix_);
     }
 
-    std::shared_ptr<SparseBlockMatrixCCS<MatrixType>> ccs_matrix_ = nullptr;
-    bool block_ordering_ = true;
+    std::shared_ptr<SparseBlockMatrixCCS<MatrixType>> ccs_matrix_ = nullptr;  ///< 以压缩列结构表示的块稀疏矩阵。
+    bool block_ordering_ = true;  ///< 是否按块进行稀疏重排序。
 };
 
 }  // namespace lightning::miao

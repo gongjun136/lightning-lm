@@ -131,21 +131,21 @@ class AndersonAcceleration {
     }
 
    private:
-    Vec current_u_ = Vec::Zero();  // 当前解 u_k（或当前加速后的更新）
-    Vec current_F_ = Vec::Zero();  // 当前残差 F_k = G_k - u_k
+    Vec current_u_ = Vec::Zero();  ///< 当前解 u_k（或当前加速后的更新）
+    Vec current_F_ = Vec::Zero();  ///< 当前残差 F_k = G_k - u_k
 
-    MatDM prev_dG_ = MatDM::Zero();  // 历史 dG_j 列向量：G_j - G_{j-1}
-    MatDM prev_dF_ = MatDM::Zero();  // 历史 dF_j 列向量：F_j - F_{j-1}
+    MatDM prev_dG_ = MatDM::Zero();  ///< 历史 dG_j 列向量：G_j - G_{j-1}
+    MatDM prev_dF_ = MatDM::Zero();  ///< 历史 dF_j 列向量：F_j - F_{j-1}
 
-    MatDD M_ = MatDD::Zero();     // 法方程矩阵 M = dFᵀ dF（只用前 m_k×m_k 块）
-    Vec theta_ = Vec::Zero();     // 通过法方程求得的系数 theta（前 m_k 元素有效）
-    Vec dF_scale_ = Vec::Zero();  // 每一列 dF 的缩放因子，用于反缩放 theta
+    MatDD M_ = MatDD::Zero();     ///< 法方程矩阵 M = dFᵀ dF（只用前 m_k×m_k 块）
+    Vec theta_ = Vec::Zero();     ///< 通过法方程求得的系数 theta（前 m_k 元素有效）
+    Vec dF_scale_ = Vec::Zero();  ///< 每一列 dF 的缩放因子，用于反缩放 theta
 
     // 使用动态大小 MatXd 来做分解，因为 m_k 在迭代中会变化
-    Eigen::CompleteOrthogonalDecomposition<MatXd> cod_;
+    Eigen::CompleteOrthogonalDecomposition<MatXd> cod_;  ///< 求解加速混合系数的完全正交分解缓存。
 
-    int iter_ = 0;      // 自初始化以来的迭代次数
-    int col_idx_ = -1;  // 下一次写入历史矩阵的列索引（循环使用）
+    int iter_ = 0;      ///< 自初始化以来的迭代次数
+    int col_idx_ = -1;  ///< 下一次写入历史矩阵的列索引（循环使用）
 };
 
 }  // namespace lightning

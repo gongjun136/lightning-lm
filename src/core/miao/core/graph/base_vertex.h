@@ -127,12 +127,12 @@ class BaseVertex : public Vertex {
    protected:
     /// NOTE: 现在hessian和b都存储于本地，通过Copy操作再进入solver,而不是直接map to solver
     std::mutex hessian_mutex_;
-    HessianBlockType hessian_;
-    Eigen::Matrix<double, D, 1> b_ = Eigen::Matrix<double, D, 1>::Zero();
-    double *hessian_in_solver_ = nullptr;
+    HessianBlockType hessian_;  ///< 当前顶点的 Hessian 对角块。
+    Eigen::Matrix<double, D, 1> b_ = Eigen::Matrix<double, D, 1>::Zero();  ///< 当前顶点对应的正规方程右端项。
+    double *hessian_in_solver_ = nullptr;  ///< 求解器中该顶点 Hessian 块的内存映射地址。
 
-    EstimateType estimate_;   // 估计值
-    BackupStackType backup_;  // 备份值
+    EstimateType estimate_;  ///< 当前顶点的状态估计。
+    BackupStackType backup_;  ///< 用于试探更新回滚的状态备份栈。
 };
 
 template <int D, typename T>

@@ -31,7 +31,7 @@ class IVoxNode {
                             const double& max_range);
 
    private:
-    std::vector<PointT> points_;
+    std::vector<PointT> points_;  ///< 该体素节点保留的地图点。
 };
 
 template <typename PointT, int dim = 3>
@@ -64,21 +64,21 @@ class IVoxNodePhc {
     uint32_t CalculatePhcIndex(const PointT& pt) const;
 
    private:
-    std::vector<PhcCube> phc_cubes_;  // PHC子立方体数组，存储每个子立方体的质心信息
+    std::vector<PhcCube> phc_cubes_;  ///< PHC子立方体数组，存储每个子立方体的质心信息
 
-    PointT center_;                          // 当前IVox节点的中心坐标
-    float side_length_ = 0;                  // 当前IVox节点的边长
-    int phc_order_ = 6;                      // PHC subdivision层级，默认将体素划分为2^6=64个子立方体
-    float phc_side_length_ = 0;              // PHC子立方体的边长 = side_length_ / (2^phc_order_)
-    float phc_side_length_inv_ = 0;          // PHC子立方体边长的倒数，用于快速计算索引
-    Eigen::Matrix<float, dim, 1> min_cube_;  // PHC网格的最小边界点坐标
+    PointT center_;                          ///< 当前IVox节点的中心坐标
+    float side_length_ = 0;                  ///< 当前IVox节点的边长
+    int phc_order_ = 6;                      ///< PHC subdivision层级，默认将体素划分为2^6=64个子立方体
+    float phc_side_length_ = 0;              ///< PHC子立方体的边长 = side_length_ / (2^phc_order_)
+    float phc_side_length_inv_ = 0;          ///< PHC子立方体边长的倒数，用于快速计算索引
+    Eigen::Matrix<float, dim, 1> min_cube_;  ///< PHC网格的最小边界点坐标
 };
 
 template <typename PointT, int dim>
 struct IVoxNode<PointT, dim>::DistPoint {
-    double dist = 0;           // 距离查询点的欧氏距离平方
-    IVoxNode* node = nullptr;  // 指向包含该点的体素节点
-    int idx = 0;               // 该点在体素节点中的索引位置
+    double dist = 0;  ///< 最近邻候选的距离度量。
+    IVoxNode* node = nullptr;  ///< 该最近邻候选所属的体素节点。
+    int idx = 0;  ///< 候选点或 PHC 立方体在节点内的索引。
 
     DistPoint() = default;
     // 构造函数：初始化距离、节点指针和索引
@@ -197,9 +197,9 @@ int IVoxNode<PointT, dim>::KNNPointByCondition(std::vector<DistPoint>& dis_point
 
 template <typename PointT, int dim>
 struct IVoxNodePhc<PointT, dim>::DistPoint {
-    double dist = 0;
-    IVoxNodePhc* node = nullptr;
-    int idx = 0;
+    double dist = 0;  ///< 最近邻候选的距离度量。
+    IVoxNodePhc* node = nullptr;  ///< 该最近邻候选所属的体素节点。
+    int idx = 0;  ///< 候选点或 PHC 立方体在节点内的索引。
 
     DistPoint() {}
     DistPoint(const double d, IVoxNodePhc* n, const int i) : dist(d), node(n), idx(i) {}
@@ -213,8 +213,8 @@ struct IVoxNodePhc<PointT, dim>::DistPoint {
 
 template <typename PointT, int dim>
 struct IVoxNodePhc<PointT, dim>::PhcCube {
-    uint32_t idx = 0;
-    pcl::CentroidPoint<PointT> mean;
+    uint32_t idx = 0;  ///< 候选点或 PHC 立方体在节点内的索引。
+    pcl::CentroidPoint<PointT> mean;  ///< PHC 立方体内点的累积质心统计。
 
     PhcCube(uint32_t index, const PointT& pt) { mean.add(pt); }
 

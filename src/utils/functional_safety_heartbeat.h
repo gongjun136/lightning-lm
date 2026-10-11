@@ -23,11 +23,11 @@ enum class NodeState : std::uint8_t {
 };
 
 struct HeartbeatConfig {
-    std::uint16_t node_id = 0;
-    std::string topic;
-    std::chrono::milliseconds period{100};
-    std::size_t qos_depth = 1;
-    bool reliable = false;
+    std::uint16_t node_id = 0;  ///< 监测端区分节点的标识。
+    std::string topic;  ///< 心跳消息发布话题。
+    std::chrono::milliseconds period{100};  ///< 心跳发布周期，使用毫秒表示。
+    std::size_t qos_depth = 1;  ///< 心跳发布器的 QoS 队列深度。
+    bool reliable = false;  ///< 是否采用可靠传输 QoS。
 };
 
 class HeartbeatPublisher {
@@ -57,16 +57,16 @@ class HeartbeatPublisher {
    private:
     void Run();
 
-    HeartbeatConfig config_;
-    rclcpp::Publisher<diagnostic_monitor_interfaces::msg::NodeHeartbeat>::SharedPtr publisher_;
-    const std::uint64_t boot_id_;
-    std::atomic<std::uint32_t> heartbeat_seq_{0};
-    std::atomic<std::uint32_t> work_seq_{0};
-    std::atomic<std::uint8_t> state_{static_cast<std::uint8_t>(NodeState::kNotReady)};
-    std::atomic_bool stop_requested_{false};
-    std::mutex wait_mutex_;
-    std::condition_variable wait_condition_;
-    std::thread worker_;
+    HeartbeatConfig config_;  ///< 心跳标识、发布周期与 QoS 配置。
+    rclcpp::Publisher<diagnostic_monitor_interfaces::msg::NodeHeartbeat>::SharedPtr publisher_;  ///< 发布 NodeHeartbeat 消息的 ROS 发布器。
+    const std::uint64_t boot_id_;  ///< 本次进程启动的唯一标识。
+    std::atomic<std::uint32_t> heartbeat_seq_{0};  ///< 心跳发布序列号。
+    std::atomic<std::uint32_t> work_seq_{0};  ///< 有效定位工作完成后推进的工作序列号。
+    std::atomic<std::uint8_t> state_{static_cast<std::uint8_t>(NodeState::kNotReady)};  ///< 当前节点运行状态，供监测端识别未就绪、运行或故障。
+    std::atomic_bool stop_requested_{false};  ///< 请求心跳线程退出的标志。
+    std::mutex wait_mutex_;  ///< 配合条件变量等待发布周期或停止请求。
+    std::condition_variable wait_condition_;  ///< 心跳周期等待及停止时唤醒使用的条件变量。
+    std::thread worker_;  ///< 独立于算法处理线程的心跳发布线程。
 };
 
 }  // namespace lightning::functional_safety

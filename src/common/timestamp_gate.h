@@ -8,11 +8,11 @@
 namespace lightning {
 
 struct TimestampGateDecision {
-    bool accepted = false;
-    bool valid = false;
-    double timestamp = 0.0;
-    double reference_timestamp = 0.0;
-    double lag_sec = 0.0;
+    bool accepted = false;  ///< 本次输入是否通过门控。
+    bool valid = false;  ///< 本次时间戳是否有限且为正值。
+    double timestamp = 0.0;  ///< 本次待检查的时间戳（s）。
+    double reference_timestamp = 0.0;  ///< 门控检查使用的此前时间戳水位（s）。
+    double lag_sec = 0.0;  ///< 本次输入相对水位的滞后或回退量（s）。
 };
 
 /// Thread-safe strict monotonic timestamp gate for externally visible streams.
@@ -61,10 +61,10 @@ class MonotonicTimestampGate {
     }
 
    private:
-    mutable std::mutex mutex_;
-    double last_accepted_timestamp_ = 0.0;
-    std::uint64_t rejected_count_ = 0;
-    double worst_rollback_sec_ = 0.0;
+    mutable std::mutex mutex_;  ///< 保护时间戳水位与拒绝统计。
+    double last_accepted_timestamp_ = 0.0;  ///< 严格递增门控最近接受的时间戳（s）。
+    std::uint64_t rejected_count_ = 0;  ///< 因无效时间戳或不满足门控条件而拒绝的次数。
+    double worst_rollback_sec_ = 0.0;  ///< 被拒输入相对上次接受时间戳的最大回退（s）。
 };
 
 /// Thread-safe gate for dropping sensor packets that arrive too far behind the
@@ -117,11 +117,11 @@ class MaximumLagTimestampGate {
     }
 
    private:
-    mutable std::mutex mutex_;
-    double maximum_lag_sec_ = 0.0;
-    double latest_timestamp_ = 0.0;
-    std::uint64_t rejected_count_ = 0;
-    double worst_lag_sec_ = 0.0;
+    mutable std::mutex mutex_;  ///< 保护时间戳水位与拒绝统计。
+    double maximum_lag_sec_ = 0.0;  ///< 允许落后最新输入的时间（s），0 关闭滞后限制。
+    double latest_timestamp_ = 0.0;  ///< 输入组中已观察到的最大有效时间戳（s）。
+    std::uint64_t rejected_count_ = 0;  ///< 因无效时间戳或不满足门控条件而拒绝的次数。
+    double worst_lag_sec_ = 0.0;  ///< 被拒输入相对最新时间戳的最大滞后（s）。
 };
 
 }  // namespace lightning

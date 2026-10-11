@@ -150,12 +150,12 @@ class Optimizer : public Graph {
 
     void ClearIndexMapping();
 
-    OptimizerConfig config_;
+    OptimizerConfig config_;  ///< 非线性算法、线性求解器与并行配置。
 
-    bool* force_stop_flag_ = nullptr;
-    bool verbose_ = false;
+    bool* force_stop_flag_ = nullptr;  ///< 调用方提供的可选停止标志地址。
+    bool verbose_ = false;  ///< 是否输出详细优化日志。
 
-    VertexContainer iv_map_;           /// 按ID顺序排列好的vertex，被marg部分在前
+    VertexContainer iv_map_;  ///< 按求解顺序排列的活动顶点，边缘化顶点在前。
     VertexContainer active_vertices_;  ///< sorted according to id
     std::vector<Edge*> active_edges_;  ///< sorted according to id
 
@@ -166,7 +166,7 @@ class Optimizer : public Graph {
 
     void SortVectorContainers();
 
-    std::shared_ptr<OptimizationAlgorithm> algorithm_ = nullptr;
+    std::shared_ptr<OptimizationAlgorithm> algorithm_ = nullptr;  ///< 当前配置选择的非线性优化算法。
 };
 
 }  // namespace lightning::miao

@@ -175,8 +175,10 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     // 允许跳帧
     lidar_loc_proc_cloud_.SetSkipParam(options_.enable_lidar_loc_skip_, options_.lidar_loc_skip_num_);
 
+    // [localization-init-dispatch]
     sensor_proc_.SetProcFunc([this](const SensorInput& input) { ProcessSensorInput(input); });
     lidar_loc_proc_cloud_.SetProcFunc([this](const LidarLocInput& input) { LidarLocProcCloud(input); });
+    // [localization-init-dispatch]
 
     if (options_.online_mode_) {
         {

@@ -26,10 +26,10 @@
 namespace lightning::sany_output {
 
 struct FixedMapTransform {
-    bool enabled = false;
-    std::string source_frame = "localization_map";
-    std::string target_frame = "map";
-    SE3 T_target_localization;
+    bool enabled = false;  ///< 是否启用业务输出地图的固定坐标变换。
+    std::string source_frame = "localization_map";  ///< 固定变换的源定位地图坐标系名称。
+    std::string target_frame = "map";  ///< 固定变换的目标业务地图坐标系名称。
+    SE3 T_target_localization;  ///< 将定位地图坐标变换到目标业务地图坐标的固定变换。
 };
 
 /// Read output.fixed_map_transform.  The stored transform convention is
@@ -90,16 +90,16 @@ class LocalizationPublicationGate {
 
    private:
     bool MatchStaleLocked(double current_sensor_stamp, Clock::time_point now) const;
-    mutable std::mutex mutex_;
-    std::size_t lost_frame_threshold_ = 5;
-    std::size_t consecutive_lost_frames_ = 0;
-    bool has_valid_match_ = false;
-    double max_lidar_match_age_sec_ = 0.0;
-    double last_lidar_match_stamp_ = 0.0;
-    double last_valid_lidar_match_stamp_ = 0.0;
-    mutable double latest_sensor_stamp_ = 0.0;
-    Clock::time_point last_valid_match_arrival_{};
-    mutable bool stale_latched_ = false;
+    mutable std::mutex mutex_;  ///< 保护匹配时效、连续丢帧与输出门控状态。
+    std::size_t lost_frame_threshold_ = 5;  ///< 判定定位失锁所需的连续无效匹配帧数。
+    std::size_t consecutive_lost_frames_ = 0;  ///< 当前连续无效地图匹配的帧数。
+    bool has_valid_match_ = false;  ///< 是否已观察到有效地图匹配。
+    double max_lidar_match_age_sec_ = 0.0;  ///< 有效地图匹配允许的最大年龄（s）。
+    double last_lidar_match_stamp_ = 0.0;  ///< 最近一次地图匹配输入的时间戳（s）。
+    double last_valid_lidar_match_stamp_ = 0.0;  ///< 最近有效地图匹配的传感器时间戳（s）。
+    mutable double latest_sensor_stamp_ = 0.0;  ///< 门控已观察到的最新传感器时间戳（s）。
+    Clock::time_point last_valid_match_arrival_{};  ///< 最近有效匹配到达的单调时钟时刻。
+    mutable bool stale_latched_ = false;  ///< 地图匹配过期后保持的失效状态。
 };
 
 class FrameDecimator {
@@ -109,8 +109,8 @@ class FrameDecimator {
     bool Tick() { return interval_ > 0 && ++frame_count_ % interval_ == 0; }
 
    private:
-    std::size_t interval_;
-    std::size_t frame_count_ = 0;
+    std::size_t interval_;  ///< 地图点云降频发布的帧间隔。
+    std::size_t frame_count_ = 0;  ///< 已经调用抽帧器的帧数。
 };
 
 enum class LocalizationFaultType : std::int32_t {
@@ -142,17 +142,17 @@ class LocalizationTelemetryState {
     std::size_t PathSize() const;
 
    private:
-    mutable std::mutex mutex_;
-    std::size_t lost_frame_threshold_ = 5;
-    std::size_t path_capacity_ = 500;
-    double path_sample_period_ = 0.1;
-    std::uint8_t current_status_ = lightning::msg::LocalizationStatus::STATUS_IDLE;
-    bool has_good_localization_ = false;
-    bool localization_lost_latched_ = false;
-    std::deque<geometry_msgs::msg::PoseStamped> path_poses_;
-    double last_path_sample_time_ = 0.0;
-    double last_offline_health_publish_time_ = 0.0;
-    double last_offline_path_publish_time_ = 0.0;
+    mutable std::mutex mutex_;  ///< 保护健康状态与可视化轨迹缓存。
+    std::size_t lost_frame_threshold_ = 5;  ///< 判定定位失锁所需的连续无效匹配帧数。
+    std::size_t path_capacity_ = 500;  ///< 可视化轨迹最多保留的位姿数。
+    double path_sample_period_ = 0.1;  ///< 可视化轨迹的采样间隔（s）。
+    std::uint8_t current_status_ = lightning::msg::LocalizationStatus::STATUS_IDLE;  ///< 最近一次定位模块报告的运行状态。
+    bool has_good_localization_ = false;  ///< 定位是否曾达到有效状态。
+    bool localization_lost_latched_ = false;  ///< 失锁后保持的故障状态，供健康消息使用。
+    std::deque<geometry_msgs::msg::PoseStamped> path_poses_;  ///< 按时间保存的后轴可视化位姿路径。
+    double last_path_sample_time_ = 0.0;  ///< 最近一次路径采样的传感器时间戳（s）。
+    double last_offline_health_publish_time_ = 0.0;  ///< 离线诊断最近一次发布的传感器时间戳（s）。
+    double last_offline_path_publish_time_ = 0.0;  ///< 离线路径最近一次发布的传感器时间戳（s）。
 };
 
 }  // namespace lightning::sany_output

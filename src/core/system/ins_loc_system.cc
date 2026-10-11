@@ -58,43 +58,43 @@ SE3 ReadExtrinsic(const YAML::Node& n) {
 }
 
 struct InsLocSystem::Impl {
-    rclcpp::Node::SharedPtr node;
-    std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions;
-    std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat;
-    rclcpp::TimerBase::SharedPtr timer;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tf;
-    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_pub;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
-    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pub;
-    rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr status_pub;
-    rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_pub;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub;
-    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diagnostic_pub;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_pub, map_pub;
-    ins::Sample sample;
-    ins::QualityPolicy policy;
-    std::unique_ptr<ins::GeoReference> reference;
-    std::unique_ptr<ins::RecoveryGate> gate;
-    std::unique_ptr<ins::PoseBuffer> poses;
-    std::array<double,5> consumed{};
-    std::string reason = "awaiting_navigation", frame = "map", rear_frame = "rear_axle";
-    double offset = 0, geoid_separation = 0, latest_published = 0, cloud_wait = 0.3;
-    double last_path_stamp = 0, max_radius = 20000;
-    bool clouds_enabled = false, ever_good = false, recording_failed = false;
-    std::size_t cloud_drops = 0, cloud_count = 0;
-    int map_every = 1;
-    std::ofstream raw_log, solutions, tum, events;
-    std::filesystem::path audit_directory;
-    nav_msgs::msg::Path path;
-    std::atomic<std::uint32_t> pose_seq{0}, fault_seq{0};
-    MultiLidarConfig lidar_config;
-    MultiLidarFrameAssembler assembler;
-    SelfPointFilterConfig self_filter;
-    std::map<int,std::shared_ptr<PointCloudPreprocess>> preprocessors;
-    SE3 rear_from_primary;
-    double cloud_leaf = 0;
-    struct Pending { FusedLidarFrame frame; double arrival; };
-    std::deque<Pending> pending;
+    rclcpp::Node::SharedPtr node;  ///< INS 在线定位的 ROS 节点。
+    std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions;  ///< 各导航字段的 ROS 订阅器，持有以维持订阅生命周期。
+    std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat;  ///< 独立发布 INS 定位节点的功能安全心跳。
+    rclcpp::TimerBase::SharedPtr timer;  ///< 周期检查健康状态与待投影点云的定时器。
+    std::unique_ptr<tf2_ros::TransformBroadcaster> tf;  ///< 可选的地图到后轴 TF 发布器。
+    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_pub;  ///< 发布后轴业务定位结果 PosRes。
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;  ///< 发布后轴位姿 PoseStamped。
+    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pub;  ///< 发布车辆位姿与速度。
+    rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr status_pub;  ///< 发布定位运行状态。
+    rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_pub;  ///< 发布导航质量失效的故障状态。
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub;  ///< 发布后轴可视化轨迹。
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr diagnostic_pub;  ///< 发布 INS 导航质量与点云处理诊断。
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_pub /**< 发布后轴坐标系下的投影点云。 */, map_pub /**< 发布地图坐标系下的投影点云。 */;
+    ins::Sample sample;  ///< 最近收到的各类 INS 导航字段与质量信息。
+    ins::QualityPolicy policy;  ///< 导航字段时效、标准差和恢复门控参数。
+    std::unique_ptr<ins::GeoReference> reference;  ///< 从大地坐标到配置局部地图的坐标参考。
+    std::unique_ptr<ins::RecoveryGate> gate;  ///< 连续有效导航样本的恢复门控。
+    std::unique_ptr<ins::PoseBuffer> poses;  ///< 为点云扫描时刻插值提供的后轴位姿历史。
+    std::array<double,5> consumed{};  ///< 各主导航字段最近已消费的时间戳（s）。
+    std::string reason = "awaiting_navigation" /**< 当前导航不可用、恢复或有效状态的原因。 */, frame = "map" /**< 业务地图输出坐标系名称。 */, rear_frame = "rear_axle" /**< 后轴坐标系名称。 */;
+    double offset = 0 /**< CAN 接收时间戳到 ROS 时间域的校正偏移（s）。 */, geoid_separation = 0 /**< 将设备高度换算为椭球高使用的大地水准面差（m）。 */, latest_published = 0 /**< 最近记录发布后轴位姿的时间戳（s）。 */, cloud_wait = 0.3 /**< 等待导航位姿覆盖点云扫描区间的超时（s）。 */;
+    double last_path_stamp = 0 /**< 最近一次可视化路径采样的时间戳（s）。 */, max_radius = 20000 /**< 允许发布的位姿到局部地图原点最大距离（m）。 */;
+    bool clouds_enabled = false /**< 是否启用融合点云的后轴与地图投影发布。 */, ever_good = false /**< 导航是否曾通过质量与恢复门控。 */, recording_failed = false /**< 审计记录发生写入失败后的故障锁存标志。 */;
+    std::size_t cloud_drops = 0 /**< 点云无法获得有效导航覆盖而丢弃的次数。 */, cloud_count = 0 /**< 控制地图点云降频发布的输入帧计数。 */;
+    int map_every = 1;  ///< 地图点云发布的帧间隔。
+    std::ofstream raw_log /**< 原始 CAN 导航字段的审计文件流。 */, solutions /**< 导航转换与质量判定结果的审计文件流。 */, tum /**< 实际发布的后轴位姿 TUM 文件流。 */, events /**< 导航状态变化事件记录文件流。 */;
+    std::filesystem::path audit_directory;  ///< 本次运行的审计产物目录。
+    nav_msgs::msg::Path path;  ///< 用于发布的后轴可视化路径。
+    std::atomic<std::uint32_t> pose_seq{0} /**< 车辆位姿消息的通信序列号。 */, fault_seq{0} /**< 故障状态消息的通信序列号。 */;
+    MultiLidarConfig lidar_config;  ///< 多雷达组帧及固定外参配置。
+    MultiLidarFrameAssembler assembler;  ///< 将各雷达点云组成主雷达坐标系融合帧。
+    SelfPointFilterConfig self_filter;  ///< 投影前的车体自反射过滤配置。
+    std::map<int,std::shared_ptr<PointCloudPreprocess>> preprocessors;  ///< 按雷达 ID 保存的点云预处理器。
+    SE3 rear_from_primary;  ///< 将主雷达点坐标变换到后轴坐标的固定外参。
+    double cloud_leaf = 0;  ///< 投影点云的体素降采样分辨率（m）。
+    struct Pending { FusedLidarFrame frame /**< 等待导航位姿覆盖扫描区间的融合点云帧。 */; double arrival /**< 该待处理点云到达的单调时钟时刻（s）。 */; };
+    std::deque<Pending> pending;  ///< 等待导航历史覆盖扫描区间的融合点云队列。
 
     void Reject(const std::string& why) {
         gate->Reject(); poses->Clear();

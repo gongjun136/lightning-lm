@@ -16,10 +16,10 @@ class UiCar {
     void Render();
 
    private:
-    Vec3f color_;
-    std::vector<Vec3f> pts_;
+    Vec3f color_;  ///< 车辆图形的 RGB 颜色。
+    std::vector<Vec3f> pts_;  ///< 车辆图形的局部坐标顶点。
 
-    static std::vector<Vec3f> car_vertices_;  // 小车的顶点
+    static std::vector<Vec3f> car_vertices_;  ///< 小车的顶点
 };
 
 }  // namespace lightning::ui

@@ -50,20 +50,20 @@ class UiCloud {
         return intensity_color_table_pcl_[index];
     }
 
-    UseColor use_color_ = UseColor::PCL_COLOR;
-    Vec4f custom_color_ = Vec4f::Zero();
+    UseColor use_color_ = UseColor::PCL_COLOR;  ///< 点云着色方式。
+    Vec4f custom_color_ = Vec4f::Zero();  ///< 自定义点云 RGBA 颜色。
 
-    float point_size_ = 1.0f;
-    std::vector<Vec3f> xyz_data_;              // 点的世界坐标
-    std::vector<Vec4f> color_data_pcl_;        // 根据intensity映射得到的颜色
-    std::vector<Vec4f> color_data_intensity_;  // 点的intensity不映射直接做颜色
-    std::vector<Vec4f> color_data_height_;     // 根据height映射得到的颜色
-    std::vector<Vec4f> color_data_gray_;       // 全部点都为灰色
+    float point_size_ = 1.0f;  ///< 点云显示点的像素大小。
+    std::vector<Vec3f> xyz_data_;              ///< 点的世界坐标
+    std::vector<Vec4f> color_data_pcl_;        ///< 根据intensity映射得到的颜色
+    std::vector<Vec4f> color_data_intensity_;  ///< 点的intensity不映射直接做颜色
+    std::vector<Vec4f> color_data_height_;     ///< 根据height映射得到的颜色
+    std::vector<Vec4f> color_data_gray_;       ///< 全部点都为灰色
 
     /// PCL中intensity table
     void BuildIntensityTable();
     // 颜色映射表
-    static std::vector<Vec4f> intensity_color_table_pcl_;
+    static std::vector<Vec4f> intensity_color_table_pcl_;  ///< 按强度索引的预计算点云颜色表。
 };
 
 }  // namespace lightning::ui

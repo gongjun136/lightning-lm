@@ -96,12 +96,12 @@ class Solver {
     virtual void SetSchur(bool s) = 0;
 
    protected:
-    Optimizer* optimizer_ = nullptr;
-    lightning::VecXd x_;                  // 求解的x
-    lightning::VecXd b_;                  // 求解的b
-    size_t x_size_ = 0, max_x_size_ = 0;  // x的size
+    Optimizer* optimizer_ = nullptr;  ///< 所属优化器的非拥有指针。
+    lightning::VecXd x_;                  ///< 求解的x
+    lightning::VecXd b_;                  ///< 求解的b
+    size_t x_size_ = 0 /**< 当前求解增量向量的有效长度。 */, max_x_size_ = 0 /**< 已分配增量向量的容量。 */;  ///< x的size
     bool is_levenberg_ = false;           ///< the system we gonna Solve is a Levenberg-Marquardt system
-    size_t additional_vector_space_ = 0;
+    size_t additional_vector_space_ = 0;  ///< 求解器为临时变量预留的附加向量空间。
 
     void ResizeVector(size_t sx);
 };

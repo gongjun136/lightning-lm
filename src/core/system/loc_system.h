@@ -44,43 +44,50 @@ namespace loc {
 class Localization;
 }
 
+/**
+ * @brief 在线 LiDAR 定位的 ROS 编排层，连接传感器输入、定位算法与业务输出。
+ * @details 持有 loc::Localization 和 ROS 节点，负责订阅、发布、心跳与轨迹记录。
+ * 由 run_loc_online.cc 创建；算法内部的数据处理流程见 loc::Localization。
+ * @see Init(), SetInitPose(), Spin(), Finish(),
+ *      @ref online_localization_flow "在线定位数据流"
+ */
 class LocSystem {
    public:
     struct Options {
-        bool pub_tf_ = false;  // YAML system.pub_tf may explicitly enable /tf.
+        bool pub_tf_ = false;  ///< 是否发布 TF，可由 YAML 的 system.pub_tf 显式启用。
     };
 
     explicit LocSystem(Options options);
     ~LocSystem();
 
     /**
-     * @brief 根据配置与地图路径装配在线定位系统，连接 ROS 输入输出与底层定位算法。
+     * @brief 根据配置与地图路径准备在线定位算法、ROS 输入与结果输出。
      *
      * @details
-     * 由 @ref run_loc_online.cc "run_loc_online" 入口调用；成功后，入口通过 SetInitPose()
-     * 设置初始位姿，再由 Spin() 开始处理输入。
+     * 由 @ref run_loc_online.cc "run_loc_online" 的 LiDAR 定位分支调用。
+     * 成功后，入口通过 SetInitPose() 设置初始位姿，再调用 Spin() 处理 ROS 输入。
      *
-     * 主要步骤：
+     * @par 主要流程
      *
-     * 1. <b>读取配置</b>：确定地图路径、输出坐标及输入和发布约束。
+     * 1. <b>读取配置</b>：确定地图路径、输出坐标系及输入和发布约束。
      * 2. <b>初始化算法</b>：创建 ROS 节点与心跳，调用
      *    @ref lightning::loc::Localization::Init() "Localization::Init()"
-     *    准备 LIO、地图匹配、PGO 和处理线程。
-     * 3. <b>连接输入</b>：按单雷达或多雷达配置订阅 IMU、点云，并按需接入 CAN 轮速。
-     * 4. <b>连接输出</b>：创建业务发布器和定时器，通过结果回调连接算法输出、业务发布与轨迹记录。
+     *    初始化底层定位算法。
+     * 3. <b>连接输入</b>：按单雷达或多雷达配置订阅 IMU、点云，并按配置接入 CAN 轮速。
+     * 4. <b>连接输出</b>：创建业务发布器和定时器，注册回调以发布定位结果、点云并记录轨迹。
      *
      * @htmlonly[block]
      * <details>
-     * <summary>关键代码：在线算法对象与实时结果回调</summary>
+     * <summary>关键代码（点击展开）</summary>
      * @endhtmlonly
      *
-     * <b>在线算法对象</b>：创建并设置在线模式的 Localization 对象。
+     * <b>创建在线算法对象</b>
      *
-     * @snippet{trimleft} loc_system.cc loc-system-init-online-object
+     * @snippet core/system/loc_system.cc loc-system-init-online-object
      *
-     * <b>实时结果回调</b>：算法产生结果后，交回本层 PublishLocalizationResult() 发布。
+     * <b>连接结果发布</b>：将实时结果交给 PublishLocalizationResult()。
      *
-     * @snippet{trimleft} loc_system.cc loc-system-init-live-result
+     * @snippet core/system/loc_system.cc loc-system-init-live-result
      *
      * @htmlonly[block]
      * </details>
@@ -88,139 +95,207 @@ class LocSystem {
      *
      * @param yaml_path 定位配置文件路径。
      * @param map_path_override 非空时覆盖 YAML 中的 `system.map_path`。
-     * @return 装配成功返回 true，显式校验或初始化失败返回 false；有效定位结果由后续输入产生。
+     * @return 初始化成功返回 true，显式校验或算法初始化失败返回 false。
      * @note YAML 读取或字段转换异常可向调用方传播。
-     * 后续处理流程见 @ref online_localization_flow "在线定位数据流"。
+     * @see SetInitPose(), Spin(), PublishLocalizationResult(),
+     *      @ref online_localization_flow "在线定位数据流"
      */
     bool Init(const std::string& yaml_path, const std::string& map_path_override = "");
 
-    /// 设置初始化位姿
+    /**
+     * @brief 将初始位姿交给定位算法，并开启传感器处理。
+     * @details 调用 loc::Localization::SetExternalPose() 后打开输入处理开关。
+     * @param pose 用于初始化或重新定位的地图位姿。
+     * @see Init(), Spin(), loc::Localization::SetExternalPose()
+     */
     void SetInitPose(const SE3& pose);
 
-    /// 处理IMU
+    /**
+     * @brief 记录 IMU 输入状态，并在定位启动后转交算法处理。
+     * @details 由 ROS 订阅回调调用；SetInitPose() 之前只记录输入状态。
+     * @see loc::Localization::ProcessIMUMsg()
+     */
     void ProcessIMU(const lightning::IMUPtr& imu);
 
-    /// 处理点云
+    /**
+     * @brief 检查标准点云的输入时效，并在定位启动后转交算法。
+     * @details 多雷达模式默认使用主雷达 ID；单雷达模式使用 ID 0。
+     * @see ObserveLidarInput(), loc::Localization::ProcessLidarMsg()
+     */
     void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
+    /**
+     * @brief 按指定雷达 ID 检查并转发标准点云。
+     * @param cloud 非空标准点云消息，使用消息头时间戳检查输入时效。
+     * @param lidar_id 与多雷达配置对应的传感器 ID。
+     * @see ObserveLidarInput(), loc::Localization::ProcessLidarMsg()
+     */
     void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id);
+    /**
+     * @brief 检查 Livox 自定义点云的输入时效，并在定位启动后转交算法。
+     * @details 输入统计使用 ID 0；算法侧通过 ProcessLivoxLidarMsg() 处理该消息格式。
+     * @see loc::Localization::ProcessLivoxLidarMsg()
+     */
     void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
 
-    /// 实时模式下的spin
+    /**
+     * @brief 进入 ROS 事件循环，执行传感器回调和定时器，直到 ROS 关闭。
+     * @see Init(), SetInitPose(), Finish()
+     */
     void Spin();
-    /// Stop workers after draining all accepted sensor and localization data.
+    /**
+     * @brief 等待算法队列处理结束，停止心跳并关闭已发布轨迹文件。
+     * @details 入口在 ROS 输入停止后调用；析构也会调用，重复调用直接返回。
+     * @see loc::Localization::Finish(), StartPublishedTrajectoryTum()
+     */
     void Finish();
-    /// PGO global corrections, matching the offline trajectory definition.
+    /**
+     * @brief 将 PGO 全局校正结果保存为 TUM 轨迹，与离线轨迹定义一致。
+     * @return 文件打开成功且至少写入一个位姿时返回 true。
+     * @see SaveHighFrequencyTrajectoryTum(), CaptureGlobalLocalizationResult()
+     */
     bool SaveTrajectoryTum(const std::string& path) const;
-    /// Live high-frequency extrapolated output published to ROS.
+    /**
+     * @brief 将通过位姿发布门控的高频算法状态保存为 TUM 轨迹。
+     * @details 记录算法坐标下的状态；业务输出坐标下的后轴轨迹由 StartPublishedTrajectoryTum() 记录。
+     * @return 文件打开成功且至少写入一个位姿时返回 true。
+     * @see SaveTrajectoryTum(), StartPublishedTrajectoryTum()
+     */
     bool SaveHighFrequencyTrajectoryTum(const std::string& path) const;
-    /// Open a live TUM stream containing the final rear-axle pose sent on /PosRes.
+    /**
+     * @brief 打开 TUM 文件，在运行中记录实际发布到 /PosRes 的后轴位姿。
+     * @details 创建父目录并截断目标文件；记录频率受运行开销策略控制。
+     * @return 文件与表头初始化成功返回 true；路径、目录或文件操作失败返回 false。
+     * @see PublishLocalizationResult(), Finish()
+     */
     bool StartPublishedTrajectoryTum(const std::string& path);
 
    private:
+    /**
+     * @brief 将高频定位结果转换为后轴业务消息，经过门控后发布并记录轨迹。
+     * @details 由实时结果回调调用，是算法坐标与业务输出坐标的连接处。
+     * @par 主要流程
+     * 1. <b>检查结果</b>：过滤无效、重复或回退时间戳，并检查位姿发布门控。
+     * 2. <b>构建消息</b>：转换后轴位姿、输出地图坐标和车体纵向速度。
+     * 3. <b>发布与记录</b>：发布位姿和速度消息，更新心跳，按运行策略记录审核轨迹。
+     * @see PublishProcessedCloud(), RecordPublishedPoseTum(),
+     *      @ref output_contracts "定位状态、参考点与 ROS 输出"
+     */
     void PublishLocalizationResult(const loc::LocalizationResult& result);
+    /// @brief 收集有效且时间递增的 PGO 全局校正结果，供 SaveTrajectoryTum() 导出。
     void CaptureGlobalLocalizationResult(const loc::LocalizationResult& result);
     bool WriteTrajectoryTum(const std::string& path, const std::vector<NavState>& states,
                             const char* description) const;
     void RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& pose);
     void ClosePublishedTrajectoryTum();
+    /**
+     * @brief 更新匹配有效性与发布门控，并按条件发布后轴和地图坐标下的点云。
+     * @details 雷达数量不满足要求时停止点云发布；地图点云还受匹配门控和降频控制。
+     * @see PublishLocalizationResult(), PublishHealthStatus()
+     */
     void PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
                                const MultiLidarFrameStats& stats, bool eligible);
+    /// @brief 汇总输入、定位与队列状态，周期发布健康消息和流水线诊断。
     void PublishHealthStatus();
     void PublishPath();
     void RegisterLidarInput(int lidar_id, const std::string& topic);
+    /**
+     * @brief 记录点云到达情况，并检查相对最新传感器时间戳的滞后程度。
+     * @return 时间戳有效且满足配置的输入时效门槛时返回 true。
+     * @see ProcessLidar(), PublishHealthStatus()
+     */
     bool ObserveLidarInput(int lidar_id, double sensor_stamp);
     void ObserveImuInput(double sensor_stamp);
     void ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
                                 double motor_torque);
 
     struct InputTopicStats {
-        std::string topic;
-        std::uint64_t message_count = 0;
-        std::uint64_t stale_drop_count = 0;
-        double last_sensor_stamp = 0.0;
-        std::chrono::steady_clock::time_point last_arrival;
-        bool has_arrival = false;
+        std::string topic;  ///< 该路输入的 ROS 话题名称。
+        std::uint64_t message_count = 0;  ///< 该路输入累计收到的消息数。
+        std::uint64_t stale_drop_count = 0;  ///< 该路点云因时间戳门控被拒绝的次数。
+        double last_sensor_stamp = 0.0;  ///< 最近收到消息的传感器时间戳（s）。
+        std::chrono::steady_clock::time_point last_arrival;  ///< 最近一次接收消息的单调时钟时刻，用于判断断流。
+        bool has_arrival = false;  ///< 是否已接收到该路输入，用于区分未启动与断流。
     };
 
-    Options options_;
+    Options options_;  ///< ROS 编排层的启动选项。
 
-    std::shared_ptr<loc::Localization> loc_ = nullptr;  // 定位接口
+    std::shared_ptr<loc::Localization> loc_ = nullptr;  ///< 定位接口
 
-    std::atomic_bool loc_started_ = false;  // 是否开启定位
-    std::atomic_bool map_loaded_ = false;   // 地图是否已载入
+    std::atomic_bool loc_started_ = false;  ///< 是否开启定位
+    std::atomic_bool map_loaded_ = false;   ///< 地图是否已载入
 
     /// 实时模式下的ros2 node, subscribers
     rclcpp::Node::SharedPtr node_;
-    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_ = nullptr;  ///< 发布算法位姿对应 TF 的广播器。
 
-    std::string imu_topic_;
-    std::string cloud_topic_;
-    std::string livox_topic_;
-    std::string map_frame_ = "map";
-    std::string rear_axle_frame_ = "rear_axle";
-    bool wheel_speed_observation_enabled_ = true;
-    bool speed_smoothing_shadow_enabled_ = false;
-    sany_output::SpeedSmoothingShadow speed_smoothing_shadow_;
-    std::string wheel_speed_topic_ = "/SpeThrCAN4_topic";
-    double wheel_speed_scale_mps_per_rpm_ = 0.00120639253574024;
-    double online_lidar_input_max_timestamp_lag_sec_ = 0.0;
-    Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();
-    sany_output::FixedMapTransform fixed_map_transform_;
-    sany_output::LocalizationPublicationGate publication_gate_;
-    sany_output::FrameDecimator map_cloud_decimator_{10};
-    std::unique_ptr<sany_output::LocalizationTelemetryState> telemetry_;
-    mutable std::mutex trajectory_mutex_;
-    std::vector<NavState> localization_states_;
-    std::vector<NavState> global_localization_states_;
-    mutable std::mutex published_tum_mutex_;
-    std::ofstream published_tum_stream_;
-    std::string published_tum_path_;
-    double last_published_tum_timestamp_ = 0.0;
-    double last_production_pose_audit_stamp_ = 0.0;
-    std::uint64_t published_tum_pose_count_ = 0;
-    std::uint64_t published_tum_write_error_count_ = 0;
-    bool finished_ = false;
-    mutable std::mutex input_stats_mutex_;
-    MaximumLagTimestampGate lidar_input_timestamp_gate_;
-    std::map<int, InputTopicStats> lidar_input_stats_;
-    InputTopicStats imu_input_stats_;
-    InputTopicStats wheel_speed_input_stats_;
-    double last_wheel_speed_mps_ = 0.0;
-    double last_motor_rpm_ = 0.0;
-    double last_motor_torque_ = 0.0;
-    std::atomic<double> last_localization_stamp_{0.0};
-    std::atomic<double> last_posres_stamp_{0.0};
-    std::atomic<std::uint64_t> cloud_publish_suppressed_count_{0};
-    std::mutex posres_publish_mutex_;
-    MonotonicTimestampGate posres_timestamp_gate_;
-    std::atomic_bool map_outputs_ever_enabled_{false};
-    std::atomic_bool map_outputs_enabled_last_{false};
-    std::atomic_bool localization_ever_good_{false};
-    std::atomic<std::uint32_t> pose_vel_comm_seq_{0};
-    std::atomic<std::uint32_t> fault_status_comm_seq_{0};
+    std::string imu_topic_;    ///< 单雷达配置使用的 IMU 输入话题。
+    std::string cloud_topic_;  ///< 单雷达配置使用的 PointCloud2 输入话题。
+    std::string livox_topic_;  ///< 单雷达配置使用的 Livox CustomMsg 输入话题。
+    std::string map_frame_ = "map";              ///< 业务输出使用的地图坐标系名称。
+    std::string rear_axle_frame_ = "rear_axle";  ///< 后轴坐标系点云使用的 frame ID。
+    bool wheel_speed_observation_enabled_ = true;  ///< 是否订阅 CAN 轮速并送入定位滤波器。
+    bool speed_smoothing_shadow_enabled_ = false;  ///< 是否计算用于诊断日志对照的平滑速度。
+    sany_output::SpeedSmoothingShadow speed_smoothing_shadow_;  ///< 速度平滑影子实验的滤波状态。
+    std::string wheel_speed_topic_ = "/SpeThrCAN4_topic";  ///< 提供电机转速与扭矩的 CAN 输入话题。
+    double wheel_speed_scale_mps_per_rpm_ = 0.00120639253574024;  ///< 电机转速到车速的换算系数，单位 (m/s)/rpm。
+    double online_lidar_input_max_timestamp_lag_sec_ = 0.0;  ///< 相对最新 LiDAR 时间戳允许的最大滞后（s）；0 关闭滞后限制。
+    Vec3d primary_lidar_position_in_body_ = Vec3d::Zero();  ///< 主雷达在后轴坐标系中的安装位置，单位 m。
+    sany_output::FixedMapTransform fixed_map_transform_;  ///< 定位地图到业务输出地图的固定坐标变换。
+    sany_output::LocalizationPublicationGate publication_gate_;  ///< 根据匹配有效性、连续丢帧与匹配时效控制发布。
+    sany_output::FrameDecimator map_cloud_decimator_{10};  ///< 地图坐标系点云的抽帧器，每 10 帧允许一次发布。
+    std::unique_ptr<sany_output::LocalizationTelemetryState> telemetry_;  ///< 汇总定位健康状态并缓存待发布的轨迹路径。
+    mutable std::mutex trajectory_mutex_;  ///< 保护高频与全局校正两组轨迹状态。
+    std::vector<NavState> localization_states_;  ///< 高频定位状态轨迹，供 SaveHighFrequencyTrajectoryTum() 导出。
+    std::vector<NavState> global_localization_states_;  ///< 全局校正状态轨迹，供 SaveTrajectoryTum() 导出。
+    mutable std::mutex published_tum_mutex_;  ///< 保护已发布 TUM 文件流、时间戳与写入统计。
+    std::ofstream published_tum_stream_;  ///< 记录实际发布的后轴位姿的 TUM 文件流。
+    std::string published_tum_path_;  ///< 已发布位姿 TUM 轨迹文件的输出路径。
+    double last_published_tum_timestamp_ = 0.0;  ///< TUM 写入门控使用的上一条位姿时间戳（s）。
+    double last_production_pose_audit_stamp_ = 0.0;  ///< 最近一次生产位姿审计日志的传感器时间戳（s），用于限制日志频率。
+    std::uint64_t published_tum_pose_count_ = 0;  ///< 成功写入已发布 TUM 轨迹的位姿数。
+    std::uint64_t published_tum_write_error_count_ = 0;  ///< TUM 记录位姿时的失败次数。
+    bool finished_ = false;  ///< 标记 Finish() 已完成，避免重复收尾。
+    mutable std::mutex input_stats_mutex_;  ///< 保护传感器接收统计及最近 CAN 观测值。
+    MaximumLagTimestampGate lidar_input_timestamp_gate_;  ///< 跨雷达共享的时间戳门控，拒绝无效或滞后超限的输入。
+    std::map<int, InputTopicStats> lidar_input_stats_;  ///< 按雷达 ID 保存输入话题及接收统计。
+    InputTopicStats imu_input_stats_;  ///< IMU 话题的接收与到达统计。
+    InputTopicStats wheel_speed_input_stats_;  ///< CAN 轮速话题的接收与到达统计。
+    double last_wheel_speed_mps_ = 0.0;  ///< 最近 CAN 观测换算得到的车速，单位 m/s。
+    double last_motor_rpm_ = 0.0;  ///< 最近 CAN 观测的电机转速，单位 rpm。
+    double last_motor_torque_ = 0.0;  ///< 最近 CAN 观测的电机扭矩。
+    std::atomic<double> last_localization_stamp_{0.0};  ///< 最近通过输出时间戳检查的定位结果时间（s）。
+    std::atomic<double> last_posres_stamp_{0.0};  ///< 最近实际发布的 PosRes 时间戳（s）。
+    std::atomic<std::uint64_t> cloud_publish_suppressed_count_{0};  ///< 因输入完整性要求而抑制点云发布的帧数。
+    std::mutex posres_publish_mutex_;  ///< 串行保护位姿时间戳检查和业务消息发布。
+    MonotonicTimestampGate posres_timestamp_gate_;  ///< 保证 PosRes 业务输出时间戳严格递增。
+    std::atomic_bool map_outputs_ever_enabled_{false};  ///< 地图输出门控是否曾经开启，用于状态变化诊断。
+    std::atomic_bool map_outputs_enabled_last_{false};  ///< 上一次观察到的地图输出门控状态。
+    std::atomic_bool localization_ever_good_{false};  ///< 定位是否曾达到有效状态，用于故障恢复诊断。
+    std::atomic<std::uint32_t> pose_vel_comm_seq_{0};  ///< 位姿与速度消息的通信序列号。
+    std::atomic<std::uint32_t> fault_status_comm_seq_{0};  ///< 故障状态消息的通信序列号。
     profiling::MultiStageTimingWindow output_timing_window_{
         {"pose_transform", "message_build", "ros_publish", "diagnostic_io",
-         "record_tum", "outer"}};
+         "record_tum", "outer"}};  ///< 位姿转换、消息构建、发布和记录各阶段的耗时窗口。
 
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;
-    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;
-    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;
-    rclcpp::GenericSubscription::SharedPtr wheel_speed_sub_ = nullptr;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_ = nullptr;  ///< 接收 IMU 消息的 ROS 订阅器。
+    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_subs_;  ///< 按雷达配置保存的 PointCloud2 订阅器。
+    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_sub_ = nullptr;  ///< 接收 Livox CustomMsg 的 ROS 订阅器。
+    rclcpp::GenericSubscription::SharedPtr wheel_speed_sub_ = nullptr;  ///< 接收 CAN 转速与扭矩的通用 ROS 订阅器。
 
-    std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;
+    std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;  ///< 独立发布功能安全心跳并记录有效工作进度。
 
-    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;
-    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_ = nullptr;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_ = nullptr;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;
-    rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;
-    rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr loc_status_pub_ = nullptr;
-    rclcpp::Publisher<lightning::msg::PipelineDiagnostics>::SharedPtr pipeline_diagnostics_pub_ = nullptr;
-    rclcpp::Publisher<lightning::msg::DebugMessage>::SharedPtr debug_message_pub_ = nullptr;
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_ = nullptr;
-    rclcpp::TimerBase::SharedPtr health_timer_ = nullptr;
-    rclcpp::TimerBase::SharedPtr path_timer_ = nullptr;
+    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;  ///< 发布后轴业务定位结果 PosRes。
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;  ///< 发布后轴位姿 PoseStamped。
+    rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_ = nullptr;  ///< 发布车辆位姿与速度消息。
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_ = nullptr;  ///< 发布后轴坐标系下的处理后点云。
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_cloud_pub_ = nullptr;  ///< 发布业务地图坐标系下的处理后点云。
+    rclcpp::Publisher<lightning::msg::FaultStatus>::SharedPtr fault_status_pub_ = nullptr;  ///< 发布定位故障状态。
+    rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr loc_status_pub_ = nullptr;  ///< 发布定位运行状态。
+    rclcpp::Publisher<lightning::msg::PipelineDiagnostics>::SharedPtr pipeline_diagnostics_pub_ = nullptr;  ///< 发布输入、队列与算法处理诊断。
+    rclcpp::Publisher<lightning::msg::DebugMessage>::SharedPtr debug_message_pub_ = nullptr;  ///< 发布状态变化和异常调试事件。
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_ = nullptr;  ///< 发布用于可视化的后轴轨迹路径。
+    rclcpp::TimerBase::SharedPtr health_timer_ = nullptr;  ///< 周期触发健康状态与流水线诊断发布。
+    rclcpp::TimerBase::SharedPtr path_timer_ = nullptr;  ///< 周期触发可视化轨迹路径发布。
 };
 
 };  // namespace lightning
