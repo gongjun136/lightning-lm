@@ -5,13 +5,14 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import yaml
 
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 class LauncherFailureTest(unittest.TestCase):
-    def run_launcher(self, probe_exit, algorithm_exit):
+    def run_launcher(self, probe_exit, algorithm_exit, fixed_map_transform=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "setup.bash").write_text(":\n")
@@ -51,6 +52,8 @@ exit 91
                 "PROBE_EXIT": str(probe_exit),
                 "ALGORITHM_EXIT": str(algorithm_exit),
             })
+            if fixed_map_transform is not None:
+                env["SANY_ENABLE_FIXED_MAP_TRANSFORM"] = fixed_map_transform
             # Allow cold Python/NumPy imports and metadata I/O on mounted workspaces.
             result = subprocess.run(
                 ["bash", str(REPO / "scripts/run_sany_lidar_loc.sh"), "test"],
@@ -73,6 +76,21 @@ exit 91
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertIn("algorithm_exit_code=23", files["run_metadata.txt"])
         self.assertIn("mock algorithm failure", files["logs/run_loc_online.stderr.log"])
+
+    def test_site_transform_is_enabled_only_in_run_snapshot(self):
+        result, files = self.run_launcher(0, 0, "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        snapshot = yaml.safe_load(files["config.yaml"])
+        self.assertTrue(snapshot["output"]["fixed_map_transform"]["enabled"])
+        self.assertTrue(snapshot["vehicle_configuration"]["fixed_map_transform_override"])
+        shared = yaml.safe_load((REPO / "config/sany/localization.yaml").read_text())
+        self.assertFalse(shared["output"]["fixed_map_transform"]["enabled"])
+
+    def test_illegal_site_transform_fails_before_algorithm_start(self):
+        result, files = self.run_launcher(0, 0, "yes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SANY_ENABLE_FIXED_MAP_TRANSFORM must be 0 or 1", result.stderr)
+        self.assertNotIn("logs/run_loc_online.stderr.log", files)
 
 
 if __name__ == "__main__":

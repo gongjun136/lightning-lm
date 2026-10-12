@@ -20,7 +20,7 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def resolve(base_path, vehicle_path, calibration_path=None):
+def resolve(base_path, vehicle_path, calibration_path=None, fixed_map_transform=None):
     base_path, vehicle_path = Path(base_path).resolve(), Path(vehicle_path).resolve()
     base, vehicle = load(base_path), load(vehicle_path)
     vin = vehicle.get("VIN")
@@ -76,6 +76,12 @@ def resolve(base_path, vehicle_path, calibration_path=None):
         "calibrations_path": str(calibration_path), "calibrations_sha256": digest(calibration_path),
         "transform_convention": registry["transform_convention"], "translation_unit": "m",
     }
+    if fixed_map_transform is not None:
+        transform = result.get("output", {}).get("fixed_map_transform")
+        if not isinstance(transform, dict):
+            raise ValueError("output.fixed_map_transform is required for the site override")
+        transform["enabled"] = bool(fixed_map_transform)
+        result["vehicle_configuration"]["fixed_map_transform_override"] = bool(fixed_map_transform)
     return result
 
 
@@ -85,6 +91,8 @@ def main():
     parser.add_argument("--vehicle-config", type=Path, default=Path("/opt/conf/vehicle_config.yaml"))
     parser.add_argument("--calibrations", type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--fixed-map-transform", type=int, choices=(0, 1),
+                        help="Override only the run snapshot's output transform; keep the shared YAML unchanged")
     parser.add_argument("--ins-site", action="store_true", help="Resolve an INS site's shared LiDAR cloud configuration")
     args = parser.parse_args()
     try:
@@ -103,7 +111,7 @@ def main():
                 else:
                     cloud["lidar_config"] = str(lidar_path)
         else:
-            result = resolve(args.base_config, args.vehicle_config, args.calibrations)
+            result = resolve(args.base_config, args.vehicle_config, args.calibrations, args.fixed_map_transform)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as stream:
             yaml.safe_dump(result, stream, sort_keys=False, allow_unicode=True)

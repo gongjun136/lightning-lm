@@ -51,6 +51,7 @@ enable_pose_vel_watchdog="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 min_free_gb="${SANY_MIN_FREE_GB:-20}"
 wheel_speed_topic="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 enable_can_observation="${SANY_ENABLE_CAN_OBSERVATION:-1}"
+fixed_map_transform="${SANY_ENABLE_FIXED_MAP_TRANSFORM:-}"
 run_mode="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
 # [sany-lidar-mode-settings]
 case "${run_mode}" in
@@ -110,6 +111,7 @@ Useful environment variables:
   SANY_MIN_FREE_GB            When recording, require this free space in GiB (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
+  SANY_ENABLE_FIXED_MAP_TRANSFORM  0/1 site override; unset keeps the shared YAML default
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
   LIGHTNING_LM_WS             Workspace path used by legacy fallback defaults
@@ -218,6 +220,8 @@ cd -- "${repo_dir}" || fail "repository directory not found: ${repo_dir}"
   fail "SANY_ENABLE_POSE_VEL_WATCHDOG must be 0 or 1."
 [[ "${enable_can_observation}" == "0" || "${enable_can_observation}" == "1" ]] ||
   fail "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1."
+[[ -z "${fixed_map_transform}" || "${fixed_map_transform}" == "0" || "${fixed_map_transform}" == "1" ]] ||
+  fail "SANY_ENABLE_FIXED_MAP_TRANSFORM must be 0 or 1 when set."
 [[ "${compute_profile}" == "0" || "${compute_profile}" == "1" ]] ||
   fail "LIGHTNING_LM_COMPUTE_PROFILE must be 0 or 1."
 [[ "${reduce_nonessential_overhead}" == "0" || "${reduce_nonessential_overhead}" == "1" ]] ||
@@ -314,10 +318,14 @@ fi
 if [[ "${record_bag}" == "1" ]]; then mkdir -p "${run_dir}/bag"; fi
 # [sany-lidar-run-directory]
 # [sany-lidar-config-snapshot]
+site_config_args=()
+if [[ -n "${fixed_map_transform}" ]]; then
+  site_config_args+=(--fixed-map-transform "${fixed_map_transform}")
+fi
 config_path="$(python3 "${script_dir}/resolve_sany_config.py" \
   --base-config "${config_path}" --vehicle-config "${SANY_VEHICLE_CONFIG}" \
   --calibrations "${repo_dir}/config/sany/calibrations.yaml" \
-  --output "${run_dir}/config.yaml")" || fail "vehicle configuration resolution failed"
+  --output "${run_dir}/config.yaml" "${site_config_args[@]}")" || fail "vehicle configuration resolution failed"
 lidar_layout="$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["vehicle_configuration"]["lidar_count"])' "${config_path}")"
 if [[ -n "${SANY_LIDAR_LAYOUT:-}" && "${SANY_LIDAR_LAYOUT}" != "${lidar_layout}" ]]; then
   fail "SANY_LIDAR_LAYOUT conflicts with vehicle_config.yaml LIDAR; remove the legacy override"

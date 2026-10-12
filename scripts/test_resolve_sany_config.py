@@ -68,6 +68,20 @@ class SanyConfigTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 resolve(CONFIG / "localization.yaml", self.vehicle)
 
+    def test_site_output_transform_override_preserves_shared_default(self):
+        self.vehicle_config()
+        original = (CONFIG / "localization.yaml").read_bytes()
+        default = resolve(CONFIG / "localization.yaml", self.vehicle)
+        enabled = resolve(CONFIG / "localization.yaml", self.vehicle, fixed_map_transform=1)
+        disabled = resolve(CONFIG / "localization.yaml", self.vehicle, fixed_map_transform=0)
+        self.assertFalse(default["output"]["fixed_map_transform"]["enabled"])
+        self.assertTrue(enabled["output"]["fixed_map_transform"]["enabled"])
+        self.assertFalse(disabled["output"]["fixed_map_transform"]["enabled"])
+        self.assertTrue(enabled["vehicle_configuration"]["fixed_map_transform_override"])
+        self.assertEqual(enabled["output"]["fixed_map_transform"]["translation_xyz"],
+                         default["output"]["fixed_map_transform"]["translation_xyz"])
+        self.assertEqual((CONFIG / "localization.yaml").read_bytes(), original)
+
     def test_invalid_calibration_is_rejected(self):
         registry = yaml.safe_load((CONFIG / "calibrations.yaml").read_text())
         broken = copy.deepcopy(registry)
