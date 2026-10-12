@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
+# Export editor compile settings by default, including after clean builds.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
+        "Export compile_commands.json for C++ code navigation")
+
 project(lightning_lm)
 
 # Default to C++17
