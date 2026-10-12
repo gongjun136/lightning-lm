@@ -123,7 +123,8 @@ fasterlio:
   propagate_velocity: true
   lidar_update_pose_only: false
   lidar_update_inertial_states: true
-  max_update_velocity_step: 0.1
+  # A 0.1 m/s gate causes pose-only fallback and startup drift on the new vehicle.
+  max_update_velocity_step: 0.5
   max_update_gyro_bias_step: 0.05
   max_update_acc_bias_step: 0.5
   max_update_gravity_step: 0.05
