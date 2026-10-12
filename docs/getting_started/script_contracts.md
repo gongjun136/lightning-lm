@@ -56,6 +56,8 @@ ${SANY_WS}/run.sh
 | `LIGHTNING_LM_OUT_ROOT` | `$repo_dir/runs` | 持久运行目录根；创建后转为绝对路径 |
 | `LIGHTNING_LM_RUN_NAME` | 时间戳名称 | 无位置 run name 时生效 |
 
+SANY 共用模板会在创建运行目录后，通过 `sany_config.sh` 调用 `resolve_sany_config.py`，按 `SANY_VEHICLE_CONFIG`（默认 `/opt/conf/vehicle_config.yaml`）生成 `config.yaml` 后再启动。其他数据集配置不经过车辆选择。运行 YAML 是快照，不是额外维护的部署参数文件。
+
 `-h/--help` 仍会先 source 两个 setup，再通过 `ros2 pkg prefix lightning_lm` 找到安装空间中的真实二进制并调用其 help；help 分支不创建 run dir。
 
 ### 工作目录与调用链

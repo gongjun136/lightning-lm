@@ -1,49 +1,10 @@
 # Lightning-LM 复现配置
 
-本目录只保存 Lightning-LM 单雷达和多雷达实验的配置。四个对照算法的复现资产分别位于其代码仓库的 `reproduction/m3dgr/`：
+本目录保存单雷达、多雷达实验参数；SANY 正式建图和定位入口统一位于 [config/sany](../sany/README.md)，只有 mapping.yaml 和 localization.yaml，两组 VIN 外参集中存放在 calibrations.yaml。
 
-- `ws_fastlio/src/FAST_LIO/reproduction/m3dgr/`
-- `ws_fastlivo2/src/FAST-LIVO2/reproduction/m3dgr/`
-- `ws_voxel_slam/src/Voxel-SLAM/reproduction/m3dgr/`
-- `ws_ground_fusion2/src/Ground-Fusion2/reproduction/m3dgr/`
+- `single_lidar/m3dgr/`：M3DGR 基准和消融配置。
+- `single_lidar/sany/`：历史 114/127 单雷达配置。
+- `multi_lidar/sany/sany_4lidar_frontend_final.yaml`：114/127/187/195 旧数据的历史回归。
+- `multi_lidar/sany/matrix/`：C0—C6 来源缺失和噪声模型消融实验；run_frontend_offline_batch.sh 默认读取这里。
 
-Lightning-LM 不再复制 FAST-LIO、FAST-LIVO2、Voxel-SLAM 或 Ground-Fusion2 的 YAML/launch。
-
-## 目录
-
-```text
-reproduction/
-├── single_lidar/
-│   ├── m3dgr/
-│   │   ├── lightning_m3dgr_mid360_benchmark.yaml
-│   │   ├── lightning_m3dgr_variant_acc01.yaml
-│   │   ├── lightning_m3dgr_variant_classic.yaml
-│   │   └── lightning_m3dgr_variant_prop_off.yaml
-│   └── sany/
-│       ├── sany_livox_114_20260701_velprop_no_lba.yaml
-│       └── sany_livox_127.yaml
-└── multi_lidar/
-    └── sany_4livox/
-        ├── sany_4lidar_frontend_final.yaml
-        ├── sany_4lidar_mapping.yaml
-        ├── sany_4lidar_localization_solid.yaml
-        └── matrix/
-            ├── C0_single114_noise.yaml
-            ├── C1_four_noise.yaml
-            ├── C2_four_no_noise.yaml
-            ├── C3_drop114_lidar.yaml
-            ├── C4_drop127.yaml
-            ├── C5_drop187.yaml
-            └── C6_drop195.yaml
-```
-
-## 使用约定
-
-- M3DGR 的 `benchmark` 配置是已完成单雷达精度实验的正式配置；其余三个 `variant` 文件是 Lightning-LM 消融/调参配置。
-- SANY 单雷达配置保留原文件名，便于追溯早期 114 和 127 数据处理。
-- `sany_4lidar_frontend_final.yaml` 保留用于 114/127/187/195 旧四雷达数据的历史回归。
-- `sany_4lidar_mapping.yaml` 是 184/108/133/143 四雷达建图与地图数据库导出的正式配置。
-- `sany_4lidar_localization_solid.yaml` 是与上述地图配对的 SOLiD 定位配置。正式 YAML 保存在 `config/` 下；`runs/` 只保存实验输出、快照和临时变体。
-- `matrix/` 中的 C0—C6 用于单 114 基线、四雷达、噪声模型消融和单路 LiDAR 缺失实验。
-- 新车测试场地使用新增的 `multi_lidar/sany_4livox/sany_4lidar_new_vehicle_test_ground_mapping.yaml` 与 `multi_lidar/sany_4livox/sany_4lidar_new_vehicle_test_ground_localization_solid.yaml`。旧默认 YAML 不变；部署时通过 `LIGHTNING_LM_CONFIG` 手动覆盖，详见 [新车配置与部署](multi_lidar/sany_4livox/NEW_VEHICLE_TEST_GROUND.md)。
-- `scripts/run_frontend_offline_batch.sh` 默认读取 `matrix/`，不需要再传 `--config-dir`。
+这些历史实验 YAML 不作为新老车正式部署参数。其他对照算法资产保存在各自仓库，不在本仓库复制。

@@ -1,4 +1,9 @@
 /**
+ * @example{lineno} sany_config.sh
+ * 为通用建图、定位入口解析 SANY VIN/接线方式并生成完整运行 YAML；其他数据集配置保持原样。
+ * 用途见 config/sany/README.md；由入口 source 调用，不单独启动 ROS 节点。
+ */
+/**
  * @example{lineno} align_maps_offline.sh
  * 离线估计新旧地图之间的刚体变换，所有参数交给已安装的 align_maps_offline 程序；不会启动在线定位。
  * 用途与阅读说明见 @ref align_maps_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
@@ -87,11 +92,6 @@
  * @example{lineno} save_default_map.sh
  * 调用 /lightning/save_map 服务请求当前在线建图节点保存 new_map；不单独启动建图程序。
  * 用途与阅读说明见 @ref save_map_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
- */
-/**
- * @example{lineno} field/new_vehicle_test_ground_run_loc.sh
- * 新车辆四雷达试验场定位入口，加载集中路径配置，固定地图与生产运行模式后调用 SANY 定位脚本。
- * 车辆与外参来源见 @ref vehicle_calibration_management "车辆标定档案"；输入预检与运行管理见 @ref sany_lidar_launcher_guide "SANY LiDAR 导读"。
  */
 /**
  * @example{lineno} reproduction/formal_report/rerun_m3dgr_fastlivo2_timestamp_fix.sh

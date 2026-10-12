@@ -46,28 +46,35 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(row['iowait_percent'],10)
         self.assertIsNone(monitor.host_intervals({'cpu0':(200,60,10)},{})[0]['busy_percent'])
 
-    def test_formal_config_matches_conservative(self):
+    def test_formal_config_preserves_budgets_with_adaptive_sources(self):
         repo=Path(__file__).resolve().parent.parent
-        path=repo/'config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml'
+        path=repo/'config/sany/localization.yaml'
         declared=config_summary.summarize(path,{'LIGHTNING_LM_NDT_MAX_POINTS':'3600'})
         self.assertTrue(declared['lio_point_budget_enabled'])
         load=declared['adaptive_load']
         self.assertEqual(load['lio_point_budgets'],[2200,1804,1500])
-        self.assertEqual(load['tracking_lidar_count'],3)
+        self.assertEqual(load['tracking_lidar_count'],0)
+        self.assertEqual(load['tracking_min_lidars'],1)
         self.assertFalse(load['rotate_secondary_lidars'])
         self.assertEqual(load['hard_latency_sec'],.3)
         self.assertEqual(declared['requested_effective_budget']['ndt_max_points'],3600)
         self.assertEqual(declared['compute_budget']['ndt_max_points'],3500)
         with tempfile.TemporaryDirectory() as temp:
+            from resolve_sany_config import resolve
+            vehicle=Path(temp)/'vehicle.yaml'
+            vehicle.write_text('VIN: "SANLV77EXSH000858"\nLIDAR: "MASTER AND SLAVE"\n')
+            runtime=Path(temp)/'runtime.yaml'
+            runtime.write_text(yaml.safe_dump(resolve(path,vehicle),sort_keys=False))
             generated=Path(temp)/'candidate.yaml'
             subprocess.run([sys.executable,str(repo/'scripts/prepare_compute_pruning_config.py'),
-                            '--base',str(path),'--output',str(generated)],check=True,capture_output=True)
+                            '--base',str(runtime),'--output',str(generated)],check=True,capture_output=True)
             result=config_summary.summarize(generated,{})
-            self.assertEqual(result['adaptive_load'],declared['adaptive_load'])
+            self.assertEqual(result['adaptive_load']['lio_point_budgets'],load['lio_point_budgets'])
+            self.assertEqual(result['compute_budget']['ndt_max_points'],3500)
 
     def test_three_lidar_uses_current_map_without_fixed_transform(self):
         repo=Path(__file__).resolve().parent.parent
-        path=repo/'config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml'
+        path=repo/'config/sany/localization.yaml'
         config=yaml.safe_load(path.read_text(encoding='utf-8'))
         self.assertIs(config['output']['fixed_map_transform']['enabled'],False)
 

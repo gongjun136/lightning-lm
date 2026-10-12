@@ -34,7 +34,7 @@ ins_only:
     recovery_samples: 10
 cloud:
   enabled: true
-  lidar_config: ../reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml
+  lidar_config: ../sany/localization.yaml
   rear_from_primary:
     confirmed: false
     translation_m: [null, null, null]

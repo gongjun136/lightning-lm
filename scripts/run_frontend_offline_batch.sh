@@ -31,7 +31,7 @@ EOF
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
 runner="$script_dir/run_frontend_offline.sh"
-config_dir="$repo_dir/config/reproduction/multi_lidar/sany_4livox/matrix"
+config_dir="$repo_dir/config/reproduction/multi_lidar/sany/matrix"
 bag_dir=""
 output_root=""
 repeats="1"

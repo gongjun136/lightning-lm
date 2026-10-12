@@ -33,6 +33,13 @@ if c.get('system',{}).get('localization_mode')!='ins_only':
 PY
 # [ins-mode]
 # [ins-launch]
+run_root="${LIGHTNING_LM_OUT_ROOT:-$repo/runs}"
+mkdir -p "$run_root"
+config_snapshot_dir="$(mktemp -d "$run_root/ins_site_XXXXXXXX")"
+config="$(python3 "$repo/scripts/resolve_sany_config.py" \
+  --ins-site --base-config "$config" \
+  --vehicle-config "${SANY_VEHICLE_CONFIG:-/opt/conf/vehicle_config.yaml}" \
+  --output "$config_snapshot_dir/config.yaml")"
 cd "$repo"
 exec ros2 run lightning_lm run_loc_online --config "$config" "$@"
 # [ins-launch]

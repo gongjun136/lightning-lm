@@ -10,6 +10,8 @@
     <buildtool_depend>ament_cmake</buildtool_depend>
 
     <exec_depend>rosbag2_storage_mcap</exec_depend>
+    <exec_depend>python3-yaml</exec_depend>
+    <exec_depend>python3-numpy</exec_depend>
     
     <depend>scrubber_common</depend>
     <depend>agibot_robot</depend>

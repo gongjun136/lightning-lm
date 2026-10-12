@@ -6,12 +6,16 @@
 
 `conservative` 候选保持全部来源；来源轮换须显式启用实验选项。历史 balanced 回放出现航向/RPE 回归，不能当作已通过的部署配置。默认值以最终 YAML 和启动输出为准，不把旧批次点数当作永久默认。
 
+# 当前 SANY 正式策略
+
+共用配置允许健康跟踪从全部三/四台逐级降载到前雷达一台：先按旧车 2200/1804/1500 点预算裁剪，再减少辅助来源。拼接点云发布仍要求当前布局全部雷达齐全，与内部观测更新独立。旧 conservative/balanced 生成器用于三雷达实验，不代表当前正式来源数量策略；先用 resolve_sany_config.py 生成三雷达运行配置再创建实验候选。
+
 # 创建候选与核验
 
 在仓库根目录运行，base 与 output 必须不同：
 ```bash
 python3 scripts/prepare_compute_pruning_config.py \
-  --base config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
+  --base /absolute/resolved_three_lidar_config.yaml \
   --output /tmp/sany_compute_candidate.yaml \
   --profile conservative --lio-points 2200 --minimum-lio-points 1500 --ndt-points 3500
 ```

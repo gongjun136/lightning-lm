@@ -70,7 +70,7 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 
 | 变量 | 从哪里来 | 交给程序做什么 |
 |---|---|---|
-| `config_path` | 显式 `LIGHTNING_LM_CONFIG`，或按雷达布局选择的内置 YAML | `--config`：定位系统的配置 |
+| `config_path` | 共用模板或显式 `LIGHTNING_LM_CONFIG` 按车辆文件解析后生成的运行 YAML | `--config`：定位系统的配置 |
 | `map_path` | `SANY_MAP_PATH`，由根入口固定现场地图 | `--map`：覆盖配置中的地图路径 |
 | `run_dir` | 输出根目录与本次 run name | 保存全局、高频和实际发布的后轴轨迹，以及运行日志 |
 
@@ -118,11 +118,11 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 @anchor sany_lidar_runtime
 ### 1. 确定运行参数
 
-输入是根入口导出的环境变量，以及可选的 run name。脚本先设置可覆盖的默认值，按 `SANY_LIDAR_LAYOUT` 选择内置三/四雷达配置，再解析本次运行的路径：
+输入是根入口导出的环境变量，以及可选的 run name。脚本先设置可覆盖的默认值，使用共用 `config/sany/localization.yaml`，按车辆配置 VIN/LIDAR 解析标定及三/四雷达布局，再解析本次运行的路径：
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-runtime-settings
 
-`${变量:-默认值}` 表示外部有效值优先。因此，现场根入口固定的地图、三雷达、production 和关闭录包预设会传入本次运行。`LIGHTNING_LM_RUN_MODE` 同样可覆盖，决定计时、资源采样和诊断 I/O 的默认开关。此阶段得到 `config_path`、`map_path`、`out_root`、`run_name` 和各功能开关。
+`${变量:-默认值}` 表示外部有效值优先。因此，现场根入口固定的地图、production 和关闭录包预设会传入本次运行。`LIGHTNING_LM_RUN_MODE` 同样可覆盖，决定计时、资源采样和诊断 I/O 的默认开关。此阶段得到 `config_path`、`map_path`、`out_root`、`run_name` 和各功能开关。
 
 @anchor sany_lidar_environment
 ### 2. 检查并加载环境
@@ -234,8 +234,8 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 | `LIGHTNING_LM_ROS_SETUP` | `/opt/ros/humble/setup.bash` | ROS 环境 |
 | `LIGHTNING_LM_INSTALL_SETUP` | `$REPO/install/setup.bash` | 定位工作区安装环境；统一工作区应显式覆盖 |
 | `LIGHTNING_LM_OUT_ROOT` | `$LIGHTNING_LM_WS/runs` | 本次日志和证据输出的根目录 |
-| `SANY_LIDAR_LAYOUT` | `3` | 选择内置三/四雷达 YAML；不自动探测设备 |
-| `LIGHTNING_LM_CONFIG` | 所选布局的正式定位 YAML | 可显式覆盖为绝对路径；输入话题从该配置解析 |
+| `SANY_VEHICLE_CONFIG` | `/opt/conf/vehicle_config.yaml` | VIN 选择标定，LIDAR 选择 master 三台或四台；缺失/未知/非法时拒绝启动 |
+| `LIGHTNING_LM_CONFIG` | `$REPO/config/sany/localization.yaml` | 共用参数模板；启动时生成带 VIN、标定及来源哈希的运行配置 |
 | `SANY_MAP_PATH` | `$LIGHTNING_LM_WS/maps/sany_4lidar_20260811_a4defa3_solid` | 保留旧入口的历史 fallback；现场根入口必须固定实际发布地图 |
 | `SANY_ENABLE_CAN_OBSERVATION` / `SANY_WHEEL_SPEED_TOPIC` | `1` / `/SpeThrCAN4_topic` | CAN 轮速观测及输入话题；启用时预检该输入 |
 | `SANY_RECORD_BAG` | `0` | 可选后台 MCAP；启用后采集全部配置雷达/IMU和 CAN 等话题 |
@@ -245,7 +245,7 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 | `SANY_MIN_FREE_GB` | `20` | 仅在录包时要求输出目录所在磁盘保有此空间 |
 | `SANY_ENABLE_POSE_VEL_WATCHDOG` / `SANY_POSE_VEL_TIMEOUT_SECONDS` | `0` / `5` | 可选定位输出静默检测和现场快照；不自动重启 |
 
-所有默认值都可由调用环境覆盖。项目根入口固定的三雷达、地图、`production` 和关闭录包等设置优先于仓库默认值，最终有效设置记录到 `run_metadata.txt`。
+所有默认值都可由调用环境覆盖。项目根入口固定的地图、`production` 和关闭录包等设置优先于仓库默认值，最终有效设置记录到 `run_metadata.txt`。
 
 仓库入口的现场默认设置取自真实脚本：
 

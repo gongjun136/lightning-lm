@@ -25,11 +25,15 @@ source install/setup.bash
 在 WSL Ubuntu 22.04 的仓库根目录执行：
 
 ```bash
+python3 scripts/resolve_sany_config.py \
+  --base-config config/sany/localization.yaml \
+  --vehicle-config /absolute/vehicle_config.yaml \
+  --output /absolute/new_alignment_run/config.yaml
 bash scripts/align_maps_offline.sh \
   --old_map=runs/sany_3lidar_mapping_blind5_ground_z0_btc_20260725/data/new_map \
   --new_map=runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
   --input_bag=/mnt/f/datasets/SANY/sites/zhugong_mixing_plant/raw/rig_4lidar/mapping/data1 \
-  --config=config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
+  --config=/absolute/new_alignment_run/config.yaml \
   --output_dir=runs/sany_map_alignment_3lidar_old_4lidar_new_20260813
 ```
 
@@ -37,7 +41,7 @@ bash scripts/align_maps_offline.sh \
 
 候选生成优先使用老地图 SOLiD；若老地图尚无 SOLiD 数据库，工具会利用其 BTC 子图生成一次。BTC 和全局 PCA 几何候选作为交叉验证与后备。候选经过多尺度 ICP、全局双向重叠、局部分区覆盖、多个静止子图一致性及歧义检查。
 
-只有全部自动门限通过时，工具才会备份并更新定位 YAML 的 `output.fixed_map_transform`。失败时不改配置，并返回非零退出码。可用 `--update_config=false` 只生成判断材料而不写 YAML。
+只有全部自动门限通过时，工具才会备份并更新传入运行 YAML 的 `output.fixed_map_transform`。失败时不改配置，并返回非零退出码。可用 `--update_config=false` 只生成判断材料而不写 YAML。审核后将配置与对应地图成套发布；不要直接修改共用模板来启用某个场地的变换。
 
 ## 人工复核材料
 
@@ -55,9 +59,9 @@ bash scripts/align_maps_offline.sh \
 
 ### 2026-10-09 宝马展复刻场地地图
 
-正式三雷达配置 `config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml`
-现已启用从 `bauma_3lidar_20261009_113953` 到旧资产地图
-`sany_3lidar_baoma_sim_20260901` 的固定变换。使用该配置时，应把
+2026-10-09 的历史三雷达配置启用了从 `bauma_3lidar_20261009_113953` 到旧资产地图
+`sany_3lidar_baoma_sim_20260901` 的固定变换。2026-10-11 共用配置
+`config/sany/localization.yaml` 保留该数值，按用户要求默认关闭。需要恢复该场地变换时，先在审核后的运行配置中启用，并把
 `SANY_MAP_PATH` 指向新地图包；配置中的变换和地图包必须成对切换。
 旧地图目录继续保留，便于回退。PGM 和三维地图文件仍处于新地图内部坐标系。
 

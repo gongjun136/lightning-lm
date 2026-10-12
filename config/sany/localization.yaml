@@ -1,10 +1,7 @@
-# New vehicle test ground, four LiDARs: primary 184 / left 108 / right 133 / rear 143.
-# Exact user-provided calibration user_provided_20261010_v1; no extrinsic refinement.
-# Vehicle ID new_vehicle_20260922 is provisional; VIN and serial numbers pending.
-# Validated with map new_vehicle_4lidar_20260922_201743_calib_user_20261010_v1.
-# Explicit selection only; the existing SANY_LIDAR_LAYOUT=3/4 defaults are unchanged.
-# Source YAML SHA-256: 4001f393c087d79620e2caa688c3f93c71da6b377fd8a051f73ebaf4ae0f1e24
-# LiDAR/IMU, body geometry and CAN calibration remain inherited/unverified.
+# SANY shared localization parameters. Resolve VIN/LIDAR before starting C++ nodes.
+# Use scripts/resolve_sany_config.py or the standard shell launchers.
+sany_vehicle_config:
+  calibrations: calibrations.yaml
 common:
   dataset: sany
   lidar_topic: /livox/lidar_192_168_3_184
@@ -14,6 +11,7 @@ common:
 compute_budget:
   lio_threads: 6
   ndt_threads: 4
+  ndt_max_points: 3500
   solid_icp_workers: 12
   solid_worker_nice: 5
 multi_lidar:
@@ -21,24 +19,31 @@ multi_lidar:
   primary_lidar_id: 0
   frame_period: 0.1
   match_tolerance: 0.02
-  reorder_window: 0.5
-  min_lidars: 3
+  reorder_window: 0.1
+  min_lidars: 1
   adaptive_load:
     enabled: true
-    tracking_min_lidars: 3
-    relocalization_min_lidars: 3
-    cloud_publish_min_lidars: 3
+    tracking_min_lidars: 1
+    relocalization_min_lidars: 1
+    cloud_publish_min_lidars: 4
     cloud_publish_require_primary: true
-    target_latency_sec: 0.2
+    tracking_lidar_count: 0
+    rotate_secondary_lidars: false
+    lio_point_budgets:
+    - 2200
+    - 1804
+    - 1500
+    predictive: true
+    target_latency_sec: 0.09
     hard_latency_sec: 0.3
-    degrade_processing_ratio: 0.8
-    recover_processing_ratio: 0.6
-    degrade_consecutive_frames: 3
-    recover_consecutive_frames: 20
+    degrade_processing_ratio: 0.72
+    recover_processing_ratio: 0.5
+    degrade_consecutive_frames: 1
+    recover_consecutive_frames: 75
     point_strides:
     - 1
-    - 2
-    - 3
+    - 1
+    - 1
   online_extrinsic_estimation: false
   topics:
     lidar_0: /livox/lidar_192_168_3_184
@@ -49,79 +54,6 @@ multi_lidar:
     imu_1: /livox/imu_192_168_1_108
     imu_2: /livox/imu_192_168_2_133
     imu_3: /livox/imu_192_168_4_143
-  extrinsics:
-    lidar0:
-      T:
-      - 1.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 1.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 1.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 0.0
-      - 1.0
-    lidar1:
-      T:
-      - 0.46549289008765604
-      - -0.8681906242025259
-      - -0.1719343168906945
-      - -0.758476
-      - 0.34161787700296403
-      - -0.0029591101370609607
-      - 0.9398342778273118
-      - 0.838821
-      - -0.8164640808938438
-      - -0.4962220105094345
-      - 0.2952119931441568
-      - -0.465699
-      - 0
-      - 0
-      - 0
-      - 1
-    lidar2:
-      T:
-      - 0.46609239148437687
-      - 0.870693294051361
-      - -0.15700659315571625
-      - -0.749705
-      - -0.3098619860802809
-      - -0.005572677858235453
-      - -0.9507652154153896
-      - -0.85648
-      - -0.8286998444447533
-      - 0.49179480777604656
-      - 0.26719737061161974
-      - -0.468532
-      - 0
-      - 0
-      - 0
-      - 1
-    lidar3:
-      T:
-      - -0.5117237564511263
-      - 0.006977338098379928
-      - -0.8591217107235789
-      - -1.54192
-      - -0.013819775193281876
-      - -0.9999044962022094
-      - 0.00011085220863877102
-      - -0.00924621
-      - -0.8590388878841022
-      - 0.011929594614483143
-      - 0.5117713101329332
-      - -0.876691
-      - 0
-      - 0
-      - 0
-      - 1
 imu_initialization:
   initial_yaw_deg: 0.0
   min_duration: 2.0
@@ -170,8 +102,8 @@ map_export:
     padding: 0.1
   export_pgm: true
   pgm_resolution: 0.05
-  pgm_min_height: 0.3
-  pgm_max_height: 100.0
+  pgm_min_height: 3.5
+  pgm_max_height: 4.0
   pgm_obstacle_dilation_radius: 0.0
   pgm_min_observation_frames: 3
 fasterlio:
@@ -191,7 +123,7 @@ fasterlio:
   propagate_velocity: true
   lidar_update_pose_only: false
   lidar_update_inertial_states: true
-  max_update_velocity_step: 0.5
+  max_update_velocity_step: 0.1
   max_update_gyro_bias_step: 0.05
   max_update_acc_bias_step: 0.5
   max_update_gravity_step: 0.05
@@ -235,7 +167,6 @@ system:
   online_sensor_resume_lag_sec: 0.1
   online_lidar_loc_queue_size: 1
   enable_lidar_loc_skip: false
-  online_lidar_input_max_timestamp_lag_sec: 0.3
   localization_output_max_lidar_age_sec: 0.5
   enable_imu_static_hold: true
   enable_wheel_speed_observation: true
@@ -246,7 +177,7 @@ system:
   wheel_speed_dr_stationary_std_mps: 0.08
   wheel_speed_dr_stationary_threshold_mps: 0.03
   wheel_speed_dr_max_age_sec: 0.25
-  wheel_speed_dr_future_tolerance_sec: 0.03
+  wheel_speed_dr_future_tolerance_sec: 0.0
   wheel_speed_dr_max_acceleration_mps2: 4.0
   wheel_speed_dr_max_abs_innovation_mps: 1.5
   wheel_speed_dr_nis_gate: 9.0
@@ -256,6 +187,7 @@ system:
   lidar_qos:
     reliability: reliable
     depth: 16
+  online_lidar_input_max_timestamp_lag_sec: 0.0
 backend:
   mode: ba_btc_hba
   verbose: true
@@ -360,7 +292,26 @@ lidar_loc:
   try_self_extrap: false
 relocalization:
   enabled: true
-  backend: solid
+  backend: solid_kiss
+  refinement_backend: plane_icp
+  plane_icp:
+    target_voxel_size: 0.5
+    source_voxel_size: 0.5
+    plane_fit_threshold: 0.15
+    coarse_max_correspondence_distance: 2.0
+    fine_max_correspondence_distance: 0.75
+    huber_delta: 0.2
+    max_rmse: 0.12
+    coarse_max_iterations: 10
+    fine_max_iterations: 15
+    min_matches: 500
+    min_inlier_ratio: 0.3
+    translation_convergence: 0.005
+    rotation_convergence_deg: 0.05
+    min_normalized_hessian_eigenvalue: 0.0001
+    max_hessian_condition_number: 100000.0
+    max_translation_correction: 2.0
+    max_rotation_correction_deg: 10.0
   database_subdirectory: btc_relocalization
   lost_frame_threshold: 5
   query_submap_sizes:
@@ -380,7 +331,8 @@ relocalization:
   map_bounds_margin: 0.5
   map_nearest_neighbor_distance: 0.5
   map_min_inside_xy_ratio: 0.9
-  map_min_overlap_ratio: 0.95
+  map_precheck_min_overlap_ratio: 0.85
+  map_min_overlap_ratio: 0.92
   map_min_gravity_alignment_cos: 0.95
   map_consistency_max_points: 50000
   confirmation_count: 2
@@ -437,7 +389,7 @@ relocalization:
     - 5
     - 10
     query_stride: 1
-    top_k: 20
+    top_k: 128
     retrieval_pool_size: 200
     min_similarity: 0.55
     candidate_dedup_radius: 2.0
@@ -489,35 +441,26 @@ offline_localization:
     - 0.0
     - 1.0
 output:
-  map_frame: map
   fixed_map_transform:
     enabled: false
     convention: target_from_localization
     source_frame: localization_map
     target_frame: map
     translation_xyz:
-    - -2.41949081420898
-    - 18.3118782043457
-    - -0.130619361996651
+    - 2.34416675567627
+    - -3.11785960197449
+    - -0.0604841262102127
     quaternion_xyzw:
-    - 0.00079188585717829
-    - -0.0124272375022884
-    - -0.305301087578141
-    - 0.952174449672147
+    - 0.000469976801548861
+    - -0.00108713562520467
+    - 0.0238052228746426
+    - 0.999715913958474
     provenance:
       generated_by: align_maps_offline
-      report: /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning-lm/runs/sany_map_alignment_3lidar_old_4lidar_new_20260813/alignment_report.yaml
-      quality: 0.989856910679774
-calibration_reference:
-  vehicle_id: new_vehicle_20260922
-  vehicle_identity_status: provisional_capture_label
-  calibration_id: user_provided_20261010_v1
-  extrinsics_sha256: 76515008fb29d64bbd026cb941ff06ae3b7cc6dbf98db86b1e83f33e4c7b12a4
-  vehicle_profile_sha256: 8a3bbfc387ee1544d64e7346612c848d8fc14aab4e603c4f617ff36cb534bc4d
-  metadata_sha256: 3f3474f8749b2f7048ee0b3a6235cce056c5936681b5e59a956df4c844872361
-  base_config_sha256: e76e3c66c24f8746892e472b46cffd2aca36de4928648cd7ac3de3a0149f5412
-  registry_revision: /mnt/f/datasets/SANY/vehicles/new_vehicle_20260922/calibrations/user_provided_20261010_v1
-  transform_convention: T_primary_from_lidar_row_major
-  translation_unit: m
-  scope: relative_lidar_extrinsics_only
-  other_vehicle_parameters: inherited_unverified
+      report: docs/operations/map_alignment/bauma_20261009/alignment_report.yaml
+      source_map_version: bauma_3lidar_20261009_113953
+      target_map_version: sany_3lidar_baoma_sim_20260901
+      source_global_pcd_sha256: 59d717bca14929c275cfbeef72e2c1285319428cd3c715561697803873149de1
+      target_global_pcd_sha256: 0463386c579b11513b4a962ec0c7e157e96a7687e986225298a7f93672fadc99
+      quality: 0.925570067627487
+  map_frame: map

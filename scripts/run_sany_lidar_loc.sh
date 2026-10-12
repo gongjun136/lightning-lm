@@ -18,7 +18,7 @@ MAP_DIR="${WS}/maps/sany_4lidar_20260811_a4defa3_solid"
 export LIGHTNING_LM_INSTALL_SETUP="${LIGHTNING_LM_INSTALL_SETUP:-${REPO}/install/setup.bash}"
 export SANY_MAP_PATH="${SANY_MAP_PATH:-${MAP_DIR}}"
 export LIGHTNING_LM_OUT_ROOT="${LIGHTNING_LM_OUT_ROOT:-${WS}/runs}"
-export SANY_LIDAR_LAYOUT="${SANY_LIDAR_LAYOUT:-3}"
+export SANY_VEHICLE_CONFIG="${SANY_VEHICLE_CONFIG:-/opt/conf/vehicle_config.yaml}"
 export SANY_ENABLE_CAN_OBSERVATION="${SANY_ENABLE_CAN_OBSERVATION:-1}"
 export SANY_WHEEL_SPEED_TOPIC="${SANY_WHEEL_SPEED_TOPIC:-/SpeThrCAN4_topic}"
 export SANY_RECORD_BAG="${SANY_RECORD_BAG:-0}"
@@ -31,24 +31,12 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${REPO}"
 ros_setup="${LIGHTNING_LM_ROS_SETUP:-/opt/ros/humble/setup.bash}"
 install_setup="${LIGHTNING_LM_INSTALL_SETUP:-${repo_dir}/install/setup.bash}"
-lidar_layout="${SANY_LIDAR_LAYOUT:-3}"
-case "${lidar_layout}" in
-  3)
-    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml"
-    ;;
-  4)
-    default_config_path="${repo_dir}/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml"
-    ;;
-  *)
-    echo "ERROR: SANY_LIDAR_LAYOUT must be 3 or 4." >&2
-    exit 1
-    ;;
-esac
+default_config_path="${repo_dir}/config/sany/localization.yaml"
 # [sany-lidar-runtime-settings]
 config_path="${LIGHTNING_LM_CONFIG:-${default_config_path}}"
 map_path="${SANY_MAP_PATH:-}"
 out_root="${LIGHTNING_LM_OUT_ROOT:-/home/nvidia/project/gj_ws/runs}"
-run_name="${1:-sany_${lidar_layout}lidar_$(date +%Y%m%d_%H%M%S)}"
+run_name="${1:-sany_lidar_$(date +%Y%m%d_%H%M%S)}"
 # [sany-lidar-runtime-settings]
 qos_file="${SANY_RECORD_QOS_FILE:-${script_dir}/config/sany_localization_record_qos.yaml}"
 record_bag="${SANY_RECORD_BAG:-0}"
@@ -109,7 +97,7 @@ Useful environment variables:
                               (legacy fallback: $LIGHTNING_LM_WS/maps/sany_4lidar_20260811_a4defa3_solid)
   LIGHTNING_LM_CONFIG         Override the bundled localization YAML
   LIGHTNING_LM_ROS_SETUP      ROS setup (default: /opt/ros/humble/setup.bash)
-  SANY_LIDAR_LAYOUT           Select bundled localization YAML: 3 or 4 (default: 3)
+  SANY_VEHICLE_CONFIG        VIN/LIDAR YAML (default: /opt/conf/vehicle_config.yaml)
   LIGHTNING_LM_INSTALL_SETUP  Built workspace setup.bash
   LIGHTNING_LM_OUT_ROOT       Run root (default: $LIGHTNING_LM_WS/runs)
   SANY_RECORD_BAG             Record a background MCAP: 1=yes, 0=no (default: 0)
@@ -308,6 +296,37 @@ if [[ "${record_bag}" == "1" ]]; then
   grep -Fqx mcap <<<"$(ros2 bag list storage)" || fail "MCAP storage plugin is not installed."
 fi
 
+# [sany-lidar-run-directory]
+mkdir -p "${out_root}"
+out_root="$(cd -- "${out_root}" && pwd)"
+run_dir="${out_root}/${run_name}"
+[[ ! -e "${run_dir}" ]] || fail "run directory already exists: ${run_dir}"
+if [[ "${record_bag}" == "1" ]]; then
+  available_kb="$(df -Pk "${out_root}" | awk 'NR==2 {print $4}')"
+  required_kb=$((min_free_gb * 1024 * 1024))
+  ((available_kb >= required_kb)) || fail "less than ${min_free_gb} GiB free under ${out_root}"
+fi
+mkdir -p "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
+unset LIGHTNING_LM_CAUSAL_TRACE_PATH
+if [[ "${causal_trace}" == "1" ]]; then
+  export LIGHTNING_LM_CAUSAL_TRACE_PATH="${run_dir}/results/causal_trace.csv"
+fi
+if [[ "${record_bag}" == "1" ]]; then mkdir -p "${run_dir}/bag"; fi
+# [sany-lidar-run-directory]
+# [sany-lidar-config-snapshot]
+config_path="$(python3 "${script_dir}/resolve_sany_config.py" \
+  --base-config "${config_path}" --vehicle-config "${SANY_VEHICLE_CONFIG}" \
+  --calibrations "${repo_dir}/config/sany/calibrations.yaml" \
+  --output "${run_dir}/config.yaml")" || fail "vehicle configuration resolution failed"
+lidar_layout="$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["vehicle_configuration"]["lidar_count"])' "${config_path}")"
+if [[ -n "${SANY_LIDAR_LAYOUT:-}" && "${SANY_LIDAR_LAYOUT}" != "${lidar_layout}" ]]; then
+  fail "SANY_LIDAR_LAYOUT conflicts with vehicle_config.yaml LIDAR; remove the legacy override"
+fi
+python3 "${script_dir}/summarize_run_config.py" \
+  --config "${config_path}" --output "${run_dir}/launch_compute_config.json" \
+  | tee "${run_dir}/logs/launch_compute_config.log"
+# [sany-lidar-config-snapshot]
+
 sensor_topics="$({ python3 - "${config_path}" <<'PY'
 import re
 import sys
@@ -385,35 +404,6 @@ if [[ "${enable_can_observation}" == "1" ]]; then
   required_topics+=("${wheel_speed_topic}")
 fi
 # [sany-lidar-required-inputs]
-
-# [sany-lidar-run-directory]
-mkdir -p "${out_root}"
-out_root="$(cd -- "${out_root}" && pwd)"
-run_dir="${out_root}/${run_name}"
-[[ ! -e "${run_dir}" ]] || fail "run directory already exists: ${run_dir}"
-# [sany-lidar-run-directory]
-if [[ "${record_bag}" == "1" ]]; then
-  available_kb="$(df -Pk "${out_root}" | awk 'NR==2 {print $4}')"
-  required_kb=$((min_free_gb * 1024 * 1024))
-  ((available_kb >= required_kb)) || fail "less than ${min_free_gb} GiB free under ${out_root}"
-fi
-
-mkdir -p "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
-# Always scope the trace to this unique run, ignoring any inherited path.
-unset LIGHTNING_LM_CAUSAL_TRACE_PATH
-if [[ "${causal_trace}" == "1" ]]; then
-  export LIGHTNING_LM_CAUSAL_TRACE_PATH="${run_dir}/results/causal_trace.csv"
-fi
-if [[ "${record_bag}" == "1" ]]; then
-  mkdir -p "${run_dir}/bag"
-fi
-# [sany-lidar-config-snapshot]
-config_path="$(realpath "${config_path}")"
-cp -- "${config_path}" "${run_dir}/config.yaml"
-python3 "${script_dir}/summarize_run_config.py" \
-  --config "${run_dir}/config.yaml" --output "${run_dir}/launch_compute_config.json" \
-  | tee "${run_dir}/logs/launch_compute_config.log"
-# [sany-lidar-config-snapshot]
 
 wait_for_inputs() {
   local topic

@@ -389,64 +389,99 @@ void TestSpatialBudgetAndRecovery() {
 }
 
 void TestFormalSanyAdaptiveConfigs() {
-    const auto check_config = [](const std::string& relative_path,
-                                 int expected_lidar_count,
-                                 int expected_relocalization_min) {
-        const YAML::Node root = YAML::LoadFile(std::string(ROOT_DIR) + relative_path);
-        MultiLidarConfig config;
-        std::string error;
-        Require(lightning::LoadMultiLidarConfig(root, config, &error),
-                "formal SANY multi-lidar config parses");
-        Require(config.enabled && config.adaptive_load.enabled,
-                "formal SANY adaptive load is enabled");
-        Require(static_cast<int>(config.lidars.size()) == expected_lidar_count,
-                "formal SANY lidar count");
-        Require(config.primary_lidar_id == 0 && config.reorder_window == 0.1 &&
-                    config.min_lidars == 3,
-                "formal SANY primary, three-lidar minimum and bounded reorder window");
-        Require(config.adaptive_load.tracking_min_lidars == 3 &&
-                    config.adaptive_load.relocalization_min_lidars ==
-                        expected_relocalization_min &&
-                    config.adaptive_load.cloud_publish_min_lidars == 3 &&
-                    config.adaptive_load.cloud_publish_require_primary,
-                "formal SANY localization and publication minima");
-        Require(config.adaptive_load.hard_latency_sec == 0.3,
-                "formal SANY hard stale protection remains unchanged");
-        if (expected_lidar_count == 3) {
-            Require(config.adaptive_load.target_latency_sec == 0.09 &&
-                        config.adaptive_load.point_strides == std::vector<int>({1, 1, 1}) &&
-                        config.adaptive_load.lio_point_budgets == std::vector<int>({2200, 1804, 1500}) &&
+    const YAML::Node base = YAML::LoadFile(std::string(ROOT_DIR) + "config/sany/localization.yaml");
+    const YAML::Node registry = YAML::LoadFile(std::string(ROOT_DIR) + "config/sany/calibrations.yaml");
+    MultiLidarConfig unresolved;
+    std::string error;
+    Require(!lightning::LoadMultiLidarConfig(base, unresolved, &error),
+            "shared template cannot start before vehicle calibration resolution");
+    for (const auto& vehicle : registry["vehicles"]) {
+        for (const int count : {3, 4}) {
+            YAML::Node root = YAML::Clone(base);
+            root.remove("sany_vehicle_config");
+            auto multi = root["multi_lidar"];
+            multi["extrinsics"] = YAML::Clone(vehicle.second["extrinsics"]);
+            if (count == 3) {
+                multi["topics"].remove("lidar_3");
+                multi["topics"].remove("imu_3");
+                multi["extrinsics"].remove("lidar3");
+            }
+            multi["adaptive_load"]["cloud_publish_min_lidars"] = count;
+            MultiLidarConfig config;
+            Require(lightning::LoadMultiLidarConfig(root, config, &error),
+                    "both vehicle calibrations parse with either active layout");
+            Require(config.lidars.size() == static_cast<std::size_t>(count) &&
+                        config.min_lidars == 1 && config.reorder_window == 0.1 &&
+                        config.match_tolerance == 0.02 &&
+                        config.adaptive_load.tracking_min_lidars == 1 &&
+                        config.adaptive_load.relocalization_min_lidars == 1 &&
+                        config.adaptive_load.tracking_lidar_count == 0,
+                    "single-lidar correction remains available under load");
+            Require(config.adaptive_load.lio_point_budgets == std::vector<int>({2200, 1804, 1500}) &&
                         config.adaptive_load.predictive &&
-                        config.adaptive_load.tracking_lidar_count == 3 &&
-                        !config.adaptive_load.rotate_secondary_lidars &&
+                        config.adaptive_load.hard_latency_sec == 0.3 &&
                         root["compute_budget"]["ndt_max_points"].as<int>() == 3500,
-                    "formal three-lidar YAML enables the conservative deployment budget");
-        } else {
-            Require(config.adaptive_load.target_latency_sec == 0.2 &&
-                        config.adaptive_load.point_strides == std::vector<int>({1, 2, 3}) &&
-                        config.adaptive_load.lio_point_budgets.empty(),
-                    "four-lidar deployment policy is unchanged");
+                    "shared configuration preserves the legacy point and compute budgets");
+            MultiLidarFrameAssembler assembler(config);
+            const std::array<double, 4> offsets = {0.0, 0.001, 0.010, 0.002};
+            for (int id = 0; id < count; ++id) {
+                Require(assembler.AddCloud(id, 1000.0 + offsets[id], MakeCloud(1.0)),
+                        "20 ms accepts same-cycle headers with a 10 ms phase difference");
+            }
+            FusedLidarFrame frame;
+            Require(assembler.PopReady(frame) && !frame.stats.partial &&
+                        frame.stats.present_lidar_ids.size() == static_cast<std::size_t>(count),
+                    "phase-offset inputs still produce a complete publication frame");
+            for (const auto& point : frame.cloud->points) {
+                Require(std::abs(frame.stats.begin_time + point.time * 1e-3 -
+                                 (1000.099 + offsets[point.lidar_id])) < 1e-6,
+                        "matching tolerance preserves every point's physical timestamp");
+            }
+            Require(assembler.AddCloud(0, 1000.1, MakeCloud(1.0)) &&
+                        !assembler.AddCloud(1, 1000.125, MakeCloud(1.0)),
+                    "headers beyond 20 ms are still rejected");
+            AdaptiveLidarLoadController controller;
+            controller.Reset(config);
+            controller.SetLocalizationGood(true);
+            controller.Observe(0.01, 0.01, true);
+            auto full = count == 3 ? MakeFrameStats({0, 1, 2}) : MakeFrameStats({0, 1, 2, 3});
+            auto selection = controller.Select(full);
+            Require(selection.lidar_ids.size() == static_cast<std::size_t>(count) &&
+                        selection.max_points == 2200,
+                    "healthy tracking starts with all configured lidars");
+            for (int step = 1; step <= count + 1; ++step) {
+                controller.Observe(0.07, 0.1, true);
+                selection = controller.Select(full);
+                const int expected_count = step <= 2 ? count : count - (step - 2);
+                Require(selection.lidar_ids.size() == static_cast<std::size_t>(expected_count) &&
+                            selection.lidar_ids.front() == 0,
+                        "point budgets degrade first, then secondary lidars down to primary only");
+                Require(selection.max_points == (step == 1 ? 1804 : 1500),
+                        "legacy point budget survives lidar-count degradation");
+            }
+            Require(controller.CanPublishCloud(full),
+                    "tracking selection does not trim the complete publication cloud");
+            Require(!controller.CanPublishCloud(MakeFrameStats({0})),
+                    "single-lidar correction never publishes an incomplete fused cloud");
+            if (count == 4) Require(!controller.CanPublishCloud(MakeFrameStats({0, 1, 2})),
+                                   "four-lidar layout requires the rear cloud before publication");
+            Require(controller.Select(MakeFrameStats({0})).lidar_ids == std::vector<int>({0}),
+                    "a primary-only frame still supplies a correction");
+            Require(controller.Select(MakeFrameStats({1})).lidar_ids.empty(),
+                    "primary lidar remains mandatory for tracking");
+            controller.SetLocalizationGood(false);
+            Require(controller.Select(full).lidar_ids.size() == static_cast<std::size_t>(count) &&
+                        controller.Select(full).max_points == 0,
+                    "quality loss restores all available observations and removes point caps");
+            Require(controller.Select(MakeFrameStats({0})).lidar_ids == std::vector<int>({0}),
+                    "recovery can still attempt observations when only primary is available");
+            controller.SetLocalizationGood(true);
+            for (int i = 0; i < 75 * (count + 1); ++i) controller.Observe(0.01, 0.01, true);
+            Require(controller.Select(full).lidar_ids.size() == static_cast<std::size_t>(count) &&
+                        controller.Select(full).max_points == 2200,
+                    "healthy load recovery gradually restores all lidars and the first budget");
         }
-        const YAML::Node system = root["system"];
-        Require(root["fasterlio"]["skip_lidar_num"].as<int>() == 0 && system &&
-                    system["enable_lidar_loc_skip"] &&
-                    !system["enable_lidar_loc_skip"].as<bool>() &&
-                    system["pub_tf"] && !system["pub_tf"].as<bool>() &&
-                    system["enable_wheel_speed_dr_observation"].as<bool>() &&
-                    system["localization_output_max_lidar_age_sec"].as<double>() == 0.5 &&
-                    system["wheel_speed_dr_max_age_sec"].as<double>() == 0.25 &&
-                    system["wheel_speed_dr_max_velocity_step_mps"].as<double>() == 0.35,
-                "formal SANY fixed-skip, output freshness and wheel-speed DR gates are explicit");
-    };
-
-    check_config(
-        "config/reproduction/multi_lidar/sany_3livox/"
-        "sany_3lidar_localization_solid.yaml",
-        3, 3);
-    check_config(
-        "config/reproduction/multi_lidar/sany_4livox/"
-        "sany_4lidar_localization_solid.yaml",
-        4, 3);
+    }
 }
 
 }  // namespace

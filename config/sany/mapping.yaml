@@ -1,46 +1,30 @@
-# Formal SANY three-LiDAR mapping configuration.
-# Use sany_3lidar_localization_solid.yaml for published SOLiD localization.
+# SANY shared mapping parameters. Resolve VIN/LIDAR before starting C++ nodes.
+# Use scripts/resolve_sany_config.py or the standard shell launchers.
+sany_vehicle_config:
+  calibrations: calibrations.yaml
 common:
-  dataset: "sany"
-  lidar_topic: "/livox/lidar_192_168_3_184"
-  livox_lidar_topic: ""
-  imu_topic: "/livox/imu_192_168_3_184"
-
+  dataset: sany
+  lidar_topic: /livox/lidar_192_168_3_184
+  livox_lidar_topic: ''
+  imu_topic: /livox/imu_192_168_3_184
 multi_lidar:
   enabled: true
   primary_lidar_id: 0
   frame_period: 0.1
-  match_tolerance: 0.002
+  match_tolerance: 0.02
   reorder_window: 0.5
   min_lidars: 1
   online_extrinsic_estimation: false
   topics:
-    lidar_0: "/livox/lidar_192_168_3_184"
-    lidar_1: "/livox/lidar_192_168_1_108"
-    lidar_2: "/livox/lidar_192_168_2_133"
-    imu_0: "/livox/imu_192_168_3_184"
-    imu_1: "/livox/imu_192_168_1_108"
-    imu_2: "/livox/imu_192_168_2_133"
-  extrinsics:
-    # Each matrix transforms that LiDAR's points into the primary/front LiDAR frame.
-    lidar0:
-      T: [1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          0, 0, 0, 1]
-    lidar1:
-      T: [0.446473502, -0.877885367, -0.173143569, -0.761582134,
-          0.347582000, -0.008151075, 0.937614160, 0.852950694,
-          -0.824529057, -0.478801465, 0.301497912, -0.431472352,
-          0, 0, 0, 1]
-    lidar2:
-      T: [0.452308401, 0.876805341, -0.163185493, -0.747640026,
-          -0.376264880, 0.021710567, -0.926257735, -0.853061064,
-          -0.808604879, 0.480355124, 0.339730928, -0.437692514,
-          0, 0, 0, 1]
-
+    lidar_0: /livox/lidar_192_168_3_184
+    lidar_1: /livox/lidar_192_168_1_108
+    lidar_2: /livox/lidar_192_168_2_133
+    lidar_3: /livox/lidar_192_168_4_143
+    imu_0: /livox/imu_192_168_3_184
+    imu_1: /livox/imu_192_168_1_108
+    imu_2: /livox/imu_192_168_2_133
+    imu_3: /livox/imu_192_168_4_143
 imu_initialization:
-  # After gravity alignment, primary LiDAR 184 already points along vehicle +X.
   initial_yaw_deg: 0.0
   min_duration: 2.0
   min_samples: 300
@@ -49,7 +33,6 @@ imu_initialization:
   max_acc_std: 0.5
   min_mean_acc_norm: 0.5
   max_mean_acc_norm: 1.5
-
 lidar_noise_model:
   enabled: true
   range_sigma: 0.02
@@ -57,10 +40,6 @@ lidar_noise_model:
   reference_sigma: 0.05
   min_information_scale: 0.25
   max_information_scale: 4.0
-
-# Vehicle-aligned ego box measured from the primary/front LiDAR (metres).
-# The filter uses the initialized primary-LiDAR-to-body rotation, so these axes
-# are vehicle forward/back/left/right/up/down rather than raw Livox axes.
 self_point_filter:
   enabled: true
   front: 4.2218
@@ -69,42 +48,45 @@ self_point_filter:
   right: 1.543
   bottom: 3.577
   top: 0.05
-  padding: 0.10
-
+  padding: 0.1
 output:
-  map_frame: "map"
-  lidar_frame: "lidar_184"
-  primary_lidar_position_in_body: [2.199, 0.0, 2.740]
-
+  map_frame: map
+  lidar_frame: lidar_184
+  primary_lidar_position_in_body:
+  - 2.199
+  - 0.0
+  - 2.74
 map_export:
   normalize_start_ground_z: true
   start_ground_search_radius: 10.0
-  expected_sensor_height: 3.560
+  expected_sensor_height: 3.56
   expected_height_tolerance: 0.8
   histogram_bin_size: 0.05
-  inlier_tolerance: 0.20
-  max_median_absolute_deviation: 0.10
+  inlier_tolerance: 0.2
+  max_median_absolute_deviation: 0.1
   min_ground_inliers: 100
   max_ground_tilt_deg: 10.0
-  # Export-only swept envelope for the raised bucket/boom. It is applied to
-  # keyframe copies before global PCD/PGM generation and does not affect LIO.
   self_point_filter:
     enabled: true
-    min_body: [1.0, -4.8, -0.75]
-    max_body: [5.4, 4.8, 1.0]
-    padding: 0.10
+    min_body:
+    - 1.0
+    - -4.8
+    - -0.75
+    max_body:
+    - 5.4
+    - 4.8
+    - 1.0
+    padding: 0.1
   export_pgm: true
   pgm_resolution: 0.05
   pgm_min_height: 3.5
   pgm_max_height: 4.0
-  # Leave safety inflation to the planning stack; increase this only to inspect raster gaps.
   pgm_obstacle_dilation_radius: 0.0
   pgm_min_observation_frames: 3
-
 fasterlio:
   lidar_type: 1
   scan_line: 4
-  blind: 0.5  # Sensor near-range guard; vehicle returns are removed by self_point_filter.
+  blind: 0.5
   time_scale: 1e-3
   skip_lidar_num: 0
   point_filter_num: 3
@@ -127,10 +109,20 @@ fasterlio:
   b_acc_cov: 0.0001
   b_gyr_cov: 0.0001
   extrinsic_est_en: false
-  extrinsic_T: [-0.011, -0.02329, 0.04412]
-  extrinsic_R: [1, 0, 0,
-                0, 1, 0,
-                0, 0, 1]
+  extrinsic_T:
+  - -0.011
+  - -0.02329
+  - 0.04412
+  extrinsic_R:
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
+  - 0
+  - 0
+  - 0
+  - 1
   keep_first_imu_estimation: false
   kf_dis_th: -1.0
   kf_angle_th: 0.0
@@ -139,21 +131,16 @@ fasterlio:
   min_pts: 300
   imu_filter: false
   proj_kfs: false
-
+  livox_point_time_scale: 1.0e-09
 roi:
   height_max: 100.0
   height_min: -100.0
-
 system:
   with_ui: false
   with_loop_closing: true
   with_2dui: false
   with_g2p5: false
   step_on_kf: false
-
-# Build the BTC descriptor database used by global relocalization. Local BA
-# and HBA stay disabled so this rerun changes only loop closure/BTC behavior;
-# the existing Faster-LIO map geometry and ground-Z export path are preserved.
 backend:
   mode: ba_btc_hba
   verbose: true
@@ -165,7 +152,7 @@ backend:
     descriptor_submap_stride: 2
     max_points_per_submap: 50000
     min_points_per_submap: 100
-    downsample_leaf_size: 0.20
+    downsample_leaf_size: 0.2
     refine_with_icp: true
     icp_max_iterations: 30
     icp_max_correspondence_distance: 5.0
@@ -173,7 +160,7 @@ backend:
     icp_max_translation_correction: 10.0
     icp_batch_size: 8
     icp_workers: 8
-    min_loop_score: 0.60
+    min_loop_score: 0.6
     max_drift_ratio: 0.005
     max_rotation_correction_deg: 45.0
     refine_with_plane_icp: true
@@ -181,19 +168,19 @@ backend:
     plane_icp_min_matches: 20
     plane_icp_min_observability: 3.0
     allow_degenerate_plane_icp: true
-    degenerate_min_loop_score: 0.60
+    degenerate_min_loop_score: 0.6
     degenerate_min_matches: 60
     confirmation_count: 2
     confirmation_max_current_gap: 10
     confirmation_max_history_gap: 10
     loop_cooldown_descriptors: 10
     max_odom_revisit_distance: 0.0
-    min_optimization_translation: 0.20
+    min_optimization_translation: 0.2
     min_optimization_rotation_deg: 2.0
     descriptor:
       useful_corner_num: 200
-      plane_merge_normal_threshold: 0.10
-      plane_merge_distance_threshold: 0.30
+      plane_merge_normal_threshold: 0.1
+      plane_merge_distance_threshold: 0.3
       plane_detection_threshold: 0.01
       voxel_size: 1.0
       voxel_init_points: 10
@@ -214,16 +201,16 @@ backend:
       candidate_count: 50
       verification_threads: 4
       rough_distance_threshold: 0.03
-      similarity_threshold: 0.50
+      similarity_threshold: 0.5
       internal_icp_threshold: 0.15
-      normal_threshold: 0.20
-      plane_distance_threshold: 0.50
+      normal_threshold: 0.2
+      plane_distance_threshold: 0.5
   pose_graph:
     iterations: 20
     outlier_iterations: 10
-    motion_translation_noise: 0.10
+    motion_translation_noise: 0.1
     motion_rotation_noise_deg: 3.0
-    loop_translation_noise: 0.20
+    loop_translation_noise: 0.2
     loop_rotation_noise_deg: 3.0
     robust_kernel_delta: 1.0
     loop_outlier_chi2: 25.0

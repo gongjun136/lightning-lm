@@ -2,6 +2,10 @@
 
 不同车辆的标定按车辆和版本归档，场地地图单独归档。运行前生成完整 YAML，程序仍读取现有格式，无需为了选择车辆修改 C++。
 
+## 域控按 VIN 选择
+
+正式 SANY 算法参数统一为 `config/sany/mapping.yaml` 和 `localization.yaml`。两组相对雷达外参存放在 `calibrations.yaml`；`scripts/resolve_sany_config.py` 根据 `/opt/conf/vehicle_config.yaml` 的 VIN 选择旧车 SANLV77EXSH000858 或新车 SW956ELCG0858，再根据 LIDAR 选择 master 三/四台。离线文件路径通过 SANY_VEHICLE_CONFIG 指定，缺失、未知或非法配置拒绝启动。标准 Shell 入口自动生成带哈希的完整运行快照；直接调用 C++ 时先显式解析。详见 [共用配置](../../config/sany/README.md)。下述数据集档案仍用于标定版本与实验追溯，不需要复制到每辆车上。
+
 ## 档案结构
 
 ```text

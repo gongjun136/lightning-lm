@@ -17,10 +17,8 @@ def main() -> int:
         type=Path,
         default=repo
         / "config"
-        / "reproduction"
-        / "multi_lidar"
-        / "sany_4livox"
-        / "sany_4lidar_mapping.yaml",
+        / "sany"
+        / "localization.yaml",
     )
     parser.add_argument(
         "--backend",
@@ -36,6 +34,9 @@ def main() -> int:
     args = parser.parse_args()
 
     config = yaml.safe_load(args.base.read_text(encoding="utf-8"))
+    if isinstance(config, dict) and config.get("sany_vehicle_config"):
+        declaration = config["sany_vehicle_config"]
+        declaration["calibrations"] = str((args.base.parent / declaration["calibrations"]).resolve())
     relocalization = config.get("relocalization") if isinstance(config, dict) else None
     if not isinstance(relocalization, dict):
         raise SystemExit(f"missing relocalization section: {args.base}")

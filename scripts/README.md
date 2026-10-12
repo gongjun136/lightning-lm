@@ -214,8 +214,8 @@ LiDAR 分支调用仓库内的 `scripts/run_sany_lidar_loc.sh`，由它直接管
 ```bash
 export SANY_MAP_PATH=/home/nvidia/project/gj_ws/maps/current
 export LIGHTNING_LM_RUN_MODE=diagnostic
-export SANY_LIDAR_LAYOUT=3
-# 可选：export LIGHTNING_LM_CONFIG=/absolute/path/to/localization.yaml
+export SANY_VEHICLE_CONFIG=/opt/conf/vehicle_config.yaml
+# 共用配置默认 config/sany/localization.yaml，按 VIN/LIDAR 自动解析
 bash lightning-lm/scripts/run_sany_lidar_loc.sh
 ```
 

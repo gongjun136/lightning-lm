@@ -36,8 +36,8 @@ data_dir="${LIGHTNING_LM_SANY_DATA_DIR:-/mnt/f/datasets/SANY/mid360/data_2026070
 
 bag_dir="${LIGHTNING_LM_INPUT_BAG:-$data_dir/rosbag2_2026_07_01-17_30_42_merged}"
 legacy_config_path="${LIGHTNING_LM_CONFIG:-}"
-mapping_config_path="${LIGHTNING_LM_MAPPING_CONFIG:-${legacy_config_path:-$repo_dir/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml}}"
-localization_config_path="${LIGHTNING_LM_LOCALIZATION_CONFIG:-${legacy_config_path:-$repo_dir/config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml}}"
+mapping_config_path="${LIGHTNING_LM_MAPPING_CONFIG:-${legacy_config_path:-$repo_dir/config/sany/mapping.yaml}}"
+localization_config_path="${LIGHTNING_LM_LOCALIZATION_CONFIG:-${legacy_config_path:-$repo_dir/config/sany/localization.yaml}}"
 output_root="${LIGHTNING_LM_OUT_ROOT:-$data_dir/lightning_lm_4lidar_offline_localization_20260713}"
 run_prefix="${LIGHTNING_LM_RUN_NAME:-sany_4lidar_offline_loc_$(date +%Y%m%d_%H%M%S)}"
 sequence="SANY_4lidar"

@@ -71,6 +71,8 @@ out_root="$(mkdir -p "$out_root" && cd "$out_root" && pwd)"
 run_dir="$out_root/$run_name"
 log_dir="$run_dir/logs"
 mkdir -p "$log_dir"
+source "$script_dir/sany_config.sh"
+config_path="$(resolve_sany_config "$config_path" "$run_dir")"
 
 {
   echo "executable=run_loc_online"

@@ -1,23 +1,23 @@
 # SANY 多雷达 SOLiD / SOLiD-KISS 重定位
 
-## 当前三雷达发布边界（2026-09-01）
+## 当前共用配置边界（2026-10-11）
 
-- 当前在线拓扑只使用主 Orin 的前 184、左 108、右 133 三台雷达；后 143 雷达不进入定位。
-- 现场唯一入口是 `bash "${SANY_WS}/run.sh"`。其 LiDAR 分支调用仓库内 `scripts/run_sany_lidar_loc.sh`，在同一脚本内完成预检、可选采集、定位启动与收尾。
-- 正式配置是 `config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml`，默认 `relocalization.backend: solid_kiss`。
+- 车辆文件中 `MASTER AND SLAVE` 使用前 184、左 108、右 133；`MASTER` 同时使用后 143。VIN 选择外参，两种布局共用算法参数。
+- 现场定位入口是 `bash "${SANY_WS}/run_loc.sh"`，调用仓库内 `scripts/run_sany_lidar_loc.sh`，完成预检、可选采集、定位启动与收尾。
+- 正式配置是 `config/sany/localization.yaml`，默认 `relocalization.backend: solid_kiss`。
 - `solid_kiss` 没有替换 SOLiD：SOLiD 负责地点召回，KISS-Matcher 风格模块用 FPFH、距离兼容图、maximum k-core 和 GNC-TLS 估计候选子图相对位姿，随后仍执行地图预检、点到面精配准、最终地图一致性和两帧确认。
 - 当前生效预算为 Top-K 8、检索池 64、候选批次 8、每帧最多精配准一个候选。纯 `solid` Top-128 段保留为回退，不是默认参数。
 
-用生成器冻结三雷达 `solid_kiss` 变体时必须显式指定三雷达定位 YAML 为 base：
+正式配置已使用 `solid_kiss`。实验变体写入临时目录，并由启动脚本根据 `SANY_VEHICLE_CONFIG` 展开标定，禁止覆盖共用模板：
 
 ```bash
 python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_config.py \
-  --base config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
+  --base config/sany/localization.yaml \
   --backend solid_kiss \
   --compute-backend cpu \
   --top-k 8 \
   --retrieval-pool-size 64 \
-  --output /tmp/sany_3lidar_localization_solid_kiss.yaml
+  --output /tmp/sany_localization_solid_kiss_template.yaml
 ```
 
 地图导出后生成 SOLiD 数据库：
@@ -25,8 +25,12 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
+python3 scripts/resolve_sany_config.py \
+  --base-config config/sany/localization.yaml \
+  --vehicle-config /absolute/vehicle_config.yaml \
+  --output /tmp/sany_solid_database_config.yaml
 ./install/lightning_lm/lib/lightning_lm/build_solid_database \
-  --config=config/reproduction/multi_lidar/sany_3livox/sany_3lidar_localization_solid.yaml \
+  --config=/tmp/sany_solid_database_config.yaml \
   --map_path=/absolute/path/to/new_map
 ```
 
@@ -60,10 +64,10 @@ new_map/
 
 建图与定位使用独立的正式 YAML，两者都保存在 `config/` 下：
 
-- 建图：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_mapping.yaml`；
-- SOLiD 定位：`config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml`。
+- 建图：`config/sany/mapping.yaml`；
+- SOLiD 定位：`config/sany/localization.yaml`。
 
-`runs/` 只保存地图、轨迹、日志、分析结果和临时变体，不是域控正式配置的来源。需要复现四雷达纯 SOLiD 配置时，执行：
+`runs/` 只保存地图、轨迹、日志、分析结果和临时变体，不是域控正式配置的来源。以下是使用当前代码构造纯 SOLiD 实验变体的命令，不保证重现历史配置的全部参数。历史逐位复现应使用当时的 Git 提交。车辆文件必须填写对应旧车 VIN 和 `LIDAR: MASTER`，并另存实验配置：
 
 ```bash
 python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_config.py \
@@ -71,7 +75,11 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
   --compute-backend cpu \
   --top-k 20 \
   --retrieval-pool-size 200 \
-  --output config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml
+  --output /tmp/sany_historical_solid_template.yaml
+python3 scripts/resolve_sany_config.py \
+  --base-config /tmp/sany_historical_solid_template.yaml \
+  --vehicle-config /absolute/legacy_four_vehicle.yaml \
+  --output /tmp/sany_historical_solid_config.yaml
 ```
 
 生成数据库：
@@ -80,7 +88,7 @@ python3 scripts/reproduction/multi_lidar/sany_4livox/prepare_relocalization_conf
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ./install/lightning_lm/lib/lightning_lm/build_solid_database \
-  --config=config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
+  --config=/tmp/sany_historical_solid_config.yaml \
   --map_path=runs/sany_4lidar_mapping_data1_20260811_full/data/new_map
 ```
 
@@ -89,7 +97,7 @@ source install/setup.bash
 ```bash
 bash scripts/reproduction/multi_lidar/sany_4livox/run_phase_a_relocalization_matrix.sh \
   /mnt/f/datasets/SANY/sites/zhugong_mixing_plant/raw/rig_4lidar/relocalization \
-  config/reproduction/multi_lidar/sany_4livox/sany_4lidar_localization_solid.yaml \
+  /tmp/sany_historical_solid_config.yaml \
   runs/sany_4lidar_mapping_data1_20260811_full/data/new_map \
   runs/sany_4lidar_relocalization_latency_matrix_20260812/worker12
 

@@ -162,7 +162,7 @@ source "$ros_setup"
 source "$install_setup"
 set -u
 prefix="$(realpath "$(ros2 pkg prefix lightning_lm)")"
-expected_prefix="$(realpath "$repo_dir/install/lightning_lm")"
+expected_prefix="$(realpath "$(dirname "$install_setup")/lightning_lm")"
 if [[ "$prefix" != "$expected_prefix" ]]; then
   echo "lightning resolves to unexpected install prefix: $prefix (expected $expected_prefix)" >&2
   exit 2
@@ -178,6 +178,8 @@ if [[ ! -x "$binary" || ! -f "$monitor" || ! -f "$inspector" || ! -f "$timing_ex
   exit 2
 fi
 
+source "$script_dir/sany_config.sh"
+config_path="$(resolve_sany_config "$config_path" "$run_dir")"
 python3 "$inspector" --bag "$bag_dir" --config "$config_path" --output "$run_dir/bag_contract.json"
 readarray -t contract < <(python3 -c 'import json,sys
 p=json.load(open(sys.argv[1],encoding="utf-8"))

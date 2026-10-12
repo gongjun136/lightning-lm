@@ -15,6 +15,8 @@ class LauncherFailureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "setup.bash").write_text(":\n")
+            (root / "vehicle.yaml").write_text('VIN: "SANLV77EXSH000858"\nLIDAR: "MASTER AND SLAVE"\n')
+            (root / "map").mkdir()
             fake = root / "ros2"
             fake.write_text("""#!/usr/bin/env bash
 if [[ "$1 $2 $3" == 'run lightning_lm check_localization_inputs' ]]; then
@@ -44,12 +46,15 @@ exit 91
                 "LIGHTNING_LM_INSTALL_SETUP": str(root / "setup.bash"),
                 "LIGHTNING_LM_OUT_ROOT": str(root / "runs"),
                 "LIGHTNING_LM_RUN_MODE": "production",
+                "SANY_VEHICLE_CONFIG": str(root / "vehicle.yaml"),
+                "SANY_MAP_PATH": str(root / "map"),
                 "PROBE_EXIT": str(probe_exit),
                 "ALGORITHM_EXIT": str(algorithm_exit),
             })
+            # Allow cold Python/NumPy imports and metadata I/O on mounted workspaces.
             result = subprocess.run(
                 ["bash", str(REPO / "scripts/run_sany_lidar_loc.sh"), "test"],
-                env=env, text=True, capture_output=True, timeout=15)
+                env=env, text=True, capture_output=True, timeout=30)
             run = root / "runs/test"
             files = {str(path.relative_to(run)): path.read_text()
                      for path in run.rglob("*") if path.is_file()}

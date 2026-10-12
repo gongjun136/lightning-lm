@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Verify VIN/layout selection, shared parameters and fail-closed vehicle startup."""
+import copy
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+import yaml
+from resolve_sany_config import resolve
+
+REPO = Path(__file__).resolve().parents[1]
+CONFIG = REPO / "config/sany"
+
+
+class SanyConfigTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.vehicle = Path(self.temp.name) / "vehicle.yaml"
+
+    def vehicle_config(self, vin="SANLV77EXSH000858", layout="MASTER AND SLAVE"):
+        self.vehicle.write_text(yaml.safe_dump({"VIN": vin, "LIDAR": layout}))
+
+    def test_each_vin_and_layout_for_both_modes(self):
+        registry = yaml.safe_load((CONFIG / "calibrations.yaml").read_text())
+        for mode in ("mapping", "localization"):
+            for vin, profile in registry["vehicles"].items():
+                for layout, count in (("MASTER AND SLAVE", 3), ("MASTER", 4)):
+                    with self.subTest(mode=mode, vin=vin, layout=layout):
+                        self.vehicle_config(vin, layout)
+                        result = resolve(CONFIG / f"{mode}.yaml", self.vehicle)
+                        multi = result["multi_lidar"]
+                        self.assertEqual(len(multi["topics"]), count * 2)
+                        self.assertEqual(multi["extrinsics"], {f"lidar{i}": profile["extrinsics"][f"lidar{i}"] for i in range(count)})
+                        self.assertEqual(multi["match_tolerance"], 0.02)
+                        self.assertEqual(multi["min_lidars"], 1)
+                        self.assertEqual(result["fasterlio"]["livox_point_time_scale"], 1e-9)
+                        self.assertNotIn("sany_vehicle_config", result)
+                        if mode == "localization":
+                            load = multi["adaptive_load"]
+                            self.assertEqual(load["cloud_publish_min_lidars"], count)
+                            self.assertEqual(load["tracking_min_lidars"], 1)
+                            self.assertEqual(load["relocalization_min_lidars"], 1)
+                            self.assertEqual(load["tracking_lidar_count"], 0)
+                            self.assertEqual(load["lio_point_budgets"], [2200, 1804, 1500])
+
+    def test_algorithm_parameters_are_shared_across_vehicles(self):
+        self.vehicle_config()
+        old = resolve(CONFIG / "localization.yaml", self.vehicle)
+        self.vehicle_config("SW956ELCG0858", "MASTER")
+        new = resolve(CONFIG / "localization.yaml", self.vehicle)
+        for result in (old, new):
+            result.pop("vehicle_configuration")
+            result["multi_lidar"].pop("extrinsics")
+            result["multi_lidar"].pop("topics")
+            result["multi_lidar"]["adaptive_load"].pop("cloud_publish_min_lidars")
+        self.assertEqual(old, new)
+        self.assertEqual(old["relocalization"]["backend"], "solid_kiss")
+        self.assertEqual(old["relocalization"]["refinement_backend"], "plane_icp")
+        self.assertFalse(old["output"]["fixed_map_transform"]["enabled"])
+
+    def test_missing_unknown_or_illegal_vehicle_fails(self):
+        with self.assertRaises(OSError):
+            resolve(CONFIG / "localization.yaml", self.vehicle)
+        for vin, layout in (("UNKNOWN", "MASTER"), (None, "MASTER"), ("SW956ELCG0858", "SLAVE")):
+            self.vehicle_config(vin, layout)
+            with self.assertRaises(ValueError):
+                resolve(CONFIG / "localization.yaml", self.vehicle)
+
+    def test_invalid_calibration_is_rejected(self):
+        registry = yaml.safe_load((CONFIG / "calibrations.yaml").read_text())
+        broken = copy.deepcopy(registry)
+        broken["vehicles"]["SW956ELCG0858"]["extrinsics"]["lidar1"]["T"][0] = 2
+        path = Path(self.temp.name) / "broken.yaml"
+        path.write_text(yaml.safe_dump(broken))
+        self.vehicle_config("SW956ELCG0858", "MASTER")
+        with self.assertRaises(ValueError):
+            resolve(CONFIG / "localization.yaml", self.vehicle, path)
+
+    def test_run_snapshot_is_immutable(self):
+        self.vehicle_config()
+        output = Path(self.temp.name) / "runtime.yaml"
+        command = ["python3", str(REPO / "scripts/resolve_sany_config.py"), "--base-config", str(CONFIG / "mapping.yaml"),
+                   "--vehicle-config", str(self.vehicle), "--output", str(output)]
+        self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+        original = output.read_bytes()
+        self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+        self.assertEqual(output.read_bytes(), original)
+
+
+if __name__ == "__main__":
+    unittest.main()
