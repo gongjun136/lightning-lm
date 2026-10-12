@@ -102,6 +102,12 @@ class Links(HTMLParser):
 
 def check_html(folder, page_ids):
     errors, cache = [], {}
+    # Doxygen renders unresolved Markdown references as plain text, so they
+    # disappear from the HTML link list. Inspect the build log as well.
+    warning_log = folder.parent.parent / 'doxygen-warnings.log'
+    if warning_log.is_file():
+        errors.extend(line for line in warning_log.read_text(encoding='utf-8').splitlines()
+                      if re.search(r'[/\\]docs[/\\].*: warning:', line))
     def parse(path):
         if path not in cache:
             parser = Links()

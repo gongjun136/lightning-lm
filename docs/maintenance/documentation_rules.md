@@ -106,6 +106,8 @@ python3 docs/maintenance/check_links.py --html build_docs/docs/html
 
 文档构建会拒绝手写页面的 Doxygen 告警；历史源码注释告警仍留在日志，不将其误报为本轮零告警。链接检查覆盖全部手册页、API 目标、锚点和图像资源；公式与图布局还需浏览器查看。
 
+相对 Markdown 链接的目标必须纳入 Doxygen `INPUT`，仅在仓库中存在文件还不足以生成可跳转页面。`--html` 检查也会读取构建目录的 `doxygen-warnings.log`，捕获被 Doxygen 输出成普通文本的失效手册引用。
+
 Shell 源码通过 `shell_sources.dox` 的 `@example{lineno}` 直接引用真实文件，手册用 `@ref` 跳转。新增、删除或重命名脚本时同步注册与调用说明；检查器会拒绝注册遗漏、重复或不存在的脚本。生成的脚本源码页也参加 HTML 链接检查。
 
 源码注释变化检查非注释 token 不变。改动文档 CMake 时核验独立 docs 和 `BUILD_DOCS=ON` 两个入口；涉及业务代码或依赖变化时，再使用同一依赖环境验证业务构建。文档迁移之后检查整个仓库与工作区入口的路径，不只检查 Markdown。
