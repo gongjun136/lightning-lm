@@ -78,7 +78,8 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         return false;
     }
     std::string map_frame_error;
-    if (!map_frame::ReadExportOptions(yaml, map_export_options_, map_frame_error)) {
+    if (!map_frame::ReadExportOptions(yaml, map_export_options_, map_frame_error) ||
+        !map_manifest::ReadExportOptions(yaml, map_manifest_options_, map_frame_error)) {
         LOG(ERROR) << map_frame_error;
         return false;
     }
@@ -436,7 +437,8 @@ bool SlamSystem::SaveMap(const std::string& path) {
         }
     }
 
-    if (!map_frame::SaveMetadata(save_path, map_metadata, map_frame_error)) {
+    if (!map_frame::SaveMetadata(save_path, map_metadata, map_frame_error) ||
+        !map_manifest::SaveExportManifest(save_path, map_manifest_options_, map_frame_error)) {
         LOG(ERROR) << "map export aborted: " << map_frame_error;
         return false;
     }

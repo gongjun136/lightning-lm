@@ -63,6 +63,8 @@ digraph offline_slam {
 
 至少一个关键帧是硬前置条件。入口选择 LIO 或优化位姿生成全局点云，估计导出坐标系，原位转换点云，然后写 tiled map、压缩 PCD，以及可选 PGM/YAML。轨迹、后端诊断、BTC 重定位库和 map metadata 随后写出。
 
+最后写 `map_manifest.yaml`，绑定几何 SHA-256 和业务输出坐标声明；保存失败返回 4。新导出默认 `unknown`，不会复制共用定位 YAML 的历史新→老变换；只有明确配置 `map_export.alignment_status: not_required` 才声明原生坐标可直接使用。详见 @ref map_contracts "地图清单与启动契约"。
+
 导出目录若已存在，C++ 入口会递归删除后重建；标准 shell 运行器在更早阶段拒绝覆盖自己的受管产物。直接运行二进制不会获得脚本的这一层保护。
 
 **代码依据：** `src/app/run_slam_offline.cc:433-573`（关键帧检查、`remove_all`、地图/轨迹/诊断导出）

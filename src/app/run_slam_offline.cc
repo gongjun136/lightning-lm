@@ -19,6 +19,7 @@
 #include "core/lio/laser_mapping.h"
 #include "core/loop_closing/loop_closing.h"
 #include "core/maps/map_frame.h"
+#include "core/maps/map_manifest.h"
 #include "core/maps/navigation_map_export.h"
 #include "core/maps/tiled_map.h"
 #include "io/yaml_io.h"
@@ -254,9 +255,11 @@ int main(int argc, char** argv) {
     YAML_IO yaml(FLAGS_config);
     const YAML::Node config_root = YAML::LoadFile(FLAGS_config);
     map_frame::ExportOptions map_export_options;
+    map_manifest::ExportOptions manifest_options;
     std::string map_frame_error;
     if (!map_frame::ReadExportOptions(
-            config_root, map_export_options, map_frame_error)) {
+            config_root, map_export_options, map_frame_error) ||
+        !map_manifest::ReadExportOptions(config_root, manifest_options, map_frame_error)) {
         LOG(ERROR) << map_frame_error;
         return 2;
     }
@@ -567,7 +570,8 @@ int main(int argc, char** argv) {
         }
     }
     if (!FLAGS_backend_evaluation_only &&
-        !map_frame::SaveMetadata(map_dir.string(), map_metadata, map_frame_error)) {
+        (!map_frame::SaveMetadata(map_dir.string(), map_metadata, map_frame_error) ||
+         !map_manifest::SaveExportManifest(map_dir.string(), manifest_options, map_frame_error))) {
         LOG(ERROR) << "failed to finalize map package: " << map_frame_error;
         Timer::PrintAll();
         return 4;

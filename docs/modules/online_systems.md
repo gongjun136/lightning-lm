@@ -26,7 +26,7 @@
 
 在线定位的完整逐帧路径、状态机和发布门控见 @ref online_localization_flow "在线定位端到端流程"；本页只保留系统编排层的共同职责。
 
-1. `LocSystem::Init()` 解析地图路径及 ROS 输出配置，构造 `Localization` 并注册结果/点云回调。
+1. `LocSystem::Init()` 解析地图路径，校验该包 `map_manifest.yaml` 的几何哈希与变换状态，从清单加载 ROS 地图输出变换，再初始化 `Localization` 并注册结果/点云回调。缺失或未知清单在创建 ROS 节点前返回失败。
 2. ROS 回调只做消息适配、计数和转发；算法队列与定位线程由 `Localization` 管理。
 3. 定位回调发布 pose、path、TF、状态与诊断；可选轨迹文件由独立互斥量串行写入。
 4. `Finish()` 依次让 sensor、定位和高频输出队列 drain 并 join，再停止地图更新线程、heartbeat 和轨迹文件；析构会再次进入同一幂等路径。

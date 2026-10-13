@@ -159,6 +159,8 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 此阶段把“本次用了什么配置”和后续产物绑定到同一个目录。算法工作目录仍是仓库目录，三份轨迹通过明确的参数写入 `run_dir`。
 
+车辆参数解析后，`export_map_manifest --apply_to_config` 校验所选地图并将其输出变换写入本次快照。地图清单缺失、`unknown` 或哈希/矩阵矛盾时立即退出，尚未检查传感器或启动定位；原因保存在 `logs/map_manifest.log`。共用 YAML 中残留的场地矩阵不会决定本次输出坐标。
+
 @anchor sany_lidar_input_gate
 ### 5. 注册收尾，等待并核对传感器输入
 

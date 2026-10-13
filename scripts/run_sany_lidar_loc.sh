@@ -111,7 +111,7 @@ Useful environment variables:
   SANY_MIN_FREE_GB            When recording, require this free space in GiB (default: 20)
   SANY_RECORD_QOS_FILE        QoS override YAML
   SANY_ENABLE_CAN_OBSERVATION Fuse CAN wheel speed: 1=yes, 0=no (default: 1)
-  SANY_ENABLE_FIXED_MAP_TRANSFORM  0/1 site override; unset keeps the shared YAML default
+  SANY_ENABLE_FIXED_MAP_TRANSFORM  Deprecated and ignored; the selected map owns its transform
   SANY_WHEEL_SPEED_TOPIC      Motor-speed topic (default: /SpeThrCAN4_topic)
   SANY_IMU_TOPIC              Optional primary IMU topic override
   LIGHTNING_LM_WS             Workspace path used by legacy fallback defaults
@@ -318,18 +318,22 @@ fi
 if [[ "${record_bag}" == "1" ]]; then mkdir -p "${run_dir}/bag"; fi
 # [sany-lidar-run-directory]
 # [sany-lidar-config-snapshot]
-site_config_args=()
 if [[ -n "${fixed_map_transform}" ]]; then
-  site_config_args+=(--fixed-map-transform "${fixed_map_transform}")
+  echo "SANY_ENABLE_FIXED_MAP_TRANSFORM is deprecated and ignored; loading the selected map_manifest.yaml." >&2
 fi
 config_path="$(python3 "${script_dir}/resolve_sany_config.py" \
   --base-config "${config_path}" --vehicle-config "${SANY_VEHICLE_CONFIG}" \
   --calibrations "${repo_dir}/config/sany/calibrations.yaml" \
-  --output "${run_dir}/config.yaml" "${site_config_args[@]}")" || fail "vehicle configuration resolution failed"
+  --output "${run_dir}/config.yaml")" || fail "vehicle configuration resolution failed"
 lidar_layout="$(python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))["vehicle_configuration"]["lidar_count"])' "${config_path}")"
 if [[ -n "${SANY_LIDAR_LAYOUT:-}" && "${SANY_LIDAR_LAYOUT}" != "${lidar_layout}" ]]; then
   fail "SANY_LIDAR_LAYOUT conflicts with vehicle_config.yaml LIDAR; remove the legacy override"
 fi
+# The selected map owns its output frame; shared/vehicle YAMLs cannot supply its alignment.
+ros2 run lightning_lm export_map_manifest --map="${map_path}" \
+  --apply_to_config="${config_path}" \
+  >"${run_dir}/logs/map_manifest.log" 2>&1 ||
+  fail "map manifest validation failed; see ${run_dir}/logs/map_manifest.log"
 python3 "${script_dir}/summarize_run_config.py" \
   --config "${config_path}" --output "${run_dir}/launch_compute_config.json" \
   | tee "${run_dir}/logs/launch_compute_config.log"

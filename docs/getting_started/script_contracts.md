@@ -33,7 +33,7 @@ ${SANY_WS}/run.sh
 | @ref run_frontend_online.sh "run_frontend_online.sh" | `--config` 透传；`LIGHTNING_LM_{REPO_DIR,ROS_SETUP,INSTALL_SETUP,CONFIG}` | 不改 cwd；source 两个 setup → `ros2 run ... run_frontend_online` | 取决于节点配置：发布 ROS topic/UI/log |
 | @ref run_slam_online.sh "run_slam_online.sh" | `--config` + 透传；同上，另有 OUT_ROOT/RUN_NAME | 创建并 `cd` run dir（同名目录可复用）→ `ros2 run ... run_slam_online` | 写 logs/run metadata；在线建图服务可能写地图 |
 | @ref run_loc_online.sh "run_loc_online.sh" | `--config` + 透传；同上 | 创建并 `cd` run dir → `ros2 run ... run_loc_online` | 写 logs；加载地图并发布定位结果 |
-| @ref align_maps_offline.sh "align_maps_offline.sh" | 全部参数透传 | 不改 cwd；解析安装 binary → `exec align_maps_offline` | 由二进制读写所给地图/结果路径 |
+| @ref align_maps_offline.sh "align_maps_offline.sh" | 全部参数透传 | 不改 cwd；解析安装 binary → `exec align_maps_offline` | 对齐成功且允许更新时写运行 YAML 与新地图的 `map_manifest.yaml`；只读模式不更新二者 |
 | @ref save_default_map.sh "save_default_map.sh" | 无 | 当前 cwd → `ros2 service call /lightning/save_map` | 请求在线节点写 `new_map` |
 | @ref install_dep.sh "install_dep.sh" | 无 | 当前 cwd → `sudo apt install ...` | **系统级**安装 OpenCV/PCL/YAML/glog/gflags/ROS PCL 包 |
 

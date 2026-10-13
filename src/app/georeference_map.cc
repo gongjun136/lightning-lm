@@ -1,4 +1,5 @@
 #include "core/maps/tiled_map.h"
+#include "core/maps/map_manifest.h"
 #include "common/pcd_io.h"
 #include <pcl/io/pcd_io.h>
 #include <filesystem>
@@ -55,6 +56,12 @@ int main(int argc,char** argv) {
         if (!map.ConvertFromFullPCD(cloud,transform*lightning::SE3(start_q,start_t),(output/"tiled").string()) ||
             !fs::exists(output/"tiled"/"index.txt")) throw std::runtime_error("cannot export tiled map");
         fs::copy_file(argv[2],output/"georeference.yaml");
+        lightning::map_manifest::ExportOptions map_options;
+        map_options.map_id = output.filename().string();
+        map_options.alignment_status = "not_required";
+        std::string map_error;
+        if (!lightning::map_manifest::SaveExportManifest((output/"tiled").string(), map_options, map_error))
+            throw std::runtime_error(map_error);
         std::cout << "Created " << output << "; rebuild SOLiD/BTC databases in this frame.\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

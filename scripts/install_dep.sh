@@ -1,3 +1,3 @@
 # [install-dependencies]
-sudo apt install libopencv-dev libpcl-dev pcl-tools libyaml-cpp-dev libgoogle-glog-dev libgflags-dev ros-humble-pcl-conversions
+sudo apt install libopencv-dev libpcl-dev pcl-tools libyaml-cpp-dev libgoogle-glog-dev libgflags-dev libssl-dev ros-humble-pcl-conversions
 # [install-dependencies]

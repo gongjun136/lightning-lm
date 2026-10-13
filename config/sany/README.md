@@ -56,4 +56,4 @@ python3 scripts/resolve_sany_config.py \
 
 建图和定位共用 `match_tolerance: 0.02`（20 ms），兼容新车历史四雷达约 10 ms 的帧起点跨度；仅放宽同周期帧配对条件，不改写点的物理时间。定位重排窗口保持 0.1 s。
 
-旧地图固定变换的数值保留，但默认关闭。地图路径与坐标变换必须配对具体地图版本，VIN 不选择场地地图。
+旧地图固定变换的数值保留，但在线启动从所选地图的 `map_manifest.yaml` 加载实际输出变换。车辆/VIN 配置不选择地图坐标。缺少清单、状态未确定、哈希或矩阵矛盾均拒绝启动；旧 `SANY_ENABLE_FIXED_MAP_TRANSFORM` 已弃用，不覆盖地图清单。历史地图补齐和新图 `map_export.alignment_status` 声明见 `docs/modules/maps.md`。

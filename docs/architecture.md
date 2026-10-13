@@ -25,6 +25,8 @@
 
 **代码依据：** `src/CMakeLists.txt`、各目录头文件（编译源清单、公开 API 与成员所有权）
 
+`export_map_manifest` 是独立的历史地图清单导出/校验入口；在线定位和 SLAM 导出共用 `map_manifest` 模块。它不运行估计器，写入或检查地图身份、几何哈希与输出坐标声明，详见 @ref map_contracts "地图包契约"。
+
 跨模块阅读不要沿物理目录来回跳：在线定位从 @ref online_localization_flow "在线定位端到端流程" 进入，离线建图从 @ref offline_slam_flow "离线 SLAM 端到端流程" 进入；遇到需要理解的类，再回到对应模块页和 API 源码。
 
 # 入口到编排对象

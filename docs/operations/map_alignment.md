@@ -10,7 +10,7 @@
 T_old_body = T_old_new * T_new_body
 ```
 
-其中 `T_old_new` 在 YAML 中使用 `target_from_localization` 约定。在线发布前左乘该变换，使外部系统继续收到老地图坐标系中的结果。对已有且不包含 `output.fixed_map_transform` 的配置，功能默认关闭，行为与原来一致。
+其中 `T_old_new` 在 YAML 中使用 `target_from_localization` 约定。在线发布前左乘该变换，使外部系统继续收到老地图坐标系中的结果。在线启动以所选地图包的 `map_manifest.yaml` 为准；历史地图缺少清单时须先补齐，不能从共用配置猜测变换。
 
 ## 构建
 
@@ -41,7 +41,7 @@ bash scripts/align_maps_offline.sh \
 
 候选生成优先使用老地图 SOLiD；若老地图尚无 SOLiD 数据库，工具会利用其 BTC 子图生成一次。BTC 和全局 PCA 几何候选作为交叉验证与后备。候选经过多尺度 ICP、全局双向重叠、局部分区覆盖、多个静止子图一致性及歧义检查。
 
-只有全部自动门限通过时，工具才会备份并更新传入运行 YAML 的 `output.fixed_map_transform`。失败时不改配置，并返回非零退出码。可用 `--update_config=false` 只生成判断材料而不写 YAML。审核后将配置与对应地图成套发布；不要直接修改共用模板来启用某个场地的变换。
+只有全部自动门限通过时，工具才会备份并更新传入运行 YAML 的 `output.fixed_map_transform`，并更新新地图的 `map_manifest.yaml`，记录源/目标地图版本、参考点云 SHA-256 与完整矩阵。保存清单失败返回非零退出码。可用 `--update_config=false` 只生成判断材料，不更新运行 YAML 或地图清单。审核后将配置与对应地图成套发布；不要直接修改共用模板来启用某个场地的变换。
 
 ## 人工复核材料
 

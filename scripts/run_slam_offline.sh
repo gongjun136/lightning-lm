@@ -443,7 +443,7 @@ missing_output=0
 required_outputs=("$trajectory_tum" "$frame_stats" "$timing_csv" "$timing_summary"
                   "$run_dir/resource_samples.csv" "$run_dir/resource_summary.json")
 if [[ "$backend_evaluation_only" != "true" ]]; then
-  required_outputs+=("$map_dir/index.txt" "$global_map")
+  required_outputs+=("$map_dir/index.txt" "$map_dir/map_manifest.yaml" "$global_map")
 fi
 for output in "${required_outputs[@]}"; do
   if [[ ! -s "$output" ]]; then echo "missing or empty output: $output" >&2; missing_output=1; fi

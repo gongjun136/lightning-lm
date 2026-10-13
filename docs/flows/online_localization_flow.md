@@ -191,6 +191,8 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 
 固定地图变换在输出边界应用；`output.fixed_map_transform.target_frame` 必须与 `output.map_frame` 一致。不要在算法内部再叠加一次同类变换。
 
+这两个地图输出字段以所选地图包的 `map_manifest.yaml` 为准，由 `LocSystem::Init()` 校验并加载，不从共用定位 YAML 沿用历史场地变换。清单缺失、`unknown`、几何 SHA-256 变化或矩阵/应用状态矛盾时拒绝启动。状态与补齐工具见 @ref map_contracts "地图清单契约"。
+
 **代码依据：** `src/core/localization/localization.cpp` 的 `LidarLocProcCloud()` 与 `Init()` 输出回调；`src/core/system/loc_system.cc` 的 `Init()`、`PublishLocalizationResult()`、`PublishProcessedCloud()`、`PublishHealthStatus()`
 
 # 7. 队列、时序与新鲜度

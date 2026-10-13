@@ -21,6 +21,7 @@
 #include "common/keyframe.h"
 #include "common/nav_state.h"
 #include "core/maps/map_frame.h"
+#include "core/maps/map_manifest.h"
 
 namespace lightning {
 
@@ -164,6 +165,7 @@ class SlamSystem {
     std::atomic_bool running_ = false;  ///< 系统是否处于建图运行状态。
 
     map_frame::ExportOptions map_export_options_;  ///< 地图坐标归一化与导航栅格导出配置。
+    map_manifest::ExportOptions map_manifest_options_;  ///< 地图身份与业务坐标声明。
     rclcpp::Service<SaveMapService>::SharedPtr savemap_service_ = nullptr;  ///< ROS2保存地图服务。
 
     std::string map_name_;  ///< 当前地图名。

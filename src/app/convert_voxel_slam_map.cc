@@ -19,6 +19,7 @@
 #include "common/point_def.h"
 #include "core/lightning_math.hpp"
 #include "core/maps/tiled_map.h"
+#include "core/maps/map_manifest.h"
 
 DEFINE_string(input_dir, "", "Voxel-SLAM output directory containing numbered PCDs and alidarState.txt");
 DEFINE_string(pose_file, "", "optimized Voxel-SLAM pose file; defaults to INPUT_DIR/alidarState.txt");
@@ -207,6 +208,11 @@ int main(int argc, char** argv) {
              << "voxel_size_m=" << FLAGS_voxel_size << "\n"
              << "voxelization=incremental_global_centroid_hash\n";
     metadata.close();
+    std::string manifest_error;
+    if (!lightning::map_manifest::SaveExportManifest(output_dir.string(), {}, manifest_error)) {
+        LOG(ERROR) << manifest_error;
+        return 4;
+    }
     LOG(INFO) << "converted " << loaded_frames << " Voxel-SLAM scans (" << input_points << " points) into "
               << filtered_map->size() << " tiled-map points at " << output_dir;
     return 0;

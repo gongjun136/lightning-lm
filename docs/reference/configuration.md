@@ -12,8 +12,8 @@
 | `backend.mode/local_ba/btc/hba` | `ReadBackendMode`、`BackendPipeline::Init` | system 总开关、提交条件与线程 |
 | `relocalization` | SOLiD/BTC、`LidarLoc::Init` | 数据库与地图一致、细化后端、确认阈值 |
 | 定位队列/输出 | `Localization::Init`、`LocSystem::Init` | 队列容量、最大帧龄、失效停止发布 |
-| `map_export` | `map_frame::ReadExportOptions` | 地面归一化、PGM 高度带、覆盖行为 |
-| `output.fixed_map_transform` | `LoadFixedMapTransform` | 仅输出边界左乘，不修改内部地图 |
+| `map_export` | `map_frame::ReadExportOptions`、`map_manifest::ReadExportOptions` | 地面归一化、PGM 高度带、`site_id/map_id/alignment_status` |
+| 地图包 `map_manifest.yaml` 的 `output.fixed_map_transform` | `map_manifest::LoadOutputConfig` → `LoadFixedMapTransform` | 所选地图的清单优先；启动核对几何哈希；仅输出边界左乘 |
 
 算法参数深入见 @ref eskf_theory "18 维迭代 ESKF：从预测到观测注入"、@ref backend_optimization "体素 BA、回环位姿图与分层优化"、@ref relocalization_theory "全局重定位：检索、几何验证与时间确认"。部署参数见 @ref script_contracts "Shell 启动与实验脚本契约"、@ref resource_diagnostics "资源与端到端延迟"。
 

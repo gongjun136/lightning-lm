@@ -118,7 +118,7 @@
 
 @snippet{lineno} run_slam_offline.sh slam-offline-finish
 
-普通建图还要求分块索引、全局地图和一定数量的地图点；`backend_evaluation_only=true` 时不要求这部分地图产物。所有任务都要求轨迹、帧统计、计时和资源记录满足 runner 条件。
+普通建图还要求分块索引、全局地图、`map_manifest.yaml` 和一定数量的地图点；`backend_evaluation_only=true` 时不要求这部分地图产物。新地图清单默认为 `unknown`，须完成对齐或明确声明无需变换后才能启动在线定位。所有任务都要求轨迹、帧统计、计时和资源记录满足 runner 条件。
 
 从 @ref run_slam_offline.cc "main()" 继续：初始化 LIO 与后端 → `rosbag.Go()` → 最后一帧 flush → 等待后端 → 地图导出。配置可选择新 `BackendPipeline`、legacy 或关闭后端，不能仅凭脚本名判断用了哪一种。
 

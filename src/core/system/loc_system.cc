@@ -21,6 +21,7 @@
 
 #include "core/localization/localization.h"
 #include "core/localization/pose_covariance.h"
+#include "core/maps/map_manifest.h"
 #include "common/debug_event.h"
 #include "io/yaml_io.h"
 #include "wrapper/ros_utils.h"
@@ -108,9 +109,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
         map_path = configured_map.as<std::string>();
     }
-    map_frame_ = root["output"] && root["output"]["map_frame"] ? root["output"]["map_frame"].as<std::string>() : "map";
     std::string fixed_transform_error;
-    if (!sany_output::LoadFixedMapTransform(root, fixed_map_transform_, fixed_transform_error)) {
+    YAML::Node map_output;
+    if (!map_manifest::LoadOutputConfig(map_path, map_output, fixed_transform_error)) {
+        LOG(ERROR) << "map output configuration rejected: " << fixed_transform_error;
+        return false;
+    }
+    YAML::Node output_root;
+    output_root["output"] = map_output;
+    map_frame_ = map_output["map_frame"].as<std::string>();
+    if (!sany_output::LoadFixedMapTransform(output_root, fixed_map_transform_, fixed_transform_error)) {
         LOG(ERROR) << fixed_transform_error;
         return false;
     }
@@ -119,6 +127,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                    << map_frame_ << ")";
         return false;
     }
+    LOG(INFO) << "MAP_MANIFEST loaded=" << map_path << "/" << map_manifest::kFilename
+              << " fixed_map_transform=" << fixed_map_transform_.enabled;
     primary_lidar_position_in_body_ = Vec3d(2.199, 0.0, 2.740);
     if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
         const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();

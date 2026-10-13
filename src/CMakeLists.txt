@@ -25,6 +25,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/maps/tiled_map.cc
         core/maps/tiled_map_chunk.cc
         core/maps/map_frame.cc
+        core/maps/map_manifest.cc
         core/maps/navigation_map_export.cc
 
         core/localization/localization_result.cc
@@ -98,6 +99,7 @@ target_link_libraries(${PROJECT_NAME}.libs
         miao.core
         miao.utils
         ${GEOGRAPHICLIB_LIBRARY}
+        OpenSSL::Crypto
 )
 
 install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
@@ -168,6 +170,9 @@ if(BUILD_TESTING)
     add_executable(map_frame_test test/map_frame_test.cc)
     target_link_libraries(map_frame_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(map_manifest_test test/map_manifest_test.cc)
+    target_link_libraries(map_manifest_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(navigation_map_export_test test/navigation_map_export_test.cc)
     target_link_libraries(navigation_map_export_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -207,6 +212,7 @@ if(BUILD_TESTING)
     add_test(NAME kiss_matcher_registration_test COMMAND $<TARGET_FILE:kiss_matcher_registration_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
+    add_test(NAME map_manifest_test COMMAND $<TARGET_FILE:map_manifest_test>)
     add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)
     add_test(NAME localization_input_locking_test COMMAND $<TARGET_FILE:localization_input_locking_test>)
     add_test(NAME compute_profiling_test COMMAND $<TARGET_FILE:compute_profiling_test>)

@@ -30,6 +30,7 @@
 #include "common/point_def.h"
 #include "core/localization/btc_relocalizer.h"
 #include "core/localization/solid_relocalizer.h"
+#include "core/maps/map_manifest.h"
 
 DEFINE_string(old_map, "", "old annotated Lightning-LM map package");
 DEFINE_string(new_map, "", "new Lightning-LM map package used by localization");
@@ -945,6 +946,19 @@ int main(int argc, char** argv) {
                 report["failed_gates"].push_back("config_update_failed: " + config_error);
             }
         }
+        bool manifest_written = false;
+        if (success && FLAGS_update_config) {
+            manifest_written = lightning::map_manifest::SaveAlignmentManifest(
+                new_map.string(), old_map.string(), best.transform,
+                (output_dir / "alignment_report.yaml").string(), best.quality,
+                false, config_error);
+            if (!manifest_written) {
+                success = false;
+                report["success"] = false;
+                report["failed_gates"].push_back("map_manifest_update_failed: " + config_error);
+            }
+        }
+        report["map_manifest_updated"] = manifest_written;
         report["config_updated"] = config_written;
         std::ofstream report_stream(output_dir / "alignment_report.yaml");
         report_stream << std::setprecision(15) << report;

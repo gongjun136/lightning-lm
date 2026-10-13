@@ -83,6 +83,9 @@ target_link_libraries(align_maps_offline
         ${third_party_libs}
 )
 
+add_executable(export_map_manifest export_map_manifest.cc)
+target_link_libraries(export_map_manifest ${PROJECT_NAME}.libs ${third_party_libs})
+
 add_executable(pos_res_recorder
         pos_res_recorder.cc
 )
@@ -117,5 +120,5 @@ add_executable(georeference_map georeference_map.cc)
 target_link_libraries(georeference_map ${PROJECT_NAME}.libs ${third_party_libs})
 
 install(TARGETS run_frontend_offline run_frontend_online run_slam_offline run_slam_online run_loc_offline run_loc_online ins_project_llh georeference_map
-        convert_voxel_slam_map build_solid_database align_maps_offline pos_res_recorder
+        convert_voxel_slam_map build_solid_database align_maps_offline export_map_manifest pos_res_recorder
         DESTINATION lib/${PROJECT_NAME})
