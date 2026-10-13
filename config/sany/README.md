@@ -13,11 +13,13 @@ LIDAR: "MASTER AND SLAVE"
 ```
 
 - `SANLV77EXSH000858`：旧车标定 `legacy_vehicle`。
-- `SW956ELCG0858`：新车标定 `user_provided_20261010_v1`。
+- `SANLU77E8TH000006`：新车标定 `user_provided_20261010_v1`。
 - `MASTER AND SLAVE`：master 定位/建图使用前、左、右三台，保留旧 slave 独立驱动入口。
 - `MASTER`：master 使用前、左、右、后四台；后雷达接收 IP 为 `192.168.4.100`。
 
 VIN 与接线方式分别解析；文件缺失、未知 VIN、非法 LIDAR 或无效矩阵时拒绝启动。相对外参约定为 `T_primary_from_lidar_row_major`，平移单位 m，前雷达为 ID 0，主 IMU 同为前雷达。
+
+2026-10-13 用户确认新车真实 VIN 为 `SANLU77E8TH000006`，此前登记的 `SW956ELCG0858` 对应同一台车，已更正 VIN 匹配值；相对雷达标定保持不变。车辆识别只读取 `VIN`，`DEVICE_CODE` 不替代 VIN，也不增加第三组标定。
 
 ## 启动
 

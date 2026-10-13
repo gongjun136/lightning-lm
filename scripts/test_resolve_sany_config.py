@@ -48,7 +48,7 @@ class SanyConfigTest(unittest.TestCase):
     def test_algorithm_parameters_are_shared_across_vehicles(self):
         self.vehicle_config()
         old = resolve(CONFIG / "localization.yaml", self.vehicle)
-        self.vehicle_config("SW956ELCG0858", "MASTER")
+        self.vehicle_config("SANLU77E8TH000006", "MASTER")
         new = resolve(CONFIG / "localization.yaml", self.vehicle)
         for result in (old, new):
             result.pop("vehicle_configuration")
@@ -60,10 +60,19 @@ class SanyConfigTest(unittest.TestCase):
         self.assertEqual(old["relocalization"]["refinement_backend"], "plane_icp")
         self.assertFalse(old["output"]["fixed_map_transform"]["enabled"])
 
+    def test_real_new_vehicle_vin_selects_confirmed_calibration(self):
+        self.vehicle_config("SANLU77E8TH000006", "MASTER")
+        result = resolve(CONFIG / "localization.yaml", self.vehicle)
+        self.assertEqual(result["vehicle_configuration"]["VIN"], "SANLU77E8TH000006")
+        self.assertEqual(result["vehicle_configuration"]["calibration_id"], "user_provided_20261010_v1")
+        self.assertEqual(result["vehicle_configuration"]["lidar_count"], 4)
+        self.assertIn("lidar_3", result["multi_lidar"]["topics"])
+
     def test_missing_unknown_or_illegal_vehicle_fails(self):
         with self.assertRaises(OSError):
             resolve(CONFIG / "localization.yaml", self.vehicle)
-        for vin, layout in (("UNKNOWN", "MASTER"), (None, "MASTER"), ("SW956ELCG0858", "SLAVE")):
+        for vin, layout in (("UNKNOWN", "MASTER"), (None, "MASTER"),
+                            ("SW956ELCG0858", "MASTER"), ("SANLU77E8TH000006", "SLAVE")):
             self.vehicle_config(vin, layout)
             with self.assertRaises(ValueError):
                 resolve(CONFIG / "localization.yaml", self.vehicle)
@@ -85,10 +94,10 @@ class SanyConfigTest(unittest.TestCase):
     def test_invalid_calibration_is_rejected(self):
         registry = yaml.safe_load((CONFIG / "calibrations.yaml").read_text())
         broken = copy.deepcopy(registry)
-        broken["vehicles"]["SW956ELCG0858"]["extrinsics"]["lidar1"]["T"][0] = 2
+        broken["vehicles"]["SANLU77E8TH000006"]["extrinsics"]["lidar1"]["T"][0] = 2
         path = Path(self.temp.name) / "broken.yaml"
         path.write_text(yaml.safe_dump(broken))
-        self.vehicle_config("SW956ELCG0858", "MASTER")
+        self.vehicle_config("SANLU77E8TH000006", "MASTER")
         with self.assertRaises(ValueError):
             resolve(CONFIG / "localization.yaml", self.vehicle, path)
 

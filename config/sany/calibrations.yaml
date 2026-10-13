@@ -78,7 +78,7 @@ vehicles:
         - 0
         - 0
         - 1
-  SW956ELCG0858:
+  SANLU77E8TH000006:
     calibration_id: user_provided_20261010_v1
     extrinsics:
       lidar0:

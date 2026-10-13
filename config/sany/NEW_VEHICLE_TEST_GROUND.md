@@ -1,6 +1,6 @@
 # 新车测试场地
 
-VIN 已确认是 `SW956ELCG0858`，LIDAR 为 `MASTER`，对应 `user_provided_20261010_v1` 标定。现在使用同目录共用 `mapping.yaml` / `localization.yaml`，详见 [统一配置说明](README.md)。无需新车专用算法 YAML。
+VIN 已确认是 `SANLU77E8TH000006`，LIDAR 为 `MASTER`，对应 `user_provided_20261010_v1` 标定。现在使用同目录共用 `mapping.yaml` / `localization.yaml`，详见 [统一配置说明](README.md)。无需新车专用算法 YAML。
 
 现场统一使用 `${SANY_WS}/run_loc.sh`，由其调用 [`scripts/run_sany_lidar_loc.sh`](../../scripts/run_sany_lidar_loc.sh)。地图路径通过 `SANY_MAP_PATH` 指定。
 
