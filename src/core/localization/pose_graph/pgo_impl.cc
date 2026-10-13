@@ -100,6 +100,7 @@ bool PGOImpl::Reset() {
     output_pose_queue_.clear();
     accumulated_frame_id_ = 0;
     result_ = LocalizationResult{};
+    ++pose_epoch_;
     is_in_map_ = false;
     lidar_odom_valid_ = true;
     lidar_odom_valid_cnt_ = 0;
@@ -174,6 +175,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
             std::chrono::seconds(1));
 
         result_ = LocalizationResult{};
+        ++pose_epoch_;
         result_.timestamp_ = pgo_frame->timestamp_;
         result_.status_ = LocalizationStatus::FAIL;
         CleanProblem();
@@ -366,6 +368,7 @@ bool PGOImpl::RunOptimization() {
         frame->last_opti_pose_ = frame->opti_pose_;
         frame->opti_pose_ = SE3(v->Estimate().matrix());
     }
+    ComputePosteriorCovariance();
     return true;
 }
 
@@ -562,29 +565,13 @@ void PGOImpl::AddPriorFactors() {
         e->SetVertex(0, optimizer_->GetVertex(frame->frame_id_));
         e->SetMeasurement(prior_obs_pose);
 
-        // 有必要实现noise的融合吗，毕竟还有权重项可以tune
-        // Vec6d prior_noise = rtk_fix_noise_;
-        // Vec6d prior_noise = lidar_odom_rel_noise_;
-        Vec6d prior_noise = lidar_loc_noise_;
-
-        // 先验（边缘化）约束的cov应该参考lidarLoc和lidarOdom，是一个可信任的观测
-        Mat6d prior_obs_cov = Mat6d::Zero();
-        prior_obs_cov(0, 0) = prior_noise[0] * prior_noise[0];
-        prior_obs_cov(1, 1) = prior_noise[1] * prior_noise[1];
-        prior_obs_cov(2, 2) = prior_noise[2] * prior_noise[2];
-        prior_obs_cov(3, 3) = prior_noise[3] * prior_noise[3];
-        prior_obs_cov(4, 4) = prior_noise[4] * prior_noise[4];
-        prior_obs_cov(5, 5) = prior_noise[5] * prior_noise[5];
-
-        Mat6d prior_obs_info = prior_obs_cov.inverse();
-        const Vec6d prior_obs_weight = frame->prior_normalized_weight_;
-        prior_obs_info(0, 0) *= prior_obs_weight[0];
-        prior_obs_info(1, 1) *= prior_obs_weight[1];
-        prior_obs_info(2, 2) *= prior_obs_weight[2];
-        prior_obs_info(3, 3) *= prior_obs_weight[3];
-        prior_obs_info(4, 4) *= prior_obs_weight[4];
-        prior_obs_info(5, 5) *= prior_obs_weight[5];
-        e->SetInformation(prior_obs_info);
+        // Prior residual uses -delta_rotation, whereas VertexSE3 uses +delta_rotation.
+        // Preserve translation/rotation cross covariance when changing convention.
+        Mat6d signs = Mat6d::Identity();
+        signs.diagonal().tail<3>().setConstant(-1.0);
+        Eigen::LDLT<Mat6d> solve(frame->prior_cov_);
+        if (solve.info() != Eigen::Success || !solve.isPositive()) return;
+        e->SetInformation(signs * solve.solve(Mat6d::Identity()) * signs);
 
         // 个人觉得应该是不用加核函数的（像lidarOdom一样）
         // auto* rk = new g2o::RobustKernelHuber();
@@ -846,6 +833,11 @@ void PGOImpl::PGOFrameToResult(const PGOFramePtr& frame, LocalizationResult& res
     // 复制PGOFrame中的信息到Result中
     result.timestamp_ = frame->timestamp_;
     result.pose_ = frame->opti_pose_;
+    result.pose_covariance_ = frame->pose_covariance_;
+    result.pose_covariance_valid_ = frame->pose_covariance_valid_;
+    result.pose_unobservable_ = frame->pose_unobservable_;
+    result.pose_epoch_ = pose_epoch_;
+    result.absolute_observation_stamp_ = frame->timestamp_;
 
     result.lidar_loc_valid_ = frame->lidar_loc_valid_;
     result.lidar_loc_inlier_ = frame->lidar_loc_inlier_;
@@ -897,10 +889,21 @@ void PGOImpl::SlideWindowAdaptively() {
     }
 
     auto frame_to_remove = *(frames_.begin());
-    auto frame_to_keep = *(++frames_.begin());
+    auto frame_to_keep = frames_.back();
     Marginalize(frame_to_remove, frame_to_keep);
-    frames_.erase(frames_.begin());
-    frames_by_id_.erase(frame_to_remove->frame_id_);
+    // Batch-eliminate every older state into the newest full 6D Schur marginal.
+    // Keeping a single state avoids dropping the cross-state blocks generated
+    // by a one-state-at-a-time Schur prior in this unary/binary graph backend.
+    CleanProblem();
+    frames_.assign(1, frame_to_keep);
+    frames_by_id_.clear();
+    frames_by_id_[frame_to_keep->frame_id_] = frame_to_keep;
+    current_frame_ = frame_to_keep;
+    AddVertex();
+    AddPriorFactors();
+    // All old factors, including this frame's absolute observation, are consumed
+    // exactly once by the prior. Future frames add only new measurements.
+    frame_to_keep->lidar_loc_set_ = false;
     return;
 
     // 看是移除队头还是次新帧
@@ -947,14 +950,11 @@ void PGOImpl::SlideWindowAdaptively() {
 }
 
 void PGOImpl::Marginalize(const PGOFramePtr& frame_to_remove, const PGOFramePtr& frame_to_keep) {
-    /// 严格来说，我们需要按照边缘化理论实现这套东西； /// TODO: @wgh 实现边缘化算法
-    /// 但受限于时间，我们先极简处理一下，跑通流程要紧。
-
     frame_to_keep->prior_pose_ = frame_to_keep->opti_pose_;
-    // frame_to_keep->prior_cov_;
+    frame_to_keep->prior_cov_ = frame_to_keep->pose_covariance_;
     frame_to_keep->prior_normalized_weight_ = Vec6d::Ones();
-    frame_to_keep->prior_set_ = true;
-    frame_to_keep->prior_valid_ = true;
+    frame_to_keep->prior_set_ = frame_to_keep->pose_covariance_valid_;
+    frame_to_keep->prior_valid_ = frame_to_keep->pose_covariance_valid_;
 }
 
 void PGOImpl::log_window_status(std::ostringstream& report) {

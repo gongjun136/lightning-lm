@@ -30,6 +30,13 @@ struct LocalizationResult {
     LocalizationStatus status_ = LocalizationStatus::IDLE;  ///< 定位状态位
 
     /// 对内部分
+    Mat6d pose_covariance_ = Mat6d::Zero();  // world translation / right body rotation
+    bool pose_covariance_valid_ = false;
+    bool pose_unobservable_ = false;
+    std::uint64_t pose_epoch_ = 1;  // advanced by PGO reset; never compare across relocalization
+    double absolute_observation_stamp_ = 0.0;
+    SE3 unsmoothed_pose_;  // independent consistency check also sees pre-smoothing output
+    bool unsmoothed_pose_valid_ = false;
     bool lidar_loc_valid_ = false;        // 该时刻lidarLoc是否有效
     bool lidar_loc_inlier_ = false;       ///< 该时刻lidarLoc在PGO中是否是内点
     double confidence_ = 1.0;             ///< lidarLoc的confidence(若有效)

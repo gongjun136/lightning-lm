@@ -34,6 +34,9 @@ struct PGOFrame {
     // 优化后的位姿
     SE3 opti_pose_;       ///< 最新的优化位姿
     SE3 last_opti_pose_;  ///< 上一轮优化位姿，用于判断是否收敛
+    Mat6d pose_covariance_ = Mat6d::Zero();
+    bool pose_covariance_valid_ = false;
+    bool pose_unobservable_ = false;
     int opti_times_ = 0;  ///< 当前帧被优化的次数
 
     // GNSS/RTK观测【插值量】 | 提供绝对约束
@@ -134,6 +137,7 @@ struct PGOImpl {
 
     /// 执行优化的逻辑
     bool RunOptimization();
+    void ComputePosteriorCovariance();
 
     // 建立g2o优化问题
     void BuildProblem();
@@ -211,6 +215,7 @@ struct PGOImpl {
     // when the graph was reset and must not enter the new temporal epoch.
     double relative_pose_reset_watermark_ = -1.0;  ///< 重定位重置后拒绝旧相对位姿的时间戳水位（s）。
     FrameId accumulated_frame_id_ = 0;  ///< 每次自加1，作为新进PGOFrame的Id
+    std::uint64_t pose_epoch_ = 1;
 
     /// the miao optimizer
     std::shared_ptr<miao::Optimizer> optimizer_ = nullptr;

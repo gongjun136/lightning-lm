@@ -28,6 +28,8 @@ add_library(${PROJECT_NAME}.libs SHARED
         core/maps/navigation_map_export.cc
 
         core/localization/localization_result.cc
+        core/localization/pose_covariance.cc
+        core/localization/localization_dtc_monitor.cc
         core/localization/btc_relocalizer.cc
         core/localization/kiss_matcher_registration.cc
         core/localization/solid_descriptor.cc
@@ -39,6 +41,7 @@ add_library(${PROJECT_NAME}.libs SHARED
 
         core/localization/pose_graph/pgo.cc
         core/localization/pose_graph/pgo_impl.cc
+        core/localization/pose_graph/pgo_covariance.cc
         core/localization/pose_graph/pose_extrapolator.cc
         core/localization/localization.cpp
 
@@ -101,6 +104,9 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(localization_dtc_test test/localization_dtc_test.cc)
+    target_link_libraries(localization_dtc_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME localization_dtc_test COMMAND $<TARGET_FILE:localization_dtc_test>)
     add_executable(world_pcd_export_test test/world_pcd_export_test.cc)
     target_link_libraries(world_pcd_export_test ${PCL_LIBRARIES})
     add_test(NAME world_pcd_export_test COMMAND $<TARGET_FILE:world_pcd_export_test>)

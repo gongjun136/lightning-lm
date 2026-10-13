@@ -39,6 +39,10 @@ class PGO {
     void SetHighFrequencyGlobalOutputHandleFunction(GlobalOutputHandleFunction handle);
     void SetDrSmoothingEnabled(bool enabled) { dr_smoothing_enabled_ = enabled; }
     void SetDrExtrapolationEnabled(bool enabled) { dr_extrapolation_enabled_ = enabled; }
+    void SetCovarianceProcessNoise(double position, double angle) {
+        covariance_position_noise_ = position;
+        covariance_angle_noise_ = angle;
+    }
 
     /// 处理lidarOdom信息
     bool ProcessDR(const NavState& dr_result);
@@ -117,6 +121,8 @@ class PGO {
     bool lidar_loc_is_parking_ = false;  ///< 地图匹配输入报告的静止状态。
     bool dr_smoothing_enabled_ = true;  ///< 是否使用 DR 约束位姿平滑。
     bool dr_extrapolation_enabled_ = true;  ///< 是否使用 DR 外推高频位姿。
+    double covariance_position_noise_ = 0.20;  // m / sqrt(s), bench calibration required
+    double covariance_angle_noise_ = 2.0 * M_PI / 180.0;  // rad / sqrt(s)
 };
 
 }  // namespace lightning::loc

@@ -84,6 +84,10 @@ int main() {
         Require(pgo.ProcessLidarLoc(lidar_loc), "accept synthetic map localization");
         Require(output_count == index + 1, "produce one PGO result per map-localization frame");
         Require(output.valid_, "PGO result is valid");
+        Require(output.pose_covariance_valid_ && output.pose_covariance_.allFinite(),
+                "every map frame has finite posterior covariance, including after Schur window reduction");
+        Require(output.pose_covariance_(0, 0) > 0.0 && output.pose_covariance_(5, 5) > 0.0,
+                "posterior uncertainty is positive rather than a placeholder zero");
         Require((output.pose_.translation() - lidar_loc.pose_.translation()).norm() < 1e-3,
                 "non-identity global translation remains stable across incremental window replacement");
         Require((output.pose_.so3().inverse() * lidar_loc.pose_.so3()).log().norm() < 1e-3,
@@ -93,6 +97,7 @@ int main() {
                 "disabled DR extrapolation preserves scan-time map translation");
     }
 
+    const auto epoch_before_reset = output.pose_epoch_;
     const int output_count_before_reset = output_count;
     Require(pgo.Reset(), "reset a populated incremental PGO graph");
     const SE3 T_relocalized_world_odom(
@@ -137,6 +142,8 @@ int main() {
         Require(output_count == output_count_before_reset + index + 1,
                 "publish one result per relocalized frame after reset");
         Require(output.valid_, "relocalized PGO output remains valid after reset");
+        Require(output.pose_epoch_ > epoch_before_reset && output.pose_covariance_valid_,
+                "reset advances diagnostic epoch and reconstructs posterior covariance");
         Require((output.pose_.translation() - lidar_loc.pose_.translation()).norm() < 1e-3,
                 "relocalized translation remains stable after solver reset");
         Require((output.pose_.so3().inverse() * lidar_loc.pose_.so3()).log().norm() < 1e-3,

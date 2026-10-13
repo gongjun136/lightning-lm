@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "core/localization/localization.h"
+#include "core/localization/pose_covariance.h"
 #include "common/debug_event.h"
 #include "io/yaml_io.h"
 #include "wrapper/ros_utils.h"
@@ -207,6 +208,87 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         heartbeat_->PublishNow();
         return false;
     }
+
+    const YAML::Node dtc = root["diagnostics"];
+    loc::dtc::Config dtc_config;
+    auto value = [&dtc](const char* key, double fallback) {
+        return dtc && dtc[key] ? dtc[key].as<double>() : fallback;
+    };
+    dtc_config.window_sec = value("motion_window_sec", dtc_config.window_sec);
+    dtc_config.max_input_gap_sec = value("max_input_gap_sec", dtc_config.max_input_gap_sec);
+    dtc_config.longitudinal_m = value("longitudinal_tolerance_m", dtc_config.longitudinal_m);
+    dtc_config.lateral_m = value("lateral_tolerance_m", dtc_config.lateral_m);
+    dtc_config.yaw_rad = value("yaw_tolerance_deg", 2.0) * M_PI / 180.0;
+    dtc_config.distance_ratio = value("distance_tolerance_ratio", dtc_config.distance_ratio);
+    dtc_config.angle_ratio = value("angle_tolerance_ratio", dtc_config.angle_ratio);
+    dtc_config.major_sigma_m = value("major_sigma_limit_m", dtc_config.major_sigma_m);
+    dtc_config.lateral_sigma_m = value("lateral_sigma_limit_m", dtc_config.lateral_sigma_m);
+    dtc_config.yaw_sigma_rad = value("yaw_sigma_limit_deg", 2.0) * M_PI / 180.0;
+    dtc_config.covariance_scale = value("covariance_variance_scale", dtc_config.covariance_scale);
+    dtc_config.position_sigma_floor_m = value("position_sigma_floor_m", dtc_config.position_sigma_floor_m);
+    dtc_config.angle_sigma_floor_rad = value("angle_sigma_floor_deg", 0.5) * M_PI / 180.0;
+    dtc_config.output_timeout_sec = value("output_timeout_sec", dtc_config.output_timeout_sec);
+    dtc_config.evaluation_timeout_sec = value("evaluation_timeout_sec", dtc_config.evaluation_timeout_sec);
+    dtc_config.startup_grace_sec = value("startup_grace_sec", dtc_config.startup_grace_sec);
+    dtc_config.max_speed_mps = value("max_speed_mps", dtc_config.max_speed_mps);
+    dtc_config.max_yaw_rate_radps = value("max_yaw_rate_radps", dtc_config.max_yaw_rate_radps);
+    try {
+        dtc_monitor_ = std::make_unique<loc::dtc::Monitor>(dtc_config);
+        const auto radar_id = dtc && dtc["radar_source_id"] ? dtc["radar_source_id"].as<int>() : 13;
+        const double radar_timeout = value("radar_snapshot_timeout_sec", 0.5);
+        const double hms_timeout = value("radar_hms_timeout_sec", 2.5);
+        if (radar_id <= 0 || radar_id > 65535 || radar_id == heartbeat_->NodeId() ||
+            !std::isfinite(radar_timeout) || radar_timeout <= 0 ||
+            !std::isfinite(hms_timeout) || hms_timeout < radar_timeout)
+            throw std::invalid_argument("invalid radar DTC source or timeout");
+        std::array<uint16_t, 4> radar_ids{{7, 12, 8, 9}};
+        if (dtc && dtc["radar_role_source_ids"]) {
+            const auto ids = dtc["radar_role_source_ids"].as<std::vector<int>>();
+            if (ids.size() != 4 || std::set<int>(ids.begin(), ids.end()).size() != 4)
+                throw std::invalid_argument("four unique radar role IDs required");
+            for (size_t i = 0; i < 4; ++i) {
+                if (ids[i] <= 0 || ids[i] > 65535 || ids[i] == radar_id || ids[i] == heartbeat_->NodeId())
+                    throw std::invalid_argument("invalid radar role source ID");
+                radar_ids[i] = ids[i];
+            }
+        }
+        radar_dtc_state_ = std::make_unique<functional_safety::RadarDtcState>(radar_id, radar_timeout, hms_timeout, true, radar_ids);
+        if (dtc && dtc["config_version"]) dtc_config_version_ = dtc["config_version"].as<std::string>();
+        if (dtc_config_version_.empty()) throw std::invalid_argument("empty DTC config version");
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "invalid DTC configuration: " << error.what(); return false;
+    }
+    const auto dtc_qos = rclcpp::QoS(10).reliable().durability_volatile();
+    const auto topic = [&dtc](const char* key, const std::string& fallback) {
+        return dtc && dtc[key] ? dtc[key].as<std::string>() : fallback;
+    };
+    dtc_pub_ = node_->create_publisher<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
+        topic("output_topic", "/diagnostics/source_dtc/localization"), dtc_qos);
+    safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safty>(
+        topic("safety_topic", "/safety/throstle"), dtc_qos);
+    radar_dtc_sub_ = node_->create_subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
+        topic("radar_topic", "/diagnostics/source_dtc/livox"), dtc_qos,
+        [this](const diagnostic_monitor_interfaces::msg::DtcObservationArray::SharedPtr msg) {
+            radar_dtc_state_->Observe(*msg);
+        });
+    const std::array<std::string, 4> radar_roles{{"front", "rear", "left", "right"}};
+    for (size_t i = 0; i < 4; ++i)
+        radar_availability_subs_[i] = node_->create_subscription<livox_ros_driver2::msg::LidarDiagnosticState>(
+            "/sensors/livox/" + radar_roles[i] + "/diagnostic_state", dtc_qos,
+            [this, i](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
+                if (msg->role == i) radar_dtc_state_->ObserveAvailability(*msg);
+            });
+    dtc_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { PublishDtc(); });
+    safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(20), [this]() {
+        PublishSafety();
+        const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lock(dtc_publish_mutex_);
+            for (size_t i = 0; i < 2; ++i) changed |= last_dtc_conditions_[i] != snapshot.observations[i].condition;
+        }
+        if (changed) PublishDtc();
+    });
 
     // 配置并注册 IMU / LiDAR 输入订阅。
     imu_topic_ = yaml.GetValue<std::string>("common", "imu_topic");
@@ -407,6 +489,8 @@ void LocSystem::SetInitPose(const SE3 &pose) {
 
 void LocSystem::ProcessIMU(const IMUPtr &imu) {
     ObserveImuInput(imu ? imu->timestamp : 0.0);
+    if (imu && dtc_monitor_)
+        dtc_monitor_->ObserveGyro(imu->timestamp, (loc_->GetImuToBodyRotation() * imu->angular_velocity).z());
     if (loc_started_) {
         loc_->ProcessIMUMsg(imu);
     }
@@ -444,6 +528,8 @@ void LocSystem::Spin() {
 
 void LocSystem::Finish() {
     if (finished_) return;
+    if (dtc_timer_) dtc_timer_->cancel();
+    if (safety_timer_) safety_timer_->cancel();
     debug_event::ClearSink();
     if (loc_) loc_->Finish();
     if (heartbeat_) heartbeat_->Stop();
@@ -607,6 +693,17 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
+    if (dtc_monitor_) {
+        const SE3 right = sany_output::MakeRearAxleLidarTransform(
+            loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_).inverse();
+        const SO3 left = fixed_map_transform_.enabled ? fixed_map_transform_.T_target_localization.so3() : SO3();
+        const Mat6d covariance = loc::TransformPoseCovariance(result.pose_covariance_, result.pose_, right, left);
+        const SE3 raw = result.unsmoothed_pose_valid_
+            ? sany_output::TransformPoseForOutput(result.unsmoothed_pose_ * right, fixed_map_transform_)
+            : map_rear_axle_pose;
+        dtc_monitor_->ObservePose(result.timestamp_, map_rear_axle_pose, raw, covariance,
+            result.pose_covariance_valid_, result.pose_unobservable_, result.pose_epoch_);
+    }
     const auto pose_transform_timing = pose_transform_timer.Stop();
 
     // Publish the high-frequency signed body-forward estimator velocity. CAN
@@ -856,11 +953,7 @@ void LocSystem::PublishHealthStatus() {
     const auto localization_status = telemetry_->MakeLocalizationStatus(stamp);
     fault_status_pub_->publish(fault_status);
     loc_status_pub_->publish(localization_status);
-    if (fault_status.level == lightning::msg::FaultStatus::LEVEL_P0) {
-        heartbeat_->SetState(functional_safety::NodeState::kFault);
-    } else if (fault_status.level == lightning::msg::FaultStatus::LEVEL_P1) {
-        heartbeat_->SetState(functional_safety::NodeState::kDegraded);
-    } else if (heartbeat_->WorkSequence() == 0) {
+    if (heartbeat_->WorkSequence() == 0) {
         heartbeat_->SetState(functional_safety::NodeState::kIdle);
     } else {
         heartbeat_->SetState(functional_safety::NodeState::kRunning);
@@ -1044,6 +1137,7 @@ void LocSystem::ObserveImuInput(double sensor_stamp) {
 void LocSystem::ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
                                        double motor_torque) {
     const double speed_mps = motor_rpm * wheel_speed_scale_mps_per_rpm_;
+    if (dtc_monitor_) dtc_monitor_->ObserveSpeed(sensor_stamp, speed_mps);
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         ++wheel_speed_input_stats_.message_count;
@@ -1064,6 +1158,43 @@ void LocSystem::PublishPath() {
     if (!publication_gate_.MapOutputsEnabled(last_localization_stamp_.load())) return;
     const builtin_interfaces::msg::Time stamp = node_->now();
     path_pub_->publish(telemetry_->MakePath(stamp));
+}
+
+bool LocSystem::DtcLocalizationLost() const {
+    return last_posres_stamp_.load() > 0.0 &&
+           !publication_gate_.PoseOutputsEnabled(last_localization_stamp_.load());
+}
+void LocSystem::PublishDtc() {
+    if (!dtc_monitor_ || !dtc_pub_) return;
+    const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
+    std::lock_guard<std::mutex> lock(dtc_publish_mutex_);
+    diagnostic_monitor_interfaces::msg::DtcObservationArray msg;
+    msg.comm_header.source_id = heartbeat_->NodeId();
+    msg.comm_header.seq = functional_safety::HeartbeatPublisher::Advance(dtc_comm_seq_);
+    msg.comm_header.stamp_us = functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
+    msg.boot_id = heartbeat_->BootId(); msg.interface_version = 1; msg.config_version = dtc_config_version_;
+    for (size_t i = 0; i < 2; ++i) {
+        const auto& check = snapshot.observations[i];
+        diagnostic_monitor_interfaces::msg::DtcObservation obs;
+        obs.dtc = check.code; obs.physical_condition = check.condition;
+        obs.evaluation_seq = check.sequence; obs.evaluation_age_us = check.age_us;
+        msg.observations.push_back(obs);
+        last_dtc_conditions_[i] = check.condition;
+    }
+    dtc_pub_->publish(msg);
+    LOG_EVERY_N(INFO, 10) << "LOCALIZATION_DTC consistency=" << int(snapshot.observations[0].condition)
+        << " uncertainty=" << int(snapshot.observations[1].condition) << " severe=" << snapshot.severe
+        << " error_x=" << snapshot.error_longitudinal_m << " error_y=" << snapshot.error_lateral_m
+        << " error_yaw_rad=" << snapshot.error_yaw_rad << " major_sigma=" << snapshot.major_sigma_m
+        << " lateral_sigma=" << snapshot.lateral_sigma_m << " yaw_sigma_rad=" << snapshot.yaw_sigma_rad;
+}
+void LocSystem::PublishSafety() {
+    if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
+    const auto localization = dtc_monitor_->Evaluate(DtcLocalizationLost());
+    const auto radar = radar_dtc_state_->Evaluate();
+    geosun_msgs::msg::Safty msg;
+    msg.data = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
+    safety_pub_->publish(msg);
 }
 
 }  // namespace lightning

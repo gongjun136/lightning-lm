@@ -88,6 +88,15 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     pgo_->SetDrExtrapolationEnabled(localization_pgo
                                         ? localization_pgo["enable_dr_extrapolation"].as<bool>(true)
                                         : true);
+    const double covariance_position_noise = localization_pgo
+        ? localization_pgo["covariance_position_noise_m_sqrt_sec"].as<double>(0.2) : 0.2;
+    const double covariance_angle_noise = localization_pgo
+        ? localization_pgo["covariance_angle_noise_deg_sqrt_sec"].as<double>(2.0) : 2.0;
+    if (!std::isfinite(covariance_position_noise) || covariance_position_noise <= 0 ||
+        !std::isfinite(covariance_angle_noise) || covariance_angle_noise <= 0) {
+        LOG(ERROR) << "invalid PGO covariance process noise"; return false;
+    }
+    pgo_->SetCovarianceProcessNoise(covariance_position_noise, covariance_angle_noise * M_PI / 180.0);
 
     ///  各模块的异步调用
     const YAML::Node system = YAML::LoadFile(yaml_path)["system"];

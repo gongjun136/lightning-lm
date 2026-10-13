@@ -13,6 +13,8 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geosun_msgs/msg/pos_res.hpp>
+#include <geosun_msgs/msg/safty.hpp>
+#include <diagnostic_monitor_interfaces/msg/dtc_observation_array.hpp>
 #include <geosun_msgs/msg/spe_thr_can4.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -36,6 +38,8 @@
 #include "lightning/msg/pipeline_diagnostics.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
 #include "utils/functional_safety_heartbeat.h"
+#include "utils/radar_dtc_state.h"
+#include "core/localization/localization_dtc_monitor.h"
 #include "utils/compute_profiling.h"
 
 namespace lightning {
@@ -196,6 +200,9 @@ class LocSystem {
                                const MultiLidarFrameStats& stats, bool eligible);
     /// @brief 汇总输入、定位与队列状态，周期发布健康消息和流水线诊断。
     void PublishHealthStatus();
+    void PublishDtc();
+    void PublishSafety();
+    bool DtcLocalizationLost() const;
     void PublishPath();
     void RegisterLidarInput(int lidar_id, const std::string& topic);
     /**
@@ -283,6 +290,17 @@ class LocSystem {
     rclcpp::GenericSubscription::SharedPtr wheel_speed_sub_ = nullptr;  ///< 接收 CAN 转速与扭矩的通用 ROS 订阅器。
 
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;  ///< 独立发布功能安全心跳并记录有效工作进度。
+    std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
+    std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
+    std::string dtc_config_version_ = "localization-dtc-v1-bench";
+    std::atomic<uint32_t> dtc_comm_seq_{0};
+    std::mutex dtc_publish_mutex_;
+    std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};
+    rclcpp::Publisher<diagnostic_monitor_interfaces::msg::DtcObservationArray>::SharedPtr dtc_pub_;
+    rclcpp::Publisher<geosun_msgs::msg::Safty>::SharedPtr safety_pub_;
+    rclcpp::Subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>::SharedPtr radar_dtc_sub_;
+    std::array<rclcpp::Subscription<livox_ros_driver2::msg::LidarDiagnosticState>::SharedPtr, 4> radar_availability_subs_;
+    rclcpp::TimerBase::SharedPtr dtc_timer_, safety_timer_;
 
     rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;  ///< 发布后轴业务定位结果 PosRes。
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;  ///< 发布后轴位姿 PoseStamped。

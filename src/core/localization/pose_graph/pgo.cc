@@ -1,4 +1,5 @@
 #include "pgo.h"
+#include "core/localization/pose_covariance.h"
 #include "pgo_impl.h"
 
 #include <boost/format.hpp>
@@ -29,6 +30,7 @@ void PGO::SetHighFrequencyGlobalOutputHandleFunction(PGO::GlobalOutputHandleFunc
 }
 
 void PGO::PubResult() {
+    if (is_parking_) return;  // held pose is published only on the live DR clock
     // 在有需要时，高频外推然后向外发送数据
     if (high_freq_output_func_ && impl_->result_.valid_) {
         // 检查激光定位分值情况
@@ -133,11 +135,24 @@ void PGO::PubResult() {
 
         impl_->result_.timestamp_ = result.timestamp_;
         impl_->result_.pose_ = result.pose_;
+        impl_->result_.pose_covariance_ = result.pose_covariance_;
+        impl_->result_.pose_covariance_valid_ = result.pose_covariance_valid_;
+        impl_->result_.pose_unobservable_ = result.pose_unobservable_;
 
         SE3 extra_pose = result.pose_;
+        result.unsmoothed_pose_ = extra_pose;
+        result.unsmoothed_pose_valid_ = true;
         if (dr_smoothing_enabled_) {
             smoother_->PushPose(result.pose_);
             result.pose_ = smoother_->GetPose();
+            if (result.pose_covariance_valid_) {
+                Vec6d correction;
+                correction.head<3>() = result.pose_.translation() - extra_pose.translation();
+                correction.tail<3>() = (extra_pose.so3().inverse() * result.pose_.so3()).log();
+                Mat6d axes = Mat6d::Identity();
+                axes.bottomRightCorner<3, 3>() = result.pose_.rotationMatrix().transpose() * extra_pose.rotationMatrix();
+                result.pose_covariance_ = axes * (result.pose_covariance_ + correction * correction.transpose()) * axes.transpose();
+            }
         }
 
         // 输出force 2d
@@ -235,6 +250,12 @@ bool PGO::ProcessDR(const NavState& dr_result) {
     if (!impl_->dr_pose_queue_.empty() && !is_parking_) {
         PubResult();
     } else if (is_parking_ && high_freq_output_func_) {
+        if (parking_result_.pose_covariance_valid_) {
+            parking_result_.pose_covariance_ = PropagatePoseCovariance(
+                parking_result_.pose_covariance_, parking_result_.pose_, SE3(),
+                dr_result.timestamp_ - parking_result_.timestamp_,
+                covariance_position_noise_, covariance_angle_noise_);
+        }
         parking_result_.timestamp_ = dr_result.timestamp_;
         parking_result_.vel_b_ = Vec3d::Zero();
         high_freq_output_func_(parking_result_);
@@ -323,7 +344,9 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         // detector confirms is stopped. An accepted global relocalization resets PGO first,
         // so a genuine map correction can still initialize a new held pose.
         // ProcessDR remains the single monotonic parked-output clock.
-        return true;
+        // Continue estimating the posterior on fresh map matches. The published
+        // held position stays fixed; its displacement from the fused mean is
+        // added to covariance below rather than being hidden by retimestamping.
     }
 
     // 如果相对位姿(DR和LidarOdom有一个即可)还没来，也退出
@@ -425,6 +448,29 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
 
 bool PGO::ProcessPGOFrame(std::shared_ptr<PGOFrame> frame) {
     if (!impl_->AddPGOFrame(frame)) return false;
+    if (is_parking_ && parking_result_.valid_) {
+        const auto& fused = impl_->result_;
+        parking_result_.pose_covariance_ = fused.pose_covariance_;
+        parking_result_.pose_covariance_valid_ = fused.pose_covariance_valid_;
+        parking_result_.pose_unobservable_ = fused.pose_unobservable_;
+        parking_result_.absolute_observation_stamp_ = fused.absolute_observation_stamp_;
+        parking_result_.pose_epoch_ = fused.pose_epoch_;
+        Vec6d offset;
+        offset.head<3>() = parking_result_.pose_.translation() - fused.pose_.translation();
+        offset.tail<3>() = (fused.pose_.so3().inverse() * parking_result_.pose_.so3()).log();
+        if (parking_result_.pose_covariance_valid_) {
+            Mat6d rotate = Mat6d::Identity();
+            rotate.bottomRightCorner<3, 3>() =
+                parking_result_.pose_.rotationMatrix().transpose() * fused.pose_.rotationMatrix();
+            parking_result_.pose_covariance_ = rotate *
+                (fused.pose_covariance_ + offset * offset.transpose()) * rotate.transpose();
+            parking_result_.pose_covariance_ = PropagatePoseCovariance(
+                parking_result_.pose_covariance_, parking_result_.pose_, SE3(),
+                parking_result_.timestamp_ - fused.timestamp_, covariance_position_noise_, covariance_angle_noise_);
+        }
+        parking_result_.unsmoothed_pose_ = parking_result_.pose_;
+        parking_result_.unsmoothed_pose_valid_ = true;
+    }
 
     impl_->lidar_loc_pose_queue_.emplace_back(impl_->result_.timestamp_, impl_->result_.pose_);
     while (impl_->lidar_loc_pose_queue_.size() > 50) {
@@ -590,8 +636,12 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
             //     return true;
             // }
 
-            output_result.pose_ = output_result.pose_ * pose_incre;
             const double time_incre = dr_pose_queue.back().timestamp_ - output_result.timestamp_;
+            if (output_result.pose_covariance_valid_)
+                output_result.pose_covariance_ = PropagatePoseCovariance(
+                    output_result.pose_covariance_, output_result.pose_, pose_incre, time_incre,
+                    covariance_position_noise_, covariance_angle_noise_);
+            output_result.pose_ = output_result.pose_ * pose_incre;
             output_result.timestamp_ = dr_pose_queue.back().timestamp_;
         }
     }
@@ -604,6 +654,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
                 latest_time, impl_->lidar_loc_pose_queue_, [](const TimedPose& pose) { return pose.timestamp_; },
                 [](const TimedPose& pose) { return pose.pose_; }, interp_pose_final, best_match_final, 5.0)) {
             output_result.pose_ = interp_pose_final;
+            output_result.pose_covariance_valid_ = false;  // fallback has no matched covariance
             output_result.timestamp_ = latest_time;
         }
     }

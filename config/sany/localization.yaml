@@ -266,7 +266,37 @@ backend:
     enabled: false
 loop_closing:
   with_height: false
+diagnostics:
+  # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
+  config_version: localization-dtc-v1-bench
+  output_topic: /diagnostics/source_dtc/localization
+  safety_topic: /safety/throstle
+  radar_topic: /diagnostics/source_dtc/livox
+  radar_source_id: 13
+  radar_role_source_ids: [7, 12, 8, 9]  # front, rear, left, right
+  radar_snapshot_timeout_sec: 0.5
+  radar_hms_timeout_sec: 2.5
+  motion_window_sec: 0.5
+  max_input_gap_sec: 0.1
+  longitudinal_tolerance_m: 0.5
+  lateral_tolerance_m: 0.3
+  yaw_tolerance_deg: 2.0
+  distance_tolerance_ratio: 0.1
+  angle_tolerance_ratio: 0.1
+  major_sigma_limit_m: 0.5
+  lateral_sigma_limit_m: 0.3
+  yaw_sigma_limit_deg: 2.0
+  covariance_variance_scale: 4.0
+  position_sigma_floor_m: 0.1
+  angle_sigma_floor_deg: 0.5
+  output_timeout_sec: 0.3
+  evaluation_timeout_sec: 0.3
+  startup_grace_sec: 8.0
+  max_speed_mps: 30.0
+  max_yaw_rate_radps: 3.0
 localization_pgo:
+  covariance_position_noise_m_sqrt_sec: 0.2
+  covariance_angle_noise_deg_sqrt_sec: 2.0
   enable_dr_extrapolation: true
   enable_dr_smoothing: true
 lidar_loc:
