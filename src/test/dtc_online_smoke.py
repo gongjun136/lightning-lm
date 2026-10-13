@@ -11,18 +11,18 @@ import statistics
 import subprocess
 import sys
 import tempfile
-import time
 
 import rclpy
 import yaml
+from rclpy.clock import Clock, ClockType
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from diagnostic_monitor_interfaces.msg import DtcObservationArray
-from geosun_msgs.msg import Safty
+from geosun_msgs.msg import Safety
 
 
 def main():
     os.environ.setdefault('ROS_DOMAIN_ID', '172')
-    os.environ.setdefault('ROS_LOCALHOST_ONLY', '1')
+    os.environ['ROS_LOCALHOST_ONLY'] = '1'
     executable = Path(sys.argv[1]).resolve()
     source_root = Path(__file__).resolve().parents[2]
     config = yaml.safe_load((source_root / 'config/default.yaml').read_text())
@@ -38,28 +38,58 @@ def main():
         path.write_text(yaml.safe_dump(config))
         rclpy.init()
         node = rclpy.create_node('localization_dtc_smoke_probe')
+        steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
+
+        def steady_time():
+            # Match the C++ wall timer's ROS steady clock; system clock slewing
+            # can change Python time.monotonic() relative to this clock on WSL.
+            return steady_clock.now().nanoseconds * 1e-9
+
         qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.VOLATILE)
-        values, snapshots = [], []
-        node.create_subscription(Safty, '/safety/throstle', lambda msg: values.append((time.monotonic(), msg.data)), qos)
+        values, safety_messages, snapshots = [], [], []
+
+        def observe_safety(msg):
+            safety_messages.append(msg)
+            values.append((steady_time(), msg.runstate))
+
+        node.create_subscription(Safety, '/safety/throstle', observe_safety, qos)
         node.create_subscription(DtcObservationArray, '/diagnostics/source_dtc/localization', snapshots.append, qos)
         log_path = fixture / 'process.log'
         with log_path.open('w') as log:
             process = subprocess.Popen([str(executable), '--config=' + str(path), '--map=' + str(fixture)],
                                        cwd=fixture, stdout=log, stderr=log)
             try:
-                end = time.monotonic() + 6.0
-                while time.monotonic() < end:
+                startup_deadline = steady_time() + 15.0
+                end = None
+                while end is None or steady_time() < end:
                     rclpy.spin_once(node, timeout_sec=0.01)
                     if process.poll() is not None:
                         raise RuntimeError(log_path.read_text()[-5000:])
+                    if end is None:
+                        if values:
+                            end = steady_time() + 6.0
+                        elif steady_time() >= startup_deadline:
+                            raise RuntimeError('no Safety output within startup timeout:\n' + log_path.read_text()[-5000:])
                 assert len(values) >= 150, f'too few safety samples: {len(values)}'
                 assert any(value == 4 for _, value in values), 'startup UNKNOWN must be 4'
                 assert values[-1][1] == -9, 'no valid output after startup grace must be -9'
                 assert all(value in (4, -9) for _, value in values), 'uninitialized localization must never give zero'
+                publishers = node.get_publishers_info_by_topic('/safety/throstle')
+                assert len(publishers) == 1, f'expected one safety publisher, found {len(publishers)}'
+                assert publishers[0].topic_type == 'geosun_msgs/msg/Safety'
+                assert all(msg.header.stamp.sec > 0 for msg in safety_messages), 'Safety must carry a publish timestamp'
+                assert all((msg.timesync, msg.errorcode, msg.strategies, msg.reserved) == (0, 0, 0, 0)
+                           for msg in safety_messages), 'unassigned Safety fields must retain their default values'
                 intervals = [values[i][0] - values[i - 1][0] for i in range(1, len(values))]
                 median_hz = 1.0 / statistics.median(intervals)
                 average_hz = (len(values) - 1) / (values[-1][0] - values[0][0])
+                stamps = [msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9 for msg in safety_messages]
+                header_intervals = [stamps[i] - stamps[i - 1] for i in range(1, len(stamps))]
+                assert all(interval > 0 for interval in header_intervals), 'Safety publish timestamps must advance'
+                header_hz = 1.0 / statistics.median(header_intervals)
+                print(f'Safety.runstate samples={len(values)}, ROS steady average={average_hz:.1f} Hz, '
+                      f'ROS steady median={median_hz:.1f} Hz, header median={header_hz:.1f} Hz', flush=True)
                 assert 45 <= median_hz <= 55 and 43 <= average_hz <= 57, (median_hz, average_hz)
                 assert len(snapshots) >= 20
                 for msg in snapshots:
@@ -67,7 +97,7 @@ def main():
                     assert [obs.dtc for obs in msg.observations] == [0x30811813, 0x40450198]
                     assert all(obs.physical_condition == 0 for obs in msg.observations)
                     assert all(obs.evaluation_seq == 0 for obs in msg.observations)
-                print(f'dtc_online_smoke passed: real Safty publisher {average_hz:.1f} Hz, median {median_hz:.1f} Hz; startup 4 -> timeout -9; complete localization DTC snapshots')
+                print(f'dtc_online_smoke passed: real Safety.runstate publisher {average_hz:.1f} Hz, median {median_hz:.1f} Hz; startup 4 -> timeout -9; complete localization DTC snapshots')
             finally:
                 process.terminate()
                 try:

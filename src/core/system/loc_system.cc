@@ -264,7 +264,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     };
     dtc_pub_ = node_->create_publisher<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
         topic("output_topic", "/diagnostics/source_dtc/localization"), dtc_qos);
-    safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safty>(
+    safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safety>(
         topic("safety_topic", "/safety/throstle"), dtc_qos);
     radar_dtc_sub_ = node_->create_subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
         topic("radar_topic", "/diagnostics/source_dtc/livox"), dtc_qos,
@@ -1192,8 +1192,9 @@ void LocSystem::PublishSafety() {
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
     const auto localization = dtc_monitor_->Evaluate(DtcLocalizationLost());
     const auto radar = radar_dtc_state_->Evaluate();
-    geosun_msgs::msg::Safty msg;
-    msg.data = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
+    geosun_msgs::msg::Safety msg;
+    msg.header.stamp = node_->now();
+    msg.runstate = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
     safety_pub_->publish(msg);
 }
 

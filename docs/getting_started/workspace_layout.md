@@ -29,8 +29,9 @@ bash src/lightning-lm/scripts/build_workspace.sh
 
 更新定位分支后，依赖应重新按该分支的清单检出。`git fetch` 会获取远端提交，
 清单中的固定 SHA 决定实际使用版本；重复导入同一份清单不会自动改用依赖的 `main`。
-2026-10-13 的 DTC 配套版本为 `common_msgs@fa0dc09` 和 `livox_ros_driver2@713e92e`，
-分别提供新 DTC/Safty 消息与四雷达 DTC 聚合节点；两个消息清单已同步到同一版本。
+2026-10-13 的 DTC 配套版本为 `common_msgs@3f918b3` 和 `livox_ros_driver2@713e92e`，
+分别提供 DTC 消息与四雷达 DTC 聚合节点；`/safety/throstle` 复用已有的
+`geosun_msgs/msg/Safety` 的 `runstate` 字段，两个消息清单已同步到同一版本。
 发布新的跨仓库接口时，须同时更新配套清单并核对导入后的实际 HEAD。
 源码检出完成后，还须重新构建并加载当前工作区的安装环境。
 

@@ -26,8 +26,10 @@ UNKNOWN、缺项、超时、重启不能当作 PASS，也不能清除已确认�
 定位源 ID 默认 6，四台雷达 ID 为前 7、后 12、左 8、右 9；
 新增聚合节点 ID 默认 13，部署前须与统一诊断节点登记，保持唯一。
 
-定位另发布 /safety/throstle，类型 geosun_msgs/msg/Safty，字段 int8 data，50 Hz。
-该消息拼写 Safty/throstle 按表格保留；接收端必须使用同一版消息定义。
+定位另发布 /safety/throstle，复用既有 geosun_msgs/msg/Safety，字段 int8 runstate，50 Hz。
+Safety.msg 定义保持不变，不新增兼容消息类型；header.stamp 为发布时的 ROS 时间，
+timesync、errorcode、strategies、reserved 保持默认 0，header.frame_id 默认空。
+Topic 拼写 throstle 保留；接收端订阅 Safety 并读取 runstate。
 优先级 -9 > 4 > 2 > 0：定位失锁/有效输出超时或四雷达不可用给 -9；
 定位 DTC FAIL 给 4；其他雷达故障给 2；全部检测有效且正常才给 0。
 定位检测 UNKNOWN 给 4；仅雷达检测 UNKNOWN/过期给 2。
@@ -109,7 +111,10 @@ ROS 2 Humble / Ubuntu 22.04 下已完成消息包、驱动、定位程序及相�
 两项实际节点 ROS 验证使用 Cyclone DDS：
 test/dtc_ros_integration.py 通过完整快照、两台/四台失效、恢复、重放、HMS 过期和断流；
 src/test/dtc_online_smoke.py 启动真实 run_loc_online，验证定位 DTC 元数据和完整性，
-Safty 平均 50.3 Hz、间隔中位数 50.0 Hz，启动 UNKNOWN 为 4，超时后为 -9。
+Safety.runstate 约 50 Hz，启动 UNKNOWN 为 4，超时后为 -9；消息类型和时间戳一并校验。
+频率测试使用与 C++ WallTimer 相同的 ROS 稳态时钟；header 为 ROS 发布时刻。
+本机 WSL 的校正时钟与原始稳态时钟曾出现约 10% 的速率差，header 频率仅作为诊断值。
+ROS 稳态时钟实现参考 https://github.com/ros2/rcutils/blob/humble/src/time_unix.c 。
 后者使用无传感器的临时空地图，故正常运行的 0/2/4/-9 组合由定位 DTC 单元测试覆盖。
 
 在 lightning_lm_ws 根目录完成构建后，可复现节点验证：
