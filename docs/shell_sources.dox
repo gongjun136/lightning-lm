@@ -1,7 +1,7 @@
 /**
  * @example{lineno} sany_config.sh
  * 为通用建图、定位入口解析 SANY VIN/接线方式并生成完整运行 YAML；其他数据集配置保持原样。
- * 用途见 config/sany/README.md；由入口 source 调用，不单独启动 ROS 节点。
+ * 用途见 @ref md_config_sany_README "SANY 共用建图与定位配置"；由入口 source 调用，不单独启动 ROS 节点。
  */
 /**
  * @example{lineno} align_maps_offline.sh

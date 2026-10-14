@@ -17,6 +17,8 @@
 
 算法参数深入见 @ref eskf_theory "18 维迭代 ESKF：从预测到观测注入"、@ref backend_optimization "体素 BA、回环位姿图与分层优化"、@ref relocalization_theory "全局重定位：检索、几何验证与时间确认"。部署参数见 @ref script_contracts "Shell 启动与实验脚本契约"、@ref resource_diagnostics "资源与端到端延迟"。
 
+SANY 正式模板、车辆选择和配置解析见 @ref md_config_sany_README "SANY 共用建图与定位配置"；标定来源、版本冻结与验收见 @ref vehicle_calibration_management "车辆标定档案与验收"。
+
 # 重现一轮运行的最小信息
 
 记录源码 commit/未提交修改、二进制与共享库、最终 YAML 和覆盖环境、传感器 topic 与时间范围、地图 metadata/数据库、线程数、运行模式和原始日志。固定这些条件后才讨论算法回归；“相同 YAML”不能证明二进制相同。

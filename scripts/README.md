@@ -145,7 +145,7 @@ run_frontend_offline.sh 输出文件说明：
 
 ## SANY 四雷达复现工具
 
-不同车辆的外参选择、版本来源和验收方法见 [车辆标定档案与验收](../docs/calibration/vehicle_calibration_management.md)。`resolve_vehicle_config.py` 从车辆档案和明确标定版本生成完整运行 YAML；`assess_static_lidar_calibration.py` 用独立静止录包检查固定外参下的点云一致性。
+不同车辆的外参选择、版本来源和验收方法见 [车辆标定档案与验收](../docs/reference/vehicle_calibration_management.md)。`resolve_vehicle_config.py` 从车辆档案和明确标定版本生成完整运行 YAML；`assess_static_lidar_calibration.py` 用独立静止录包检查固定外参下的点云一致性。
 
 目录：`reproduction/multi_lidar/sany_4livox/`
 

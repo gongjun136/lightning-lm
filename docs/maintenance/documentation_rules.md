@@ -9,6 +9,20 @@ git diff -- CMakeLists.txt cmake package.xml src scripts config
 git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 ```
 
+@anchor documentation_placement
+# 新增与归档规则（必须遵守）
+
+新增内容先检索现有主题和引用，优先补充已有页面。确需独立页面时，先确定内容职责与所属章节，再创建文件、挂接导航；不得每完成一次任务就在工作区根目录、仓库根目录、`docs/` 根目录或网站一级目录追加一份专题文档。
+
+1. **物理目录**：`docs/` 根目录的手写 Markdown 只保留 `index.md` 和 `architecture.md`。构建配置、布局文件和 `shell_sources.dox` 仍放在根目录；新增专题必须归入 `getting_started/`、`flows/`、`modules/`、`algorithms/`、`reference/`、`operations/` 或 `maintenance/`。完整职责见 @ref documentation_structure "文档结构与保留标准"。
+2. **章节归属**：首页只挂接现有 `guide/` 章节。车型配置、一次排障或单次实验都不能成为首页/侧栏的独立一级页面。新增专题由最合适的已有章节通过唯一的 `@subpage` 收录，其他入口使用 `@ref`。新增一级章节必须对应现有章节无法容纳的一整类长期主题，并同步首页、结构约定及阅读路线。
+3. **正文唯一**：每个主题只有一份正式正文。配置、脚本等目录的 README 保留文件用途和相对链接，不复制手册，也不将它们额外加入 Doxygen `INPUT`。所有被 Doxygen 读取的 Markdown 和带 `@page` 的 `.dox` 都必须参加导航检查，禁止绕过 `docs/` 的统一维护。
+4. **标题规范**：`@page` 使用唯一、稳定的 ID 和纯文本标题；不得给页面标题加 Markdown 粗体或首尾空格。标题相同、只差粗体/空白的页面视为重复。例如“SANY 共用建图与定位配置”和“**SANY 共用建图与定位配置** ”属于同一主题，应合并到配置参考页，不能各占一个顶层入口。
+5. **迁移同步**：整理时保留已有 page id、生成页面 URL 与有效锚点，修正仓库/工作区入口、README、脚本说明和 Doxygen 输入中的路径。原先自动生成的页面 ID 可改为显式 `@page` ID，避免移动文件后 URL 改变。
+6. **证据归档**：当前诊断方法放在 `operations/`，故障记录和配套证据放在 `operations/incidents/`，图片放在 `assets/`；运行数据与批量中间产物留在 `runs/` 或外部数据目录。不得用日期、任务名或车型在顶层不断累加汇报页。
+
+创建/迁移页面后，先跑源文件检查，再构建和检查 HTML。验收必须确认页面出现在正确章节且没有同名的第二个目录入口；仅确认文件存在或构建成功不够。
+
 @anchor cpp_api_documentation_style
 # C++ API 文档的通用写法
 
@@ -86,6 +100,8 @@ API 页帮助读者快速知道“做什么、由谁调用、接下来读哪里�
 
 ```text
 [ ] 我检查了目标/入口/脚本/API/配置的 diff 分类。
+[ ] 新增内容优先更新已有页；独立页放入职责目录并挂接已有章节，没有新增顶层专题。
+[ ] 标题、正文和导航入口没有重复；迁移的 ID/URL/锚点与全仓库路径已核对。
 [ ] 数据流、生命周期、线程或关键约束变化已同步到对应页。
 [ ] shell 的参数、环境、cwd、调用链和副作用已同步。
 [ ] 新结论有 @ref 或文件+符号证据；推断已标记。
@@ -104,7 +120,7 @@ cmake --build build_docs --target docs
 python3 docs/maintenance/check_links.py --html build_docs/docs/html
 ```
 
-文档构建会拒绝手写页面的 Doxygen 告警；历史源码注释告警仍留在日志，不将其误报为本轮零告警。链接检查覆盖全部手册页、API 目标、锚点和图像资源；公式与图布局还需浏览器查看。
+文档构建会拒绝手写页面的 Doxygen 告警；历史源码注释告警仍留在日志，不将其误报为本轮零告警。链接检查覆盖目录归属、被 Doxygen 读取的手册页、纯文本/重复标题、唯一父节点、API 目标、锚点和图像资源；公式与图布局还需浏览器查看。
 
 相对 Markdown 链接的目标必须纳入 Doxygen `INPUT`，仅在仓库中存在文件还不足以生成可跳转页面。`--html` 检查也会读取构建目录的 `doxygen-warnings.log`，捕获被 Doxygen 输出成普通文本的失效手册引用。
 

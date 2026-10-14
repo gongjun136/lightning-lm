@@ -8,8 +8,9 @@
 2. @subpage workspace_layout "工作区与源码布局"：区分项目根、colcon 工作区、源码目录与 ROS 包名。
 3. @subpage build_and_run "构建与运行入口"：确认依赖、构建目标、环境加载和各模式的启动方式。
 4. @subpage configuration "配置入口与运行证据"：从实际 YAML 读取位置查参数，明确单位和运行产物。
-5. @subpage guide_scripts "脚本启动主线"：先按任务选择入口，沿真实启动命令和阶段导读进入 C++。
-6. @subpage script_contracts "启动与实验脚本契约"：需要调整运行设置时，查参数、环境变量、工作目录及副作用。
+5. @subpage md_config_sany_README "SANY 共用建图与定位配置"：查正式模板、VIN/接线方式、配置解析与运行快照。
+6. @subpage guide_scripts "脚本启动主线"：先按任务选择入口，沿真实启动命令和阶段导读进入 C++。
+7. @subpage script_contracts "启动与实验脚本契约"：需要调整运行设置时，查参数、环境变量、工作目录及副作用。
 
 **抓住三个问题**
 

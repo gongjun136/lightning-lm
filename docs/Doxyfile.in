@@ -5,8 +5,7 @@ CREATE_SUBDIRS         = NO
 OUTPUT_LANGUAGE        = Chinese
 
 INPUT                  = "@LIGHTNING_SOURCE_DIR@/docs" \
-                         "@LIGHTNING_SOURCE_DIR@/src" \
-                         "@LIGHTNING_SOURCE_DIR@/config/sany/README.md"
+                         "@LIGHTNING_SOURCE_DIR@/src"
 FILE_PATTERNS          = *.md *.dox *.h *.hpp *.cc *.cpp
 RECURSIVE              = YES
 EXCLUDE                = "@LIGHTNING_SOURCE_DIR@/src/core/miao/examples"

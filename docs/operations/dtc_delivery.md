@@ -1,4 +1,3 @@
-/**
 @page dtc_delivery DTC 与安全状态接口交付
 
 接口依据：
@@ -128,4 +127,3 @@ RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=172 python3 src/lightning-lm
 部署时须同步 common_msgs 的三个更新消息包、驱动及定位程序，并重新构建消费者。
 使用一致版本的安装目录，检查 lightning_lm/lib 内历史复制的 ROSIDL 库是否遮蔽新消息包。
 目标硬件的 Livox 状态查询、真实传感器数据、跨主机 DDS 及故障响应时间仍按上述流程联调验收。
-*/

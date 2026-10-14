@@ -10,14 +10,14 @@
 | `flows/` | 从入口到结果的完整路径 | 复制各模块实现细节 |
 | `modules/` | 职责、生命周期、并发、失败边界 | 所有函数逐条复述 |
 | `algorithms/` | 核心公式、参数化、实现差异、源码映射 | 无实现关联的数学教材 |
-| `reference/` | 配置与可重现评测协议 | 无版本上下文的性能承诺 |
-| `operations/` | 当前诊断、对齐、回归与必要故障证据 | 过时部署补丁指令 |
+| `reference/` | 通用/车型配置、车辆标定档案与可重现评测协议 | 无版本上下文的性能承诺 |
+| `operations/` | 当前诊断、DTC 接口、对齐、回归与必要故障证据；故障案例与 JSON 归入 `incidents/` | 过时部署补丁指令 |
 | `maintenance/` | 更新规则、结构约束、校验方式 | 临时工作记录 |
 | `assets/` | 当前页面/README 实际引用的资源 | 未引用图片、整批实验产物 |
 
 `shell_sources.dox` 注册 `scripts/**/*.sh` 的源码浏览页。Doxygen 每次构建直接读取真实脚本，显示完整内容与行号；不维护源码副本，也不将 Bash 当成 C++ 解析。脚本页收在独立的“脚本源码”索引，每个源码页带用途摘要及说明页链接；用途索引和定位入口详解位于 `getting_started/shell_script_guide.md`，作为脚本契约页的子页，契约与学习路线仍放在手册章节。
 
-只使用一个 `docs/`。生成站点不提交到源目录，Doxygen 配置在 `docs/Doxyfile.in`。物理目录区分内容职责，网站章节按学习模块组织：系统全貌 → 在线定位主线 → LIO → 地图定位 → 后端与建图 → 地图与输出 → 诊断 → 维护。流程、模块实现和公式通过章节导览连起来。
+只使用一个 `docs/`。根目录手写 Markdown 只保留首页与总架构，专题必须进入职责目录；配置/脚本目录的 README 只提供入口。新增与迁移按 @ref documentation_placement "新增与归档规则" 执行。生成站点不提交到源目录，Doxygen 配置在 `docs/Doxyfile.in`。物理目录区分内容职责，网站章节按学习模块组织：系统全貌 → 在线定位主线 → LIO → 地图定位 → 后端与建图 → 地图与输出 → 诊断 → 维护。流程、模块实现和公式通过章节导览连起来。
 
 学习对象已熟悉 SLAM。专题先说明输入输出、主执行路径和关键公式与实现的对应关系；对象所有权、完整关闭顺序与锁的细节作为按需参考，不占据首次阅读主线。在线定位优先，离线定位、纯前端、离线/在线建图和 CGI 纯组合导航均保留完整入口。
 
@@ -26,12 +26,14 @@
 [Ceres 文档入口](https://github.com/ceres-solver/ceres-solver/blob/master/docs/source/index.rst) 将安装、教程、导数、建模与求解原理分开；本手册借鉴阅读层次，不引入它的 Sphinx 工具链。
 [GTSAM API](https://gtsam.org/doxygen/) 按逻辑模块导航并保留类/文件索引；本项目继续使用 Doxygen + Graphviz + Markdown，将主题页和本仓库 API 连通。
 
-# 本轮清理
+# 归档与保留依据
 
 保留既有流程与模块页，并纠正在线 SLAM 队列等与源码不符的描述。将有用的几何、ESKF、统计推导吸收到直接关联实现的算法页；移除 `gj/` 的独立通用笔记、重复 DOCX/XLSX、旧架构图与汇总文档。
 移除 2026 年 7 月的一次性评测汇报、重复报告、manifest 和专属图表，保留评测方法与运行脚本。它们记录特定旧版本，不作为当前代码说明。保留 9 月定位故障证据及配套 JSON，因为它们解释当前失效门控与回归边界；不把历史现场结果描述成当前版本已验证性能。
 
 README 仍引用的演示图归入 `assets/examples/`。保留材料必须能回答当前维护问题；不能仅因“曾经生成过”就持续放入仓库。
+
+SANY 共用配置统一维护在 `reference/sany_configuration.md`，从“系统全貌与上手”章节进入；`config/sany/README.md` 保留配置文件用途和手册链接。原自动页面 ID `md_config_sany_README` 改为显式声明，生成 URL 保持不变。车辆标定页从单独的 `calibration/` 归入 `reference/`，仍由“地图、坐标与输出”章节收录。DTC 交付说明统一为 `operations/dtc_delivery.md`，收录于“诊断与排障”。这些调整保留专题内容、page id 与显式锚点。
 
 # 导航约束
 
@@ -39,4 +41,4 @@ README 仍引用的演示图归入 `assets/examples/`。保留材料必须能回
 
 跨章节、模块与原理、原理与 API 之间使用 `@ref`。同一专题在多条学习路线出现时只保留一个目录归属，其余位置使用引用；不要为第二个入口重复添加 `@subpage`。新增主题先确定稳定 page id，再补所属章节、调用方链接和源码反向链接，已有 page id 与 URL 保持稳定。
 
-生成前运行 `python3 docs/maintenance/check_links.py`，检查重复 ID、唯一父节点、可达性、环、源文件链接及 Shell 注册的完整性。新增、删除或重命名脚本时同步 `shell_sources.dox` 和引用。生成后加 `--html build_docs/docs/html` 检查手册与脚本页面、锚点与资源，并抽查侧栏实际展开层级、公式和源码跳转。
+生成前运行 `python3 docs/maintenance/check_links.py`，检查顶层目录限制、Doxygen 输入范围、纯文本/重复标题、重复 ID、唯一父节点、可达性、环、源文件链接及 Shell 注册的完整性。新增、删除或重命名脚本时同步 `shell_sources.dox` 和引用。生成后加 `--html build_docs/docs/html` 检查手册与脚本页面、锚点与资源，并抽查侧栏实际展开层级、公式和源码跳转。
