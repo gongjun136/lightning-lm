@@ -78,7 +78,7 @@ bash src/lightning-lm/scripts/build_workspace.sh --cmake-clean-cache
 
 ## 仅构建文档
 
-Doxygen 与 Graphviz 是可选开发依赖。只更新文档时，在仓库根目录独立构建，无需 ROS、C++ 编译器或已有业务构建：
+Doxygen、Graphviz 与 Python 3.9+ 是文档构建依赖。只更新文档时，在仓库根目录独立构建，无需 ROS、C++ 编译器或已有业务构建：
 
 ```bash
 cmake -S docs -B build_docs
@@ -87,6 +87,10 @@ python3 docs/maintenance/check_links.py --html build_docs/docs/html
 ```
 
 入口为 `build_docs/docs/html/index.html`。公式使用 MathJax，首次显示需要浏览器能够加载配置的 MathJax 资源；API 与源码导航来自本地 HTML。
+
+`docs` target 会先检查源文件导航，再生成 HTML，为导航/样式资源及动态加载的章节脚本添加内容版本，最后自动校验完整章节树、唯一父节点和资源版本。源码与生成页面不一致时构建失败；章节内容变化时，浏览器会请求新版本的导航脚本。上面的独立检查命令仍可用于单独审查已有 HTML。
+
+首次从旧站点切换时，在首页 URL 后加 `?refresh=1` 或强制刷新一次，让浏览器获取带版本资源的新 HTML；之后章节脚本会随内容版本更新。检查目录时，展开“开发与算法手册”应只有八个章节：SANY 共用配置属于“系统全貌与上手”，DTC 交付说明属于“诊断与排障”。
 
 若需与业务程序一同构建，在工作区根目录执行：
 

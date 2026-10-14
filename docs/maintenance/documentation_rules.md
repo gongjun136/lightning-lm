@@ -23,6 +23,8 @@ git diff --name-only -- CMakeLists.txt cmake package.xml src scripts config
 
 创建/迁移页面后，先跑源文件检查，再构建和检查 HTML。验收必须确认页面出现在正确章节且没有同名的第二个目录入口；仅确认文件存在或构建成功不够。
 
+HTML 校验必须读取 `navtreedata.js` 及延迟加载的首页/章节脚本，逐页对照源文件声明的父节点；不能只检查项目根节点。文档构建统一添加导航资源的内容版本，并校验 HTML 引用与动态加载器使用同一版本，防止旧导航脚本和新页面混用。
+
 @anchor cpp_api_documentation_style
 # C++ API 文档的通用写法
 

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import shlex
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 PAGE = re.compile(r'^\s*(?:\*\s*)?@page\s+(\w+)[ \t]*(.*)$', re.M)
@@ -41,6 +41,23 @@ def plain_title(title):
     return re.sub(r'\s+', ' ', title).strip()
 
 
+def subpages(text):
+    prose = re.sub(r'```.*?```|`[^`\n]*`', '', text, flags=re.S)
+    return re.findall(r'@subpage\s+(\w+)', prose)
+
+
+def navigation_parents(root):
+    parents = {}
+    for page in manual_pages(root):
+        text = page.read_text(encoding='utf-8')
+        declaration = PAGE.search(text)
+        parent = 'index' if page == root / 'docs/index.md' else (
+            declaration[1] if declaration else None)
+        for child in subpages(text):
+            parents[child] = parent
+    return parents
+
+
 def check_sources(root):
     errors = []
     pages = manual_pages(root)
@@ -72,8 +89,7 @@ def check_sources(root):
         if page != index and len(page_ids) != 1:
             errors.append(f'{page}: expected one stable page id')
         # Fenced and inline code are examples, not navigation instructions.
-        prose = re.sub(r'```.*?```|`[^`\n]*`', '', text, flags=re.S)
-        children = re.findall(r'@subpage\s+(\w+)', prose)
+        children = subpages(text)
         if children and page != index and page.parent != root / 'docs/guide':
             errors.append(f'{page}: only index.md and guide pages may declare subpages')
         if page == index or page_ids:
@@ -141,34 +157,87 @@ class Links(HTMLParser):
         super().__init__()
         self.ids = set()
         self.targets = []
+        self.navigation_version = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if attrs.get('id'): self.ids.add(attrs['id'])
         if tag == 'a' and attrs.get('name'): self.ids.add(attrs['name'])
+        if tag == 'meta' and attrs.get('name') == 'lightning-navigation-version':
+            self.navigation_version = attrs.get('content')
         for key in ('href', 'src', 'data'):
             if key in attrs: self.targets.append(attrs[key])
 
 
-def check_html(folder, page_ids):
-    errors, cache = [], {}
-    # A page can render successfully while Doxygen puts it beside the manual.
-    navtree = folder / 'navtreedata.js'
-    if not navtree.is_file():
-        errors.append('missing rendered navigation: navtreedata.js')
-    else:
-        tree = re.search(r'var NAVTREE\s*=\s*(\[.*?\]);',
-                         navtree.read_text(encoding='utf-8'), re.S)
+def check_navigation(folder, page_ids, parents):
+    errors, seen = [], Counter()
+
+    def read_array(name):
         try:
-            roots = json.loads(tree.group(1))[0][2] if tree else []
-            if not roots:
-                errors.append('missing rendered manual navigation')
-            for title, target, children in roots:
-                name = Path(urlsplit(target).path).stem
-                if name in page_ids or name.startswith('md_'):
-                    errors.append(f'top-level rendered topic: {title} ({target})')
-        except (ValueError, IndexError, TypeError):
-            errors.append('invalid rendered navigation: navtreedata.js')
+            if not re.fullmatch(r'\w+', name):
+                raise ValueError('invalid script name')
+            text = (folder / (name + '.js')).read_text(encoding='utf-8')
+            match = re.search(r'\bvar\s+\w+\s*=\s*(\[.*?\]);', text, re.S)
+            data = json.loads(match[1]) if match else None
+            if not isinstance(data, list):
+                raise ValueError('missing array')
+            return data
+        except (OSError, ValueError):
+            errors.append(f'invalid or missing rendered navigation: {name}.js')
+            return []
+
+    def walk(nodes, parent, ancestors):
+        for node in nodes:
+            if not isinstance(node, list) or len(node) != 3 or not isinstance(node[1], str):
+                errors.append('invalid rendered navigation node')
+                continue
+            title, target, children = node
+            url = urlsplit(target)
+            name = Path(url.path).stem
+            child_parent = parent
+            if not url.fragment:
+                if name == 'index' or name in page_ids:
+                    seen[name] += 1
+                    expected = parents.get(name)
+                    if parent != expected:
+                        errors.append(f'rendered parent mismatch: {name}: expected {expected}, got {parent}')
+                    child_parent = name
+                elif name.startswith('md_'):
+                    errors.append(f'unknown rendered manual topic: {title} ({target})')
+                    continue
+                else:
+                    # API indexes are separate from the hand-written manual.
+                    continue
+            if isinstance(children, str):
+                if children in ancestors:
+                    errors.append(f'rendered navigation cycle: {children}')
+                else:
+                    walk(read_array(children), child_parent, (*ancestors, children))
+            elif isinstance(children, list):
+                walk(children, child_parent, ancestors)
+
+    tree = read_array('navtreedata')
+    if tree and len(tree[0]) == 3 and isinstance(tree[0][2], list):
+        walk(tree[0][2], None, ('navtreedata',))
+    else:
+        errors.append('missing rendered manual navigation')
+    for name in ['index', *page_ids]:
+        if seen[name] != 1:
+            errors.append(f'rendered manual page must occur once: {name} ({seen[name]} occurrences)')
+    return errors
+
+
+def check_html(folder, page_ids, parents):
+    errors, cache = check_navigation(folder, page_ids, parents), {}
+    version_file = folder / 'navigation_version.txt'
+    version = version_file.read_text(encoding='ascii').strip() if version_file.is_file() else ''
+    if not re.fullmatch(r'[0-9a-f]{16}', version):
+        errors.append('missing navigation asset version; rebuild the docs target')
+    else:
+        loader_file = folder / 'navtree.js'
+        loader = loader_file.read_text(encoding='utf-8') if loader_file.is_file() else ''
+        if ".js?v=" + version not in loader:
+            errors.append('navigation loader uses an outdated asset version')
     # Doxygen renders unresolved Markdown references as plain text, so they
     # disappear from the HTML link list. Inspect the build log as well.
     warning_log = folder.parent.parent / 'doxygen-warnings.log'
@@ -188,9 +257,13 @@ def check_html(folder, page_ids):
         if not page.is_file():
             errors.append(f'missing rendered page: {page.name}')
             continue
+        if parse(page).navigation_version != version:
+            errors.append(f'{page.name}: navigation asset version mismatch')
         for target in parse(page).targets:
             url = urlsplit(target)
             if url.scheme or url.netloc: continue
+            if Path(url.path).suffix in {'.js', '.css'} and parse_qs(url.query).get('v') != [version]:
+                errors.append(f'{page.name}: unversioned or outdated asset {target}')
             path = (page.parent/unquote(url.path)).resolve() if url.path else page
             if not path.is_file():
                 errors.append(f'{page.name}: missing {target}')
@@ -210,7 +283,7 @@ def main():
         ids = []
         for page in manual_pages(root):
             ids.extend(name for name, title in PAGE.findall(page.read_text(encoding='utf-8')))
-        errors.extend(check_html(args.html.resolve(), ids))
+        errors.extend(check_html(args.html.resolve(), ids, navigation_parents(root)))
     for error in errors: print(error)
     print(f'{count} manual pages; {len(errors)} link/navigation errors')
     return bool(errors)

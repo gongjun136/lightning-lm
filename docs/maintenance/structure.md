@@ -42,3 +42,5 @@ SANY 共用配置统一维护在 `reference/sany_configuration.md`，从“系�
 跨章节、模块与原理、原理与 API 之间使用 `@ref`。同一专题在多条学习路线出现时只保留一个目录归属，其余位置使用引用；不要为第二个入口重复添加 `@subpage`。新增主题先确定稳定 page id，再补所属章节、调用方链接和源码反向链接，已有 page id 与 URL 保持稳定。
 
 生成前运行 `python3 docs/maintenance/check_links.py`，检查顶层目录限制、Doxygen 输入范围、纯文本/重复标题、重复 ID、唯一父节点、可达性、环、源文件链接及 Shell 注册的完整性。新增、删除或重命名脚本时同步 `shell_sources.dox` 和引用。生成后加 `--html build_docs/docs/html` 检查手册与脚本页面、锚点与资源，并抽查侧栏实际展开层级、公式和源码跳转。
+
+`docs` target 自动执行这些检查，并用 `maintenance/prepare_html.py` 为静态资源和动态导航脚本添加内容版本。HTML 检查会展开完整手册导航树，核对每页的父节点、唯一出现次数和资源版本；首页章节脚本里额外挂入专题也会失败。
