@@ -1,0 +1,32 @@
+# Copy into EXPERIMENT/configs/. Paths below are relative to that directory.
+# Fill every null from recording/measurement evidence. Unknown clocks fail closed.
+schema_version: 1
+role: calibration
+reference:
+  csv: ../B/reference.csv
+  metadata: ../B/reference.metadata.json
+estimates:
+  - name: calibration_localization
+    tum: ../B/localization_rear.tum
+    metadata: ../B/localization_rear.metadata.json
+analysis_intervals:
+  - start_ns: null  # Full bag/capture boundary in reference time, not first good pose.
+    end_ns: null
+    epoch: FILL_REFERENCE_EPOCH
+time:
+  offset_status: unknown  # known, or assumed with allow_conditional=true
+  estimate_to_reference_offset_ns: null  # t_ref = t_est + offset (constant, measured separately)
+  reference_epoch: FILL_REFERENCE_EPOCH
+  evidence: FILL_CLOCK_SYNCHRONIZATION_AND_LATENCY_EVIDENCE
+  allow_conditional: false
+pairing:
+  max_reference_gap_sec: null  # Expected CGI cadence + measured jitter tolerance.
+  availability_hold_sec: null  # Largest acceptable age of the latest estimate sample.
+fit:
+  method: position_attitude  # position is supported; both require a non-collinear path.
+  min_pairs: 30
+  min_secondary_span_m: null
+  attitude_weight_m: null  # Basis-vector attitude constraints, expressed as metre weight.
+  max_attitude_dispersion_deg: null  # Calibration consistency gate, not an acceptance threshold.
+conditions: []
+# No fit-time acceptance claim. Frozen calibration residuals are training diagnostics.

@@ -1,4 +1,9 @@
 /**
+ * @example{lineno} accuracy_capture.sh
+ * 本机旁路录制或隔离域输入白名单回放；保留完整采集区间与参考审计，不改变 CAN/业务节点。
+ * 参数、输出和验证见 @ref lidar_ins_accuracy "建图与定位精度评估"。
+ */
+/**
  * @example{lineno} sany_config.sh
  * 为通用建图、定位入口解析 SANY VIN/接线方式并生成完整运行 YAML；其他数据集配置保持原样。
  * 用途见 @ref md_config_sany_README "SANY 共用建图与定位配置"；由入口 source 调用，不单独启动 ROS 节点。

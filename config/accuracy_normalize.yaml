@@ -1,0 +1,29 @@
+# T_AB maps B coordinates into A. Use actual measured mounting calibration.
+# No defaults: do not copy a relative multi-LiDAR calibration as T_rear_axle_lidar.
+schema_version: 1
+source_frame: imu
+timestamp_offset_ns: null # Original mapping header -> canonical comparison clock. Exported canonical TUM uses 0.
+world_frame_id: null  # map:<SHA256 of the exported map_manifest.yaml>
+source_world_frame_id: null # Same frame for mapping; business output may be in a legacy frame.
+trajectory_kind: frontend  # optimized_keyframes / optimized_dense_reconstructed / localization
+T_imu_lidar:
+  confirmed: false
+  evidence: null
+  translation_m: null
+  quaternion_xyzw: null
+T_rear_axle_lidar:
+  confirmed: false
+  evidence: null
+  translation_m: null
+  quaternion_xyzw: null
+# For already published rear-axle TUM, source_frame=rear_axle_flu and confirm below.
+published_reference_point_confirmed: false
+published_reference_point_evidence: null
+# Optional LEFT multiplication to undo an existing published map-frame transform.
+# T_target_world_source_world; this is an already known frame contract, never fitted here.
+world_transform:
+  enabled: false
+  confirmed: false
+  evidence: null
+  translation_m: null
+  quaternion_xyzw: null

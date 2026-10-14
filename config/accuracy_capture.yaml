@@ -1,0 +1,98 @@
+# Copy into the experiment directory. Raw capture needs source ID, epoch and
+# capture confirmation/settings only. Complete export contracts after calibration.
+# These are experiment inputs, not production settings or acceptance limits.
+schema_version: 1
+source_recording_id: null # Same immutable ID in both computers' copies.
+epoch: null # One uninterrupted, audited clock epoch; split recordings after a reset.
+time_basis: null # Common comparison time domain, e.g. unix_utc_receive_proxy.
+world_frame_id: null # Stable name for this fixed ENU origin.
+
+georeference:
+  confirmed: false
+  datum: WGS84
+  origin_llh: [null, null, null] # latitude deg, longitude deg, ELLIPSOID height m
+  evidence: null
+height:
+  confirmed: false
+  datum: null # ellipsoidal or orthometric
+  geoid_separation_m: null # 0 for ellipsoidal; h = H + N for orthometric
+  evidence: null
+reference_point:
+  confirmed: false
+  position: rear_axle_center
+  attitude_axes: FLU
+  device_lever_arm_already_applied: true
+  evidence: null # Exporter deliberately applies no second lever arm.
+clock:
+  confirmed: false
+  assumption_acknowledged: false # Permits provisional export only; never a PASS.
+  reference_header_semantics: socketcan_kernel_receive
+  # Comparison timestamp = original timestamp + explicitly measured offset.
+  # Header offsets may include a separately measured device latency correction.
+  # Bag offsets correct the recorder host clock ONLY. Never infer leap seconds.
+  reference_header_offset_ns: null
+  reference_bag_offset_ns: null
+  estimate_header_offset_ns: null
+  estimate_bag_offset_ns: null
+  uncertainty_ns: null # Explicit bound supported by synchronization/latency audit.
+  evidence: null
+  latency_evidence: null # Receive stamps are not proven device measurement epochs.
+assembly:
+  confirmed: false
+  assumption_acknowledged: false # Propagates an explicit report condition.
+  method: causal_record_order_at_latitude
+  evidence: null # Inspect field cadence/order; there is no per-frame GNSS epoch ID.
+quality:
+  confirmed: false
+  evidence: null # Choose gates before viewing errors; these are reference quality gates.
+  max_age_sec: null
+  max_skew_sec: null
+  max_future_sec: null
+  max_differential_age_sec: null
+  max_horizontal_sigma_m: null
+  max_vertical_sigma_m: null
+  max_attitude_sigma_deg: null
+  max_velocity_sigma_mps: null
+  max_site_radius_m: null
+  recovery_samples: null
+estimate:
+  confirmed: false
+  trajectory_kind: localization # Or frontend for a published frontend pose stream.
+  topic: /slamPoseRaw_topic
+  world_frame_id: null # map:<asset hash> for localization, run:<unique run id> for mapping.
+  body_frame_id: rear_axle_flu
+  evidence: null # Confirm published rear-axle position AND body attitude convention.
+
+capture:
+  confirmed: false
+  evidence: null # Verify ownership, topic names, sensor settings and algorithm config.
+  storage_id: mcap # Humble requires rosbag2_storage_mcap; sqlite3 is also supported.
+  cgi_prefix: /cgi430
+  can_interface: can1
+  expected_can_bitrate: null # Read current settings; recorder never configures CAN.
+  input_topics: # Explicit replay allowlist; adapt to the recorded vehicle setup.
+    - /livox/lidar_192_168_3_184
+    - /livox/lidar_192_168_1_108
+    - /livox/lidar_192_168_2_133
+    - /livox/lidar_192_168_4_143
+    - /livox/imu_192_168_3_184
+    - /livox/imu_192_168_1_108
+    - /livox/imu_192_168_2_133
+    - /livox/imu_192_168_4_143
+    - /SpeThrCAN4_topic
+  output_topics:
+    - /slamPoseRaw_topic
+    - /localization/pose_vel
+    - /PosRes
+    - /localization/loc_status
+    - /localization/fault_status
+    - /localization/pipeline_diagnostics
+    - /diagnostics/heartbeat/lightning_slam
+    - /diagnostics/source_dtc/localization
+    - /slamState_topic
+    - /SystemState
+  # Record these if available; missing optional topics are reported, not fatal.
+  evidence_topics: [/rosout, /tf, /tf_static]
+  # Preflight requires every input for algorithm/combined. Output-only recording
+  # can start before the algorithm; final export reports missing output streams.
+  required_output_topics: [/slamPoseRaw_topic, /localization/loc_status, /diagnostics/heartbeat/lightning_slam]

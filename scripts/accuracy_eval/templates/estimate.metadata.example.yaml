@@ -1,0 +1,24 @@
+# Metadata accompanying a canonical TUM: seconds x y z qx qy qz qw.
+# Translation in metres; active world_from_body rotation; right-handed frames.
+# This file is illustrative. Exporters must write actual provenance and values.
+schema_version: 1
+source_recording_id: FILL_STABLE_RAW_RECORDING_ID
+source_recording_sha256: FILL_RAW_RECORDING_MANIFEST_SHA256
+world_frame_id: map:FILL_EXACT_MAP_ASSET_HASH
+body_frame_id: rear_axle_flu
+trajectory_kind: frontend  # frontend|optimized_keyframes|optimized_dense_reconstructed|localization
+time_basis: FILL_ACTUAL_TIMESTAMP_BASIS
+clock_epoch: FILL_ESTIMATE_EPOCH
+recorded_intervals:
+  - start_ns: null  # Recorder/capture boundary, never first successfully published pose.
+    end_ns: null
+    epoch: FILL_ESTIMATE_EPOCH
+conditions: []  # Propagated into the frozen artifact/report and cannot be cleared by config.
+evidence:
+  source_file_sha256: FILL_SOURCE_TUM_HASH
+  pose_convention: world_from_body
+  reference_point: rear_axle
+  frame_conversion: FILL_CHECKED_CHAIN_AND_TRANSFORM_HASHES
+  map_frame: FILL_MANIFEST_AND_WORLD_NORMALIZATION_EVIDENCE
+  output_semantics: FILL_FRONTEND_OR_KEYFRAME_OR_RECONSTRUCTED_DENSE_OR_LOCALIZATION
+  clock: FILL_CLOCK_AND_TIMESTAMP_EVIDENCE

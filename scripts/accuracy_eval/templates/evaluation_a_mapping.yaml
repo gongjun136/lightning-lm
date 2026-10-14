@@ -1,0 +1,44 @@
+# A: independent mapping recording that created the map. All exports must be in
+# that exact exported-map frame, rear axle FLU. Reuse B's ONE frozen transform.
+schema_version: 1
+role: evaluation
+reference:
+  csv: ../A/reference.csv
+  metadata: ../A/reference.metadata.json
+estimates:
+  - name: mapping_frontend_dense
+    tum: ../A/frontend_rear.tum
+    metadata: ../A/frontend_rear.metadata.json
+    alignment: ../frozen_map_to_enu.json
+  - name: mapping_frontend_keyframes
+    tum: ../A/frontend_keyframes_rear.tum
+    metadata: ../A/frontend_keyframes_rear.metadata.json
+    alignment: ../frozen_map_to_enu.json
+    availability_hold_sec: null
+  - name: mapping_optimized_keyframes
+    tum: ../A/optimized_keyframes_rear.tum
+    metadata: ../A/optimized_keyframes_rear.metadata.json
+    alignment: ../frozen_map_to_enu.json
+    availability_hold_sec: null  # Set from keyframe cadence. Sparse sampling coverage is not online uptime.
+  - name: mapping_optimized_dense_supplement
+    tum: ../A/optimized_dense_rear.tum
+    metadata: ../A/optimized_dense_rear.metadata.json
+    alignment: ../frozen_map_to_enu.json
+analysis_intervals:
+  - start_ns: null
+    end_ns: null
+    epoch: FILL_REFERENCE_EPOCH
+time:
+  offset_status: unknown
+  estimate_to_reference_offset_ns: null
+  reference_epoch: FILL_REFERENCE_EPOCH
+  evidence: FILL_CLOCK_SYNCHRONIZATION_AND_LATENCY_EVIDENCE
+  allow_conditional: false
+pairing:
+  max_reference_gap_sec: null
+  availability_hold_sec: null
+thresholds: null  # No thresholds => NOT_ASSESSED_NO_THRESHOLDS, never PASS.
+conditions: []
+common_sample_groups:
+  - name: mapping_before_after
+    estimates: [mapping_frontend_keyframes, mapping_optimized_keyframes]
