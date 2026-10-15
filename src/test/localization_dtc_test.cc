@@ -131,6 +131,25 @@ int main() {
     msg.comm_header.seq = 2; msg.observations[0].dtc = msg.observations[1].dtc;
     Require(!radar.Observe(msg, At(1140)), "duplicate DTC invalidates snapshot");
     msg.observations[0].dtc = 0x110476C4;
+    auto history_msg = msg;
+    for (auto& obs : history_msg.observations) {
+        obs.physical_condition = 1;
+        for (uint32_t base : {0x110476C4u, 0x11037660u, 0x11017598u, 0x110275FCu})
+            if (obs.dtc == base + 12 || obs.dtc == base + 13) obs.physical_condition = 2;
+    }
+    functional_safety::RadarDtcState history(13, 0.5, 2.5);
+    Require(history.Observe(history_msg, At(1140)) && history.Evaluate(At(1140)).all_pass &&
+            !history.Evaluate(At(1140)).fault, "fresh recovered/history warnings alone are not a current safety fault");
+    Require(!history.Evaluate(At(1641)).all_pass, "historical warning exception does not waive heartbeat expiry");
+    ++history_msg.comm_header.seq;
+    history_msg.observations[1].physical_condition = 2;  // front current time-sync DTC
+    Require(history.Observe(history_msg, At(1150)) && history.Evaluate(At(1150)).fault &&
+            !history.Evaluate(At(1150)).all_pass, "current synchronization fault still requests safety action");
+    ++history_msg.comm_header.seq;
+    history_msg.observations[1].physical_condition = 1;
+    history_msg.observations[9].physical_condition = 0;  // front recovered-link history
+    Require(history.Observe(history_msg, At(1160)) && !history.Evaluate(At(1160)).all_pass,
+            "unknown history is not fabricated as valid evidence");
     functional_safety::RadarDtcState availability(13, 0.5, 2.5, true);
     Require(availability.Observe(msg, At(1140)) && !availability.Evaluate(At(1140)).all_pass,
             "DTC PASS alone does not prove four devices usable");
@@ -142,6 +161,10 @@ int main() {
         Require(availability.ObserveAvailability(state, At(1140)), "role availability accepted");
     }
     Require(availability.Evaluate(At(1140)).all_pass, "normal requires both valid DTCs and device usability");
+    history_msg.observations[9].physical_condition = 2;
+    ++history_msg.comm_header.seq;
+    Require(availability.Observe(history_msg, At(1140)) && availability.Evaluate(At(1140)).all_pass,
+            "healthy physical devices plus fresh history-only diagnostics allow normal");
     livox_ros_driver2::msg::LidarDiagnosticState fatal;
     fatal.role = 0; fatal.comm_header.source_id = 7; fatal.comm_header.seq = 2;
     fatal.boot_id = 1; fatal.config_version = "test"; fatal.usability = 2;

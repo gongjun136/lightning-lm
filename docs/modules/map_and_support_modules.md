@@ -61,6 +61,10 @@ digraph map_products {
 
 **代码依据：** `src/ui`、`src/common/keyframe.h`、`src/common/nav_state.h`、`src/utils`、`src/io` 的公开头文件及 `src/CMakeLists.txt` 源清单
 
+`src/utils/radar_dtc_state.h` 的 `RadarDtcState::Evaluate()` 直接参与 Safety 判定：通信恢复和同步历史 DTC
+保留诊断可见性，但新鲜的历史 FAIL 不单独触发当前故障；当前 DTC、证据过期和四台设备可用性仍参与判断。
+完整的故障优先级与主从版本要求见 @ref dtc_delivery 。
+
 # 阅读时的跨模块约束
 
 - 坐标系名称必须和变换方向一起读；不能仅从变量含 `map`/`odom` 猜乘法方向。

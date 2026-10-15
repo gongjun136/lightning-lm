@@ -58,8 +58,12 @@ class RadarDtcState {
         if (result.all_pass) for (const auto& obs : state_.observations) {
             const double ttl = obs.dtc == 0x10F00001 || obs.dtc == 0x10F00002 ? timeout_ : hms_timeout_;
             const bool fresh = obs.evaluation_age_us <= ttl * 1e6 && obs.evaluation_age_us * 1e-6 + age <= ttl;
-            result.fault |= fresh && obs.physical_condition == 2;
-            result.all_pass &= fresh && obs.physical_condition == 1;
+            // Recovered-link/synchronization-history DTCs remain visible to
+            // diagnostics, but are not evidence of a current safety fault.
+            // UNKNOWN/stale history still cannot stand in for valid evidence.
+            const bool history = Historical(obs.dtc);
+            result.fault |= fresh && obs.physical_condition == 2 && !history;
+            result.all_pass &= fresh && (obs.physical_condition == 1 || (history && obs.physical_condition == 2));
         }
         if (check_availability_) {
             bool all_unusable = true;
@@ -78,6 +82,11 @@ class RadarDtcState {
         for (uint32_t base : {0x110476C4u, 0x11037660u, 0x11017598u, 0x110275FCu})
             for (uint32_t offset : {0u, 1u, 3u, 4u, 7u, 8u, 9u, 10u, 11u, 12u, 13u})
                 if (code == base + offset) return true;
+        return false;
+    }
+    static bool Historical(uint32_t code) {
+        for (uint32_t base : {0x110476C4u, 0x11037660u, 0x11017598u, 0x110275FCu})
+            if (code == base + 12 || code == base + 13) return true;
         return false;
     }
  private:
