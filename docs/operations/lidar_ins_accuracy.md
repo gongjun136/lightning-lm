@@ -23,7 +23,7 @@ python3 -m pip install -r scripts/accuracy_eval/requirements.txt
 # 可选绘图：使用系统已有 matplotlib，或在独立环境安装。
 ```
 
-新增脚本从源码 checkout 运行，不需要修改 C++ 算法或生产入口。`config/accuracy_capture.yaml` 和 `config/accuracy_normalize.yaml` 是需要核验的模板，空值不代表零。
+新增脚本从源码 checkout 运行，不需要修改 C++ 算法或生产入口。`config/accuracy_capture.yaml`、`config/accuracy_reference.yaml`、`config/accuracy_lever_sweep.yaml` 和 `config/accuracy_normalize.yaml` 是需要核验的模板，空值不代表零。
 
 ## 采集配置与命令
 
@@ -48,7 +48,22 @@ bash scripts/accuracy_capture.sh record --config "$EXP/configs/capture_A.yaml" \
 
 ## 导出原始参考与业务轨迹
 
-正式导出前补齐 `georeference`、`height`、`reference_point`、`quality` 和 `estimate` 的实际数值/证据。固定原点为 WGS84 纬度/经度/椭球高；设备若输出正常高，填写已确认的 `h=H+N` 转换。CGI WebUI 已做后轴杆臂时不再次补偿。质量门限必须在查看算法误差以前确定；它们是参考准入条件，不是算法合格阈值。
+正式导出前补齐 `georeference`、`height`、`reference_point`、`quality` 和 `estimate` 的实际数值/证据。固定 ENU 原点为 WGS84 纬度/经度/椭球高；设备若输出正常高，填写已确认的 `h=H+N` 转换。质量门限必须在查看算法误差以前确定；它们是参考准入条件，不是算法合格阈值。
+
+推荐保留 CGI 的一个固定原始输出点 O，后轴转换全部离线进行。O 必须按 CGI 手册和实际输出配置确定，不能猜测它是天线或IMU中心。O 须与后轴刚性连接在同一后车体上，姿态仍统一为后车体 FLU。采集配置使用下列合同，并填写实际 `point_id` 和证据：
+
+```yaml
+reference_point:
+  confirmed: true
+  position: fixed_point
+  point_id: FILL_VERIFIED_CGI_OUTPUT_POINT_ID
+  attitude_axes: FLU
+  device_lever_arm_already_applied: false
+  rigid_to_rear_axle_confirmed: true
+  evidence: FILL_POINT_ID_OUTPUT_CONFIGURATION_AXES_AND_RIGID_ATTACHMENT_EVIDENCE
+```
+
+这里的 `device_lever_arm_already_applied:false` 只声明设备尚未把 O 转到后轴。不要清零或改动设备内部已确认的 GNSS–IMU 杆臂和安装角，也不修改设备配置或业务发布。已有已补偿后轴的录制仍可使用旧 `position:rear_axle_center`、`device_lever_arm_already_applied:true` 合同；必须保留其真实来源，不能改标成固定原始点。
 
 时钟和分帧历元尚未验证时只能显式接受条件性假设。`clock/assembly.confirmed:false` 必须配 `assumption_acknowledged:true`、显式整数偏移和说明。CAN Header 是内核接收时间；字段接收时间靠近不能证明它们来自同一测量历元。导出保留条件字段；核心不能用 `known offset=0` 消除这些缺口。
 
@@ -63,7 +78,29 @@ python3 scripts/accuracy_export_bag.py export --config "$EXP/configs/capture_A.y
 
 主要产物：`reference.csv/reference.metadata.json`、`reference.raw_frames.csv`、`reference.timeline.csv`、`reference.status.jsonl`、`estimated.tum/estimated.metadata.json` 与摘要。原始 `can_raw.log` 另留在从机会话目录，typed raw CSV 不能替代未知/未成功解码CAN帧。所有拒绝参考行保留 `reference_valid=false` 和原因；标准 NavSatFix 的 GBAS 状态不能替代定向固定解、姿态、sigma和差分龄期检查。
 
-canonical 参考列：`timestamp_ns,x,y,z,qx,qy,qz,qw,reference_valid,reason,epoch,time_basis`；XYZ 为固定 ENU 后轴位置，xyzw 为 ENU←后车体 FLU 旋转。额外列保留九字段接收戳、质量和原始字节。元数据保留完整采集区间；不得用第一/最后有效位姿缩短分母。时钟回退须分成新的具名 epoch 和物理文件。
+参考列：`timestamp_ns,x,y,z,qx,qy,qz,qw,reference_valid,reason,epoch,time_basis`。固定点模式的 XYZ 为 O 的固定 ENU 位置，元数据为 `body_frame_id:cgi_output_flu`；xyzw 始终为 ENU←后车体 FLU 旋转。导出器不施加 O→后轴杆臂，这份 `reference.csv` 不能直接交给评估核心。旧后轴模式保持后轴 XYZ 和 `rear_axle_flu` 元数据。额外列保留九字段接收戳、质量和原始字节。元数据保留完整采集区间；不得用第一/最后有效位姿缩短分母。时钟回退须分成新的具名 epoch 和物理文件。
+
+## CGI 参考点离线归一化
+
+复制 `config/accuracy_reference.yaml` 到 `$EXP/configs/reference.yaml`，填写已测量并冻结的杆臂合同。`lever_arm_m:[x,y,z]` 是从固定原始点 O 指向目标后轴中心的完整向量，以后车体 FLU 表达：x向前、y向左、z向上。它不是 ENU 中的常向量。固定点转换为 `p_rear_ENU = p_O_ENU + R_ENU_from_rear_FLU * lever_arm_m`，姿态不变；不能只把车体向量直接加到 ENU XYZ。
+
+| `mode` | 输入与离线位置变化 |
+|---|---|
+| `fixed_point` | 原始固定点 O；有效位移为 `lever_arm_m`。`source_point_id` 必须匹配原始元数据。 |
+| `rear_axle_delta` | 设备已做末端后轴外推的旧录制；有效位移为 `lever_arm_m - previous_device_lever_arm_m`。两项均是 O→后轴的完整向量，并非在旧后轴位置上再加完整新杆臂。 |
+| `already_rear` | 已确认的旧后轴数据恒等通过；只允许零 `lever_arm_m`，不再补偿。 |
+
+各模式均需填写 `confirmed/evidence` 和非空 `source_point_id`（`already_rear` 可填 `rear_axle_center`），以及 `rigid_to_rear_axle_confirmed:true`。`rear_axle_delta` 额外需要已知 `previous_device_lever_arm_m`、`previous_compensation_is_rigid_translation_confirmed:true` 和 `previous_compensation_evidence`，证明设备原处理只是对同一 O 的末端刚性平移。新旧杆臂均按FLU表达，不能未经坐标转换直接照抄WebUI向量。无法证明时不能据此撤销设备内部校准。跨铰接点的动态外参不能用静态向量代替，本工具暂不支持。
+
+```bash
+python3 scripts/accuracy_reference.py normalize \
+  --source "$EXP/A/reference.csv" --metadata "$EXP/A/reference.metadata.json" \
+  --config "$EXP/configs/reference.yaml" --output "$EXP/A/reference_rear.csv"
+```
+
+输出 `reference_rear.csv/reference_rear.metadata.json`，归一化后 `body_frame_id:rear_axle_flu`，并记录来源、配置哈希和 `reference_normalization` 链。B、C分别从各自的原始 `reference.csv` 运行同样步骤；物理输出点和安装不变时复用同一冻结杆臂合同。已经有离线归一化链的输入会被拒绝，不能通过再跑一次补偿旧结果。
+
+归一化只改位置，不改时间戳、姿态、参考有效性和完整录制区间；所有拒绝行和源点质量证据保留，源点准入及配对掩码不因候选杆臂改变。非零位移没有完整联合协方差可用于传播：保留的 sigma 只描述源点质量，不能称为后轴 sigma。元数据标记 `target_covariance_status:not_propagated`，报告携带 `REFERENCE_LEVER_ARM_COVARIANCE_NOT_PROPAGATED` 条件，不得把位置平移等同于已证明目标点不确定度。
 
 ## 建图轨迹与后轴转换
 
@@ -99,7 +136,7 @@ python3 scripts/accuracy_normalize_tum.py \
 
 ## 冻结配准与评估
 
-复制 `scripts/accuracy_eval/templates/` 中B、A、C模板并补齐元数据路径、完整参考时间区间、具名epoch、已测量的时间偏移及最大插值间隔。声明 `t_reference=t_estimate+offset_ns`。不允许从测试轨迹寻找最佳时间偏移。B的路线应包含足够转弯、平面范围和姿态变化；近共线或静止路线不能唯一标定完整刚体变换。
+复制 `scripts/accuracy_eval/templates/` 中B、A、C模板，它们分别读取 B/A/C 的 `reference_rear.csv/reference_rear.metadata.json`。补齐元数据路径、完整参考时间区间、具名epoch、已测量的时间偏移及最大插值间隔。声明 `t_reference=t_estimate+offset_ns`。不允许从测试轨迹寻找最佳时间偏移。B的路线应包含足够转弯、平面范围和姿态变化；近共线或静止路线不能唯一标定完整刚体变换。
 
 ```bash
 python3 scripts/accuracy_eval/accuracy_eval.py validate --config "$EXP/configs/calibration_b.yaml"
@@ -125,6 +162,20 @@ B标定残差仅是训练诊断；另留B验证路段或独立D路线评价其�
 
 `thresholds:null` 输出 `NOT_ASSESSED_NO_THRESHOLDS`，从不PASS；条件证据不能被配置清空。CLI退出0只说明处理完成。参考无效或时间/参考点/高度尚未成立时，报告条件或合同错误，不能强行给绝对精度结论。
 
+## 杆臂敏感性扫描
+
+扫描用于回答“保持其它条件不变时，不同候选杆臂使差值改变多少”。它不是正式精度验收，也不从测试误差中选择“最优杆臂”。正式杆臂须由实测或独立 B 标定确定并冻结；不得用 A/C 的最小误差反调杆臂。
+
+复制 `config/accuracy_lever_sweep.yaml` 到 `$EXP/configs/lever_sweep.yaml`。`normalization_config` 指向冻结参考归一化合同，`evaluation_config` 指向 C 的评估配置，两条路径相对扫描配置所在目录解析；`candidates` 是具名 `{name, lever_arm_m}` 列表，每项仍是 O→后轴的完整 FLU 向量。候选必须有明确的工程假设，不能把未测量值标为正式标定值。
+
+```bash
+python3 scripts/accuracy_reference.py sweep \
+  --source "$EXP/C/reference.csv" --metadata "$EXP/C/reference.metadata.json" \
+  --config "$EXP/configs/lever_sweep.yaml" --output "$EXP/lever_sensitivity_C"
+```
+
+每项都从同一份原始参考重新归一化，复用 B 的同一冻结 map→ENU 变换、同一时间合同、参考有效性和配对样本；扫描不调用 `fit`，不针对每个候选重新配准，不排序挑选最优值，也不产生 PASS。输出是候选差值的敏感性证据，不能替代使用冻结正式杆臂生成的 A/C 精度报告。各候选子报告的实际 `report.json` 可交给 `accuracy_plot_report.py --report <子报告路径>` 绘图；协方差未传播等条件继续保留。
+
 ## 只回放输入的隔离流程
 
 ```bash
@@ -141,6 +192,7 @@ bash scripts/accuracy_capture.sh playback --config "$EXP/configs/capture_C.yaml"
 python3 -m unittest discover -s scripts/accuracy_eval/tests -v
 python3 scripts/test_accuracy_normalize_tum.py
 python3 scripts/test_accuracy_export_bag.py
+python3 scripts/test_accuracy_reference.py -v
 bash -n scripts/accuracy_capture.sh
 # ROS storage smoke只写新临时目录，不连接硬件或发布生产话题。
 python3 scripts/test_accuracy_export_bag.py --ros-smoke /tmp/accuracy_sqlite_unique --storage sqlite3

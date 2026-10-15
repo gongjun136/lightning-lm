@@ -2,8 +2,8 @@
 schema_version: 1
 role: evaluation
 reference:
-  csv: ../C/reference.csv
-  metadata: ../C/reference.metadata.json
+  csv: ../C/reference_rear.csv
+  metadata: ../C/reference_rear.metadata.json
 estimates:
   - name: lidar_localization
     tum: ../C/localization_rear.tum

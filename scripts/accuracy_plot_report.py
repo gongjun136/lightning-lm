@@ -48,15 +48,22 @@ def render(report_path, output=None):
     all_conditions = list(dict.fromkeys(condition for estimate in report['estimates']
                                       for condition in estimate.get('conditions', [])))
     synthetic = any('synthetic' in condition.lower() for condition in all_conditions)
+    sensitivity = any('LEVER_ARM_SENSITIVITY' in condition for condition in all_conditions)
 
     def save(fig, name):
+        banners = []
         if synthetic:
-            fig.text(.5, .995, 'SYNTHETIC TEST DATA - NOT A VEHICLE ACCURACY RESULT',
-                     ha='center', va='top', color='darkred', fontsize=10,
+            banners.append('SYNTHETIC TEST DATA - NOT A VEHICLE ACCURACY RESULT')
+        if sensitivity:
+            banners.append('LEVER-ARM SENSITIVITY - NOT AN ACCURACY ACCEPTANCE RESULT')
+        elif all_conditions and not synthetic:
+            banners.append('CONDITIONAL REFERENCE ASSESSMENT - SEE REPORT CONDITIONS')
+        if banners:
+            # Place the combined banner outside the axes/title area. A fixed
+            # fraction inside short coverage figures would overlap their title.
+            fig.text(.5, 1.01, '\n'.join(banners), ha='center', va='bottom',
+                     color='darkred', fontsize=9,
                      bbox=dict(facecolor='white', edgecolor='darkred', alpha=.95))
-        elif all_conditions:
-            fig.text(.5, .995, 'CONDITIONAL REFERENCE ASSESSMENT - SEE REPORT CONDITIONS',
-                     ha='center', va='top', color='darkred', fontsize=9)
         fig.savefig(out / (name + '.png'), bbox_inches='tight')
         fig.savefig(out / (name + '.pdf'), bbox_inches='tight')
         plt.close(fig)
@@ -135,6 +142,8 @@ def render(report_path, output=None):
                'SO(3) geodesic is the main attitude metric; Euler differences are diagnostics.</p>']
     if synthetic:
         content.append('<p style="color:darkred;font-weight:bold">SYNTHETIC TEST DATA — NOT A VEHICLE ACCURACY RESULT.</p>')
+    if sensitivity:
+        content.append('<p style="color:darkred;font-weight:bold">LEVER-ARM SENSITIVITY — NOT AN ACCURACY ACCEPTANCE RESULT. No best lever arm is selected.</p>')
     if all_conditions:
         content.append('<h2>Conditions and evidence limits</h2><ul>')
         content.extend('<li>' + html.escape(condition) + '</li>' for condition in all_conditions)

@@ -173,7 +173,8 @@ def read_metadata(path: Path, reference: bool) -> dict:
     for key in ("source_recording_id", "world_frame_id", "body_frame_id", "time_basis"):
         require(isinstance(meta.get(key), str) and bool(meta[key].strip()), f"{path}: missing {key}")
     require(meta["body_frame_id"] == BODY_FRAME,
-            f"{path}: pose must already be {BODY_FRAME}; apply the measured lever arm/extrinsic in the exporter once")
+            f"{path}: pose must already be {BODY_FRAME}; normalize CGI reference with accuracy_reference.py "
+            "or sensor estimates with accuracy_normalize_tum.py exactly once")
     require(isinstance(meta.get("conditions", []), list) and all(isinstance(c, str) for c in meta.get("conditions", [])),
             f"{path}: conditions must be a list of evidence/limitation strings")
     meta["conditions"] = list(meta.get("conditions", []))

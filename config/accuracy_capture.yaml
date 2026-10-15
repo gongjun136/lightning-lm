@@ -19,10 +19,21 @@ height:
   evidence: null
 reference_point:
   confirmed: false
-  position: rear_axle_center
-  attitude_axes: FLU
-  device_lever_arm_already_applied: true
-  evidence: null # Exporter deliberately applies no second lever arm.
+  position: fixed_point
+  point_id: null # Stable physical CGI output-point ID; reuse across recordings.
+  attitude_axes: FLU # Quaternion describes the unified rear-body FLU attitude.
+  device_lever_arm_already_applied: false # No CGI-output-point to rear-axle correction.
+  rigid_to_rear_axle_confirmed: false # Must be true; a static arm cannot cross articulation.
+  evidence: null # Confirm point identity, output configuration, axes and rigid attachment.
+# Exporter applies no lever arm and changes no device GNSS-to-IMU settings.
+# fixed_point exports body_frame_id=cgi_output_flu; convert separately before evaluation.
+# Legacy already-compensated rear-axle output remains supported by replacing the block:
+# reference_point:
+#   confirmed: true
+#   position: rear_axle_center
+#   attitude_axes: FLU
+#   device_lever_arm_already_applied: true
+#   evidence: <verified device rear-axle output and rear-body FLU convention>
 clock:
   confirmed: false
   assumption_acknowledged: false # Permits provisional export only; never a PASS.

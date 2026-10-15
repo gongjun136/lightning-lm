@@ -6,9 +6,11 @@ Python, NumPy and PyYAML. Humble rosbag2_py reads sqlite3 and MCAP through insta
 storage plugins. No ROS publisher, CAN transmitter or production node is created.
 
 Coordinate/quality semantics mirror core/navigation/ins_navigation.{h,cc}:
-fixed WGS84 ENU, R_fixed_local @ Rz(90-heading) @ Ry(-pitch) @ Rx(roll), already
-lever-arm-compensated rear axle, system=2 and satellite=4. Offline arrival checks
-use recorded bag time, not a fabricated steady clock or measurement epoch.
+fixed WGS84 ENU, R_fixed_local @ Rz(90-heading) @ Ry(-pitch) @ Rx(roll), system=2
+and satellite=4. Position remains at the declared CGI output point: a confirmed
+fixed point or an already compensated rear axle. No lever arm is applied here.
+Quaternion axes always describe rear-body FLU. Offline arrival checks use
+recorded bag time, not a fabricated steady clock or measurement epoch.
 """
 from __future__ import annotations
 
@@ -99,6 +101,24 @@ def validate_capture(c, role=None):
         fail("required output topics must be listed in capture.output_topics")
 
 
+def reference_body_frame(ref):
+    """Identify the output point without translating it or rotating body axes."""
+    if ref.get("attitude_axes") != "FLU":
+        fail("reference_point.attitude_axes must be FLU for the unified rear-body attitude")
+    if ref.get("position") == "rear_axle_center":
+        if ref.get("device_lever_arm_already_applied") is not True:
+            fail("rear_axle_center requires device_lever_arm_already_applied:true; no lever arm is applied")
+        return "rear_axle_flu"
+    if ref.get("position") == "fixed_point":
+        nonempty(ref.get("point_id"), "reference_point.point_id")
+        if ref.get("device_lever_arm_already_applied") is not False:
+            fail("fixed_point requires device_lever_arm_already_applied:false; no lever arm is applied")
+        if ref.get("rigid_to_rear_axle_confirmed") is not True:
+            fail("fixed_point requires rigid_to_rear_axle_confirmed:true; a static lever arm cannot cross articulation")
+        return "cgi_output_flu"
+    fail("reference_point.position must be fixed_point or rear_axle_center")
+
+
 def load_config(path, purpose="export", role=None, require_estimate=False):
     with Path(path).open(encoding="utf-8") as stream:
         c = yaml.safe_load(stream)
@@ -128,9 +148,7 @@ def load_config(path, purpose="export", role=None, require_estimate=False):
     finite(h.get("geoid_separation_m"), "height.geoid_separation_m")
     if h["datum"] == "ellipsoidal" and h["geoid_separation_m"] != 0:
         fail("ellipsoidal input requires geoid_separation_m=0")
-    ref = c["reference_point"]
-    if ref.get("position") != "rear_axle_center" or ref.get("attitude_axes") != "FLU" or ref.get("device_lever_arm_already_applied") is not True:
-        fail("reference must already describe rear_axle_center/FLU; no lever arm is applied")
+    reference_body_frame(c["reference_point"])
     clock = c["clock"]
     for section in ("clock", "assembly"):
         block = c[section]
@@ -567,13 +585,16 @@ def interval_metadata(c, role, bag_path, capture_path, min_bag, max_bag, sample_
         conditions.append("causal_field_assembly_unverified")
     if not capture_path:
         conditions.append("capture_process_boundaries_unavailable_message_extent_only")
-    return {"schema_version": 1, "source_recording_id": c["source_recording_id"],
+    meta = {"schema_version": 1, "source_recording_id": c["source_recording_id"],
             "world_frame_id": c["world_frame_id"] if role == "reference" else c["estimate"]["world_frame_id"],
-            "body_frame_id": "rear_axle_flu", "time_basis": c["time_basis"],
-            "clock_epoch": c["epoch"], "conditions": conditions,
+            "body_frame_id": reference_body_frame(c["reference_point"]) if role == "reference" else "rear_axle_flu",
+            "time_basis": c["time_basis"], "clock_epoch": c["epoch"], "conditions": conditions,
             "trajectory_kind": "reference" if role == "reference" else c["estimate"]["trajectory_kind"],
             "recorded_intervals": [{"start_ns": start, "end_ns": end, "epoch": c["epoch"]}],
             "evidence": evidence}
+    if role == "reference":
+        meta["reference_point"] = dict(c["reference_point"])
+    return meta
 
 
 def export_stream(records, c, out, role):

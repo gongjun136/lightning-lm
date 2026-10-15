@@ -3,8 +3,8 @@
 schema_version: 1
 role: evaluation
 reference:
-  csv: ../A/reference.csv
-  metadata: ../A/reference.metadata.json
+  csv: ../A/reference_rear.csv
+  metadata: ../A/reference_rear.metadata.json
 estimates:
   - name: mapping_frontend_dense
     tum: ../A/frontend_rear.tum

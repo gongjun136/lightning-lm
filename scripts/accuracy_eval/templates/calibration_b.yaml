@@ -3,8 +3,8 @@
 schema_version: 1
 role: calibration
 reference:
-  csv: ../B/reference.csv
-  metadata: ../B/reference.metadata.json
+  csv: ../B/reference_rear.csv
+  metadata: ../B/reference_rear.metadata.json
 estimates:
   - name: calibration_localization
     tum: ../B/localization_rear.tum

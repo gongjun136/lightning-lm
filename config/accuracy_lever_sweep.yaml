@@ -1,0 +1,19 @@
+# Explicit candidate sensitivity, not a calibration or an acceptance test.
+# Paths below are relative to THIS YAML. Estimate/alignment paths retain their
+# meaning relative to the original evaluation YAML. Outputs must be NEW.
+schema_version: 1
+normalization_config: reference.yaml  # operator copy of config/accuracy_reference.yaml
+evaluation_config: null  # existing role:evaluation YAML with one frozen map->ENU alignment
+candidates:
+  - name: measured_baseline
+    lever_arm_m: null  # [forward, left, up] metres; fill measured baseline
+  - name: alternate_hypothesis
+    lever_arm_m: null  # explicit hypothesis; tool does not search/rank/select
+
+# Every candidate retains time/quality/estimate settings and the same input and
+# frozen alignment hashes. thresholds is forcibly null, with condition
+# LEVER_ARM_SENSITIVITY_NOT_ACCURACY_ACCEPTANCE. Sample timestamps/status,
+# duration coverage and attitude metrics must match exactly across candidates.
+# If this data is used to choose a lever, it is no longer an independent test.
+# A map alignment calibrated using an old lever may have absorbed its error.
+# Use independent physical/calibration evidence and a fresh validation drive.

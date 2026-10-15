@@ -1,0 +1,30 @@
+# COPY and fill evidence; this template deliberately refuses execution.
+# This is OUTPUT-point translation, never the internal GNSS-antenna/IMU lever.
+# Quaternion axes must already describe rear-body FLU in the fixed ENU world.
+# No coordinate rotation, timestamp correction, quality gate or covariance is fitted.
+schema_version: 1
+mode: fixed_point  # fixed_point | rear_axle_delta | already_rear
+source_point_id: null  # fixed_point: exact source metadata reference_point.point_id
+confirmed: false
+evidence: null  # device output origin, axes, physical rear axle and survey/config evidence
+rigid_to_rear_axle_confirmed: false  # false across articulation without a dynamic model
+lever_arm_m: null  # [forward, left, up] metres, ORIGINAL fixed point -> physical rear axle
+
+# rear_axle_delta: source CSV is already device-compensated rear_axle_flu.
+# source_point_id identifies the original origin shared by BOTH old and new levers.
+# p_new = p_device_output + R_world_rear_body * (lever_arm_m - previous_device_lever_arm_m)
+# Both vectors, the original output origin, axes, and the applied device settings
+# must be known. Recovering an internal-filter calibration change is unsupported.
+previous_device_lever_arm_m: null
+previous_compensation_is_rigid_translation_confirmed: false
+previous_compensation_evidence: null
+
+# already_rear: source_point_id: rear_axle_center, lever_arm_m: [0, 0, 0].
+# Identity only, not accepted by sweep.
+# Legacy rear_axle_flu metadata without reference_point remains supported.
+# An output carrying reference_normalization cannot be normalized a second time.
+conditions: []
+
+# Invalid rows and all quality fields remain verbatim source-point audit data.
+# Nonzero translation adds REFERENCE_LEVER_ARM_COVARIANCE_NOT_PROPAGATED:
+# source sigma is not target rear-axle covariance; validity is never re-gated.

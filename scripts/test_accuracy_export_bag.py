@@ -36,6 +36,9 @@ def config():
              time_basis="unix_utc_receive_proxy", world_frame_id="synthetic_enu_0_0_0")
     for key in ("georeference", "height", "reference_point", "clock", "assembly", "quality", "estimate", "capture"):
         c[key].update(confirmed=True, evidence="Synthetic fixture only; not vehicle calibration")
+    # Preserve the original contract for existing tests and optional core smoke.
+    c["reference_point"] = {"confirmed": True, "position": "rear_axle_center", "attitude_axes": "FLU",
+                            "device_lever_arm_already_applied": True, "evidence": "Synthetic rear-axle output"}
     c["georeference"]["origin_llh"] = [0, 0, 0]
     c["height"].update(datum="ellipsoidal", geoid_separation_m=0)
     c["clock"].update(reference_header_offset_ns=0, reference_bag_offset_ns=0,
@@ -50,6 +53,14 @@ def config():
     c["capture"]["expected_can_bitrate"] = 500000
     c["capture"]["input_topics"] = ["/synthetic/lidar", "/synthetic/imu"]
     c["capture"]["required_output_topics"] = ["/slamPoseRaw_topic"]
+    return c
+
+
+def fixed_point_config():
+    c = config()
+    c["reference_point"].update(position="fixed_point", point_id="SYNTHETIC_CGI_OUTPUT_POINT",
+                                device_lever_arm_already_applied=False, rigid_to_rear_axle_confirmed=True,
+                                evidence="Synthetic point rigidly on the rear body; unified rear-body FLU attitude")
     return c
 
 
@@ -117,6 +128,98 @@ class AccuracyExportTests(unittest.TestCase):
         self.assertEqual(row["timestamp_ns"], 1_700_000_000_000_800_000)
         self.assertEqual(row["field_skew_ns"], 800000)
         self.assertEqual(row["latitude_header_timestamp_ns"], row["timestamp_ns"])
+
+    def test_fixed_point_contract_requires_explicit_rigid_flu_output(self):
+        c = fixed_point_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(yaml.safe_dump(c), encoding="utf-8")
+            self.assertEqual(ex.load_config(path, require_estimate=True)["reference_point"], c["reference_point"])
+            cases = [("point_id", value, "point_id") for value in (None, "", "  ", "TODO", 1, True)]
+            cases += [("device_lever_arm_already_applied", value, "already_applied") for value in (None, True, 0, "false")]
+            cases += [("rigid_to_rear_axle_confirmed", value, "rigid_to_rear_axle_confirmed") for value in (None, False, 1, "true")]
+            cases += [("position", "front_articulated_body", "reference_point.position"),
+                      ("attitude_axes", "FRD", "attitude_axes"),
+                      ("confirmed", False, "reference_point.confirmed"),
+                      ("evidence", "", "reference_point.evidence")]
+            for key, value, error in cases:
+                with self.subTest(key=key, value=value):
+                    bad = copy.deepcopy(c)
+                    bad["reference_point"][key] = value
+                    path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, error):
+                        ex.load_config(path)
+            for key in ("point_id", "device_lever_arm_already_applied", "rigid_to_rear_axle_confirmed"):
+                with self.subTest(missing=key):
+                    bad = copy.deepcopy(c)
+                    del bad["reference_point"][key]
+                    path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, key):
+                        ex.load_config(path)
+
+    def test_legacy_rear_axle_contract_needs_no_fixed_point_fields(self):
+        c = config()
+        self.assertNotIn("point_id", c["reference_point"])
+        self.assertNotIn("rigid_to_rear_axle_confirmed", c["reference_point"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.yaml"
+            path.write_text(yaml.safe_dump(c), encoding="utf-8")
+            self.assertEqual(ex.load_config(path, require_estimate=True), c)
+        meta = ex.interval_metadata(c, "reference", "synthetic", None, 100, 1000)
+        self.assertEqual(meta["body_frame_id"], "rear_axle_flu")
+        self.assertEqual(meta["reference_point"], c["reference_point"])
+        for changed in ({"device_lever_arm_already_applied": False}, {"attitude_axes": "FRD"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                ex.reference_body_frame(dict(c["reference_point"], **changed))
+
+    def test_fixed_point_export_preserves_pose_audit_interval_and_conditions(self):
+        c = fixed_point_config()
+        c["clock"].update(confirmed=False, assumption_acknowledged=True)
+        c["assembly"].update(confirmed=False, assumption_acknowledged=True)
+        start, end = 1_700_000_000_000_000_000, 1_700_000_020_000_000_000
+        nav = {"latitude": {"latitude_deg": .0001}, "longitude": {"longitude_deg": .0002},
+               "altitude": {"altitude_m": 12.}, "attitude": {"heading_deg": 30., "pitch_deg": 7., "roll_deg": -13.}}
+        records = navigation_cycle(start, nav) + navigation_cycle(start + 10_000_000,
+                    dict(nav, status={"satellite_status": 5}))
+        records.append(ex.Record("/unknown/heartbeat", "missing_interfaces/msg/Heartbeat", end, None, 100))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "capture.metadata.json"
+            capture.write_text(json.dumps({"source_recording_id": c["source_recording_id"], "epoch": c["epoch"],
+                                          "capture_start_ns": start, "capture_end_ns": end, "exit_code": 0}))
+            for mode in ("fixed", "legacy"):
+                selected = copy.deepcopy(c)
+                if mode == "legacy":
+                    selected["reference_point"] = config()["reference_point"]
+                args = SimpleNamespace(output=str(root / mode), reference_bag="ref", estimate_bag=None,
+                                       reference_capture=str(capture), estimate_capture=None)
+                with patch.object(ex, "bag_records", lambda *_: iter(records)), patch("builtins.print"):
+                    self.assertEqual(ex.export_bags(args, selected), 0)
+            for suffix in ("csv", "tum", "raw_frames.csv", "timeline.csv", "status.jsonl"):
+                self.assertEqual((root / "fixed" / ("reference." + suffix)).read_bytes(),
+                                 (root / "legacy" / ("reference." + suffix)).read_bytes(), suffix)
+            with (root / "fixed/reference.csv").open(newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual([row["reference_valid"] for row in rows], ["1", "0"])
+            p, q = ex.convert_pose([.0001, .0002, 12.], [30., 7., -13.], [0, 0, 0])
+            np.testing.assert_allclose([float(rows[0][k]) for k in ("x", "y", "z", "qx", "qy", "qz", "qw")], [*p, *q], atol=1e-12)
+            meta = json.loads((root / "fixed/reference.metadata.json").read_text())
+            legacy = json.loads((root / "legacy/reference.metadata.json").read_text())
+            self.assertEqual(meta["body_frame_id"], "cgi_output_flu")
+            self.assertEqual(legacy["body_frame_id"], "rear_axle_flu")
+            self.assertEqual(meta["reference_point"], c["reference_point"])
+            self.assertEqual(meta["recorded_intervals"], [{"start_ns": start, "end_ns": end, "epoch": c["epoch"]}])
+            self.assertEqual(meta["recorded_intervals"], legacy["recorded_intervals"])
+            self.assertEqual(meta["conditions"], legacy["conditions"])
+            self.assertIn("clock_alignment_assumed", meta["conditions"])
+            self.assertIn("causal_field_assembly_unverified", meta["conditions"])
+            self.assertIn("cgi_field_measurement_epoch_unverified", meta["conditions"])
+            summary = meta["evidence"]["export_summary"]
+            self.assertEqual((summary["rows"], summary["valid_rows"]), (2, 1))
+            self.assertEqual(sum(summary["topics"].values()), 19)
+            estimate = ex.interval_metadata(c, "estimate", "synthetic", None, start, end)
+            self.assertEqual(estimate["body_frame_id"], "rear_axle_flu")
+            self.assertNotIn("reference_point", estimate)
 
     def test_only_exact_integrated_fixed_status_passes(self):
         for state in (0, 1, 3):
@@ -199,6 +302,10 @@ class AccuracyExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
             raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config/accuracy_capture.yaml").read_text())
+            self.assertEqual(raw["reference_point"]["position"], "fixed_point")
+            self.assertIsNone(raw["reference_point"]["point_id"])
+            self.assertIs(raw["reference_point"]["confirmed"], False)
+            self.assertIs(raw["reference_point"]["rigid_to_rear_axle_confirmed"], False)
             raw.update(source_recording_id="first-calibration", epoch="first")
             raw["capture"].update(confirmed=True, evidence="Verified local topics", expected_can_bitrate=500000)
             path.write_text(yaml.safe_dump(raw), encoding="utf-8")
