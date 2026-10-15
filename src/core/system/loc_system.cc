@@ -268,6 +268,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     } catch (const std::exception& error) {
         LOG(ERROR) << "invalid DTC configuration: " << error.what(); return false;
     }
+    LOG(INFO) << "LOCALIZATION_DTC_CONFIG version=" << dtc_config_version_
+              << " covariance_variance_scale=" << dtc_config.covariance_scale
+              << " major_sigma_limit_m=" << dtc_config.major_sigma_m
+              << " lateral_sigma_limit_m=" << dtc_config.lateral_sigma_m
+              << " yaw_sigma_limit_deg=" << dtc_config.yaw_sigma_rad * 180.0 / M_PI;
     const auto dtc_qos = rclcpp::QoS(10).reliable().durability_volatile();
     const auto topic = [&dtc](const char* key, const std::string& fallback) {
         return dtc && dtc[key] ? dtc[key].as<std::string>() : fallback;
@@ -1196,7 +1201,9 @@ void LocSystem::PublishDtc() {
         << " uncertainty=" << int(snapshot.observations[1].condition) << " severe=" << snapshot.severe
         << " error_x=" << snapshot.error_longitudinal_m << " error_y=" << snapshot.error_lateral_m
         << " error_yaw_rad=" << snapshot.error_yaw_rad << " major_sigma=" << snapshot.major_sigma_m
-        << " lateral_sigma=" << snapshot.lateral_sigma_m << " yaw_sigma_rad=" << snapshot.yaw_sigma_rad;
+        << " lateral_sigma=" << snapshot.lateral_sigma_m << " yaw_sigma_rad=" << snapshot.yaw_sigma_rad
+        << " can_stamp_lag_sec=" << snapshot.speed_stamp_lag_sec
+        << " imu_stamp_lag_sec=" << snapshot.gyro_stamp_lag_sec;
 }
 void LocSystem::PublishSafety() {
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;

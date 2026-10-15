@@ -279,6 +279,11 @@ digraph online_loc_lifecycle {
 
 若传入 `--bag`，@ref lightning::OnlineBagPlayer "OnlineBagPlayer" 在额外线程中按 sensor time 发布消息，播放完成并等待 `--post_wait_seconds` 后调用 `rclcpp::shutdown()`，从而让主线程的 `Spin()` 返回。未传 `--bag` 时，进程持续 spin，直到外部 shutdown/信号结束 ROS 上下文。
 
+CAN 回放保持原始序列化消息，不按当前 `SpeThrCAN4` 定义重新解释历史载荷。
+旧包的 `Header+x+y` 与新包的 `TopicCommHeader+Header+x+y` 均由在线输入解码器校验；
+否则旧包会出现错误时间戳，导致定位一致性检测长期 UNKNOWN。
+安全状态与协方差默认倍率的配置、升级说明见 @ref dtc_delivery "DTC 与安全状态接口交付"。
+
 `LocSystem` 析构函数还会调用 `Finish()`；`finished_` 让显式调用与析构调用保持幂等。
 
 **代码依据：** @ref run_loc_online.cc "run_loc_online.cc" 的 `ReadInitialPose()` 与 `main()`；@ref lightning::LocSystem::SetInitPose() "LocSystem::SetInitPose()"、@ref lightning::LocSystem::Finish() "LocSystem::Finish()"

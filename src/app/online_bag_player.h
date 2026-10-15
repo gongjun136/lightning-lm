@@ -15,7 +15,6 @@
 #include <string>
 #include <thread>
 
-#include "geosun_msgs/msg/spe_thr_can4.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
 #include "wrapper/bag_io.h"
 
@@ -89,13 +88,15 @@ class OnlineBagPlayer {
                 ? std::getenv("SANY_WHEEL_SPEED_TOPIC")
                 : wheel_speed_topic;
         if (wheel_speed_observation_enabled && !selected_wheel_speed_topic.empty()) {
-            wheel_speed_pub_ = node_->create_publisher<geosun_msgs::msg::SpeThrCAN4>(
-                selected_wheel_speed_topic, rclcpp::QoS(rclcpp::KeepLast(50)).reliable());
+            wheel_speed_pub_ = node_->create_generic_publisher(
+                selected_wheel_speed_topic, "geosun_msgs/msg/SpeThrCAN4",
+                rclcpp::QoS(rclcpp::KeepLast(50)).reliable());
             bag_->AddHandle(selected_wheel_speed_topic, [this](const RosbagIO::MsgType& serialized) {
-                auto msg = std::make_shared<geosun_msgs::msg::SpeThrCAN4>();
+                // Historical SANY bags predate TopicCommHeader. Preserve their
+                // wire layout so LocSystem's checked dual-layout decoder sees
+                // the original timestamp and signed RPM, just as in live ROS.
                 rclcpp::SerializedMessage data(*serialized->serialized_data);
-                wheel_speed_serialization_.deserialize_message(&data, msg.get());
-                wheel_speed_pub_->publish(*msg);
+                wheel_speed_pub_->publish(data);
                 return rclcpp::ok();
             });
         }
@@ -162,8 +163,7 @@ class OnlineBagPlayer {
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;  ///< 回放 IMU 消息的发布器。
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;  ///< 单雷达 PointCloud2 回放发布器。
     rclcpp::Publisher<livox_ros_driver2::msg::CustomMsg>::SharedPtr livox_pub_;  ///< Livox CustomMsg 回放发布器。
-    rclcpp::Publisher<geosun_msgs::msg::SpeThrCAN4>::SharedPtr wheel_speed_pub_;  ///< 回放 CAN 轮速与扭矩消息的发布器。
-    rclcpp::Serialization<geosun_msgs::msg::SpeThrCAN4> wheel_speed_serialization_;  ///< CAN bag 消息的反序列化器。
+    rclcpp::GenericPublisher::SharedPtr wheel_speed_pub_;  ///< 保留新旧 CAN 消息原始 CDR 布局的回放发布器。
     std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> cloud_pubs_;  ///< 多雷达模式按话题保存的点云回放发布器。
 };
 

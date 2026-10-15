@@ -1,5 +1,6 @@
 #include "core/localization/pose_graph/pgo.h"
 #include "core/localization/pose_graph/smoother.h"
+#include "core/localization/localization_dtc_monitor.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -42,6 +43,7 @@ int main() {
     LocalizationResult output;
     int output_count = 0;
     LocalizationResult high_frequency_output;
+    dtc::Monitor posterior_monitor(dtc::Config{}, dtc::Clock::time_point{});
     pgo.SetGlobalOutputHandleFunction([&](const LocalizationResult& result) {
         output = result;
         ++output_count;
@@ -88,6 +90,17 @@ int main() {
                 "every map frame has finite posterior covariance, including after Schur window reduction");
         Require(output.pose_covariance_(0, 0) > 0.0 && output.pose_covariance_(5, 5) > 0.0,
                 "posterior uncertainty is positive rather than a placeholder zero");
+        // Exercise the actual default PGO noise and Schur window, rather than
+        // an unrealistically tiny hand-written covariance. The original 4x
+        // variance multiplier made even this exact healthy trajectory fail.
+        const auto now = dtc::Clock::time_point{} + std::chrono::milliseconds(index * 100);
+        posterior_monitor.ObservePose(timestamp, output.pose_, output.pose_, output.pose_covariance_,
+                                      output.pose_covariance_valid_, output.pose_unobservable_,
+                                      output.pose_epoch_, now);
+        if (index >= 10) {
+            Require(posterior_monitor.Evaluate(false, now).observations[1].condition == dtc::kPass,
+                    "converged default PGO posterior must pass default uncertainty limits");
+        }
         Require((output.pose_.translation() - lidar_loc.pose_.translation()).norm() < 1e-3,
                 "non-identity global translation remains stable across incremental window replacement");
         Require((output.pose_.so3().inverse() * lidar_loc.pose_.so3()).log().norm() < 1e-3,

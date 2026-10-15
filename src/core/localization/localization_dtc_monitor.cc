@@ -146,6 +146,10 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
 Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
     Snapshot out = snapshot_;
+    if (!poses_.empty()) {
+        if (!speeds_.empty()) out.speed_stamp_lag_sec = poses_.back().stamp - speeds_.back().stamp;
+        if (!gyros_.empty()) out.gyro_stamp_lag_sec = poses_.back().stamp - gyros_.back().stamp;
+    }
     const bool stale = output_seen_ ? Age(now, output_time_) > config_.output_timeout_sec : Age(now, start_) > config_.startup_grace_sec;
     out.severe = lost || stale;
     for (auto& obs : out.observations) {

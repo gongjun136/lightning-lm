@@ -34,6 +34,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='dtc_online_', dir=executable.parent.parent) as directory:
         fixture = Path(directory)
         (fixture / 'index.txt').write_text('0 0 0\n')
+        # Localization validates map identity before starting its publishers.
+        # Build the temporary fixture through the same manifest exporter used
+        # for real maps, including the geometry checksum and native frame.
+        subprocess.run([str(executable.with_name('export_map_manifest')),
+                        '--map=' + str(fixture), '--status=not_required',
+                        '--site_id=dtc_smoke_fixture'], check=True, capture_output=True, text=True)
         path = fixture / 'config.yaml'
         path.write_text(yaml.safe_dump(config))
         rclpy.init()

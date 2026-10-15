@@ -17,7 +17,7 @@ struct Config {
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
     double distance_ratio = 0.1, angle_ratio = 0.1;
     double major_sigma_m = 0.5, lateral_sigma_m = 0.3, yaw_sigma_rad = 2.0 * M_PI / 180.0;
-    double covariance_scale = 4.0;  // variance multiplier for correlation/model mismatch
+    double covariance_scale = 1.0;  ///< Additional variance inflation; calibrate against independent error evidence.
     double position_sigma_floor_m = 0.10, angle_sigma_floor_rad = 0.5 * M_PI / 180.0;
     double output_timeout_sec = 0.3, evaluation_timeout_sec = 0.3, startup_grace_sec = 8.0;
     double max_speed_mps = 30.0, max_yaw_rate_radps = 3.0;
@@ -32,6 +32,8 @@ struct Snapshot {
     bool severe = false;
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
     double major_sigma_m = 0, lateral_sigma_m = 0, yaw_sigma_rad = 0;
+    double speed_stamp_lag_sec = std::numeric_limits<double>::quiet_NaN();  ///< Latest pose minus latest CAN stamp; NaN if absent.
+    double gyro_stamp_lag_sec = std::numeric_limits<double>::quiet_NaN();  ///< Latest pose minus latest IMU stamp; NaN if absent.
 };
 // Raw CAN speed and body-frame IMU angular rate are independent of fused pose velocity.
 class Monitor {

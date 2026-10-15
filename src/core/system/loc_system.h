@@ -292,7 +292,7 @@ class LocSystem {
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;  ///< 独立发布功能安全心跳并记录有效工作进度。
     std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
-    std::string dtc_config_version_ = "localization-dtc-v1-bench";
+    std::string dtc_config_version_ = "localization-dtc-v2-model-scale";
     std::atomic<uint32_t> dtc_comm_seq_{0};
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};

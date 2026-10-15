@@ -63,6 +63,8 @@ int main() {
     }
     Require(normal.Evaluate(false, At(1740)).observations[0].condition == kUnknown, "frozen CAN must not refresh evidence");
     Require(!normal.Evaluate(false, At(1740)).severe, "CAN unknown is separate from pose loss");
+    Require(normal.Evaluate(false, At(1740)).speed_stamp_lag_sec > 0.13,
+            "diagnostics expose the frozen CAN sensor-time lag");
     Mat6d large = SmallCov(); large(0, 0) = 1;
     Feed(reverse, 1020, Pose(-1.02), -1, 0, 1, nullptr, &large);
     Require(reverse.Evaluate(false, At(1020)).observations[1].condition == kFail, "major covariance ellipse exceeds limit");
@@ -75,6 +77,17 @@ int main() {
     Require(reverse.Evaluate(false, At(1080)).observations[1].condition == kUnknown, "missing covariance cannot pass");
     reverse.ObservePose(101.10, Pose(-1.10), Pose(-1.10), Mat6d::Zero(), true, false, 1, At(1100));
     Require(reverse.Evaluate(false, At(1100)).observations[1].condition == kUnknown, "placeholder zero covariance cannot pass");
+
+    // Physical 1-sigma limits remain active after removing the uncalibrated
+    // default inflation. These cases separately exercise lateral and yaw limits.
+    Mat6d lateral_fault = SmallCov(); lateral_fault(1, 1) = 0.31 * 0.31;
+    Feed(reverse, 1120, Pose(-1.12), -1, 0, 1, nullptr, &lateral_fault);
+    Require(reverse.Evaluate(false, At(1120)).observations[1].condition == kFail,
+            "31 cm lateral uncertainty still fails the 30 cm limit");
+    Mat6d yaw_fault = SmallCov(); yaw_fault(5, 5) = std::pow(2.1 * M_PI / 180.0, 2);
+    Feed(reverse, 1140, Pose(-1.14), -1, 0, 1, nullptr, &yaw_fault);
+    Require(reverse.Evaluate(false, At(1140)).observations[1].condition == kFail,
+            "2.1 degree yaw uncertainty still fails the 2 degree limit");
 
     Eigen::MatrixXd h = Eigen::MatrixXd::Zero(12, 12);
     h.topLeftCorner<6, 6>() = 15 * Mat6d::Identity();

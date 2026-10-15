@@ -268,7 +268,7 @@ loop_closing:
   with_height: false
 diagnostics:
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v1-bench
+  config_version: localization-dtc-v2-model-scale
   output_topic: /diagnostics/source_dtc/localization
   safety_topic: /safety/throstle
   radar_topic: /diagnostics/source_dtc/livox
@@ -286,7 +286,9 @@ diagnostics:
   major_sigma_limit_m: 0.5
   lateral_sigma_limit_m: 0.3
   yaw_sigma_limit_deg: 2.0
-  covariance_variance_scale: 4.0
+  # PGO already includes factor noise, DR process noise and output offsets.
+  # Additional inflation requires calibration; 4x failed healthy PGO posteriors.
+  covariance_variance_scale: 1.0
   position_sigma_floor_m: 0.1
   angle_sigma_floor_deg: 0.5
   output_timeout_sec: 0.3
