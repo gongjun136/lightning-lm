@@ -293,6 +293,7 @@ class LocSystem {
     std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
     std::string dtc_config_version_ = "localization-dtc-v2-model-scale";
+    bool safety_fault_reporting_enabled_ = true;  ///< 关闭时 Safety.runstate 固定为正常值 0，源 DTC 不受影响。
     std::atomic<uint32_t> dtc_comm_seq_{0};
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};

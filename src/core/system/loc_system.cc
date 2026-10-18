@@ -244,6 +244,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     dtc_config.max_yaw_rate_radps = value("max_yaw_rate_radps", dtc_config.max_yaw_rate_radps);
     try {
         dtc_monitor_ = std::make_unique<loc::dtc::Monitor>(dtc_config);
+        safety_fault_reporting_enabled_ = dtc && dtc["safety_fault_reporting_enabled"]
+                                              ? dtc["safety_fault_reporting_enabled"].as<bool>()
+                                              : true;
         const auto radar_id = dtc && dtc["radar_source_id"] ? dtc["radar_source_id"].as<int>() : 13;
         const double radar_timeout = value("radar_snapshot_timeout_sec", 0.5);
         const double hms_timeout = value("radar_hms_timeout_sec", 2.5);
@@ -269,6 +272,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         LOG(ERROR) << "invalid DTC configuration: " << error.what(); return false;
     }
     LOG(INFO) << "LOCALIZATION_DTC_CONFIG version=" << dtc_config_version_
+              << " safety_fault_reporting_enabled=" << safety_fault_reporting_enabled_
               << " covariance_variance_scale=" << dtc_config.covariance_scale
               << " major_sigma_limit_m=" << dtc_config.major_sigma_m
               << " lateral_sigma_limit_m=" << dtc_config.lateral_sigma_m
@@ -1211,7 +1215,9 @@ void LocSystem::PublishSafety() {
     const auto radar = radar_dtc_state_->Evaluate();
     geosun_msgs::msg::Safety msg;
     msg.header.stamp = node_->now();
-    msg.runstate = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
+    msg.runstate = safety_fault_reporting_enabled_
+                       ? loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass)
+                       : 0;
     safety_pub_->publish(msg);
 }
 

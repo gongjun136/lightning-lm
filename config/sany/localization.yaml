@@ -271,6 +271,8 @@ diagnostics:
   config_version: localization-dtc-v2-model-scale
   output_topic: /diagnostics/source_dtc/localization
   safety_topic: /safety/throstle
+  # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
+  safety_fault_reporting_enabled: true
   radar_topic: /diagnostics/source_dtc/livox
   radar_source_id: 13
   radar_role_source_ids: [7, 12, 8, 9]  # front, rear, left, right

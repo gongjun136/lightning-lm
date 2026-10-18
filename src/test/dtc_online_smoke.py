@@ -5,11 +5,11 @@ source install/setup.bash
 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=172 python3 \
   src/lightning-lm/src/test/dtc_online_smoke.py build/lightning_lm/bin/run_loc_online
 """
+import argparse
 import os
 from pathlib import Path
 import statistics
 import subprocess
-import sys
 import tempfile
 
 import rclpy
@@ -21,9 +21,13 @@ from geosun_msgs.msg import Safety
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('executable', type=Path)
+    parser.add_argument('--safety-fault-reporting', choices=('default', 'true', 'false'), default='default')
+    args = parser.parse_args()
     os.environ.setdefault('ROS_DOMAIN_ID', '172')
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
-    executable = Path(sys.argv[1]).resolve()
+    executable = args.executable.resolve()
     source_root = Path(__file__).resolve().parents[2]
     config = yaml.safe_load((source_root / 'config/default.yaml').read_text())
     config['system']['with_ui'] = False
@@ -31,6 +35,8 @@ def main():
     config['map_export'] = {'normalize_start_ground_z': False}
     config['maps']['save_dyn_when_quit'] = False
     config['diagnostics'] = {'startup_grace_sec': 2.0, 'config_version': 'smoke-test'}
+    if args.safety_fault_reporting != 'default':
+        config['diagnostics']['safety_fault_reporting_enabled'] = args.safety_fault_reporting == 'true'
     with tempfile.TemporaryDirectory(prefix='dtc_online_', dir=executable.parent.parent) as directory:
         fixture = Path(directory)
         (fixture / 'index.txt').write_text('0 0 0\n')
@@ -78,9 +84,12 @@ def main():
                         elif steady_time() >= startup_deadline:
                             raise RuntimeError('no Safety output within startup timeout:\n' + log_path.read_text()[-5000:])
                 assert len(values) >= 150, f'too few safety samples: {len(values)}'
-                assert any(value == 4 for _, value in values), 'startup UNKNOWN must be 4'
-                assert values[-1][1] == -9, 'no valid output after startup grace must be -9'
-                assert all(value in (4, -9) for _, value in values), 'uninitialized localization must never give zero'
+                if args.safety_fault_reporting == 'false':
+                    assert all(value == 0 for _, value in values), 'disabled fault reporting must always give zero'
+                else:
+                    assert any(value == 4 for _, value in values), 'startup UNKNOWN must be 4'
+                    assert values[-1][1] == -9, 'no valid output after startup grace must be -9'
+                    assert all(value in (4, -9) for _, value in values), 'uninitialized localization must never give zero'
                 publishers = node.get_publishers_info_by_topic('/safety/throstle')
                 assert len(publishers) == 1, f'expected one safety publisher, found {len(publishers)}'
                 assert publishers[0].topic_type == 'geosun_msgs/msg/Safety'
@@ -103,7 +112,7 @@ def main():
                     assert [obs.dtc for obs in msg.observations] == [0x30811813, 0x40450198]
                     assert all(obs.physical_condition == 0 for obs in msg.observations)
                     assert all(obs.evaluation_seq == 0 for obs in msg.observations)
-                print(f'dtc_online_smoke passed: real Safety.runstate publisher {average_hz:.1f} Hz, median {median_hz:.1f} Hz; startup 4 -> timeout -9; complete localization DTC snapshots')
+                print(f'dtc_online_smoke passed: real Safety.runstate publisher {average_hz:.1f} Hz, median {median_hz:.1f} Hz; safety_fault_reporting={args.safety_fault_reporting}; complete localization DTC snapshots')
             finally:
                 process.terminate()
                 try:

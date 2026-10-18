@@ -29,6 +29,12 @@ UNKNOWN、缺项、超时、重启不能当作 PASS，也不能清除已确认�
 Safety.msg 定义保持不变，不新增兼容消息类型；header.stamp 为发布时的 ROS 时间，
 timesync、errorcode、strategies、reserved 保持默认 0，header.frame_id 默认空。
 Topic 拼写 throstle 保留；接收端订阅 Safety 并读取 runstate。
+`config/sany/localization.yaml` 的 `diagnostics.safety_fault_reporting_enabled`
+控制该兼容接口的故障上报，默认及缺省值为 `true`。设为 `false` 并重启定位节点后，
+@ref lightning::LocSystem::PublishSafety() 始终以 50 Hz 发布 `runstate=0`，
+包括启动 UNKNOWN、定位失锁、超时及雷达故障；时间戳仍正常更新。
+该开关只覆盖 Safety 输出，不改变源 DTC、心跳或 `/localization/fault_status`。
+开关为 `true` 时使用以下原有判定规则。
 优先级 -9 > 4 > 2 > 0：定位失锁/有效输出超时或四雷达不可用给 -9；
 定位 DTC FAIL 给 4；其他雷达故障给 2；全部检测有效且正常才给 0。
 定位检测 UNKNOWN 给 4；仅雷达检测 UNKNOWN/过期给 2。
