@@ -113,6 +113,21 @@ struct Candidate {
     double quality = -std::numeric_limits<double>::infinity();
 };
 
+// Sort scalar indices so libstdc++ temporary buffers never hold over-aligned
+// Eigen/Sophus Candidate values. std::vector uses C++17 aligned allocation.
+template <typename Compare>
+void StableSortCandidates(std::vector<Candidate>& candidates, Compare compare) {
+    std::vector<std::size_t> order(candidates.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return compare(candidates[a], candidates[b]);
+    });
+    std::vector<Candidate> sorted;
+    sorted.reserve(candidates.size());
+    for (const auto index : order) sorted.push_back(std::move(candidates[index]));
+    candidates = std::move(sorted);
+}
+
 double RotationDistanceDeg(const lightning::SE3& left, const lightning::SE3& right) {
     const lightning::Mat3d relative = left.rotationMatrix().transpose() * right.rotationMatrix();
     const double cosine = std::clamp((relative.trace() - 1.0) * 0.5, -1.0, 1.0);
@@ -773,7 +788,7 @@ int main(int argc, char** argv) {
             candidate.rough_overlap_20 =
                 EvaluateDirectional(new_coarse, old_coarse, candidate.seed).overlap_20;
         }
-        std::stable_sort(seeds.begin(), seeds.end(), [](const Candidate& left, const Candidate& right) {
+        StableSortCandidates(seeds, [](const Candidate& left, const Candidate& right) {
             if (left.rough_overlap_20 != right.rough_overlap_20) return left.rough_overlap_20 > right.rough_overlap_20;
             return left.retrieval_score > right.retrieval_score;
         });
@@ -816,7 +831,7 @@ int main(int argc, char** argv) {
             evaluated.push_back(std::move(candidate));
         }
         if (evaluated.empty()) throw std::runtime_error("all candidate refinements failed");
-        std::stable_sort(evaluated.begin(), evaluated.end(), [](const Candidate& left, const Candidate& right) {
+        StableSortCandidates(evaluated, [](const Candidate& left, const Candidate& right) {
             return left.quality > right.quality;
         });
         const Candidate& best = evaluated.front();
