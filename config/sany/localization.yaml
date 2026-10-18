@@ -172,7 +172,7 @@ system:
   enable_imu_static_hold: true
   enable_wheel_speed_observation: true
   wheel_speed_topic: /SpeThrCAN4_topic
-  wheel_speed_scale_mps_per_rpm: 0.00120639253574024
+  # Filled from calibrations.yaml by resolve_sany_config.py using VIN (m/s per rpm).
   enable_wheel_speed_dr_observation: true
   wheel_speed_dr_base_std_mps: 0.35
   wheel_speed_dr_stationary_std_mps: 0.08

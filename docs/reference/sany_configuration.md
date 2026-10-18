@@ -1,6 +1,6 @@
 @page md_config_sany_README SANY 共用建图与定位配置
 
-正式算法配置只有 `mapping.yaml` 和 `localization.yaml`。`calibrations.yaml` 只保存两组 VIN 标定，不复制算法参数。旧 `sany_3livox/sany_4livox` 正式配置已合并；早期 114/127/187/195 实验保存在 `config/reproduction/multi_lidar/sany/`。
+正式算法配置只有 `mapping.yaml` 和 `localization.yaml`。`calibrations.yaml` 保存两组 VIN 的相对雷达标定和轮速换算系数，不复制共用算法参数。旧 `sany_3livox/sany_4livox` 正式配置已合并；早期 114/127/187/195 实验保存在 `config/reproduction/multi_lidar/sany/`。
 
 ## 车辆配置
 
@@ -20,6 +20,8 @@ LIDAR: "MASTER AND SLAVE"
 VIN 与接线方式分别解析；文件缺失、未知 VIN、非法 LIDAR 或无效矩阵时拒绝启动。相对外参约定为 `T_primary_from_lidar_row_major`，平移单位 m，前雷达为 ID 0，主 IMU 同为前雷达。
 
 2026-10-13 用户确认新车真实 VIN 为 `SANLU77E8TH000006`，此前登记的 `SW956ELCG0858` 对应同一台车，已更正 VIN 匹配值；相对雷达标定保持不变。车辆识别只读取 `VIN`，`DEVICE_CODE` 不替代 VIN，也不增加第三组标定。
+
+`scripts/resolve_sany_config.py::resolve` 同时将所选 VIN 的 `wheel_speed_scale_mps_per_rpm` 写入运行快照的 `system`，与 LIDAR 接线方式无关。旧车 `SANLV77EXSH000858` 使用 `0.00120639253574024`，新车 `SANLU77E8TH000006` 使用 2026-10-18 确认的 `0.0011687`，单位均为 `(m/s)/rpm`。系数缺失、非数值、非有限或不为正时拒绝生成配置；共用模板不再保存统一系数。直接调用 C++ 前也必须先解析配置。已有运行快照不自动修改，更新后需重新启动生成快照。
 
 ## 启动
 

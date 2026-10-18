@@ -3,6 +3,7 @@
 import copy
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -37,6 +38,10 @@ class SanyConfigTest(unittest.TestCase):
                         self.assertEqual(multi["min_lidars"], 1)
                         self.assertEqual(result["fasterlio"]["livox_point_time_scale"], 1e-9)
                         self.assertNotIn("sany_vehicle_config", result)
+                        expected_scale = {"SANLV77EXSH000858": 0.00120639253574024,
+                                          "SANLU77E8TH000006": 0.0011687}
+                        self.assertEqual(result["system"]["wheel_speed_scale_mps_per_rpm"],
+                                         expected_scale[vin])
                         if mode == "localization":
                             load = multi["adaptive_load"]
                             self.assertEqual(load["cloud_publish_min_lidars"], count)
@@ -52,6 +57,7 @@ class SanyConfigTest(unittest.TestCase):
         new = resolve(CONFIG / "localization.yaml", self.vehicle)
         for result in (old, new):
             result.pop("vehicle_configuration")
+            result["system"].pop("wheel_speed_scale_mps_per_rpm")
             result["multi_lidar"].pop("extrinsics")
             result["multi_lidar"].pop("topics")
             result["multi_lidar"]["adaptive_load"].pop("cloud_publish_min_lidars")
@@ -101,10 +107,26 @@ class SanyConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve(CONFIG / "localization.yaml", self.vehicle, path)
 
+    def test_invalid_wheel_speed_scale_is_rejected(self):
+        registry = yaml.safe_load((CONFIG / "calibrations.yaml").read_text())
+        path = Path(self.temp.name) / "broken.yaml"
+        self.vehicle_config("SANLU77E8TH000006", "MASTER")
+        for value in (None, 0, -1, float("nan"), float("inf"), True, "0.0011687"):
+            with self.subTest(value=value):
+                broken = copy.deepcopy(registry)
+                profile = broken["vehicles"]["SANLU77E8TH000006"]
+                if value is None:
+                    profile.pop("wheel_speed_scale_mps_per_rpm")
+                else:
+                    profile["wheel_speed_scale_mps_per_rpm"] = value
+                path.write_text(yaml.safe_dump(broken))
+                with self.assertRaisesRegex(ValueError, "wheel_speed_scale_mps_per_rpm"):
+                    resolve(CONFIG / "localization.yaml", self.vehicle, path)
+
     def test_run_snapshot_is_immutable(self):
         self.vehicle_config()
         output = Path(self.temp.name) / "runtime.yaml"
-        command = ["python3", str(REPO / "scripts/resolve_sany_config.py"), "--base-config", str(CONFIG / "mapping.yaml"),
+        command = [sys.executable, str(REPO / "scripts/resolve_sany_config.py"), "--base-config", str(CONFIG / "mapping.yaml"),
                    "--vehicle-config", str(self.vehicle), "--output", str(output)]
         self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
         original = output.read_bytes()

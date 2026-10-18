@@ -8,4 +8,4 @@ VIN 已确认是 `SANLU77E8TH000006`，LIDAR 为 `MASTER`，对应 `user_provide
 
 历史验证基于提交 448744d 的专用配置：3398 个四雷达融合帧建图，五包静止冷启动定位 5/5 通过。历史配置使用 20 ms 帧配对和纯 solid 重定位。当前共用方案采用用户新确认的旧车 solid_kiss/plane_icp 及自适应单雷达观测策略，历史结果不能代替本次方案的实车实时与动态精度验收。
 
-启动后核对运行目录 config.yaml 中的 VIN、LIDAR、四路话题、calibration_id；地图路径仍独立选择。新车 IMU/车体/CAN 参数尚未独立提供，现有值沿用来源配置；新车 CAN 速度换算确认前，在统一入口设置 `SANY_ENABLE_CAN_OBSERVATION=0`。
+启动后核对运行目录 config.yaml 中的 VIN、LIDAR、四路话题、calibration_id；地图路径仍独立选择。新车轮速换算系数已于 2026-10-18 确认为 `0.0011687 (m/s)/rpm`，解析器按 VIN 写入 `system.wheel_speed_scale_mps_per_rpm`。其余尚未独立提供的 IMU/车体/CAN 参数沿用来源配置；需要关闭 CAN 观测时，在统一入口设置 `SANY_ENABLE_CAN_OBSERVATION=0`。

@@ -1,10 +1,11 @@
-# Shared relative LiDAR calibrations selected by /opt/conf/vehicle_config.yaml VIN.
+# LiDAR and wheel-speed calibrations selected by /opt/conf/vehicle_config.yaml VIN.
 transform_convention: T_primary_from_lidar_row_major
 translation_unit: m
 primary_lidar_id: 0
 vehicles:
   SANLV77EXSH000858:
     calibration_id: legacy_vehicle
+    wheel_speed_scale_mps_per_rpm: 0.00120639253574024
     extrinsics:
       lidar0:
         T:
@@ -80,6 +81,7 @@ vehicles:
         - 1
   SANLU77E8TH000006:
     calibration_id: user_provided_20261010_v1
+    wheel_speed_scale_mps_per_rpm: 0.0011687
     extrinsics:
       lidar0:
         T:

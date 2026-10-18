@@ -43,6 +43,11 @@ def resolve(base_path, vehicle_path, calibration_path=None, fixed_map_transform=
     if vin not in registry.get("vehicles", {}):
         raise ValueError(f"Unknown VIN: {vin}; add its verified calibration before launch")
     profile = registry["vehicles"][vin]
+    wheel_speed_scale = profile.get("wheel_speed_scale_mps_per_rpm")
+    if (isinstance(wheel_speed_scale, bool)
+            or not isinstance(wheel_speed_scale, (int, float))
+            or not np.isfinite(wheel_speed_scale) or wheel_speed_scale <= 0):
+        raise ValueError(f"Invalid wheel_speed_scale_mps_per_rpm for VIN: {vin}")
     extrinsics = profile["extrinsics"]
     for index in range(4):
         matrix = np.asarray(extrinsics[f"lidar{index}"]["T"], dtype=float).reshape(4, 4)
@@ -56,6 +61,7 @@ def resolve(base_path, vehicle_path, calibration_path=None, fixed_map_transform=
             raise ValueError("Primary LiDAR calibration must be identity")
     result = copy.deepcopy(base)
     result.pop("sany_vehicle_config", None)
+    result.setdefault("system", {})["wheel_speed_scale_mps_per_rpm"] = wheel_speed_scale
     multi = result["multi_lidar"]
     if not multi.get("enabled") or multi.get("primary_lidar_id") != 0:
         raise ValueError("SANY requires enabled multi_lidar and primary_lidar_id: 0")
