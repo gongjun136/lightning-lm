@@ -5,11 +5,13 @@
 | 文件 | 用途 |
 |---|---|
 | `accuracy_eval.py` | 验证 canonical 输入、拟合并冻结一个 SE(3)、应用冻结结果评估。 |
+| `accuracy_diagnostic.py` | 仅有 A 时，拟合单一同数据诊断 SE(3)，对共同关键帧作描述性对比；不生成独立精度或验收结论。 |
 | `../accuracy_reference.py` | 将原始 CGI 固定输出点离线归一化到后轴；在同一冻结变换和配对合同下扫描候选杆臂。 |
 | `../../config/accuracy_reference.yaml` | 参考点归一化合同；`fixed_point`、旧设备补偿差量和旧后轴恒等模式。 |
 | `../../config/accuracy_lever_sweep.yaml` | 引用归一化与评估配置，列出具名候选杆臂；仅作敏感性分析。 |
 | `templates/calibration_b.yaml` | B 独立地图定位标定数据，生成 map → ENU 冻结变换。 |
 | `templates/evaluation_a_mapping.yaml` | A 建图前端与最终优化关键帧；重建稠密轨迹作为补充。 |
+| `templates/diagnostic_a_mapping.yaml` | 缺少独立 B/C 时的 A-only 诊断，显式保存未确认的参考/时间/几何条件。 |
 | `templates/evaluation_c_localization.yaml` | C 独立纯雷达定位；与 A 共用 B 的冻结变换。 |
 | `templates/estimate.metadata.example.yaml` | 已转换至后轴 FLU 的 TUM 元数据示例。 |
 | `tests/test_accuracy_eval.py` | 时间、质量、SE(3)、杆臂合同、采样缺失、去重和输出的语义测试。 |
@@ -35,6 +37,16 @@ python3 scripts/accuracy_eval/tests/generate_demo.py --output NEW_SYNTHETIC_DEMO
 成功返回 0；合同/数据/文件错误返回 2。`fit` 以独占创建写入冻结文件，`evaluate` 要求新的输出目录；不会覆盖既有证据。返回 0 表示命令完成，验收结论必须读取 `report.json` 的 `acceptance`。没有阈值时不会给出 PASS。
 
 输出 `report.json`、中文 `report.md`、每路逐样本 `*_samples.csv` 与按完整声明录制时长分段的 `*_coverage.csv`。参考无效样本、未配对估计和估计停发均保留证据。工具不拟合测试段时间偏移、比例尺、杆臂或地图变换。
+
+只有建图 A、尚无独立 B/C 时，可以执行：
+
+```bash
+python3 scripts/accuracy_eval/accuracy_diagnostic.py --config EXPERIMENT/configs/diagnostic_a_mapping.yaml --output EXPERIMENT/diagnostic_a
+```
+
+该入口独立于正式 `fit/evaluate`：所有曲线使用同一个、在 A 共同有效关键帧上由预先指定的最终优化关键帧拟合的位置 SE(3)，不拟合尺度、时差或杆臂，不逐曲线重新对齐。输出 `A_ONLY_ALIGNED_DIAGNOSTIC`、`pass:null`、拟合样本掩码与条件证据；变换产物不能用于正式 `evaluate`。优化曲线的同数据拟合残差具有乐观偏差，前后差异只作描述性诊断。完整声明分析时长仍作为覆盖分母。参考原点、高程基准、测量历元或物理外参未确认时，必须在输入元数据和配置 `conditions` 中如实列出，并保持原始 APC 数据与条件化后轴数据可追溯，不能把条件化结果当独立三维精度。
+
+可选 `relative_motion` 在查看残差前声明 `deltas_sec:[1,10]` 与 `max_estimate_gap_sec:0.25`，增加固定时距相对位姿差（RPE）。标准残差为 `E=inv(inv(Tref0)*Tref1)*(inv(Test0)*Test1)`，直接由两路相对SE(3)计算，不使用A拟合变换。每个实际估计样本作起点，终点仅在声明的最大gap内做位置线性/SLERP插值；整个区间的参考与估计都必须连续有效，不能跨失锁、epoch或估计停发。报告所有起始样本、完整时距候选、配对及拒配原因；零对时指标为null。稀疏关键帧可能全部拒配，不能偷偷用密集重建替代关键帧。密集优化结果仍是辅助重建；不同样本集合不能直接比较收益，重叠RPE窗口不属于独立试验。RPE仍受后车体定义、杆臂、时间和参考质量条件影响，不能当作独立物理精度认证。
 
 杆臂扫描另输出 `sweep.json`、`sweep.md` 和 `summary.csv`；候选子报告位于 `<扫描目录>/<候选名>/report/report.json`。
 

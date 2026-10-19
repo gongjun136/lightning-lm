@@ -1,0 +1,42 @@
+# Mapping A only: in-sample aligned diagnostics, never independent accuracy.
+schema_version: 1
+role: diagnostic_mapping_a
+reference:
+  csv: ../A/reference_rear.csv
+  metadata: ../A/reference_rear.metadata.json
+estimates:
+  - name: frontend_keyframes
+    tum: ../A/frontend_keyframes_rear.tum
+    metadata: ../A/frontend_keyframes_rear.metadata.json
+  - name: optimized_keyframes
+    tum: ../A/optimized_keyframes_rear.tum
+    metadata: ../A/optimized_keyframes_rear.metadata.json
+# Predeclare this choice before viewing residuals. It favours the optimized
+# trajectory in-sample; comparison is descriptive, not independent proof of gain.
+fit_estimate: optimized_keyframes
+fit_common_sample_group: keyframes
+common_sample_groups:
+  - name: keyframes
+    estimates: [frontend_keyframes, optimized_keyframes]
+analysis_intervals:
+  - start_ns: null  # Full driving/initialization interval, not first good RTK.
+    end_ns: null
+    epoch: FILL_REFERENCE_EPOCH
+time:
+  offset_status: assumed
+  allow_conditional: true
+  estimate_to_reference_offset_ns: 0  # Explicit assumption; never fitted on A.
+  reference_epoch: FILL_REFERENCE_EPOCH
+  evidence: FILL_CLOCK_AND_RECEIVE_PROXY_EVIDENCE
+pairing:
+  max_reference_gap_sec: null
+  availability_hold_sec: null
+fit:
+  method: position
+  min_pairs: 30
+  min_secondary_span_m: null
+relative_motion:
+  deltas_sec: [1, 10]  # Freeze before viewing residuals; do not search for best delta.
+  max_estimate_gap_sec: 0.25  # Full-segment continuity + position/SLERP gap limit.
+thresholds: null
+conditions: []  # Declare every unconfirmed datum/time/geometry assumption.

@@ -21,8 +21,15 @@ def render(report_path, output=None):
     import matplotlib.pyplot as plt
     report_path = Path(report_path).resolve()
     report = json.loads(report_path.read_text(encoding='utf-8'))
-    if report.get('report_type') != 'reference_disagreement':
-        raise ValueError('expected an accuracy_eval reference_disagreement report')
+    diagnostic_a = report.get('report_type') == 'mapping_a_aligned_diagnostic'
+    if diagnostic_a:
+        if (report.get('status') != 'A_ONLY_ALIGNED_DIAGNOSTIC'
+                or report.get('independent_accuracy_assessed') is not False
+                or report.get('localization_accuracy_assessed') is not False
+                or any(e.get('acceptance', {}).get('pass') is not None for e in report.get('estimates', []))):
+            raise ValueError('mapping A diagnostics must explicitly exclude independent accuracy and acceptance')
+    elif report.get('report_type') != 'reference_disagreement':
+        raise ValueError('expected a reference_disagreement or mapping_a_aligned_diagnostic report')
     out = Path(output) if output else report_path.parent / 'plots'
     if out.exists():
         raise ValueError('plot directory exists; choose a new output directory')
@@ -41,8 +48,8 @@ def render(report_path, output=None):
     out.mkdir(parents=True, exist_ok=False)
     plt.rcParams.update({'font.size': 9, 'axes.spines.top': False, 'axes.spines.right': False,
                          'figure.dpi': 160, 'savefig.dpi': 200})
-    manifest = dict(schema_version=1, report_sha256=digest(report_path), input_csv_sha256=inputs,
-                    interpretation='Paired samples only; no fitted alignment or extrapolation. Coverage is separate.',
+    manifest = dict(schema_version=1, report_type=report['report_type'], report_sha256=digest(report_path), input_csv_sha256=inputs,
+                    interpretation='Paired samples only; no alignment refitting or extrapolation during plotting. Coverage is separate.',
                     figures=[])
     galleries = []
     all_conditions = list(dict.fromkeys(condition for estimate in report['estimates']
@@ -52,6 +59,8 @@ def render(report_path, output=None):
 
     def save(fig, name):
         banners = []
+        if diagnostic_a:
+            banners.append('A-ONLY ALIGNED DIAGNOSTIC - NOT INDEPENDENT ACCURACY OR ACCEPTANCE')
         if synthetic:
             banners.append('SYNTHETIC TEST DATA - NOT A VEHICLE ACCURACY RESULT')
         if sensitivity:
@@ -142,6 +151,11 @@ def render(report_path, output=None):
                'SO(3) geodesic is the main attitude metric; Euler differences are diagnostics.</p>']
     if synthetic:
         content.append('<p style="color:darkred;font-weight:bold">SYNTHETIC TEST DATA — NOT A VEHICLE ACCURACY RESULT.</p>')
+    if diagnostic_a:
+        content.append('<p style="color:darkred;font-weight:bold">A-ONLY ALIGNED DIAGNOSTIC — '
+                       'alignment was fitted using the same mapping data. '
+                       'These are conditional residuals, not independent absolute accuracy, '
+                       'map localization accuracy, or acceptance results.</p>')
     if sensitivity:
         content.append('<p style="color:darkred;font-weight:bold">LEVER-ARM SENSITIVITY — NOT AN ACCURACY ACCEPTANCE RESULT. No best lever arm is selected.</p>')
     if all_conditions:
