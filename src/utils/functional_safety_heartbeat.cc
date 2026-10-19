@@ -35,17 +35,30 @@ void HeartbeatPublisher::SetState(NodeState state) {
     state_.store(static_cast<std::uint8_t>(state), std::memory_order_relaxed);
 }
 
+void HeartbeatPublisher::UpdateFaults(const std::vector<std::uint32_t>& failed,
+                                      const std::vector<std::uint32_t>& passed) {
+    std::lock_guard<std::mutex> lock(fault_mutex_);
+    for (const auto code : passed) active_faults_.erase(code);
+    // FAIL wins if a malformed batch contains both conditions; never emit zero.
+    for (const auto code : failed) if (code != 0) active_faults_.insert(code);
+}
+
 void HeartbeatPublisher::RecordWork() {
     Advance(work_seq_);
 }
 
 void HeartbeatPublisher::PublishNow() {
+    std::lock_guard<std::mutex> publish_lock(publish_mutex_);
     diagnostic_monitor_interfaces::msg::NodeHeartbeat message;
     message.node_id = config_.node_id;
     message.boot_id = boot_id_;
     message.heartbeat_seq = Advance(heartbeat_seq_);
     message.work_seq = work_seq_.load(std::memory_order_relaxed);
     message.state = state_.load(std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(fault_mutex_);
+      message.active_fault.assign(active_faults_.begin(), active_faults_.end());
+    }
     publisher_->publish(message);
 }
 

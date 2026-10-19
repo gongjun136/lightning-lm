@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <set>
+#include <vector>
 
 #include <diagnostic_monitor_interfaces/msg/node_heartbeat.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -39,6 +41,10 @@ class HeartbeatPublisher {
     HeartbeatPublisher& operator=(const HeartbeatPublisher&) = delete;
 
     void SetState(NodeState state);
+    // Apply one evaluated batch atomically. UNKNOWN/omitted codes retain state.
+    // Callers supply only owned, non-historical codes with fresh evidence.
+    void UpdateFaults(const std::vector<std::uint32_t>& failed,
+                      const std::vector<std::uint32_t>& passed);
     void RecordWork();
     void PublishNow();
     void Stop();
@@ -64,6 +70,9 @@ class HeartbeatPublisher {
     std::atomic<std::uint32_t> work_seq_{0};  ///< 有效定位工作完成后推进的工作序列号。
     std::atomic<std::uint8_t> state_{static_cast<std::uint8_t>(NodeState::kNotReady)};  ///< 当前节点运行状态，供监测端识别未就绪、运行或故障。
     std::atomic_bool stop_requested_{false};  ///< 请求心跳线程退出的标志。
+    std::mutex fault_mutex_;
+    std::set<std::uint32_t> active_faults_;
+    std::mutex publish_mutex_;
     std::mutex wait_mutex_;  ///< 配合条件变量等待发布周期或停止请求。
     std::condition_variable wait_condition_;  ///< 心跳周期等待及停止时唤醒使用的条件变量。
     std::thread worker_;  ///< 独立于算法处理线程的心跳发布线程。

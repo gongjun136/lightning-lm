@@ -16,7 +16,7 @@ import rclpy
 import yaml
 from rclpy.clock import Clock, ClockType
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from diagnostic_monitor_interfaces.msg import DtcObservationArray
+from diagnostic_monitor_interfaces.msg import DtcObservationArray, NodeHeartbeat
 from geosun_msgs.msg import Safety
 
 
@@ -59,7 +59,7 @@ def main():
 
         qos = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.VOLATILE)
-        values, safety_messages, snapshots = [], [], []
+        values, safety_messages, snapshots, heartbeats = [], [], [], []
 
         def observe_safety(msg):
             safety_messages.append(msg)
@@ -67,6 +67,8 @@ def main():
 
         node.create_subscription(Safety, '/safety/throstle', observe_safety, qos)
         node.create_subscription(DtcObservationArray, '/diagnostics/source_dtc/localization', snapshots.append, qos)
+        node.create_subscription(NodeHeartbeat, '/diagnostics/heartbeat/lightning_slam', heartbeats.append,
+                                 QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT))
         log_path = fixture / 'process.log'
         with log_path.open('w') as log:
             process = subprocess.Popen([str(executable), '--config=' + str(path), '--map=' + str(fixture)],
@@ -106,13 +108,18 @@ def main():
                 print(f'Safety.runstate samples={len(values)}, ROS steady average={average_hz:.1f} Hz, '
                       f'ROS steady median={median_hz:.1f} Hz, header median={header_hz:.1f} Hz', flush=True)
                 assert 45 <= median_hz <= 55 and 43 <= average_hz <= 57, (median_hz, average_hz)
-                assert len(snapshots) >= 20
-                for msg in snapshots:
-                    assert msg.comm_header.source_id == 6 and msg.boot_id and msg.interface_version == 1
-                    assert [obs.dtc for obs in msg.observations] == [0x30811813, 0x40450198]
-                    assert all(obs.physical_condition == 0 for obs in msg.observations)
-                    assert all(obs.evaluation_seq == 0 for obs in msg.observations)
-                print(f'dtc_online_smoke passed: real Safety.runstate publisher {average_hz:.1f} Hz, median {median_hz:.1f} Hz; safety_fault_reporting={args.safety_fault_reporting}; complete localization DTC snapshots')
+                assert not snapshots, 'legacy localization DTC must not be published'
+                assert node.count_publishers('/diagnostics/source_dtc/localization') == 0
+                assert node.count_subscribers('/internal/diagnostics/livox_dtc') == 1, 'Safety must retain its internal radar subscription'
+                assert node.count_subscribers('/diagnostics/source_dtc/livox') == 0, 'Safety must not use the retired external topic'
+                assert len(heartbeats) >= 20, 'heartbeat must continue during UNKNOWN'
+                assert all(msg.node_id == 6 and msg.boot_id and not msg.active_fault for msg in heartbeats)
+                assert all(msg.work_seq == 0 for msg in heartbeats), 'heartbeat is not business work'
+                assert len({msg.boot_id for msg in heartbeats}) == 1
+                assert all(heartbeats[i].heartbeat_seq > heartbeats[i-1].heartbeat_seq
+                           for i in range(1, len(heartbeats)))
+                print(f'dtc_online_smoke passed: Safety {average_hz:.1f} Hz; '
+                      f'safety_fault_reporting={args.safety_fault_reporting}; heartbeat DTC only, startup UNKNOWN')
             finally:
                 process.terminate()
                 try:

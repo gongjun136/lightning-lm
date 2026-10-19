@@ -6,18 +6,35 @@ https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 
 @section dtc_interfaces 接口与职责
 
-雷达发布 /diagnostics/source_dtc/livox，包含 44 个单雷达 DTC 和
-0x10F00001（至少两台不可用）、0x10F00002（四台不可用），共 46 条。
-定位发布 /diagnostics/source_dtc/localization，包含
-0x30811813（一致性异常）、0x40450198（不确定度超限）。
-两者类型均为 diagnostic_monitor_interfaces/msg/DtcObservationArray，
-完整快照按码排序，10 Hz；已观察到的状态改变尽快追加发布。
-QoS 为 reliable、volatile、KeepLast(10)。
-physical_condition：0 UNKNOWN，1 PASS，2 FAIL。
-这里只报告内部物理判断；故障分级、确认/恢复消抖、历史、锁存和后处理由诊断节点负责。
-现有 /localization/fault_status 留作兼容，统一诊断节点应只消费新接口，避免重复处理。
+对外 DTC 统一通过 diagnostic_monitor_interfaces/msg/NodeHeartbeat.active_fault 上报。
+使用 common/message dev 的既有定义（73e8a24b），不增加公共字段。
+定位 ID 6 的 /diagnostics/heartbeat/lightning_slam 负责
+0x30811813（一致性异常）、0x40450198（不确定度超限）；
+雷达聚合 ID 13 的 /diagnostics/heartbeat/livox_dtc 负责各设备当前故障及
+0x10F00001（至少两台不可用）、0x10F00002（四台不可用）。
+四台驱动的心跳不重复上报设备 DTC；部署时须把相应非历史码登记到 ID 13。
+心跳默认 10 Hz、best_effort、volatile、KeepLast(1)，每次携带排序去重后的完整活动集合。
+FAIL 加入，明确且新鲜的 PASS 才移除，UNKNOWN、缺项或过期保留此前活动状态。
+零码和历史码不进入 active_fault；雷达四角色的 base+12/base+13 仅保留在内部观测。
+源端不重复实现诊断中心的 1 秒确认和 2 秒恢复消抖。
+HeartbeatPublisher::UpdateFaults 原子更新一批判定，发布线程复制快照，发送不推进 work_seq。
 
-comm_header.seq 表示发送方本轮健康评估；evaluation_seq 表示该项检测所依据的
+旧 /diagnostics/source_dtc/localization 和 /diagnostics/source_dtc/livox 不再发布。
+雷达完整 46 项 DtcObservationArray 移到 /internal/diagnostics/livox_dtc，
+仍为 10 Hz 加状态改变发布，reliable、volatile、KeepLast(10)，供定位 Safety 消费。
+physical_condition：0 UNKNOWN，1 PASS，2 FAIL；保留检测序号、证据年龄和历史观测。
+定位配置改用 diagnostics.internal_radar_topic，聚合节点改用 internal_output_topic；
+旧 output_topic/radar_topic 配置不再控制该链路，定制话题必须同步迁移两端。
+现有 /localization/fault_status 留作兼容遥测，统一诊断节点只消费心跳 DTC，
+不得把内部观测或兼容状态再次接入故障确认/动作链路。
+
+活动集合是进程内状态，不跨重启持久化。启动 UNKNOWN 不生成虚构故障码；
+空集合不能证明检测已完成或系统健康。boot_id 改变后的历史故障保持及就绪判定仍由
+诊断中心负责，本次不修改其实现，也不假设 state=3/4 会阻止恢复。
+保留旧 FAIL 的兼容方案不能表达“当前证据未知”，中心仍可能据此累计确认时间；
+这是现有公共接口的表达限制。Safety 继续使用原始三态及新鲜度，不使用保留后的活动集合。
+
+内部观测的 comm_header.seq 表示发送方本轮健康评估；evaluation_seq 表示该项检测所依据的
 新证据/检测进度；evaluation_age_us 是最近实际评估的稳态时钟年龄。
 从未完成检测时为 UINT64_MAX。boot_id 与同节点心跳共用启动标识。
 接收方应同时检查来源、版本、完整码集合、启动标识、序号及证据年龄。
@@ -121,7 +138,7 @@ rpm 比例、轮速符号、时间对齐、陀螺偏差和安装方向须用实�
 
 升级后须重新由 `config/sany/localization.yaml` 生成运行配置并重启定位。
 既有 `runs/*/config.yaml` 是不可变运行快照；更新代码不会把其中显式写入的 4.0 改成 1.0。
-排查 `runstate=4` 时同时查看 `LOCALIZATION_DTC` 日志及定位 DTC Topic：
+排查 `runstate=4` 时同时查看 `LOCALIZATION_DTC` 日志及定位心跳的 active_fault：
 `consistency=1 uncertainty=2 severe=0` 表示不确定度超限；条件 0 表示证据不足。
 启动日志 `LOCALIZATION_DTC_CONFIG` 显示实际生效的版本、倍率和三个门限；
 周期日志 `can_stamp_lag_sec` / `imu_stamp_lag_sec` 显示最后位姿时间减相应最新输入时间，
@@ -134,7 +151,7 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
 需在联调后冻结 config_version。不得将建议阈值当作已验收的安全响应指标。
 
 1. 采集静止、低速、倒车、弯道、颠簸、各坡度及地图边缘场景，
-   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志及两个 DTC Topic。
+   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志、两个节点心跳及雷达内部观测。
 2. 正常数据统计纵/横/航向残差分布，按速度、转弯、坡度分层标定基础容差和比例容差。
    时间不同步或参考自身无效的片段单独处理，不能用于放宽容差。
 3. 用独立参考误差标定协方差方差倍率、下限及过程噪声，检查二维椭圆和航向覆盖率；
@@ -148,12 +165,17 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
    默认上界预算：设备 HMS 检出约 1 s 查询 + 100 ms 评估 + 网络；
    断流约 500 ms + 100 ms 评估 + 网络；定位有效输出超时 300 ms + 20 ms 状态周期；
    运动窗口 500 ms，突跳可由相邻增量提前发现。
+   对外 DTC 改由心跳发送后，还需计入最多一个心跳周期（默认 100 ms）；
+   检测变化只更新缓存，不额外插发心跳。Safety 仍使用独立的 20 ms 发布周期。
    这些是配置预算，最终最大响应时间必须在目标硬件负载及网络环境中实测验收。
 
 自动回归：lidar_dtc_monitor_test、localization_dtc_test、localization_pgo_test。
 PGO 回归直接将实际优化器的后验送入 DTC，覆盖五帧窗口边缘化后的健康轨迹；
 定位回归另外验证 0.31 m 横向、2.1° 航向超限仍为 FAIL。
-test/dtc_ros_integration.py 验证实际聚合节点的 ROS 输入、恢复、重放和断流行为。
+test/dtc_ros_integration.py 验证实际聚合节点的 ROS 输入、恢复、重放和断流行为，
+并校验心跳当前码、历史过滤、UNKNOWN/过期 PASS 不清除、内部快照保留和旧话题停发。
+两包的 heartbeat_dtc_test 使用真实 ROS 发布/订阅检查集合去重、逐码恢复、
+并发快照一致性、心跳与工作序号分离及启动标识。
 
 历史 SANY bag 的 `SpeThrCAN4` 可能只有 `Header+x+y`，新版多了 `TopicCommHeader`。
 `OnlineBagPlayer` 原样发布 CDR 字节，由在线输入已有的新旧布局解码器校验，
@@ -189,13 +211,18 @@ smoke 夹具通过 `export_map_manifest` 生成合法地图清单；需同时构
 
 @section dtc_validation 开发验证与部署准备
 
-ROS 2 Humble / Ubuntu 22.04 下已完成消息包、驱动、定位程序及相关测试构建。
-八项相关 CTest 通过：雷达 DTC、定位 DTC、轮速消息、雷达跟踪状态、后轴位姿、
-三一定位输出、PGO 和定位输入并发回归。
-两项实际节点 ROS 验证使用 Cyclone DDS：
-test/dtc_ros_integration.py 通过完整快照、两台/四台失效、恢复、重放、HMS 过期和断流；
-src/test/dtc_online_smoke.py 启动真实 run_loc_online，验证定位 DTC 元数据和完整性，
-Safety.runstate 约 50 Hz，启动 UNKNOWN 为 4，超时后为 -9；消息类型和时间戳一并校验。
+2026-10-19 在 ROS 2 Humble / Ubuntu 22.04 完成既有 dev 消息定义、雷达驱动/聚合器、
+在线/离线定位程序及相关测试构建。九项 CTest 通过：两个包各自的 heartbeat_dtc_test，
+雷达 DTC、PTP 启动保护、定位 DTC、后轴位姿、三一定位输出、PGO、定位输入并发。
+另有三项实际节点 ROS 验证通过，均使用 Cyclone DDS 和隔离 domain：
+test/dtc_ros_integration.py 通过完整快照、两台/四台失效、恢复、重放、HMS 过期和断流，
+并验证 UNKNOWN、过期 PASS、设备重启不清除已活动码，历史码不进入心跳、旧话题无发布者；
+src/test/dtc_online_smoke.py 启动真实 run_loc_online，验证心跳 DTC 和旧定位 DTC 话题停发，
+且 Safety 只订阅新内部雷达观测话题。默认 Safety 故障上报平均 49.7 Hz，
+启动 UNKNOWN 为 4，超时后为 -9；关闭故障上报时平均 50.0 Hz，runstate 始终为 0。
+两次 smoke 均校验消息类型、时间戳、心跳序号和无业务输入时 work_seq 不递增。
+文档源链接/导航检查通过（59 页）；全量 HTML 校验仍有原有 sany_configuration.md 的
+resolve 链接告警，不属于本次 DTC 代码回归。上述均为本地验证，未部署车辆。
 频率测试使用与 C++ WallTimer 相同的 ROS 稳态时钟；header 为 ROS 发布时刻。
 本机 WSL 的校正时钟与原始稳态时钟曾出现约 10% 的速率差，header 频率仅作为诊断值。
 ROS 稳态时钟实现参考 https://github.com/ros2/rcutils/blob/humble/src/time_unix.c 。
@@ -211,4 +238,7 @@ RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=172 python3 src/lightning-lm
 
 部署时须同步 common_msgs 的三个更新消息包、驱动及定位程序，并重新构建消费者。
 使用一致版本的安装目录，检查 lightning_lm/lib 内历史复制的 ROSIDL 库是否遮蔽新消息包。
+升级 NodeHeartbeat 后须将该目录内旧 diagnostic_monitor_interfaces 库副本备份移出，
+用 ldd 确认程序实际加载 install/diagnostic_monitor_interfaces/lib 中的新库；
+仅重新生成头文件不能修复被旧类型支持库遮蔽的运行环境。
 目标硬件的 Livox 状态查询、真实传感器数据、跨主机 DDS 及故障响应时间仍按上述流程联调验收。

@@ -281,12 +281,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     const auto topic = [&dtc](const char* key, const std::string& fallback) {
         return dtc && dtc[key] ? dtc[key].as<std::string>() : fallback;
     };
-    dtc_pub_ = node_->create_publisher<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
-        topic("output_topic", "/diagnostics/source_dtc/localization"), dtc_qos);
     safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safety>(
         topic("safety_topic", "/safety/throstle"), dtc_qos);
     radar_dtc_sub_ = node_->create_subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
-        topic("radar_topic", "/diagnostics/source_dtc/livox"), dtc_qos,
+        topic("internal_radar_topic", "/internal/diagnostics/livox_dtc"), dtc_qos,
         [this](const diagnostic_monitor_interfaces::msg::DtcObservationArray::SharedPtr msg) {
             radar_dtc_state_->Observe(*msg);
         });
@@ -297,7 +295,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             [this, i](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
                 if (msg->role == i) radar_dtc_state_->ObserveAvailability(*msg);
             });
-    dtc_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { PublishDtc(); });
+    dtc_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { UpdateDtcHeartbeat(); });
     safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(20), [this]() {
         PublishSafety();
         const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
@@ -306,7 +304,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             std::lock_guard<std::mutex> lock(dtc_publish_mutex_);
             for (size_t i = 0; i < 2; ++i) changed |= last_dtc_conditions_[i] != snapshot.observations[i].condition;
         }
-        if (changed) PublishDtc();
+        if (changed) UpdateDtcHeartbeat();
     });
 
     // 配置并注册 IMU / LiDAR 输入订阅。
@@ -1183,24 +1181,18 @@ bool LocSystem::DtcLocalizationLost() const {
     return last_posres_stamp_.load() > 0.0 &&
            !publication_gate_.PoseOutputsEnabled(last_localization_stamp_.load());
 }
-void LocSystem::PublishDtc() {
-    if (!dtc_monitor_ || !dtc_pub_) return;
+void LocSystem::UpdateDtcHeartbeat() {
+    if (!dtc_monitor_ || !heartbeat_) return;
     const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
     std::lock_guard<std::mutex> lock(dtc_publish_mutex_);
-    diagnostic_monitor_interfaces::msg::DtcObservationArray msg;
-    msg.comm_header.source_id = heartbeat_->NodeId();
-    msg.comm_header.seq = functional_safety::HeartbeatPublisher::Advance(dtc_comm_seq_);
-    msg.comm_header.stamp_us = functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
-    msg.boot_id = heartbeat_->BootId(); msg.interface_version = 1; msg.config_version = dtc_config_version_;
+    std::vector<uint32_t> failed, passed;
     for (size_t i = 0; i < 2; ++i) {
         const auto& check = snapshot.observations[i];
-        diagnostic_monitor_interfaces::msg::DtcObservation obs;
-        obs.dtc = check.code; obs.physical_condition = check.condition;
-        obs.evaluation_seq = check.sequence; obs.evaluation_age_us = check.age_us;
-        msg.observations.push_back(obs);
+        if (check.condition == loc::dtc::kFail) failed.push_back(check.code);
+        if (check.condition == loc::dtc::kPass) passed.push_back(check.code);
         last_dtc_conditions_[i] = check.condition;
     }
-    dtc_pub_->publish(msg);
+    heartbeat_->UpdateFaults(failed, passed);
     LOG_EVERY_N(INFO, 10) << "LOCALIZATION_DTC consistency=" << int(snapshot.observations[0].condition)
         << " uncertainty=" << int(snapshot.observations[1].condition) << " severe=" << snapshot.severe
         << " error_x=" << snapshot.error_longitudinal_m << " error_y=" << snapshot.error_lateral_m

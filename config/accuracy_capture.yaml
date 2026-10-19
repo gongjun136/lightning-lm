@@ -99,7 +99,6 @@ capture:
     - /localization/fault_status
     - /localization/pipeline_diagnostics
     - /diagnostics/heartbeat/lightning_slam
-    - /diagnostics/source_dtc/localization
     - /slamState_topic
     - /SystemState
   # Record these if available; missing optional topics are reported, not fatal.

@@ -200,7 +200,7 @@ class LocSystem {
                                const MultiLidarFrameStats& stats, bool eligible);
     /// @brief 汇总输入、定位与队列状态，周期发布健康消息和流水线诊断。
     void PublishHealthStatus();
-    void PublishDtc();
+    void UpdateDtcHeartbeat();
     void PublishSafety();
     bool DtcLocalizationLost() const;
     void PublishPath();
@@ -294,10 +294,8 @@ class LocSystem {
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
     std::string dtc_config_version_ = "localization-dtc-v2-model-scale";
     bool safety_fault_reporting_enabled_ = true;  ///< 关闭时 Safety.runstate 固定为正常值 0，源 DTC 不受影响。
-    std::atomic<uint32_t> dtc_comm_seq_{0};
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};
-    rclcpp::Publisher<diagnostic_monitor_interfaces::msg::DtcObservationArray>::SharedPtr dtc_pub_;
     rclcpp::Publisher<geosun_msgs::msg::Safety>::SharedPtr safety_pub_;
     rclcpp::Subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>::SharedPtr radar_dtc_sub_;
     std::array<rclcpp::Subscription<livox_ros_driver2::msg::LidarDiagnosticState>::SharedPtr, 4> radar_availability_subs_;

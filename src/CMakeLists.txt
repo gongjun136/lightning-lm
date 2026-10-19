@@ -106,6 +106,9 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(heartbeat_dtc_test test/heartbeat_dtc_test.cc utils/functional_safety_heartbeat.cc)
+    ament_target_dependencies(heartbeat_dtc_test rclcpp diagnostic_monitor_interfaces)
+    add_test(NAME heartbeat_dtc_test COMMAND $<TARGET_FILE:heartbeat_dtc_test>)
     add_executable(localization_dtc_test test/localization_dtc_test.cc)
     target_link_libraries(localization_dtc_test ${PROJECT_NAME}.libs ${third_party_libs})
     add_test(NAME localization_dtc_test COMMAND $<TARGET_FILE:localization_dtc_test>)
