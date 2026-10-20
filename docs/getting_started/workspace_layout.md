@@ -35,6 +35,18 @@ bash src/lightning-lm/scripts/build_workspace.sh
 发布新的跨仓库接口时，须同时更新配套清单并核对导入后的实际 HEAD。
 源码检出完成后，还须重新构建并加载当前工作区的安装环境。
 
+2026-10-20 修正：当前消息依赖固定为 `common_msgs@b7c005f`，包含心跳代码
+使用的 `NodeHeartbeat.active_fault`。旧版本 `3f918b3` 不包含该字段。
+两个消息清单必须同步更新；仅更新定位仓库或复用本机旧安装目录不构成验证。
+构建脚本会先检查依赖 HEAD、未提交修改和两份清单的一致性。手工构建前也应执行：
+
+```bash
+python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
+```
+
+检查仅验证源码版本，不验证安装空间。消息更新后用 `colcon build --packages-up-to
+lightning_lm` 重编消息与消费者，并重新加载安装环境；不要仅构建消费者。
+
 `cgi430_driver` 仓库保留原 Git 历史，根目录直接是 `cgi430_driver` 包，协议库与运行脚本随驱动维护。`common_msgs` 只存接口；定位与驱动分别声明对接口的依赖，由 colcon 确定构建顺序。不再加载外部 CGI 安装空间。
 
 ## Local compatibility mapping

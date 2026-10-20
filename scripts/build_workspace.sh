@@ -20,6 +20,7 @@ for package in common_msgs/cgi430_interfaces cgi430_driver livox_ros_driver2 Liv
 done
 # [build-workspace-packages]
 # [build-workspace-launch]
+python3 "$repo/scripts/check_workspace_repos.py" --workspace "$ws"
 export MAKEFLAGS="-j$jobs -l$jobs"
 export CMAKE_BUILD_PARALLEL_LEVEL="$jobs"
 set +u
