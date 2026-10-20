@@ -1,0 +1,150 @@
+{
+  "raw_file": "raw_sync_priority20_15min.jsonl",
+  "sha256": "8fc8a076857039486d0f4fcf16dfa6b4561465b8f0683a96712e3e93adef0268",
+  "start": "2026-10-20T10:38:27.170067+08:00",
+  "end": "2026-10-20T10:53:27.083728+08:00",
+  "observed_seconds": 899.9136614690005,
+  "record_counts": {
+    "raw": 5299,
+    "dtc": 9012,
+    "safety": 7
+  },
+  "safety_transitions": [
+    {
+      "time": "2026-10-20T10:38:27.176910+08:00",
+      "state": 0
+    },
+    {
+      "time": "2026-10-20T10:47:15.786527+08:00",
+      "state": 2
+    },
+    {
+      "time": "2026-10-20T10:47:42.787124+08:00",
+      "state": 0
+    },
+    {
+      "time": "2026-10-20T10:48:34.789887+08:00",
+      "state": 2
+    },
+    {
+      "time": "2026-10-20T10:49:00.789136+08:00",
+      "state": 0
+    },
+    {
+      "time": "2026-10-20T10:51:01.785005+08:00",
+      "state": 2
+    },
+    {
+      "time": "2026-10-20T10:51:05.784243+08:00",
+      "state": 0
+    }
+  ],
+  "radars": {
+    "left": {
+      "ip": "192.168.1.108",
+      "responses": 1757,
+      "nonzero_return_codes": 0,
+      "sync_types": {
+        "1": 1757
+      },
+      "max_abs_offset_ns": 1964075,
+      "max_sync_age_ns": 26548403246,
+      "max_response_gap_s": 1.0048097039998538,
+      "hms": {
+        "0x04050002": 1698,
+        "0x04050002,0x04020002": 51,
+        "0x04050002,0x04020002,0x04060002": 2,
+        "0x04050002,0x04060002": 6
+      }
+    },
+    "right": {
+      "ip": "192.168.2.133",
+      "responses": 1776,
+      "nonzero_return_codes": 0,
+      "sync_types": {
+        "1": 1776
+      },
+      "max_abs_offset_ns": 2137964,
+      "max_sync_age_ns": 783889394,
+      "max_response_gap_s": 1.5000762800000302,
+      "hms": {
+        "0x04050002": 1770,
+        "0x04050002,0x04060002": 6
+      }
+    },
+    "front": {
+      "ip": "192.168.3.184",
+      "responses": 1766,
+      "nonzero_return_codes": 0,
+      "sync_types": {
+        "1": 1766
+      },
+      "max_abs_offset_ns": 1961831,
+      "max_sync_age_ns": 25585013104,
+      "max_response_gap_s": 1.0111371399998461,
+      "hms": {
+        "0x04050002": 1710,
+        "0x04050002,0x04020002": 48,
+        "0x04050002,0x04020002,0x04060002": 2,
+        "0x04050002,0x04060002": 6
+      }
+    }
+  },
+  "runtime": {
+    "duration": 900.0114163450007,
+    "counts": {
+      "/safety/throstle": 45002,
+      "/localization/pose_vel": 128374,
+      "/sensors/livox/left/diagnostic_state": 9000,
+      "/sensors/livox/right/diagnostic_state": 9000,
+      "/internal/diagnostics/livox_dtc": 9012,
+      "/sensors/livox/front/diagnostic_state": 9000,
+      "/sensors/livox/rear/diagnostic_state": 9000
+    },
+    "safety_states": {
+      "0": 42152,
+      "2": 2850
+    },
+    "max_gap_sec": {
+      "/safety/throstle": 0.0375663610002448,
+      "/localization/pose_vel": 0.12226284699954704,
+      "/sensors/livox/left/diagnostic_state": 0.11485410999921442,
+      "/sensors/livox/right/diagnostic_state": 0.11413793800056737,
+      "/internal/diagnostics/livox_dtc": 0.11590195000007952,
+      "/sensors/livox/front/diagnostic_state": 0.11855917599950772,
+      "/sensors/livox/rear/diagnostic_state": 0.11379337099970144
+    },
+    "errors": [
+      "Safety.runstate=2 after probe warmup"
+    ]
+  },
+  "load": {
+    "samples": 180,
+    "interval_s": 5,
+    "run_queue": {
+      "min": 0.0,
+      "mean": 7.4222222222222225,
+      "max": 26.0
+    },
+    "cpu_user_percent": {
+      "min": 28.0,
+      "mean": 35.77777777777778,
+      "max": 67.0
+    },
+    "cpu_system_percent": {
+      "min": 12.0,
+      "mean": 16.877777777777776,
+      "max": 22.0
+    },
+    "cpu_idle_percent": {
+      "min": 14.0,
+      "mean": 47.266666666666666,
+      "max": 55.0
+    },
+    "cpu_iowait_percent": {
+      "min": 0.0,
+      "mean": 0.027777777777777776,
+      "max": 3.0
+    }
+  }
+}

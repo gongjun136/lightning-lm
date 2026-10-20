@@ -1,0 +1,16 @@
+2026-10-20T10:47:15+0800 ubuntuM ptp4l[37555]: [7971.805] timed out while polling for tx timestamp
+2026-10-20T10:47:15+0800 ubuntuM ptp4l[37555]: [7971.805] increasing tx_timestamp_timeout may correct this issue, but it is likely caused by a driver bug
+2026-10-20T10:47:15+0800 ubuntuM ptp4l[37555]: [7971.805] port 1: send sync failed
+2026-10-20T10:47:15+0800 ubuntuM ptp4l[37555]: [7971.805] port 1: MASTER to FAULTY on FAULT_DETECTED (FT_UNSPECIFIED)
+2026-10-20T10:47:31+0800 ubuntuM ptp4l[37555]: [7987.807] port 1: FAULTY to LISTENING on INIT_COMPLETE
+2026-10-20T10:47:38+0800 ubuntuM ptp4l[37555]: [7995.581] port 1: LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES
+2026-10-20T10:47:38+0800 ubuntuM ptp4l[37555]: [7995.581] selected local clock 00a0c9.fffe.000000 as best master
+2026-10-20T10:47:38+0800 ubuntuM ptp4l[37555]: [7995.581] port 1: assuming the grand master role
+2026-10-20T10:48:34+0800 ubuntuM ptp4l[37554]: [8050.769] timed out while polling for tx timestamp
+2026-10-20T10:48:34+0800 ubuntuM ptp4l[37554]: [8050.769] increasing tx_timestamp_timeout may correct this issue, but it is likely caused by a driver bug
+2026-10-20T10:48:34+0800 ubuntuM ptp4l[37554]: [8050.769] port 1: send sync failed
+2026-10-20T10:48:34+0800 ubuntuM ptp4l[37554]: [8050.769] port 1: MASTER to FAULTY on FAULT_DETECTED (FT_UNSPECIFIED)
+2026-10-20T10:48:50+0800 ubuntuM ptp4l[37554]: [8066.772] port 1: FAULTY to LISTENING on INIT_COMPLETE
+2026-10-20T10:48:56+0800 ubuntuM ptp4l[37554]: [8073.581] port 1: LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES
+2026-10-20T10:48:56+0800 ubuntuM ptp4l[37554]: [8073.581] selected local clock 00a0c9.fffe.000002 as best master
+2026-10-20T10:48:56+0800 ubuntuM ptp4l[37554]: [8073.581] port 1: assuming the grand master role
