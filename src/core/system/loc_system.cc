@@ -250,6 +250,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         radar_time_sync_shadow_enabled_ = dtc && dtc["radar_time_sync_shadow_enabled"]
                                              ? dtc["radar_time_sync_shadow_enabled"].as<bool>()
                                              : true;
+        radar_bounded_sync_warning_enabled_ = dtc && dtc["radar_bounded_sync_warning_enabled"]
+                                                 ? dtc["radar_bounded_sync_warning_enabled"].as<bool>()
+                                                 : false;
+        radar_fault_mask_enabled_ = dtc && dtc["radar_fault_mask_enabled"]
+                                        ? dtc["radar_fault_mask_enabled"].as<bool>() : false;
         const auto radar_id = dtc && dtc["radar_source_id"] ? dtc["radar_source_id"].as<int>() : 13;
         const double radar_timeout = value("radar_snapshot_timeout_sec", 0.5);
         const double hms_timeout = value("radar_hms_timeout_sec", 2.5);
@@ -276,6 +281,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     }
     LOG(INFO) << "LOCALIZATION_DTC_CONFIG version=" << dtc_config_version_
               << " safety_fault_reporting_enabled=" << safety_fault_reporting_enabled_
+              << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_
+              << " radar_bounded_sync_warning_enabled=" << radar_bounded_sync_warning_enabled_
               << " covariance_variance_scale=" << dtc_config.covariance_scale
               << " major_sigma_limit_m=" << dtc_config.major_sigma_m
               << " lateral_sigma_limit_m=" << dtc_config.lateral_sigma_m
@@ -1206,18 +1213,29 @@ void LocSystem::PublishSafety() {
     geosun_msgs::msg::Safety msg;
     msg.header.stamp = node_->now();
     const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
+    const int bounded = loc::dtc::SafetyValue(localization, radar.all_failed,
+        radar.bounded_fault, radar.bounded_all_pass);
     msg.runstate = safety_fault_reporting_enabled_
-                       ? strict
+                       ? loc::dtc::SafetyValue(localization, radar.all_failed,
+                             radar_bounded_sync_warning_enabled_ ? radar.bounded_fault : radar.fault,
+                             radar_bounded_sync_warning_enabled_ ? radar.bounded_all_pass : radar.all_pass,
+                             radar_fault_mask_enabled_)
                        : 0;
     safety_pub_->publish(msg);
-    if (radar_time_sync_shadow_enabled_) {
+    if (radar_time_sync_shadow_enabled_ || radar_fault_mask_enabled_) {
         const int shadow = loc::dtc::SafetyValue(localization, radar.all_failed,
             radar.fault_without_time_sync, radar.all_pass_without_time_sync);
         const bool changed = strict != last_safety_strict_ || shadow != last_safety_shadow_ ||
-                             radar.time_sync_fault_mask != last_safety_sync_mask_;
+                             radar.time_sync_fault_mask != last_safety_sync_mask_ ||
+                             msg.runstate != last_safety_published_ ||
+                             radar.bounded_sync_warning_mask != last_safety_bounded_mask_;
         if (changed || ++safety_shadow_ticks_ % 50 == 0) {
             LOG(INFO) << "SAFETY_TIME_SYNC_SHADOW published_runstate=" << int(msg.runstate)
                       << " strict_runstate=" << strict << " shadow_runstate=" << shadow
+                      << " bounded_runstate=" << bounded
+                      << " bounded_policy_enabled=" << radar_bounded_sync_warning_enabled_
+                      << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_
+                      << " bounded_sync_warning_mask=" << int(radar.bounded_sync_warning_mask)
                       << " time_sync_fault_mask=" << int(radar.time_sync_fault_mask)
                       << " non_sync_fault=" << radar.fault_without_time_sync
                       << " non_sync_all_pass=" << radar.all_pass_without_time_sync
@@ -1228,6 +1246,8 @@ void LocSystem::PublishSafety() {
         last_safety_strict_ = strict;
         last_safety_shadow_ = shadow;
         last_safety_sync_mask_ = radar.time_sync_fault_mask;
+        last_safety_published_ = msg.runstate;
+        last_safety_bounded_mask_ = radar.bounded_sync_warning_mask;
     }
 }
 

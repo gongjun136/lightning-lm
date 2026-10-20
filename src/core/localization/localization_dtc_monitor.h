@@ -61,7 +61,8 @@ class Monitor {
     bool output_seen_ = false;
     Snapshot snapshot_;
 };
-// UNKNOWN is never a normal state. Severe > localization > lidar > normal.
+// Severe > localization > lidar > normal. An explicit radar-only override
+// suppresses the lidar branch (including UNKNOWN), never the first two branches.
 int8_t SafetyValue(const Snapshot& localization, bool all_lidar_failed,
-                   bool radar_fault, bool radar_all_pass);
+                   bool radar_fault, bool radar_all_pass, bool mask_radar_fault = false);
 }

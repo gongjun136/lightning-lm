@@ -33,6 +33,8 @@ Features of Lightning-LM:
 
 Developer and algorithm manual: [documentation home](./docs/index.md), [build instructions](./docs/getting_started/build_and_run.md), and [backend configuration](./docs/reference/backend_configuration.md).
 
+SANY Safety configuration: [bounded PTP warnings and the radar-only fault mask](./docs/operations/incidents/20261020_bounded_sync_policy.md).
+
 > Current implementation: the ESKF error state has 18 dimensions; dated entries below describe earlier revisions. See [ESKF](./docs/algorithms/eskf.md).
 
 ## Updates

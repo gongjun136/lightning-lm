@@ -16,7 +16,14 @@ def check_interfaces(repo, workspace):
         driver = workspace / "src/livox_ros_driver2"
         radar = yaml.safe_load((driver / "config/dtc_aggregator.yaml").read_text())["lidar_dtc_aggregator"]["ros__parameters"]
         heartbeat = (workspace / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg").read_text()
+        lidar_state = (workspace / "src/common_msgs/livox_ros_driver/msg/LidarDiagnosticState.msg").read_text()
         errors = []
+        for field in ("bool bounded_time_sync_warning", "int64 time_sync_offset_ns",
+                      "uint64 time_sync_evidence_age_us"):
+            if not re.search(r"^" + field.replace(" ", r"\s+") + r"\s*(?:#.*)?$", lidar_state, re.MULTILINE):
+                errors.append(f"LidarDiagnosticState.msg lacks {field}")
+        if radar.get("config_version") != "livox-dtc-v3-bounded-sync":
+            errors.append("radar bounded-warning evidence requires livox-dtc-v3-bounded-sync")
         if not re.search(r"^uint32\[\]\s+active_fault\s*(?:#.*)?$", heartbeat, re.MULTILINE):
             errors.append("NodeHeartbeat.msg lacks uint32[] active_fault")
         topic = radar.get("internal_output_topic")
@@ -35,7 +42,7 @@ def check_interfaces(repo, workspace):
     for error in errors:
         print(f"ERROR: {error}", file=sys.stderr)
     if not errors:
-        print("PASS: heartbeat field and radar topic/source-ID contracts match (runtime still requires verification)")
+        print("PASS: heartbeat, bounded PTP proof schema/version and radar topic/source-ID contracts match (runtime still requires verification)")
     return 1 if errors else 0
 
 

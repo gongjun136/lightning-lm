@@ -19,16 +19,19 @@ class InterfaceTest(unittest.TestCase):
         self.config = self.ws / "src/livox_ros_driver2/config/dtc_aggregator.yaml"
         self.source = self.ws / "src/livox_ros_driver2/src/lidar_dtc_aggregator.cpp"
         self.msg = self.ws / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg"
-        for path in (self.loc, self.config, self.source, self.msg):
+        self.lidar_msg = self.ws / "src/common_msgs/livox_ros_driver/msg/LidarDiagnosticState.msg"
+        for path in (self.loc, self.config, self.source, self.msg, self.lidar_msg):
             path.parent.mkdir(parents=True, exist_ok=True)
         self.loc.write_text(yaml.safe_dump({"diagnostics": {
             "internal_radar_topic": "/internal/diagnostics/livox_dtc",
             "radar_source_id": 13, "radar_role_source_ids": [7, 12, 8, 9]}}))
         self.params = {"internal_output_topic": "/internal/diagnostics/livox_dtc",
-                       "functional_safety.node_id": 13, "expected_source_ids": [7, 12, 8, 9]}
+                       "functional_safety.node_id": 13, "expected_source_ids": [7, 12, 8, 9],
+                       "config_version": "livox-dtc-v3-bounded-sync"}
         self.write_config()
         self.source.write_text('declare_parameter<std::string>("internal_output_topic", "default");')
         self.msg.write_text("uint32[] active_fault\n")
+        self.lidar_msg.write_text("bool bounded_time_sync_warning\nint64 time_sync_offset_ns\nuint64 time_sync_evidence_age_us\n")
 
     def write_config(self):
         self.config.write_text(yaml.safe_dump({"lidar_dtc_aggregator": {"ros__parameters": self.params}}))
@@ -39,6 +42,15 @@ class InterfaceTest(unittest.TestCase):
 
     def test_compatible(self):
         self.assertEqual(self.result(), 0)
+
+    def test_old_bounded_proof_schema(self):
+        self.lidar_msg.write_text("uint8 usability\n")
+        self.assertEqual(self.result(), 1)
+
+    def test_old_driver_semantics(self):
+        self.params["config_version"] = "livox-dtc-v2-sync-source"
+        self.write_config()
+        self.assertEqual(self.result(), 1)
 
     def test_old_driver_topic(self):
         self.params["output_topic"] = "/diagnostics/source_dtc/livox"

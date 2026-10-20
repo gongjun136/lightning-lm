@@ -272,9 +272,15 @@ diagnostics:
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
-  # Counterfactual audit only; no timing-error budget has been approved.
-  # Actual Safety retains all current time-sync protections.
+  # Retain strict and unrestricted shadow results for audit.
+  # Only the separately approved bounded policy below can affect actual Safety.
   radar_time_sync_shadow_enabled: true
+  # Active only with fresh driver v3 proof: advancing PTP, <=1 ms,
+  # no detected clock discontinuity, warning-only allowlist and healthy localization.
+  radar_bounded_sync_warning_enabled: true
+  # Explicit override of runstate=2 only, including unknown/stale radar evidence.
+  # Native DTCs, localization runstate=4 and severe/all-lidar-failed -9 remain active.
+  radar_fault_mask_enabled: false
   internal_radar_topic: /internal/diagnostics/livox_dtc
   radar_source_id: 13
   radar_role_source_ids: [7, 12, 8, 9]  # front, rear, left, right

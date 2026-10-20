@@ -30,6 +30,7 @@ topics = {
 for role in ['front', 'rear', 'left', 'right']:
     topics[f'/sensors/livox/{role}/diagnostic_state'] = 'livox_ros_driver2/msg/LidarDiagnosticState'
 counts, last, states, gaps, previous = Counter(), {}, Counter(), {}, {}
+bounded_counts, sync_fault_counts, offset_ranges = Counter(), Counter(), {}
 errors = set()
 roles = ['front', 'rear', 'left', 'right']
 def receive(topic, msg):
@@ -49,6 +50,17 @@ def receive(topic, msg):
             errors.add(f'{topic}: config_version={msg.config_version}, expected={params["config_version"]}')
         if msg.role != role or msg.comm_header.source_id != params['expected_source_ids'][role]:
             errors.add(f'{topic}: role/source_id mismatch')
+        if msg.bounded_time_sync_warning and (
+                abs(msg.time_sync_offset_ns) > 1000000 or msg.time_sync_evidence_age_us > 2500000):
+            errors.add(f'{topic}: invalid bounded time-sync evidence')
+        bounded_counts[roles[role]] += int(msg.bounded_time_sync_warning)
+        if len(msg.observations) != 11:
+            errors.add(f'{topic}: expected 11 source observations')
+        else:
+            sync_fault_counts[roles[role]] += int(msg.observations[1].physical_condition == 2)
+        bounds = offset_ranges.setdefault(roles[role], [msg.time_sync_offset_ns, msg.time_sync_offset_ns])
+        bounds[0] = min(bounds[0], msg.time_sync_offset_ns)
+        bounds[1] = max(bounds[1], msg.time_sync_offset_ns)
         if args.require_healthy and now - start >= 5 and msg.usability != 1:
             errors.add(f'{topic}: usability={msg.usability}')
     if topic == radar_topic:
@@ -69,6 +81,8 @@ for topic in topics:
     elif time.monotonic() - previous[topic] > 1:
         errors.add(f'{topic}: no recent message')
 result = dict(duration=time.monotonic()-start, counts=dict(counts),
+              bounded_warning_counts=dict(bounded_counts), sync_fault_counts=dict(sync_fault_counts),
+              reported_offset_range_ns=offset_ranges,
               safety_states=dict(states), max_gap_sec=gaps, errors=sorted(errors), last=last)
 print(json.dumps(result, indent=2), flush=True)
 node.destroy_node()

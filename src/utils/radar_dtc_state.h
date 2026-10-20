@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <set>
@@ -16,6 +17,8 @@ class RadarDtcState {
         // a bounded timing-error policy has been defined and validated.
         bool fault_without_time_sync = false, all_pass_without_time_sync = false;
         uint8_t time_sync_fault_mask = 0;  // front, rear, left, right bits
+        bool bounded_fault = false, bounded_all_pass = false;
+        uint8_t bounded_sync_warning_mask = 0;
     };
     RadarDtcState(uint16_t source, double timeout, double hms_timeout, bool check_availability = false,
                   std::array<uint16_t, 4> ids = {{7, 12, 8, 9}})
@@ -32,6 +35,15 @@ class RadarDtcState {
         if (role.seen && role.boot != msg.boot_id) role.retired.insert(role.boot);
         role.seen = true; role.boot = msg.boot_id; role.seq = msg.comm_header.seq;
         role.usability = msg.usability; role.received = now;
+        role.bounded_warning = msg.config_version == "livox-dtc-v3-bounded-sync" &&
+            msg.bounded_time_sync_warning && msg.time_sync_offset_ns >= -1000000 &&
+            msg.time_sync_offset_ns <= 1000000 && msg.time_sync_evidence_age_us <= 2500000 &&
+            msg.observations.size() == 11 &&
+            TimeSyncRoleMask(msg.observations[1].dtc) == (1u << msg.role) &&
+            msg.observations[1].physical_condition == 2;
+        role.proof_age_us = msg.time_sync_evidence_age_us;
+        if (msg.observations.size() == 11)
+            role.proof_age_us = std::max(role.proof_age_us, msg.observations[1].evaluation_age_us);
         return true;
     }
     bool Observe(const diagnostic_monitor_interfaces::msg::DtcObservationArray& msg,
@@ -62,6 +74,7 @@ class RadarDtcState {
         const double age = std::chrono::duration<double>(now - received_).count();
         result.all_pass = seen_ && age <= timeout_;
         result.all_pass_without_time_sync = result.all_pass;
+        result.bounded_all_pass = result.all_pass;
         if (result.all_pass) for (const auto& obs : state_.observations) {
             const double ttl = obs.dtc == 0x10F00001 || obs.dtc == 0x10F00002 ? timeout_ : hms_timeout_;
             const bool fresh = obs.evaluation_age_us <= ttl * 1e6 && obs.evaluation_age_us * 1e-6 + age <= ttl;
@@ -72,12 +85,26 @@ class RadarDtcState {
             const uint8_t sync_role = TimeSyncRoleMask(obs.dtc);
             const bool sync_fail = fresh && obs.physical_condition == 2 && sync_role != 0;
             if (sync_fail) result.time_sync_fault_mask |= sync_role;
+            bool advisory = false;
+            if (sync_fail && check_availability_) {
+                for (size_t i = 0; i < availability_.size(); ++i) if (sync_role == (1u << i)) {
+                    const auto& device = availability_[i];
+                    const double arrival_age = std::chrono::duration<double>(now - device.received).count();
+                    advisory = device.seen && arrival_age <= timeout_ && device.usability == 1 &&
+                        device.bounded_warning && device.proof_age_us * 1e-6 + arrival_age <= 2.5 &&
+                        device.proof_age_us * 1e-6 + arrival_age <= hms_timeout_;
+                }
+            }
+            if (advisory) result.bounded_sync_warning_mask |= sync_role;
             result.fault |= fresh && obs.physical_condition == 2 && !history;
             result.all_pass &= fresh && (obs.physical_condition == 1 || (history && obs.physical_condition == 2));
             result.fault_without_time_sync |= fresh && obs.physical_condition == 2 && !history && !sync_role;
             // UNKNOWN, stale evidence and non-sync faults stay blocking even in shadow.
             result.all_pass_without_time_sync &= fresh &&
                 (obs.physical_condition == 1 || (history && obs.physical_condition == 2) || sync_fail);
+            result.bounded_fault |= fresh && obs.physical_condition == 2 && !history && !advisory;
+            result.bounded_all_pass &= fresh &&
+                (obs.physical_condition == 1 || (history && obs.physical_condition == 2) || advisory);
         }
         if (check_availability_) {
             bool all_unusable = true;
@@ -87,6 +114,8 @@ class RadarDtcState {
                 result.fault |= fresh && role.usability == 2;
                 result.all_pass_without_time_sync &= fresh && role.usability == 1;
                 result.fault_without_time_sync |= fresh && role.usability == 2;
+                result.bounded_all_pass &= fresh && role.usability == 1;
+                result.bounded_fault |= fresh && role.usability == 2;
                 all_unusable &= fresh && role.usability == 2;
             }
             result.all_failed |= all_unusable;
@@ -123,6 +152,8 @@ class RadarDtcState {
         uint64_t boot = 0;
         uint32_t seq = 0;
         uint8_t usability = 0;
+        bool bounded_warning = false;
+        uint64_t proof_age_us = 0;
         Clock::time_point received;
         std::set<uint64_t> retired;
     };

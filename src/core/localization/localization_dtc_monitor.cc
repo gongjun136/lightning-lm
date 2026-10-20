@@ -161,10 +161,10 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
         Age(now, gyros_.back().arrival) > config_.max_input_gap_sec) out.observations[0].condition = kUnknown;
     return out;
 }
-int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass) {
+int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass, bool mask_radar_fault) {
     if (loc.severe || all_failed) return -9;
     if (loc.observations[0].condition != kPass || loc.observations[1].condition != kPass) return 4;
-    if (radar_fault || !radar_all_pass) return 2;
+    if (!mask_radar_fault && (radar_fault || !radar_all_pass)) return 2;
     return 0;
 }
 }

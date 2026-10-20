@@ -28,6 +28,18 @@ int main() {
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");
     for (int ms = 0; ms <= 1000; ms += 20) Feed(normal, ms, Pose(ms * 0.001));
     auto snapshot = normal.Evaluate(false, At(1000));
+    Require(SafetyValue(snapshot, false, true, false, false) == 2, "radar mask defaults off");
+    Require(SafetyValue(snapshot, false, true, false, true) == 0, "explicit mask suppresses radar-only fault");
+    Require(SafetyValue(snapshot, false, false, false, true) == 0, "explicit mask also suppresses unknown radar branch");
+    Require(SafetyValue(snapshot, true, true, false, true) == -9, "mask preserves all-lidar-failed");
+    auto masked_severe = snapshot;
+    masked_severe.severe = true;
+    Require(SafetyValue(masked_severe, false, true, false, true) == -9, "mask preserves localization severe");
+    auto masked_unknown = snapshot;
+    masked_unknown.observations[0].condition = kUnknown;
+    Require(SafetyValue(masked_unknown, false, true, false, true) == 4, "mask preserves localization unknown");
+    masked_unknown.observations[0].condition = kFail;
+    Require(SafetyValue(masked_unknown, false, true, false, true) == 4, "mask preserves localization failure");
     const auto healthy_loc = snapshot;
     Require(snapshot.observations[0].condition == kPass && snapshot.observations[1].condition == kPass, "straight motion and valid covariance pass");
     Require(SafetyValue(snapshot, false, false, true) == 0, "all confirmed healthy gives zero");
@@ -193,20 +205,59 @@ int main() {
                 "actual Safety still stops for current synchronization fault");
         Require(SafetyValue(healthy_loc, r.all_failed, r.fault_without_time_sync,
                             r.all_pass_without_time_sync) == 0, "shadow isolates sync-only cause");
+        Require(SafetyValue(healthy_loc, r.all_failed, r.bounded_fault, r.bounded_all_pass) == 2,
+                "bounded policy fails closed without independent v3 proof");
+        livox_ros_driver2::msg::LidarDiagnosticState proof;
+        proof.role = role; proof.comm_header.source_id = ids[role]; proof.comm_header.seq = 2;
+        proof.boot_id = 1; proof.config_version = "livox-dtc-v3-bounded-sync"; proof.usability = 1;
+        proof.bounded_time_sync_warning = true; proof.time_sync_offset_ns = 1000000;
+        proof.time_sync_evidence_age_us = 0;
+        proof.observations.resize(11);
+        proof.observations[1].dtc = sync_codes[role]; proof.observations[1].physical_condition = 2;
+        Require(audit.ObserveAvailability(proof, At(2000)), "bounded proof accepted");
+        auto bounded_result = audit.Evaluate(At(2000));
+        Require(bounded_result.bounded_sync_warning_mask == (1u << role) &&
+                bounded_result.fault && !bounded_result.all_pass &&
+                SafetyValue(healthy_loc, bounded_result.all_failed, bounded_result.bounded_fault,
+                            bounded_result.bounded_all_pass) == 0,
+                "only bounded policy permits current verified warning; strict and DTC remain failed");
+        ++proof.comm_header.seq; proof.config_version = "livox-dtc-v2-sync-source";
+        Require(audit.ObserveAvailability(proof, At(2000)) &&
+                !audit.Evaluate(At(2000)).bounded_all_pass, "old driver cannot authorize advisory");
+        ++proof.comm_header.seq; proof.config_version = "livox-dtc-v3-bounded-sync";
+        proof.time_sync_offset_ns = -1000001;
+        Require(audit.ObserveAvailability(proof, At(2000)) &&
+                !audit.Evaluate(At(2000)).bounded_all_pass, "consumer independently enforces negative bound");
+        ++proof.comm_header.seq; proof.time_sync_offset_ns = 1000001;
+        Require(audit.ObserveAvailability(proof, At(2000)) &&
+                !audit.Evaluate(At(2000)).bounded_all_pass, "consumer independently enforces positive bound");
+        ++proof.comm_header.seq; proof.time_sync_offset_ns = 0; proof.time_sync_evidence_age_us = 2490000;
+        Require(audit.ObserveAvailability(proof, At(2000)) &&
+                !audit.Evaluate(At(2011)).bounded_all_pass, "proof freshness includes receiver residence time");
+        ++proof.comm_header.seq; proof.time_sync_evidence_age_us = 0;
+        proof.bounded_time_sync_warning = false;
+        Require(audit.ObserveAvailability(proof, At(2000)) &&
+                !audit.Evaluate(At(2000)).bounded_all_pass, "driver revoked proof blocks immediately");
+        ++proof.comm_header.seq; proof.bounded_time_sync_warning = true;
+        Require(audit.ObserveAvailability(proof, At(2000)), "fresh proof restored for combined-fault tests");
         auto lost_loc = healthy_loc;
         lost_loc.observations[0].condition = kUnknown;
         Require(SafetyValue(lost_loc, r.all_failed, r.fault_without_time_sync,
                             r.all_pass_without_time_sync) == 4, "shadow never waives localization UNKNOWN");
+        Require(SafetyValue(lost_loc, bounded_result.all_failed, bounded_result.bounded_fault,
+                            bounded_result.bounded_all_pass) == 4, "bounded policy never waives localization UNKNOWN");
         lost_loc.severe = true;
         Require(SafetyValue(lost_loc, r.all_failed, r.fault_without_time_sync,
                             r.all_pass_without_time_sync) == -9, "severe localization remains highest priority");
         Require(!audit.Evaluate(At(2501)).all_pass_without_time_sync,
                 "shadow cannot waive stale snapshot or availability");
+        Require(!audit.Evaluate(At(2501)).bounded_all_pass, "bounded proof cannot waive stale transport");
         ++isolated.comm_header.seq;
         isolated.observations[0].physical_condition = 2;
         Require(audit.Observe(isolated, At(2010)), "accept additional non-sync failure");
         Require(audit.Evaluate(At(2010)).fault_without_time_sync &&
                 !audit.Evaluate(At(2010)).all_pass_without_time_sync, "non-sync failure still blocks shadow");
+        Require(!audit.Evaluate(At(2010)).bounded_all_pass, "bounded time warning cannot waive another radar fault");
         ++isolated.comm_header.seq;
         isolated.observations[0].physical_condition = 0;
         Require(audit.Observe(isolated, At(2020)) && !audit.Evaluate(At(2020)).all_pass_without_time_sync,
