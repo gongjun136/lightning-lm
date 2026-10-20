@@ -49,6 +49,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/timer.cc
         utils/compute_budget.cc
         utils/compute_profiling.cc
+        utils/online_logging.cc
         utils/causal_trace.cc
         utils/functional_safety_heartbeat.cc
         utils/pointcloud_utils.cc
@@ -106,6 +107,11 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME online_logging_slow_sink_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_online_logging.py)
+    add_test(NAME causal_trace_order_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_causal_trace.py)
     add_executable(heartbeat_dtc_test test/heartbeat_dtc_test.cc utils/functional_safety_heartbeat.cc)
     ament_target_dependencies(heartbeat_dtc_test rclcpp diagnostic_monitor_interfaces)
     add_test(NAME heartbeat_dtc_test COMMAND $<TARGET_FILE:heartbeat_dtc_test>)

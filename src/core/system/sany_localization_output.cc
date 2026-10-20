@@ -117,34 +117,37 @@ geometry_msgs::msg::TransformStamped TransformTfForOutput(
     return output;
 }
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
+lightning::msg::VehiclePose MakeVehiclePoseMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id) {
-    geosun_msgs::msg::PosRes message;
+    lightning::msg::VehiclePose message;
     message.header.stamp = ToRosStamp(stamp);
     message.header.frame_id = frame_id;
-    message.f8enh = {map_rear_axle_pose.translation().x(), map_rear_axle_pose.translation().y(),
-                     map_rear_axle_pose.translation().z()};
-    message.f8vehiclespeed = vehicle_speed;
+    message.x = map_rear_axle_pose.translation().x();
+    message.y = map_rear_axle_pose.translation().y();
+    message.z = map_rear_axle_pose.translation().z();
+    message.speed = vehicle_speed;
 
     const Mat3d rotation = map_rear_axle_pose.so3().matrix();
     const double roll = std::atan2(rotation(2, 1), rotation(2, 2));
     const double pitch = std::asin(std::clamp(-rotation(2, 0), -1.0, 1.0));
     double yaw = std::atan2(rotation(1, 0), rotation(0, 0));
     if (yaw < 0.0) yaw += 2.0 * M_PI;
-    message.f8pry = {roll * kDegreesPerRadian, pitch * kDegreesPerRadian, yaw * kDegreesPerRadian};
+    message.roll = roll * kDegreesPerRadian;
+    message.pitch = pitch * kDegreesPerRadian;
+    message.yaw = yaw * kDegreesPerRadian;
     return message;
 }
 
-geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position) {
+geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::msg::VehiclePose& position) {
     geometry_msgs::msg::PoseStamped message;
     message.header = position.header;
-    message.pose.position.x = position.f8enh[0];
-    message.pose.position.y = position.f8enh[1];
-    message.pose.position.z = position.f8enh[2];
+    message.pose.position.x = position.x;
+    message.pose.position.y = position.y;
+    message.pose.position.z = position.z;
 
-    const double roll = position.f8pry[0] * kRadiansPerDegree;
-    const double pitch = position.f8pry[1] * kRadiansPerDegree;
-    const double yaw = position.f8pry[2] * kRadiansPerDegree;
+    const double roll = position.roll * kRadiansPerDegree;
+    const double pitch = position.pitch * kRadiansPerDegree;
+    const double yaw = position.yaw * kRadiansPerDegree;
     const Quatd quaternion =
         Eigen::AngleAxisd(yaw, Vec3d::UnitZ()) * Eigen::AngleAxisd(pitch, Vec3d::UnitY()) *
         Eigen::AngleAxisd(roll, Vec3d::UnitX());
@@ -152,20 +155,6 @@ geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& 
     message.pose.orientation.y = quaternion.y();
     message.pose.orientation.z = quaternion.z();
     message.pose.orientation.w = quaternion.w();
-    return message;
-}
-
-lightning::msg::VehiclePose MakeVehiclePoseMessage(
-    const geosun_msgs::msg::PosRes& position) {
-    lightning::msg::VehiclePose message;
-    message.header = position.header;
-    message.x = position.f8enh[0];
-    message.y = position.f8enh[1];
-    message.z = position.f8enh[2];
-    message.roll = position.f8pry[0];
-    message.pitch = position.f8pry[1];
-    message.yaw = position.f8pry[2];
-    message.speed = position.f8vehiclespeed;
     return message;
 }
 

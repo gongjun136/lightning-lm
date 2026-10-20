@@ -12,7 +12,7 @@
 - 输入纬度/经度单位为度。固定 `origin_llh` 顺序为纬度、经度、WGS84 椭球高（米）；每次启动使用同一个现场配置，不能取本次首帧作为原点。
 - 位置经过 WGS84 LLH → ECEF → 固定 ENU。`map` 的 x/y/z 是东/北/上，米。远离原点时，用 GeographicLib 的局部 ENU 到固定 ENU 旋转同步转换姿态和速度；默认拒绝离原点超过 20 km 的点。
 - 高程必须核实：`ellipsoidal` 直接使用；`orthometric` 按 `h=H+N` 加入已知 `geoid_separation_m`。常数 N 只适用于经验证的现场范围，不是通用大地水准面模型。CGCS2000/ITRF 等输入不能仅改标签为 WGS84。
-- CHC 航向从北顺时针，俯仰抬头为正、横滚右倾为正。后体 FLU 到测量点 ENU 的旋转为 `Rz(90°-heading) Ry(-pitch) Rx(roll)`，再左乘测量点 ENU 到固定 ENU 的旋转。业务消息仍由原有 `sany_output` 构造：`f8pry` 顺序是 **roll,pitch,yaw（度）**，yaw 从东逆时针。
+- CHC 航向从北顺时针，俯仰抬头为正、横滚右倾为正。后体 FLU 到测量点 ENU 的旋转为 `Rz(90°-heading) Ry(-pitch) Rx(roll)`，再左乘测量点 ENU 到固定 ENU 的旋转。业务消息仍由原有 `sany_output` 构造：`roll`、`pitch`、`yaw` 单位为度，yaw 从东逆时针。
 - 有符号速度为导航速度在后体前向的投影；倒车为负，不取速度模长。
 - 点云另需实测的 `T_rear_primary`，作用是 `p_rear=R*p_primary+t`。这与设备内部的天线杆臂是两件事。禁止把原 LIO 初始化时的重力姿态当成已知固定安装旋转。
 
@@ -45,9 +45,8 @@
 
 | Topic | 约定 |
 |---|---|
-| `/PosRes` | 后轴 ENU 位置、FLU 欧拉角、带符号速度 |
 | `/slamPoseRaw_topic` | 同一后轴位姿 PoseStamped |
-| `/localization/pose_vel` | 原 VehiclePose 类型与 comm_header |
+| `/localization/pose_vel` | 后轴 ENU 位置、FLU 欧拉角（度）、带符号速度，VehiclePose 与 comm_header |
 | `/localization/loc_status`、`fault_status` | 原类型、独立于业务位姿发送 |
 | `/diagnostics/heartbeat/lightning_slam` | node_id=6，独立心跳线程 |
 | `/localization/ins_diagnostics` | `mode`、拒绝原因、点云丢弃数、待处理数 |

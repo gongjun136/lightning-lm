@@ -19,7 +19,6 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.utilities import get_rmw_implementation_identifier
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import PoseStamped
-from geosun_msgs.msg import PosRes
 from lightning.msg import VehiclePose, LocalizationStatus, FaultStatus
 from diagnostic_monitor_interfaces.msg import NodeHeartbeat
 from cgi430_interfaces import msg as ci
@@ -29,6 +28,8 @@ import yaml
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary', required=True)
+    p.add_argument('--startup-timeout', type=float, default=15,
+                   help='seconds allowed for invalid-config subprocess startup; does not change navigation gates')
     p.add_argument('--output-root', default='runs')
     p.add_argument('--record', action='store_true', help='also exercise record_ins_only.sh and retain an input bag')
     args = p.parse_args()
@@ -59,7 +60,7 @@ def main():
     node = rclpy.create_node('ins_only_test_driver')
     data = defaultdict(list)
     subscriptions = []
-    for typ, topic in [(PosRes, '/PosRes'), (VehiclePose, '/localization/pose_vel'),
+    for typ, topic in [(VehiclePose, '/localization/pose_vel'),
                        (PoseStamped, '/slamPoseRaw_topic'), (LocalizationStatus, '/localization/loc_status'),
                        (FaultStatus, '/localization/fault_status'), (NodeHeartbeat, '/diagnostics/heartbeat/lightning_slam'),
                        (PointCloud2, '/LidarDataInv'), (PointCloud2, '/LidarDataInL')]:
@@ -132,10 +133,11 @@ def main():
         spin(1)
         for i in range(300):
             cycle(cloud=i > 10 and i % 10 == 0)
-            if i>=50 and len(data['/PosRes'])>=30 and data['/LidarDataInv'] and data['/LidarDataInL']:
+            if i>=50 and len(data['/localization/pose_vel'])>=30 and data['/LidarDataInv'] and data['/LidarDataInL']:
                 break
         (out/'observed.yaml').write_text(yaml.safe_dump({k:len(v) for k,v in data.items()}))
-        assert len(data['/PosRes']) >= 10, 'no accepted navigation'
+        assert len(data['/localization/pose_vel']) >= 10, 'no accepted navigation'
+        assert node.count_publishers('/PosRes') == 0, 'deprecated publisher still active'
         pose = data['/localization/pose_vel'][-1]
         assert max(abs(pose.x), abs(pose.y), abs(pose.z), abs(pose.yaw)) < 1e-6
         assert abs(pose.speed+2) < 1e-6, 'reverse speed sign'
@@ -151,35 +153,35 @@ def main():
         for bad in [5, 8]:
             for _ in range(12):
                 cycle(status=bad)
-            n = len(data['/PosRes'])
+            n = len(data['/localization/pose_vel'])
             clouds = (len(data['/LidarDataInv']), len(data['/LidarDataInL']))
             for _ in range(12):
                 cycle(status=bad, cloud=True)
-            assert len(data['/PosRes']) == n, f'published in invalid status {bad}'
+            assert len(data['/localization/pose_vel']) == n, f'published in invalid status {bad}'
             assert clouds == (len(data['/LidarDataInv']), len(data['/LidarDataInL'])), 'published cloud across quality loss'
             assert data['/localization/loc_status'][-1].status == LocalizationStatus.STATUS_FAIL
             assert data['/localization/fault_status'][-1].level == FaultStatus.LEVEL_P0
             for _ in range(2):
                 cycle()
-            assert len(data['/PosRes']) == n, 'recovered before three new valid solutions'
+            assert len(data['/localization/pose_vel']) == n, 'recovered before three new valid solutions'
             for _ in range(23):
                 cycle()
-            assert len(data['/PosRes']) > n, 'failed to recover'
+            assert len(data['/localization/pose_vel']) > n, 'failed to recover'
         report.append('RTK float and fixed-without-heading stop publication; recovery works')
         for _ in range(45):
             cycle(skip='attitude')
-        n = len(data['/PosRes'])
+        n = len(data['/localization/pose_vel'])
         for _ in range(10):
             cycle(skip='attitude')
-        assert len(data['/PosRes']) == n, 'stale attitude published'
+        assert len(data['/localization/pose_vel']) == n, 'stale attitude published'
         for _ in range(30):
             cycle()
-        assert len(data['/PosRes']) > n
+        assert len(data['/localization/pose_vel']) > n
         spin(.45)
-        n, heartbeats = len(data['/PosRes']), len(data['/diagnostics/heartbeat/lightning_slam'])
+        n, heartbeats = len(data['/localization/pose_vel']), len(data['/diagnostics/heartbeat/lightning_slam'])
         work = data['/diagnostics/heartbeat/lightning_slam'][-1].work_seq
         spin(.3)
-        assert len(data['/PosRes']) == n
+        assert len(data['/localization/pose_vel']) == n
         assert len(data['/diagnostics/heartbeat/lightning_slam']) > heartbeats
         assert data['/diagnostics/heartbeat/lightning_slam'][-1].work_seq == work
         assert data['/localization/loc_status'][-1].status == LocalizationStatus.STATUS_FAIL
@@ -213,10 +215,10 @@ def main():
             bad['system']['localization_mode'] = 'unknown'
         path = out/(name+'.yaml')
         path.write_text(yaml.safe_dump(bad))
-        result = subprocess.run([args.binary,'--config',str(path)],capture_output=True,text=True,timeout=15)
+        result = subprocess.run([args.binary,'--config',str(path)],capture_output=True,text=True,timeout=args.startup_timeout)
         (out/(name+'.log')).write_text(result.stdout+result.stderr)
         assert result.returncode in [1,2], name+' should refuse startup'
-    result = subprocess.run([args.binary,'--config',str(cfg),'--map','unused'],capture_output=True,text=True,timeout=15)
+    result = subprocess.run([args.binary,'--config',str(cfg),'--map','unused'],capture_output=True,text=True,timeout=args.startup_timeout)
     assert result.returncode == 2, 'must reject misleading map flag'
     report.append('unconfirmed calibration, legacy transform, unknown mode and map flag refuse startup')
     (out/'result.yaml').write_text(yaml.safe_dump(dict(passed=True, middleware=middleware, ros_domain_id=88,

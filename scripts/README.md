@@ -258,3 +258,37 @@ python3 scripts/plot_posres_statistics.py \
 
 `latency_ms` 是接收节点 ROS 时钟减消息 `header.stamp`；两台机器运行发布端和接收端时，应先做
 NTP/PTP 时钟同步。`interarrival_receive_ms` 使用单调时钟，不受系统时间校准影响。
+
+
+### Online localization log I/O isolation
+
+`run_loc_online` installs an asynchronous glog destination before ROS and algorithm workers start. Existing `LOG` calls and compute-profile extraction keep their original timestamp, producer TID, source and message, with `async_seq=N` appended. Glog's regular file output and synchronous stderr mirroring are disabled for this executable; the background writer uses the launcher's existing stderr destination. FATAL/crash output remains an emergency synchronous path. ROS middleware's own logging and direct `stderr` writes are not intercepted.
+
+The bounded double-buffer queue is shared with causal trace. Each buffer holds at most 2048 text records of 8192 bytes; 128 pending slots are reserved for WARNING/ERROR. Admission uses try-lock: contention/full queues drop records instead of waiting or falling back to synchronous I/O. Reserve does not guarantee lossless critical logging under sustained overload. Shutdown writes `ASYNC_LOG_SUMMARY` with received/written/dropped/critical_dropped/io_errors/truncated counts. A write/flush error means written counts cannot prove durable storage.
+
+One writer preserves admission order; `async_seq` is strictly increasing among retained text records. Causal `sequence` now also denotes successful admission order. Sequence allocation occurs under the insertion lock, eliminating concurrent sequence inversion. Neither wall-clock timestamps across threads nor separate files have a global chronological ordering guarantee. Drops are counted, not silently represented as complete diagnostics.
+
+Normal shutdown stops algorithm producers first and drains logging afterwards; shutdown can wait for slow storage. SIGKILL/crash may lose queued records. The implementation removes storage waits from ordinary glog calls, not formatting costs, glog mutex scheduling, ROS logging, or all system-wide contention. Do not interpret this as a hard real-time guarantee.
+
+Standalone regression commands on Linux (g++, glog and gflags development packages required):
+
+```bash
+python3 scripts/test_online_logging.py
+python3 scripts/test_causal_trace.py
+```
+
+The slow-sink test blocks the real glog output pipe while producers flood the bounded queue, checks producer/Flush completion before the pipe is drained, validates warning/error reserve, order and shutdown accounting, and exercises `/dev/full`. It is a logger test; online localization playback must separately validate pose publication under a stalled output sink.
+
+### Business pose topic migration
+
+Online LiDAR localization, INS-only mode and offline ROS/bag output publish `/localization/pose_vel` (`lightning/msg/VehiclePose`). `/PosRes` is no longer created or written to output bags. Rear-axle coordinates, attitude in degrees, signed forward speed, timestamp gating and heartbeat behavior are preserved. Live publish audit lines now use `POSE_VEL_PUBLISH topic=/localization/pose_vel`; legacy PosRes readers remain for historical bags. Existing diagnostic field names containing `posres` are retained for schema compatibility, but track the new business pose publication.
+
+Replay regression (source the matching ROS workspace first; point `LD_LIBRARY_PATH` at the matching build library when testing an uninstalled binary):
+
+```bash
+python3 scripts/test_online_logging_replay.py --binary /path/to/run_loc_online \
+  --config /path/to/config.yaml --map /path/to/map --bag /path/to/bag --output /path/to/results
+# Repeat with identical inputs and --slow.
+```
+
+The replay test uses isolated local ROS domain 173 and Cyclone DDS, pauses log-pipe consumption for five seconds after pose output is established, and checks an actual `pipe_write` wait alongside continued `/localization/pose_vel` reception. It requires more than 100 received poses during the stall, no overlapping receive gap above 0.5 seconds, strictly increasing pose timestamps, ordered retained logs, and no `/PosRes` publisher. These are regression-test thresholds, not a vehicle acceptance specification. Do not run another test in domain 173 concurrently.

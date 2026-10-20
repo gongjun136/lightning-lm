@@ -182,7 +182,7 @@ PGO 的高频结果进入容量 1 的输出队列。live output callback 用独�
 
 `LocSystem` 的发布边界还包含：
 
-- 位姿：`/PosRes`、`/slamPoseRaw_topic`、`/localization/pose_vel`，以及可选 TF。
+- 位姿：`/slamPoseRaw_topic`、`/localization/pose_vel`，以及可选 TF。
 - 点云：`/LidarDataInv`、`/LidarDataInL`。
 - 健康与可观测性：`/localization/fault_status`、`/localization/loc_status`、`/localization/pipeline_diagnostics`、`/localization/debug_message`、`/localization/path`。
 - 100 ms 健康 timer 与 2 s path timer。

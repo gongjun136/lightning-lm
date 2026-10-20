@@ -18,7 +18,6 @@
 #include "common/eigen_types.h"
 #include "common/point_def.h"
 #include "core/localization/localization_result.h"
-#include "geosun_msgs/msg/pos_res.hpp"
 #include "lightning/msg/fault_status.hpp"
 #include "lightning/msg/localization_status.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
@@ -44,12 +43,10 @@ geometry_msgs::msg::TransformStamped TransformTfForOutput(
     const geometry_msgs::msg::TransformStamped& localization_tf,
     const FixedMapTransform& transform);
 
-geosun_msgs::msg::PosRes MakePosResMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
+lightning::msg::VehiclePose MakeVehiclePoseMessage(const SE3& map_rear_axle_pose, double vehicle_speed, double stamp,
                                            const std::string& frame_id);
 
-geometry_msgs::msg::PoseStamped MakePoseMessage(const geosun_msgs::msg::PosRes& position);
-lightning::msg::VehiclePose MakeVehiclePoseMessage(
-    const geosun_msgs::msg::PosRes& position);
+geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::msg::VehiclePose& position);
 
 /// Append one strictly monotonic PoseStamped sample in TUM format. The caller
 /// owns stream lifetime and flushing.

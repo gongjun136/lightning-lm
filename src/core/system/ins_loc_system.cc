@@ -63,7 +63,6 @@ struct InsLocSystem::Impl {
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat;  ///< 独立发布 INS 定位节点的功能安全心跳。
     rclcpp::TimerBase::SharedPtr timer;  ///< 周期检查健康状态与待投影点云的定时器。
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf;  ///< 可选的地图到后轴 TF 发布器。
-    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_pub;  ///< 发布后轴业务定位结果 PosRes。
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;  ///< 发布后轴位姿 PoseStamped。
     rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pub;  ///< 发布车辆位姿与速度。
     rclcpp::Publisher<lightning::msg::LocalizationStatus>::SharedPtr status_pub;  ///< 发布定位运行状态。
@@ -179,13 +178,12 @@ struct InsLocSystem::Impl {
 
     void Publish(const ins::Pose& p) {
         if (p.stamp <= latest_published || !gate->Good()) return;
-        auto position=sany_output::MakePosResMessage(p.map_from_rear,p.SignedSpeed(),p.stamp,frame);
-        auto pose=sany_output::MakePoseMessage(position);
-        auto vehicle=sany_output::MakeVehiclePoseMessage(position);
+        auto vehicle=sany_output::MakeVehiclePoseMessage(p.map_from_rear,p.SignedSpeed(),p.stamp,frame);
+        auto pose=sany_output::MakePoseMessage(vehicle);
         vehicle.comm_header.source_id=heartbeat->NodeId();
         vehicle.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(pose_seq);
         vehicle.comm_header.stamp_us=functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
-        pos_pub->publish(position); pose_pub->publish(pose); vehicle_pub->publish(vehicle);
+        pose_pub->publish(pose); vehicle_pub->publish(vehicle);
         sany_output::WriteTumPoseLine(tum,pose,latest_published);
         heartbeat->SetState(functional_safety::NodeState::kRunning); heartbeat->RecordWork();
         ever_good=true;
@@ -375,7 +373,6 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
                     "x,y,z,qx,qy,qz,qw,vx,vy,vz,signed_speed,published,reason\n";
         x.events << "stamp,reason\n";
         const auto qos=rclcpp::QoS(1000).best_effort();
-        x.pos_pub=x.node->create_publisher<geosun_msgs::msg::PosRes>("/PosRes",qos);
         x.pose_pub=x.node->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic",qos);
         x.vehicle_pub=x.node->create_publisher<lightning::msg::VehiclePose>("/localization/pose_vel",qos);
         x.status_pub=x.node->create_publisher<lightning::msg::LocalizationStatus>("/localization/loc_status",rclcpp::QoS(10).best_effort());

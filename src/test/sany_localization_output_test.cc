@@ -129,24 +129,21 @@ int main() {
                              Eigen::AngleAxisd(roll, Vec3d::UnitX());
     const SE3 map_rear_axle_pose(quaternion, Vec3d(0.3, -18.2, 0.9));
 
-    const auto position = MakePosResMessage(map_rear_axle_pose, -1.25, 123.5, "map");
+    const auto position = MakeVehiclePoseMessage(map_rear_axle_pose, -1.25, 123.5, "map");
     Require(position.header.frame_id == "map" && position.header.stamp.sec == 123 &&
                 position.header.stamp.nanosec == 500000000,
-            "PosRes uses the map frame and sensor timestamp");
-    Require(Near(position.f8enh[0], 0.3) && Near(position.f8enh[1], -18.2) && Near(position.f8enh[2], 0.9),
-            "PosRes ENH");
-    Require(Near(position.f8pry[0], -0.4) && Near(position.f8pry[1], -1.8) && Near(position.f8pry[2], 353.0),
-            "PosRes roll/pitch/yaw degrees");
-    Require(Near(position.f8vehiclespeed, -1.25), "PosRes signed vehicle speed");
-    Require(Near(position.f8venh[0], 0.0) && Near(position.f8venh[1], 0.0) && Near(position.f8venh[2], 0.0),
-            "PosRes only publishes f8vehiclespeed");
-
+            "VehiclePose uses the map frame and sensor timestamp");
+    Require(Near(position.x, 0.3) && Near(position.y, -18.2) && Near(position.z, 0.9),
+            "VehiclePose ENH");
+    Require(Near(position.roll, -0.4) && Near(position.pitch, -1.8) && Near(position.yaw, 353.0),
+            "VehiclePose roll/pitch/yaw degrees");
+    Require(Near(position.speed, -1.25), "VehiclePose signed vehicle speed");
     const auto pose_message = MakePoseMessage(position);
     Require(pose_message.header.frame_id == "map" && pose_message.header.stamp == position.header.stamp,
-            "PoseStamped and PosRes share frame and timestamp");
+            "PoseStamped and VehiclePose share frame and timestamp");
     const Quatd reconstructed(pose_message.pose.orientation.w, pose_message.pose.orientation.x,
                               pose_message.pose.orientation.y, pose_message.pose.orientation.z);
-    Require(std::abs(std::abs(reconstructed.dot(quaternion)) - 1.0) < 1e-9, "PosRes PRY to pose quaternion");
+    Require(std::abs(std::abs(reconstructed.dot(quaternion)) - 1.0) < 1e-9, "VehiclePose PRY to pose quaternion");
 
     std::ostringstream published_tum;
     double last_published_tum_timestamp = 0.0;
@@ -161,24 +158,14 @@ int main() {
     double tum_x = 0.0, tum_y = 0.0, tum_z = 0.0;
     double tum_qx = 0.0, tum_qy = 0.0, tum_qz = 0.0, tum_qw = 0.0;
     published_tum_input >> tum_stamp >> tum_x >> tum_y >> tum_z >> tum_qx >> tum_qy >> tum_qz >> tum_qw;
-    Require(Near(tum_stamp, 123.5) && Near(tum_x, position.f8enh[0]) &&
-                Near(tum_y, position.f8enh[1]) && Near(tum_z, position.f8enh[2]),
+    Require(Near(tum_stamp, 123.5) && Near(tum_x, position.x) &&
+                Near(tum_y, position.y) && Near(tum_z, position.z),
             "published TUM preserves the downstream timestamp and rear-axle position");
     Require(Near(tum_qx, pose_message.pose.orientation.x) &&
                 Near(tum_qy, pose_message.pose.orientation.y) &&
                 Near(tum_qz, pose_message.pose.orientation.z) &&
                 Near(tum_qw, pose_message.pose.orientation.w),
             "published TUM preserves the downstream quaternion");
-
-    const auto vehicle_pose = MakeVehiclePoseMessage(position);
-    Require(vehicle_pose.header == position.header,
-            "VehiclePose and PosRes share frame and timestamp");
-    Require(Near(vehicle_pose.x, 0.3) && Near(vehicle_pose.y, -18.2) &&
-                Near(vehicle_pose.z, 0.9),
-            "VehiclePose rear-axle position");
-    Require(Near(vehicle_pose.roll, -0.4) && Near(vehicle_pose.pitch, -1.8) &&
-                Near(vehicle_pose.yaw, 353.0) && Near(vehicle_pose.speed, -1.25),
-            "VehiclePose attitude and signed speed match PosRes");
 
     CloudPtr cloud(new PointCloudType());
     PointType point;

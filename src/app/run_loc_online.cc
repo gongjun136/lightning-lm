@@ -34,6 +34,7 @@
 #include "core/system/ins_loc_system.h"
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
+#include "utils/online_logging.h"
 
 DEFINE_string(config, "./config/default.yaml", "配置文件");
 DEFINE_string(map, "", "地图目录；非空时覆盖配置中的 system.map_path");
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
     google::ParseCommandLineFlags(&argc, &argv, true);
     using namespace lightning;
 
+    OnlineLogging online_logging;
     rclcpp::init(argc, argv);
 
     try {

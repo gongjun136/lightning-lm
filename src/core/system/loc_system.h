@@ -12,7 +12,6 @@
 #include <map>
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <geosun_msgs/msg/pos_res.hpp>
 #include <geosun_msgs/msg/safety.hpp>
 #include <diagnostic_monitor_interfaces/msg/dtc_observation_array.hpp>
 #include <geosun_msgs/msg/spe_thr_can4.hpp>
@@ -166,7 +165,7 @@ class LocSystem {
      */
     bool SaveHighFrequencyTrajectoryTum(const std::string& path) const;
     /**
-     * @brief 打开 TUM 文件，在运行中记录实际发布到 /PosRes 的后轴位姿。
+     * @brief 打开 TUM 文件，在运行中记录实际发布到 /localization/pose_vel 的后轴位姿。
      * @details 创建父目录并截断目标文件；记录频率受运行开销策略控制。
      * @return 文件与表头初始化成功返回 true；路径、目录或文件操作失败返回 false。
      * @see PublishLocalizationResult(), Finish()
@@ -271,10 +270,10 @@ class LocSystem {
     double last_motor_rpm_ = 0.0;  ///< 最近 CAN 观测的电机转速，单位 rpm。
     double last_motor_torque_ = 0.0;  ///< 最近 CAN 观测的电机扭矩。
     std::atomic<double> last_localization_stamp_{0.0};  ///< 最近通过输出时间戳检查的定位结果时间（s）。
-    std::atomic<double> last_posres_stamp_{0.0};  ///< 最近实际发布的 PosRes 时间戳（s）。
+    std::atomic<double> last_published_pose_stamp_{0.0};  ///< 最近实际发布的 pose_vel 时间戳（s）。
     std::atomic<std::uint64_t> cloud_publish_suppressed_count_{0};  ///< 因输入完整性要求而抑制点云发布的帧数。
-    std::mutex posres_publish_mutex_;  ///< 串行保护位姿时间戳检查和业务消息发布。
-    MonotonicTimestampGate posres_timestamp_gate_;  ///< 保证 PosRes 业务输出时间戳严格递增。
+    std::mutex pose_publish_mutex_;  ///< 串行保护位姿时间戳检查和业务消息发布。
+    MonotonicTimestampGate pose_timestamp_gate_;  ///< 保证 pose_vel 业务输出时间戳严格递增。
     std::atomic_bool map_outputs_ever_enabled_{false};  ///< 地图输出门控是否曾经开启，用于状态变化诊断。
     std::atomic_bool map_outputs_enabled_last_{false};  ///< 上一次观察到的地图输出门控状态。
     std::atomic_bool localization_ever_good_{false};  ///< 定位是否曾达到有效状态，用于故障恢复诊断。
@@ -301,7 +300,6 @@ class LocSystem {
     std::array<rclcpp::Subscription<livox_ros_driver2::msg::LidarDiagnosticState>::SharedPtr, 4> radar_availability_subs_;
     rclcpp::TimerBase::SharedPtr dtc_timer_, safety_timer_;
 
-    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_ = nullptr;  ///< 发布后轴业务定位结果 PosRes。
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;  ///< 发布后轴位姿 PoseStamped。
     rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_ = nullptr;  ///< 发布车辆位姿与速度消息。
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_ = nullptr;  ///< 发布后轴坐标系下的处理后点云。

@@ -20,7 +20,7 @@ class CausalTraceTests(unittest.TestCase):
             received,written,dropped,errors=map(int,footer.groups())
             self.assertEqual(received,4000);self.assertEqual(received,written+dropped)
             self.assertEqual(errors,0);self.assertEqual(len(rows),written);self.assertGreater(written,0)
-            self.assertEqual(len({r['sequence'] for r in rows}),written)
+            self.assertEqual([int(r['sequence']) for r in rows], list(range(written)))
             self.assertTrue(all(r['source']=='test' and r['after_v']=='2' for r in rows))
             subprocess.run([str(binary),'off'],env=env,check=True)  # Existing file disables trace.
             self.assertEqual(path.read_text(),text)

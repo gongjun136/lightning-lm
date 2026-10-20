@@ -44,9 +44,9 @@ DEFINE_bool(relocalization_debug, true,
             "write rejected relocalization point clouds and bird's-eye images beside output_csv");
 DEFINE_bool(wait_ui, false, "wait for the 3D UI window to close after offline processing");
 DEFINE_bool(publish_topics, true,
-            "publish SANY localization outputs on /PosRes, /localization/pose_vel, "
+            "publish SANY localization outputs on /localization/pose_vel, "
             "/slamPoseRaw_topic, /LidarDataInv, and /LidarDataInL");
-DEFINE_string(output_bag, "", "write the five SANY localization output topics directly to a ROS 2 bag");
+DEFINE_string(output_bag, "", "write the four SANY localization output topics directly to a ROS 2 bag");
 DEFINE_bool(use_config_initial_pose, true,
             "use offline_localization.initial_pose from YAML; disable to require global initialization");
 DEFINE_int32(max_lidar_frames, 0, "stop after consuming this many fused lidar frames; disabled when <= 0");
@@ -84,7 +84,6 @@ class OfflineLocalizationPublisher {
                 rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
             const auto cloud_qos =
                 rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-            pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
             vehicle_pose_pub_ = node_->create_publisher<lightning::msg::VehiclePose>(
                 "/localization/pose_vel", pose_qos);
             pose_pub_ =
@@ -124,22 +123,19 @@ class OfflineLocalizationPublisher {
         }
         const lightning::SE3 map_rear_axle_pose = lightning::sany_output::MakeMapRearAxlePose(
             result.pose_, initial_lidar_rotation, primary_lidar_position_in_body_);
-        const auto position = lightning::sany_output::MakePosResMessage(
+        auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(
             map_rear_axle_pose, lightning::ImuVelocityToBody(imu_to_body_rotation, result.vel_b_).x() - result.RearAxleSpeedOffset(),
             result.timestamp_, map_frame_);
-        if (pos_res_pub_) pos_res_pub_->publish(position);
-        auto vehicle_pose = lightning::sany_output::MakeVehiclePoseMessage(position);
         vehicle_pose.comm_header.source_id = kLocalizationSourceId;
         vehicle_pose.comm_header.seq = ++pose_vel_comm_seq_;
         vehicle_pose.comm_header.stamp_us =
             lightning::functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
         if (vehicle_pose_pub_) vehicle_pose_pub_->publish(vehicle_pose);
-        const auto pose = lightning::sany_output::MakePoseMessage(position);
+        const auto pose = lightning::sany_output::MakePoseMessage(vehicle_pose);
         if (pose_pub_) pose_pub_->publish(pose);
         telemetry_.ObservePose(pose);
         if (bag_writer_) {
-            const rclcpp::Time stamp(position.header.stamp);
-            bag_writer_->write(position, "/PosRes", stamp);
+            const rclcpp::Time stamp(vehicle_pose.header.stamp);
             bag_writer_->write(vehicle_pose, "/localization/pose_vel", stamp);
             bag_writer_->write(pose, "/slamPoseRaw_topic", stamp);
         }
@@ -200,7 +196,6 @@ class OfflineLocalizationPublisher {
    private:
     static constexpr std::uint16_t kLocalizationSourceId = 6;
     rclcpp::Node::SharedPtr node_;
-    rclcpp::Publisher<geosun_msgs::msg::PosRes>::SharedPtr pos_res_pub_;
     rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr inv_cloud_pub_;

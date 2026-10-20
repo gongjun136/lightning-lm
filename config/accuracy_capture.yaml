@@ -94,7 +94,6 @@ capture:
   output_topics:
     - /slamPoseRaw_topic
     - /localization/pose_vel
-    - /PosRes
     - /localization/loc_status
     - /localization/fault_status
     - /localization/pipeline_diagnostics

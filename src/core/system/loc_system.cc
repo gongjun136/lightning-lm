@@ -78,7 +78,7 @@ LocSystem::~LocSystem() {
 bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_override) {
     finished_ = false;
     lidar_input_timestamp_gate_.Reset();
-    posres_timestamp_gate_.Reset();
+    pose_timestamp_gate_.Reset();
     speed_smoothing_shadow_.Reset();
     speed_smoothing_shadow_enabled_ = sany_output::SpeedSmoothingShadow::Enabled(
         std::getenv("LIGHTNING_LM_RUN_MODE"), std::getenv("LIGHTNING_LM_SPEED_SMOOTHING_SHADOW"),
@@ -86,7 +86,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     LOG(INFO) << "SPEED_SMOOTHING_SHADOW enabled=" << speed_smoothing_shadow_enabled_
               << " tau_ms=30 output=raw";
     last_localization_stamp_ = 0.0;
-    last_posres_stamp_ = 0.0;
+    last_published_pose_stamp_ = 0.0;
     localization_ever_good_ = false;
     // [loc-system-init-online-object]
     loc::Localization::Options opt;
@@ -429,7 +429,6 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     const auto pose_qos =
         rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
     const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-    pos_res_pub_ = node_->create_publisher<geosun_msgs::msg::PosRes>("/PosRes", pose_qos);
     pose_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", pose_qos);
     vehicle_pose_pub_ = node_->create_publisher<lightning::msg::VehiclePose>(
         "/localization/pose_vel", pose_qos);
@@ -678,16 +677,16 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_timer(profiling_enabled);
-    std::unique_lock<std::mutex> publish_lock(posres_publish_mutex_);
-    const auto timestamp_decision = posres_timestamp_gate_.Observe(result.timestamp_);
+    std::unique_lock<std::mutex> publish_lock(pose_publish_mutex_);
+    const auto timestamp_decision = pose_timestamp_gate_.Observe(result.timestamp_);
     if (!timestamp_decision.accepted) {
         std::ostringstream message;
-        message << "Dropped non-monotonic PosRes output: timestamp="
+        message << "Dropped non-monotonic pose_vel output: timestamp="
                 << std::setprecision(16) << result.timestamp_
                 << ", last_accepted=" << timestamp_decision.reference_timestamp
                 << ", rollback_sec=" << timestamp_decision.lag_sec;
         LOG(WARNING) << message.str();
-        debug_event::EmitThrottled("posres_timestamp_rollback", message.str(),
+        debug_event::EmitThrottled("pose_vel_timestamp_rollback", message.str(),
                                    std::chrono::seconds(1));
         return;
     }
@@ -703,7 +702,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             localization_states_.push_back(state);
         }
     }
-    if (!pos_res_pub_ && !pose_pub_ && !vehicle_pose_pub_) return;
+    if (!pose_pub_ && !vehicle_pose_pub_) return;
 
     profiling::Stopwatch pose_transform_timer(profiling_enabled);
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
@@ -730,10 +729,9 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     // PGO retains IMU-frame velocity internally; rotate only at the output boundary.
     const double vehicle_speed =
         ImuVelocityToBody(loc_->GetImuToBodyRotation(), result.vel_b_).x() - result.RearAxleSpeedOffset();
-    const auto position = sany_output::MakePosResMessage(
+    auto vehicle_pose = sany_output::MakeVehiclePoseMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
-    const auto pose = sany_output::MakePoseMessage(position);
-    auto vehicle_pose = sany_output::MakeVehiclePoseMessage(position);
+    const auto pose = sany_output::MakePoseMessage(vehicle_pose);
     vehicle_pose.comm_header.source_id = heartbeat_->NodeId();
     vehicle_pose.comm_header.seq =
         functional_safety::HeartbeatPublisher::Advance(pose_vel_comm_seq_);
@@ -743,17 +741,14 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
 
     profiling::Stopwatch ros_publish_timer(profiling_enabled);
     bool position_published = false;
-    if (pos_res_pub_) {
-        pos_res_pub_->publish(position);
-        position_published = true;
-        last_posres_stamp_ = result.timestamp_;
-    }
     if (pose_pub_) {
         pose_pub_->publish(pose);
         if (telemetry_) telemetry_->ObservePose(pose);
     }
     if (vehicle_pose_pub_) {
         vehicle_pose_pub_->publish(vehicle_pose);
+        position_published = true;
+        last_published_pose_stamp_ = result.timestamp_;
         heartbeat_->RecordWork();
         const auto heartbeat_state = heartbeat_->State();
         if (heartbeat_state == functional_safety::NodeState::kNotReady ||
@@ -769,8 +764,8 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
             const double shadow = speed_smoothing_shadow_.Observe(
                 result.timestamp_, vehicle_speed, result.is_parking_);
             LOG(INFO) << "SPEED_SMOOTHING_SHADOW"
-                      << " stamp_sec=" << position.header.stamp.sec
-                      << " stamp_nanosec=" << position.header.stamp.nanosec
+                      << " stamp_sec=" << vehicle_pose.header.stamp.sec
+                      << " stamp_nanosec=" << vehicle_pose.header.stamp.nanosec
                       << " raw_mps=" << std::setprecision(12) << vehicle_speed
                       << " filtered_mps=" << shadow << " tau_ms=30"
                       << " parking=" << result.is_parking_
@@ -779,14 +774,14 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         }
         // Keep this marker and key=value layout stable: it is intentionally
         // machine-readable so an exported run log can reproduce the exact
-        // downstream /PosRes X/Y/speed time series without a recorded rosbag.
-        LOG(INFO) << "POSRES_PUBLISH topic=/PosRes"
-                  << " stamp_sec=" << position.header.stamp.sec
-                  << " stamp_nanosec=" << position.header.stamp.nanosec
-                  << " x_m=" << std::setprecision(12) << position.f8enh[0]
-                  << " y_m=" << position.f8enh[1]
-                  << " z_m=" << position.f8enh[2]
-                  << " speed_mps=" << position.f8vehiclespeed
+        // downstream /localization/pose_vel X/Y/speed time series without a recorded rosbag.
+        LOG(INFO) << "POSE_VEL_PUBLISH topic=/localization/pose_vel"
+                  << " stamp_sec=" << vehicle_pose.header.stamp.sec
+                  << " stamp_nanosec=" << vehicle_pose.header.stamp.nanosec
+                  << " x_m=" << std::setprecision(12) << vehicle_pose.x
+                  << " y_m=" << vehicle_pose.y
+                  << " z_m=" << vehicle_pose.z
+                  << " speed_mps=" << vehicle_pose.speed
                   << " speed_source=estimator_body_x"
                   << " rear_axle_offset_mps=" << result.RearAxleSpeedOffset()
                   << " offset_stamp=" << result.rear_axle_speed_timestamp_;
@@ -823,7 +818,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
                                       const MultiLidarFrameStats& stats, bool eligible) {
     {
         // Serialize invalidation with the complete group of business pose publishes.
-        std::lock_guard<std::mutex> lock(posres_publish_mutex_);
+        std::lock_guard<std::mutex> lock(pose_publish_mutex_);
         publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
         if (telemetry_) {
             telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
@@ -909,7 +904,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 
 void LocSystem::PublishHealthStatus() {
     if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
-    std::lock_guard<std::mutex> publish_lock(posres_publish_mutex_);
+    std::lock_guard<std::mutex> publish_lock(pose_publish_mutex_);
     const builtin_interfaces::msg::Time stamp = node_->now();
 
     lightning::msg::PipelineDiagnostics diagnostics;
@@ -1046,7 +1041,7 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.last_valid_lidar_match_stamp =
         publication_gate_.LastValidLidarMatchStamp();
     diagnostics.last_localization_stamp = last_localization_stamp_.load();
-    diagnostics.last_posres_stamp = last_posres_stamp_.load();
+    diagnostics.last_posres_stamp = last_published_pose_stamp_.load();
     LOG_EVERY_N(INFO, 10) << "LOCALIZATION_HEALTH"
                         << " status=" << static_cast<int>(localization_status.status)
                         << " fault_level=" << static_cast<int>(fault_status.level)
@@ -1058,9 +1053,9 @@ void LocSystem::PublishHealthStatus() {
                         << diagnostics.last_valid_lidar_match_stamp
                         << " last_published_pose=" << diagnostics.last_posres_stamp;
     diagnostics.posres_non_monotonic_drop_count =
-        posres_timestamp_gate_.RejectedCount();
+        pose_timestamp_gate_.RejectedCount();
     diagnostics.worst_posres_timestamp_rollback_sec =
-        posres_timestamp_gate_.WorstRollbackSec();
+        pose_timestamp_gate_.WorstRollbackSec();
     diagnostics.adaptive_lidar_load_enabled = runtime.adaptive_lidar_load_enabled;
     diagnostics.adaptive_lidar_degradation_step = runtime.adaptive_lidar_degradation_step;
     diagnostics.selected_lidar_point_stride = runtime.selected_lidar_point_stride;
@@ -1178,7 +1173,7 @@ void LocSystem::PublishPath() {
 }
 
 bool LocSystem::DtcLocalizationLost() const {
-    return last_posres_stamp_.load() > 0.0 &&
+    return last_published_pose_stamp_.load() > 0.0 &&
            !publication_gate_.PoseOutputsEnabled(last_localization_stamp_.load());
 }
 void LocSystem::UpdateDtcHeartbeat() {

@@ -122,7 +122,7 @@ if ! kill -0 "$node_pid" 2>/dev/null; then
 fi
 
 if [[ "$mode" == "loc" ]]; then
-  ros2 bag record -o output_pose_bag /slamPoseRaw_topic /PosRes \
+  ros2 bag record -o output_pose_bag /slamPoseRaw_topic /localization/pose_vel \
     > logs/recorder.stdout.log 2> logs/recorder.stderr.log &
   recorder_pid=$!
   sleep 2
