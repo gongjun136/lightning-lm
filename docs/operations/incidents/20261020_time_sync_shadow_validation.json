@@ -1,11 +1,12 @@
 {
   "source": "time_sync_shadow_online.log",
-  "records": 334,
+  "records": 497,
   "published_strict_mismatches": 0,
   "audit_sample_counts": {
     "4/4/4": 10,
     "-9/-9/-9": 22,
-    "0/0/0": 302
+    "0/0/0": 438,
+    "2/2/0": 27
   },
   "transitions": [
     {
@@ -43,6 +44,24 @@
         0,
         0
       ]
+    },
+    {
+      "time": "11:25:42.023960",
+      "published_strict_shadow_mask": [
+        2,
+        2,
+        0,
+        2
+      ]
+    },
+    {
+      "time": "11:26:08.324584",
+      "published_strict_shadow_mask": [
+        0,
+        0,
+        0,
+        0
+      ]
     }
   ],
   "note": "Audit samples are rate-limited; counts are not ROS message counts or durations.",
@@ -70,6 +89,32 @@
       "/sensors/livox/left/diagnostic_state": 0.10612582599969755,
       "/sensors/livox/right/diagnostic_state": 0.10645214400028635,
       "/localization/pose_vel": 0.09335072899921215
+    },
+    "errors": []
+  },
+  "runtime_event": {
+    "duration": 30.005588072001046,
+    "counts": {
+      "/internal/diagnostics/livox_dtc": 301,
+      "/sensors/livox/rear/diagnostic_state": 300,
+      "/sensors/livox/front/diagnostic_state": 295,
+      "/sensors/livox/left/diagnostic_state": 294,
+      "/sensors/livox/right/diagnostic_state": 294,
+      "/safety/throstle": 1466,
+      "/localization/pose_vel": 4033
+    },
+    "safety_states": {
+      "2": 44,
+      "0": 1422
+    },
+    "max_gap_sec": {
+      "/internal/diagnostics/livox_dtc": 0.10166617600043537,
+      "/sensors/livox/rear/diagnostic_state": 0.10647513799995068,
+      "/sensors/livox/front/diagnostic_state": 0.10436746099912853,
+      "/localization/pose_vel": 0.06400587800089852,
+      "/safety/throstle": 0.026810823999767308,
+      "/sensors/livox/left/diagnostic_state": 0.10172220899949025,
+      "/sensors/livox/right/diagnostic_state": 0.10484326100049657
     },
     "errors": []
   }
