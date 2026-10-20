@@ -33,7 +33,12 @@ TOC_INCLUDE_HEADINGS   = 4
 GENERATE_HTML          = YES
 GENERATE_LATEX         = NO
 HTML_OUTPUT            = html
-HTML_EXTRA_FILES       = "@LIGHTNING_SOURCE_DIR@/docs/operations/map_alignment/bauma_20261009/alignment_report.yaml"
+HTML_EXTRA_FILES       = "@LIGHTNING_SOURCE_DIR@/docs/operations/map_alignment/bauma_20261009/alignment_report.yaml" \
+                         "@LIGHTNING_SOURCE_DIR@/docs/operations/incidents/20261020_bounded_sync_validation.json" \
+                         "@LIGHTNING_SOURCE_DIR@/docs/operations/incidents/20261020_ptp_priority_trial.json" \
+                         "@LIGHTNING_SOURCE_DIR@/docs/operations/incidents/20261020_ptp_priority_trial.txt" \
+                         "@LIGHTNING_SOURCE_DIR@/docs/operations/incidents/20261020_time_sync_shadow_validation.json" \
+                         "@LIGHTNING_SOURCE_DIR@/docs/operations/incidents/20261020_device_heartbeat_dtc_validation.json"
 HTML_DYNAMIC_MENUS     = YES
 GENERATE_TREEVIEW      = YES
 DISABLE_INDEX          = NO

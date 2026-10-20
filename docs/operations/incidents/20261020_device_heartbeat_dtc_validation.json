@@ -1,0 +1,294 @@
+{
+  "date": "2026-10-20",
+  "scope": "Per-device heartbeat DTC ownership; no registered aggregate node ID",
+  "dependency_commits": {
+    "lightning-lm": "7d4e1a893246f0456ce1245a42cf35504091f410",
+    "livox_ros_driver2": "296e7f0951d06835779a4050e884ad6ff0180cc1",
+    "common_msgs": "79c2a6843a4bae26d9bf7b2bb9f1b68fa67bb7b1"
+  },
+  "local_validation": {
+    "fresh_changed_message_packages": 2,
+    "driver_ctest_passed": 4,
+    "localization_ctest_passed": 7,
+    "real_node_smoke_passed": 2,
+    "smoke_safety_hz": [
+      50.0,
+      50.0
+    ],
+    "interface_tests_passed": 9,
+    "dependency_gate_tests_passed": 6,
+    "per_device_current_fault_cases": 36,
+    "localization_fault_cases": [
+      "0x30811813",
+      "0x40450198"
+    ]
+  },
+  "arm_validation": {
+    "master_driver_ctest_passed": 4,
+    "master_localization_ctest_passed": 7,
+    "slave_driver_ctest_passed": 4,
+    "master_real_node_smoke_passed": 2,
+    "smoke_safety_hz": [
+      50.0,
+      50.0
+    ],
+    "dds": "Fast DDS, localhost-only isolated test domains"
+  },
+  "company_messages": {
+    "merge_commit": "4e9a8e353b97b54f778ce77ec0f7818324aecea4",
+    "fresh_packages_built": [
+      "diagnostic_monitor_interfaces",
+      "livox_ros_driver2"
+    ],
+    "preserved_company_dev_interfaces_and_ci": true,
+    "heartbeat_and_device_wire_schemas_match_public_pin": true
+  },
+  "deployment": {
+    "master": {
+      "host": "ubuntuM",
+      "installed_sha256": {
+        "livox_ros_driver2_core/lib/livox_ros_driver2_core/livox_ros_driver2_node": "07d579e6815e89921d6780cb9e59367f3a2ec87708a1599520447502516dd11a",
+        "lightning_lm/lib/lightning_lm/run_loc_online": "754301f3e679445b42d61e0ec1e22031e75ba6b64a81bf63731e17f71cf144a4",
+        "lightning_lm/lib/liblightning_lm.libs.so": "c4d673a4e03037e8005175615cecd794f54b446885e9fcefc08d956e2edef5e5"
+      },
+      "driver_pids": [
+        83356,
+        83358,
+        83360
+      ],
+      "localization_pids": [
+        84348
+      ],
+      "heads": {
+        "lightning-lm": "7d4e1a893246f0456ce1245a42cf35504091f410",
+        "livox_ros_driver2": "296e7f0951d06835779a4050e884ad6ff0180cc1",
+        "common_msgs": "79c2a6843a4bae26d9bf7b2bb9f1b68fa67bb7b1"
+      },
+      "preserved_radar_mask": true,
+      "no_aggregate_artifacts": true,
+      "new_localization_library_loaded": true
+    },
+    "slave": {
+      "host": "ubuntuS",
+      "installed_sha256": {
+        "livox_ros_driver2_core/lib/livox_ros_driver2_core/livox_ros_driver2_node": "07d579e6815e89921d6780cb9e59367f3a2ec87708a1599520447502516dd11a"
+      },
+      "driver_pids": [
+        25765
+      ],
+      "localization_pids": [],
+      "heads": {
+        "lightning-lm": "7d4e1a893246f0456ce1245a42cf35504091f410",
+        "livox_ros_driver2": "296e7f0951d06835779a4050e884ad6ff0180cc1",
+        "common_msgs": "79c2a6843a4bae26d9bf7b2bb9f1b68fa67bb7b1"
+      },
+      "preserved_radar_mask": false,
+      "no_aggregate_artifacts": true,
+      "new_localization_library_loaded": false
+    }
+  },
+  "live_validation": {
+    "duration_sec": 60.01778921999994,
+    "counts": {
+      "/safety/throstle": 3005,
+      "/diagnostics/heartbeat/lightning_slam": 601,
+      "/sensors/livox/front/diagnostic_state": 601,
+      "/diagnostics/heartbeat/livox_front": 601,
+      "/diagnostics/heartbeat/livox_rear": 600,
+      "/sensors/livox/rear/diagnostic_state": 600,
+      "/diagnostics/heartbeat/livox_right": 600,
+      "/sensors/livox/left/diagnostic_state": 600,
+      "/sensors/livox/right/diagnostic_state": 600,
+      "/diagnostics/heartbeat/livox_left": 600,
+      "/localization/pose_vel": 195
+    },
+    "publisher_counts": {
+      "/safety/throstle": 1,
+      "/localization/pose_vel": 1,
+      "/diagnostics/heartbeat/lightning_slam": 1,
+      "/sensors/livox/front/diagnostic_state": 1,
+      "/diagnostics/heartbeat/livox_front": 1,
+      "/sensors/livox/rear/diagnostic_state": 1,
+      "/diagnostics/heartbeat/livox_rear": 1,
+      "/sensors/livox/left/diagnostic_state": 1,
+      "/diagnostics/heartbeat/livox_left": 1,
+      "/sensors/livox/right/diagnostic_state": 1,
+      "/diagnostics/heartbeat/livox_right": 1
+    },
+    "heartbeats": {
+      "/diagnostics/heartbeat/lightning_slam": {
+        "node_id": 6,
+        "boot_id": 12659247628731268794,
+        "active_fault": [],
+        "observed_active_faults_hex": [
+          "0x40450198"
+        ]
+      },
+      "/diagnostics/heartbeat/livox_front": {
+        "node_id": 7,
+        "boot_id": 310463363229282764,
+        "active_fault": [],
+        "observed_active_faults_hex": []
+      },
+      "/diagnostics/heartbeat/livox_rear": {
+        "node_id": 12,
+        "boot_id": 16554692988266112141,
+        "active_fault": [],
+        "observed_active_faults_hex": []
+      },
+      "/diagnostics/heartbeat/livox_right": {
+        "node_id": 9,
+        "boot_id": 10918342952697858582,
+        "active_fault": [],
+        "observed_active_faults_hex": []
+      },
+      "/diagnostics/heartbeat/livox_left": {
+        "node_id": 8,
+        "boot_id": 4252797932250302004,
+        "active_fault": [],
+        "observed_active_faults_hex": []
+      }
+    },
+    "radar_snapshots": {
+      "front": {
+        "source_id": 7,
+        "boot_id_matches": true,
+        "config_version": "livox-dtc-v3-bounded-sync",
+        "usability": 1,
+        "last_current_conditions": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last_history_conditions": [
+          1,
+          2
+        ]
+      },
+      "rear": {
+        "source_id": 12,
+        "boot_id_matches": true,
+        "config_version": "livox-dtc-v3-bounded-sync",
+        "usability": 1,
+        "last_current_conditions": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last_history_conditions": [
+          1,
+          2
+        ]
+      },
+      "left": {
+        "source_id": 8,
+        "boot_id_matches": true,
+        "config_version": "livox-dtc-v3-bounded-sync",
+        "usability": 1,
+        "last_current_conditions": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last_history_conditions": [
+          1,
+          2
+        ]
+      },
+      "right": {
+        "source_id": 9,
+        "boot_id_matches": true,
+        "config_version": "livox-dtc-v3-bounded-sync",
+        "usability": 1,
+        "last_current_conditions": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "last_history_conditions": [
+          1,
+          2
+        ]
+      }
+    },
+    "safety_states": {
+      "-9": 2942,
+      "4": 28,
+      "0": 35
+    },
+    "max_gap_sec": {
+      "/safety/throstle": 0.03265131799980736,
+      "/diagnostics/heartbeat/lightning_slam": 0.10805285900005401,
+      "/diagnostics/heartbeat/livox_front": 0.10598261700033618,
+      "/sensors/livox/front/diagnostic_state": 0.10802028800026164,
+      "/diagnostics/heartbeat/livox_rear": 0.1083229729993036,
+      "/sensors/livox/rear/diagnostic_state": 0.11558801699993637,
+      "/diagnostics/heartbeat/livox_right": 0.10850342300000193,
+      "/sensors/livox/left/diagnostic_state": 0.10580598399974406,
+      "/sensors/livox/right/diagnostic_state": 0.1061149809993367,
+      "/diagnostics/heartbeat/livox_left": 0.10956912900019233,
+      "/localization/pose_vel": 32.47998896899935
+    },
+    "dtc_interface_errors": [],
+    "full_runtime_check_exit_code": 1,
+    "full_runtime_errors": [
+      "/localization/pose_vel: no recent message"
+    ],
+    "no_aggregate_heartbeat_publisher": true,
+    "radar_fault_mask_enabled_preserved": true,
+    "healthy_vehicle_acceptance": false
+  },
+  "before_deployment": {
+    "duration_sec": 10.000422959000389,
+    "counts": {
+      "/diagnostics/heartbeat/livox_rear": 101,
+      "/sensors/livox/right/diagnostic_state": 100,
+      "/sensors/livox/rear/diagnostic_state": 100,
+      "/diagnostics/heartbeat/livox_right": 100,
+      "/sensors/livox/left/diagnostic_state": 99,
+      "/sensors/livox/front/diagnostic_state": 99,
+      "/diagnostics/heartbeat/livox_left": 99,
+      "/diagnostics/heartbeat/livox_front": 99,
+      "/safety/throstle": 414,
+      "/diagnostics/heartbeat/lightning_slam": 83
+    },
+    "safety_states": {
+      "-9": 414
+    },
+    "full_runtime_errors": [
+      "/localization/pose_vel: fewer than two messages received; check publisher, QoS and ROS/DDS environment",
+      "retired aggregate heartbeat is still publishing; stop the old aggregator"
+    ],
+    "old_localization_log": "LOCALIZATION_HEALTH status=4 pose_enabled=0 stale=1 before cutover"
+  },
+  "limitations": [
+    "Full runtime check failed because pose output was not recent; pose loss and Safety=-9 were observed before deployment too.",
+    "Post-deployment logs show failed map matching and repeated global relocalization. NDT/PGO source code and acceptance thresholds were not changed.",
+    "Radar fault masking was already true on master and remains true; Safety=0 does not prove radar health.",
+    "All four current radar snapshots were PASS during this capture. Nonempty lidar DTC reporting was verified by 36 isolated ROS fault cases, not hardware fault injection on the vehicle."
+  ]
+}

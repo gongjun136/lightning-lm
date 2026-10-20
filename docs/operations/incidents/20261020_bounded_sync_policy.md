@@ -1,4 +1,4 @@
-# 有界同步告警与雷达停车开关
+@page incident_20261020_bounded_sync_policy 有界同步告警与雷达停车开关
 
 本变更承接 [PTP 故障取证](20261020_ptp_sync.md)。PTP TX 时间戳超时的根因尚未修复；不能用停车策略变化证明时钟故障消失。
 
@@ -51,3 +51,10 @@ diagnostics:
 本轮自然事件验证了真实故障仍停车及其恢复。四路 `bounded_time_sync_warning` 次数均为 0，未遇到满足放行条件的轻微告警；该放行分支和独立全屏蔽开关由离线测试覆盖，不能宣称已有自然事件放行验证，也不能宣称 PTP 根因已修复。
 
 结构化统计见 [验证结果](20261020_bounded_sync_validation.json)。原始证据位于现场 `/home/nvidia/Sany/validation_safety_20261020/` 及知识库 `outputs/sany_safety_20261020/`：`runtime_bounded_300s.json`、`bounded_online.log`、`bounded_audit_summary.json`、`ptp_bounded_fault.txt`、主从构建测试日志。旧完整安装包均保留在现场 `pre_bounded_install/`；回退必须协调停止相关节点并同时恢复主从匹配的消息/驱动及主机定位，不能单独替换消息库。
+
+@anchor device_heartbeat_dtc_evidence_20261020
+## 同日后续设备心跳改造
+
+16:10 后的四路自身心跳 DTC 改造及部署记录见 @ref dtc_device_heartbeat_20261020 "四路自身心跳 DTC 部署验证"；
+[机器可读验证记录](20261020_device_heartbeat_dtc_validation.json) 包含精确版本、安装哈希和实际接收计数。
+该次主机沿用现场已开启的雷达屏蔽开关，且定位存在间歇失锁，不能与上文较早的现场窗口混为同一次验收。

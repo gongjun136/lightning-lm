@@ -13,7 +13,9 @@
 7. @subpage dtc_delivery "DTC 与安全状态接口交付"：核对源 DTC、兼容安全状态、标定与验收边界。
 8. @subpage incident_20260925 "定位失效案例与修复证据"：按记录日期学习当前失效保护的来源和回归边界。
 9. @subpage incident_20261008_can_schema_startup "CAN 消息版本冲突与启动静默退出"：查看接口冲突、输入预检与现场验证范围。
-10. @subpage lidar_ins_accuracy "建图与纯雷达定位精度评估"：旁路录制 CGI 参考，以独立数据冻结地图配准，比较完整三维位姿和采样覆盖。
+10. @subpage incident_20261020_ptp "雷达诊断接口与 PTP 同步故障"：区分接口不兼容与真实同步中断，查看现场证据、优先级试验及回退结果。
+11. @subpage incident_20261020_bounded_sync_policy "有界同步告警与雷达停车开关"：核对有界放行条件、独立屏蔽开关和现场验证边界。
+12. @subpage lidar_ins_accuracy "建图与纯雷达定位精度评估"：旁路录制 CGI 参考，以独立数据冻结地图配准，比较完整三维位姿和采样覆盖。
 
 先记录配置、提交、地图版本、输入时间和实际发布结果，再用 @ref online_localization_flow "在线定位流程" 定位边界。公式对应模块仍从 @ref guide_lio "LIO" 和 @ref guide_localization "地图定位" 回查，故障专题保存运行证据与方法。
 

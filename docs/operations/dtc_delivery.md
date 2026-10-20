@@ -252,3 +252,36 @@ RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=172 python3 src/lightning-lm
 用 ldd 确认程序实际加载 install/diagnostic_monitor_interfaces/lib 中的新库；
 仅重新生成头文件不能修复被旧类型支持库遮蔽的运行环境。
 目标硬件的 Livox 状态查询、真实传感器数据、跨主机 DDS 及故障响应时间仍按上述流程联调验收。
+
+@section dtc_device_heartbeat_20261020 四路自身心跳 DTC 部署验证（2026-10-20）
+
+本次移除未登记的聚合节点 ID 13，四路设备及定位统一沿用既有 NodeHeartbeat 类型，
+各自的 active_fault 只包含自身当前 DTC。多台/全雷达不可用由定位直接消费四路
+diagnostic_state 后组合 Safety，不另造聚合心跳或外部系统 DTC。
+完整的版本、安装哈希、接收计数及验证边界见
+@ref device_heartbeat_dtc_evidence_20261020 "设备心跳验证记录"。
+
+本地从固定版本的新消息源码重新生成两项变更相关消息包并构建消费者。
+驱动四项、定位七项 CTest、两次真实 run_loc_online smoke、九项接口检查及六项依赖门禁回归通过。
+四路 ROS 回归逐一覆盖 36 个当前设备故障码的归属、UNKNOWN 保持、逐码恢复及历史过滤；
+定位心跳用真实一致性/协方差检测器验证两项 DTC。两次 smoke 的 Safety 均为约 50.0 Hz。
+公司 dev 消息包与已验证公共定义合并后另外完成两包全新编译，保留同事接口及公司 CI。
+
+sany-03-master 完成 ARM 驱动四项、定位七项 CTest 和两次真实节点 smoke；
+sany-03-slave 完成后雷达 ARM 四项 CTest。目标机使用已安装的 Fast DDS，
+回归在 localhost-only 的隔离域执行。主从安装包切换后已核对实际运行的二进制 SHA256，
+并确认定位从活动 install 加载本次 liblightning_lm.libs.so。
+直接用 CMake 安装新前缀时还须保留 colcon 的依赖索引和库路径 hook，
+合并 package.dsv 中对应 hook 行；本次补齐该元数据后，地图工具和现场入口均已成功启动。
+不能仅因新前缀有 .so 文件就认为工作区 setup 会加入它的库目录。
+
+60.02 s 生产网络实收中，四路设备诊断及五路心跳各约 600 条，Safety 为 3005 条。
+十一项接口均只有一个发布者，四组设备诊断与自身心跳 boot_id 一致，旧聚合心跳无发布者。
+定位心跳实际收到 0x40450198；四台雷达本次九类当前观测均为 PASS，心跳为空符合判定结果。
+真实车辆未注入硬件故障，非空雷达心跳由上述隔离 ROS 回归验证。
+
+完整运行检查并未全通过：位姿只收到 195 条，最大间隔约 32.48 s，结束时不新鲜，
+Safety 为 -9/4/0 分别 2942/28/35 条。切换前的 10 s 基线同样没有位姿且 Safety 全为 -9，
+旧定位日志已有 pose_enabled=0、stale=1；新日志显示匹配失败及重复重定位。
+本次未改 NDT/PGO 源码或放宽定位门限，不能把 DTC 接口正确表述为定位连续性或整车健康验收通过。
+主机原有 radar_fault_mask_enabled=true 已原样保留，也不能用 Safety=0 证明雷达健康。
