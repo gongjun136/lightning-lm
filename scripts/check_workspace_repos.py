@@ -9,6 +9,36 @@ import sys
 import yaml
 
 
+def check_interfaces(repo, workspace):
+    """Check cross-repository source contracts, not just matching Git hashes."""
+    try:
+        loc = yaml.safe_load((repo / "config/sany/localization.yaml").read_text())["diagnostics"]
+        driver = workspace / "src/livox_ros_driver2"
+        radar = yaml.safe_load((driver / "config/dtc_aggregator.yaml").read_text())["lidar_dtc_aggregator"]["ros__parameters"]
+        heartbeat = (workspace / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg").read_text()
+        errors = []
+        if not re.search(r"^uint32\[\]\s+active_fault\s*(?:#.*)?$", heartbeat, re.MULTILINE):
+            errors.append("NodeHeartbeat.msg lacks uint32[] active_fault")
+        topic = radar.get("internal_output_topic")
+        if not topic or topic != loc.get("internal_radar_topic"):
+            errors.append(f"radar topic mismatch: producer={topic!r}, consumer={loc.get('internal_radar_topic')!r}")
+        if radar.get("functional_safety.node_id") != loc.get("radar_source_id"):
+            errors.append("radar aggregator source ID mismatch")
+        if radar.get("expected_source_ids") != loc.get("radar_role_source_ids"):
+            errors.append("radar role source IDs mismatch")
+        # A matching YAML key alone is insufficient if an old producer ignores it.
+        source = (driver / "src/lidar_dtc_aggregator.cpp").read_text()
+        if not re.search(r'declare_parameter<std::string>\(\s*"internal_output_topic"', source):
+            errors.append("radar producer does not declare internal_output_topic")
+    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+        errors = [f"cannot inspect interface contract: {exc}"]
+    for error in errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    if not errors:
+        print("PASS: heartbeat field and radar topic/source-ID contracts match (runtime still requires verification)")
+    return 1 if errors else 0
+
+
 def check(repo, workspace):
     dependencies = yaml.safe_load((repo / "workspace.repos").read_text())["repositories"]
     errors = []
@@ -46,4 +76,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
-    sys.exit(check(Path(__file__).resolve().parents[1], args.workspace.resolve()))
+    repo, workspace = Path(__file__).resolve().parents[1], args.workspace.resolve()
+    versions = check(repo, workspace)
+    interfaces = check_interfaces(repo, workspace)
+    sys.exit(versions or interfaces)

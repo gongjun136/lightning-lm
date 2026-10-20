@@ -11,6 +11,10 @@
   Resolve mismatched or dirty dependency checkouts; never reset user changes.
 - Rebuild changed message packages and their consumers. Report the actual tested
   dependency commits and distinguish source checks, compilation, tests, and deployment.
+- Matching Git hashes alone does not establish compatibility. Run the interface
+  checks in `check_workspace_repos.py` and `test_workspace_interfaces.py`; verify
+  live producer/consumer topics and received data after deployment. Never treat
+  graph discovery alone as proof that messages are received or Safety is healthy.
 - For dependency fixes, validate from the pinned source in a fresh build/install
   directory so cached generated headers cannot conceal missing message fields.
 
