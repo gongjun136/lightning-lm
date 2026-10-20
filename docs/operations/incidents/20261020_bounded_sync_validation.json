@@ -1,0 +1,140 @@
+{
+  "implementation_commit": "49b2d364b4891b17ed418c14489b6ca98b4deb00",
+  "dependencies": {
+    "common_msgs": "79c2a6843a4bae26d9bf7b2bb9f1b68fa67bb7b1",
+    "livox_ros_driver2": "430d803cc45f8ece77f80048b9b67c19c598be83"
+  },
+  "deployment": {
+    "master_run": "/home/nvidia/Sany/runs/sany_lidar_20261020_121811",
+    "master_process_at_verification": 204776,
+    "updated_hosts": [
+      "sany-03-master",
+      "sany-03-slave"
+    ],
+    "safety_fault_reporting_enabled": true,
+    "radar_bounded_sync_warning_enabled": true,
+    "radar_fault_mask_enabled": false,
+    "backup_on_both_hosts": "/home/nvidia/Sany/validation_safety_20261020/pre_bounded_install",
+    "installed_binaries_match_tested_candidates": true
+  },
+  "validation": {
+    "source_interface_tests": 8,
+    "manifest_tests": 6,
+    "master_ctest_passed": [
+      "localization_dtc_test",
+      "heartbeat_dtc_test",
+      "sany_ptp_guard_test",
+      "lidar_dtc_monitor_test",
+      "driver heartbeat_dtc_test"
+    ],
+    "slave_driver_ctest_passed": 3,
+    "isolated_ros_integration": "passed on slave, ROS_DOMAIN_ID=166",
+    "changed_message_and_consumers_build_base": "build_bounded_20261020"
+  },
+  "online": {
+    "duration": 300.00945174499975,
+    "counts": {
+      "/sensors/livox/right/diagnostic_state": 3001,
+      "/internal/diagnostics/livox_dtc": 3001,
+      "/sensors/livox/front/diagnostic_state": 3000,
+      "/sensors/livox/rear/diagnostic_state": 3000,
+      "/sensors/livox/left/diagnostic_state": 3000,
+      "/localization/pose_vel": 41731,
+      "/safety/throstle": 14963
+    },
+    "safety_states": {
+      "0": 13906,
+      "2": 1057
+    },
+    "max_gap_sec": {
+      "/sensors/livox/right/diagnostic_state": 0.12219215100049041,
+      "/internal/diagnostics/livox_dtc": 0.1196448299997428,
+      "/sensors/livox/front/diagnostic_state": 0.11194068799886736,
+      "/sensors/livox/rear/diagnostic_state": 0.14685398300025554,
+      "/sensors/livox/left/diagnostic_state": 0.11149336000016774,
+      "/localization/pose_vel": 0.10260778200063214,
+      "/safety/throstle": 0.040189687000747654
+    },
+    "errors": [],
+    "bounded_warning_counts": {
+      "right": 0,
+      "front": 0,
+      "rear": 0,
+      "left": 0
+    },
+    "sync_fault_counts": {
+      "right": 0,
+      "front": 212,
+      "rear": 0,
+      "left": 0
+    },
+    "reported_offset_range_ns": {
+      "right": [
+        -40049,
+        951928
+      ],
+      "front": [
+        -39219,
+        17610
+      ],
+      "rear": [
+        -12855,
+        41829
+      ],
+      "left": [
+        -36442,
+        982984
+      ]
+    }
+  },
+  "audit_from_startup": {
+    "samples": 337,
+    "actual_strict_bounded": {
+      "4/4/4": 9,
+      "-9/-9/-9": 5,
+      "0/0/0": 297,
+      "2/2/2": 26
+    },
+    "errors": [],
+    "advisory_samples": [],
+    "transitions": [
+      "I1020 12:18:21.049207 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=4 strict_runstate=4 shadow_runstate=4 bounded_runstate=4 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=0 non_sync_fault=0 non_sync_all_pass=0 localization_consistency=0 localization_uncertainty=0 severe=0 async_seq=36",
+      "I1020 12:18:28.990734 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=-9 strict_runstate=-9 shadow_runstate=-9 bounded_runstate=-9 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=0 non_sync_fault=0 non_sync_all_pass=1 localization_consistency=0 localization_uncertainty=0 severe=1 async_seq=141",
+      "I1020 12:18:32.570991 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=4 strict_runstate=4 shadow_runstate=4 bounded_runstate=4 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=0 non_sync_fault=0 non_sync_all_pass=1 localization_consistency=0 localization_uncertainty=2 severe=0 async_seq=191",
+      "I1020 12:18:33.070904 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=0 strict_runstate=0 shadow_runstate=0 bounded_runstate=0 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=0 non_sync_fault=0 non_sync_all_pass=1 localization_consistency=1 localization_uncertainty=1 severe=0 async_seq=195",
+      "I1020 12:23:12.014765 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=2 strict_runstate=2 shadow_runstate=0 bounded_runstate=2 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=1 non_sync_fault=0 non_sync_all_pass=1 localization_consistency=1 localization_uncertainty=1 severe=0 async_seq=2211",
+      "I1020 12:23:37.012802 204776 loc_system.cc:1233] SAFETY_TIME_SYNC_SHADOW published_runstate=0 strict_runstate=0 shadow_runstate=0 bounded_runstate=0 bounded_policy_enabled=1 radar_fault_mask_enabled=0 bounded_sync_warning_mask=0 time_sync_fault_mask=0 non_sync_fault=0 non_sync_all_pass=1 localization_consistency=1 localization_uncertainty=1 severe=0 async_seq=2393"
+    ]
+  },
+  "recovery_window": {
+    "duration": 15.002722231000007,
+    "counts": {
+      "/safety/throstle": 752,
+      "/localization/pose_vel": 1872,
+      "/internal/diagnostics/livox_dtc": 150,
+      "/sensors/livox/front/diagnostic_state": 150,
+      "/sensors/livox/rear/diagnostic_state": 150,
+      "/sensors/livox/left/diagnostic_state": 150,
+      "/sensors/livox/right/diagnostic_state": 150
+    },
+    "safety_states": {
+      "0": 752
+    },
+    "max_gap_sec": {
+      "/safety/throstle": 0.025678816999061382,
+      "/localization/pose_vel": 0.06555949200082978,
+      "/internal/diagnostics/livox_dtc": 0.10297307600012573,
+      "/sensors/livox/front/diagnostic_state": 0.10164292400077102,
+      "/sensors/livox/rear/diagnostic_state": 0.10334136100027536,
+      "/sensors/livox/left/diagnostic_state": 0.10426435800036415,
+      "/sensors/livox/right/diagnostic_state": 0.10385529300037888
+    },
+    "errors": []
+  },
+  "limitations": [
+    "PTP transmit-timestamp timeout root cause is not fixed by this policy.",
+    "Reception gaps do not measure localization accuracy.",
+    "The radar-only mask stayed disabled in production; its branches were tested offline.",
+    "Check advisory_samples for natural bounded-release coverage; zero samples means no live coverage."
+  ]
+}
