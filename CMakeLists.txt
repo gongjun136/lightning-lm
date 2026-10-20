@@ -19,7 +19,7 @@ set(CMAKE_BUILD_TYPE Release)
 add_definitions("-DPCL_NO_PRECOMPILE")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fopenmp -fPIC -g")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -O2 -fopenmp -fPIC -g -ggdb")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -O3 -fopenmp -fPIC -g -ggdb")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -ggdb -g -fopenmp -fPIC -g")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC -g")
 
