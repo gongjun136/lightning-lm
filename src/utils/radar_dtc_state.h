@@ -10,7 +10,13 @@ namespace lightning::functional_safety {
 class RadarDtcState {
  public:
     using Clock = std::chrono::steady_clock;
-    struct Status { bool all_failed = false, fault = false, all_pass = false; };
+    struct Status {
+        bool all_failed = false, fault = false, all_pass = false;
+        // Counterfactual evidence only: never use this to authorize motion until
+        // a bounded timing-error policy has been defined and validated.
+        bool fault_without_time_sync = false, all_pass_without_time_sync = false;
+        uint8_t time_sync_fault_mask = 0;  // front, rear, left, right bits
+    };
     RadarDtcState(uint16_t source, double timeout, double hms_timeout, bool check_availability = false,
                   std::array<uint16_t, 4> ids = {{7, 12, 8, 9}})
         : source_(source), timeout_(timeout), hms_timeout_(hms_timeout),
@@ -55,6 +61,7 @@ class RadarDtcState {
         result.all_failed = all_failed_;
         const double age = std::chrono::duration<double>(now - received_).count();
         result.all_pass = seen_ && age <= timeout_;
+        result.all_pass_without_time_sync = result.all_pass;
         if (result.all_pass) for (const auto& obs : state_.observations) {
             const double ttl = obs.dtc == 0x10F00001 || obs.dtc == 0x10F00002 ? timeout_ : hms_timeout_;
             const bool fresh = obs.evaluation_age_us <= ttl * 1e6 && obs.evaluation_age_us * 1e-6 + age <= ttl;
@@ -62,8 +69,15 @@ class RadarDtcState {
             // diagnostics, but are not evidence of a current safety fault.
             // UNKNOWN/stale history still cannot stand in for valid evidence.
             const bool history = Historical(obs.dtc);
+            const uint8_t sync_role = TimeSyncRoleMask(obs.dtc);
+            const bool sync_fail = fresh && obs.physical_condition == 2 && sync_role != 0;
+            if (sync_fail) result.time_sync_fault_mask |= sync_role;
             result.fault |= fresh && obs.physical_condition == 2 && !history;
             result.all_pass &= fresh && (obs.physical_condition == 1 || (history && obs.physical_condition == 2));
+            result.fault_without_time_sync |= fresh && obs.physical_condition == 2 && !history && !sync_role;
+            // UNKNOWN, stale evidence and non-sync faults stay blocking even in shadow.
+            result.all_pass_without_time_sync &= fresh &&
+                (obs.physical_condition == 1 || (history && obs.physical_condition == 2) || sync_fail);
         }
         if (check_availability_) {
             bool all_unusable = true;
@@ -71,6 +85,8 @@ class RadarDtcState {
                 const bool fresh = role.seen && std::chrono::duration<double>(now - role.received).count() <= timeout_;
                 result.all_pass &= fresh && role.usability == 1;
                 result.fault |= fresh && role.usability == 2;
+                result.all_pass_without_time_sync &= fresh && role.usability == 1;
+                result.fault_without_time_sync |= fresh && role.usability == 2;
                 all_unusable &= fresh && role.usability == 2;
             }
             result.all_failed |= all_unusable;
@@ -88,6 +104,11 @@ class RadarDtcState {
         for (uint32_t base : {0x110476C4u, 0x11037660u, 0x11017598u, 0x110275FCu})
             if (code == base + 12 || code == base + 13) return true;
         return false;
+    }
+    static uint8_t TimeSyncRoleMask(uint32_t code) {
+        const std::array<uint32_t, 4> codes{{0x110476C5u, 0x11037661u, 0x11017599u, 0x110275FDu}};
+        for (size_t i = 0; i < codes.size(); ++i) if (code == codes[i]) return uint8_t(1u << i);
+        return 0;
     }
  private:
     uint16_t source_;

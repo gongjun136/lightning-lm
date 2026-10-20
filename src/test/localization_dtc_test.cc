@@ -28,6 +28,7 @@ int main() {
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");
     for (int ms = 0; ms <= 1000; ms += 20) Feed(normal, ms, Pose(ms * 0.001));
     auto snapshot = normal.Evaluate(false, At(1000));
+    const auto healthy_loc = snapshot;
     Require(snapshot.observations[0].condition == kPass && snapshot.observations[1].condition == kPass, "straight motion and valid covariance pass");
     Require(SafetyValue(snapshot, false, false, true) == 0, "all confirmed healthy gives zero");
     Require(SafetyValue(snapshot, false, true, true) == 2 && SafetyValue(snapshot, false, false, false) == 2, "fault or stale radar gives two");
@@ -170,5 +171,57 @@ int main() {
     fatal.boot_id = 1; fatal.config_version = "test"; fatal.usability = 2;
     Require(availability.ObserveAvailability(fatal, At(1150)) && availability.Evaluate(At(1150)).fault &&
             !availability.Evaluate(At(1150)).all_pass, "single unmapped native fatal gives radar fault");
+    // Shadow separation must not change the production stop decision.
+    auto shadow_msg = history_msg;
+    for (auto& obs : shadow_msg.observations) { obs.physical_condition = 1; obs.evaluation_age_us = 0; }
+    for (uint8_t role = 0; role < 4; ++role) {
+        auto isolated = shadow_msg;
+        const std::array<uint32_t, 4> sync_codes{{0x110476C5u, 0x11037661u, 0x11017599u, 0x110275FDu}};
+        for (auto& obs : isolated.observations)
+            if (obs.dtc == sync_codes[role]) obs.physical_condition = 2;
+        functional_safety::RadarDtcState audit(13, 0.5, 2.5, true);
+        Require(audit.Observe(isolated, At(2000)), "shadow accepts complete source snapshot");
+        for (uint8_t i = 0; i < 4; ++i) {
+            livox_ros_driver2::msg::LidarDiagnosticState state;
+            state.role = i; state.comm_header.source_id = ids[i]; state.comm_header.seq = 1;
+            state.boot_id = 1; state.config_version = "test"; state.usability = 1;
+            Require(audit.ObserveAvailability(state, At(2000)), "shadow requires physical evidence");
+        }
+        const auto r = audit.Evaluate(At(2000));
+        Require(r.time_sync_fault_mask == uint8_t(1u << role), "correct time-sync role mask");
+        Require(SafetyValue(healthy_loc, r.all_failed, r.fault, r.all_pass) == 2,
+                "actual Safety still stops for current synchronization fault");
+        Require(SafetyValue(healthy_loc, r.all_failed, r.fault_without_time_sync,
+                            r.all_pass_without_time_sync) == 0, "shadow isolates sync-only cause");
+        auto lost_loc = healthy_loc;
+        lost_loc.observations[0].condition = kUnknown;
+        Require(SafetyValue(lost_loc, r.all_failed, r.fault_without_time_sync,
+                            r.all_pass_without_time_sync) == 4, "shadow never waives localization UNKNOWN");
+        lost_loc.severe = true;
+        Require(SafetyValue(lost_loc, r.all_failed, r.fault_without_time_sync,
+                            r.all_pass_without_time_sync) == -9, "severe localization remains highest priority");
+        Require(!audit.Evaluate(At(2501)).all_pass_without_time_sync,
+                "shadow cannot waive stale snapshot or availability");
+        ++isolated.comm_header.seq;
+        isolated.observations[0].physical_condition = 2;
+        Require(audit.Observe(isolated, At(2010)), "accept additional non-sync failure");
+        Require(audit.Evaluate(At(2010)).fault_without_time_sync &&
+                !audit.Evaluate(At(2010)).all_pass_without_time_sync, "non-sync failure still blocks shadow");
+        ++isolated.comm_header.seq;
+        isolated.observations[0].physical_condition = 0;
+        Require(audit.Observe(isolated, At(2020)) && !audit.Evaluate(At(2020)).all_pass_without_time_sync,
+                "UNKNOWN non-sync evidence still blocks shadow");
+        ++isolated.comm_header.seq;
+        isolated.observations[0].physical_condition = 1;
+        for (auto& obs : isolated.observations) if (obs.dtc == sync_codes[role]) obs.physical_condition = 0;
+        Require(audit.Observe(isolated, At(2030)) && !audit.Evaluate(At(2030)).all_pass_without_time_sync,
+                "UNKNOWN sync is not a confirmed warning");
+        ++isolated.comm_header.seq;
+        for (auto& obs : isolated.observations) if (obs.dtc == sync_codes[role]) {
+            obs.physical_condition = 2; obs.evaluation_age_us = 2500001;
+        }
+        Require(audit.Observe(isolated, At(2040)) && !audit.Evaluate(At(2040)).all_pass_without_time_sync,
+                "stale source check cannot be waived by fresh transport");
+    }
     std::cout << "localization_dtc_test passed" << std::endl;
 }

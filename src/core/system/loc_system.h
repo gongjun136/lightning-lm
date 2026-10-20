@@ -293,6 +293,10 @@ class LocSystem {
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
     std::string dtc_config_version_ = "localization-dtc-v2-model-scale";
     bool safety_fault_reporting_enabled_ = true;  ///< 关闭时 Safety.runstate 固定为正常值 0，源 DTC 不受影响。
+    bool radar_time_sync_shadow_enabled_ = true;  ///< 仅记录反事实判定，不改变真实 Safety。
+    int last_safety_strict_ = -128, last_safety_shadow_ = -128;
+    uint8_t last_safety_sync_mask_ = 0;
+    uint64_t safety_shadow_ticks_ = 0;
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};
     rclcpp::Publisher<geosun_msgs::msg::Safety>::SharedPtr safety_pub_;

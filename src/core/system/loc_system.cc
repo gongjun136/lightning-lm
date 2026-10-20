@@ -247,6 +247,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         safety_fault_reporting_enabled_ = dtc && dtc["safety_fault_reporting_enabled"]
                                               ? dtc["safety_fault_reporting_enabled"].as<bool>()
                                               : true;
+        radar_time_sync_shadow_enabled_ = dtc && dtc["radar_time_sync_shadow_enabled"]
+                                             ? dtc["radar_time_sync_shadow_enabled"].as<bool>()
+                                             : true;
         const auto radar_id = dtc && dtc["radar_source_id"] ? dtc["radar_source_id"].as<int>() : 13;
         const double radar_timeout = value("radar_snapshot_timeout_sec", 0.5);
         const double hms_timeout = value("radar_hms_timeout_sec", 2.5);
@@ -1202,10 +1205,30 @@ void LocSystem::PublishSafety() {
     const auto radar = radar_dtc_state_->Evaluate();
     geosun_msgs::msg::Safety msg;
     msg.header.stamp = node_->now();
+    const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
     msg.runstate = safety_fault_reporting_enabled_
-                       ? loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass)
+                       ? strict
                        : 0;
     safety_pub_->publish(msg);
+    if (radar_time_sync_shadow_enabled_) {
+        const int shadow = loc::dtc::SafetyValue(localization, radar.all_failed,
+            radar.fault_without_time_sync, radar.all_pass_without_time_sync);
+        const bool changed = strict != last_safety_strict_ || shadow != last_safety_shadow_ ||
+                             radar.time_sync_fault_mask != last_safety_sync_mask_;
+        if (changed || ++safety_shadow_ticks_ % 50 == 0) {
+            LOG(INFO) << "SAFETY_TIME_SYNC_SHADOW published_runstate=" << int(msg.runstate)
+                      << " strict_runstate=" << strict << " shadow_runstate=" << shadow
+                      << " time_sync_fault_mask=" << int(radar.time_sync_fault_mask)
+                      << " non_sync_fault=" << radar.fault_without_time_sync
+                      << " non_sync_all_pass=" << radar.all_pass_without_time_sync
+                      << " localization_consistency=" << int(localization.observations[0].condition)
+                      << " localization_uncertainty=" << int(localization.observations[1].condition)
+                      << " severe=" << localization.severe;
+        }
+        last_safety_strict_ = strict;
+        last_safety_shadow_ = shadow;
+        last_safety_sync_mask_ = radar.time_sync_fault_mask;
+    }
 }
 
 }  // namespace lightning
