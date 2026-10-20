@@ -36,6 +36,7 @@ roles = ['front', 'rear', 'left', 'right']
 node_ids = dict(zip(roles, params['radar_role_source_ids']))
 bases = dict(zip(roles, (0x110476C4, 0x11037660, 0x11017598, 0x110275FC)))
 pending_failures = {}
+observed_faults = {topic: set() for topic in topics if topic.startswith('/diagnostics/heartbeat/')}
 def receive(topic, msg):
     now = time.monotonic()
     if topic in previous:
@@ -76,6 +77,7 @@ def receive(topic, msg):
         if args.require_healthy and now - start >= 5 and msg.usability != 1:
             errors.add(f'{topic}: usability={msg.usability}')
     if topic.startswith('/diagnostics/heartbeat/'):
+        observed_faults[topic].update(msg.active_fault)
         if topic.endswith('/lightning_slam'):
             expected_id, allowed = 6, {0x30811813, 0x40450198}
         else:
@@ -98,9 +100,20 @@ for topic in topics:
         errors.add(f'{topic}: fewer than two messages received; check publisher, QoS and ROS/DDS environment')
     elif time.monotonic() - previous[topic] > 1:
         errors.add(f'{topic}: no recent message')
+publisher_counts = {topic: node.count_publishers(topic) for topic in topics}
+for topic, count in publisher_counts.items():
+    if count != 1:
+        errors.add(f'{topic}: expected one publisher, found {count}')
+for role in roles:
+    hb = last.get(f'/diagnostics/heartbeat/livox_{role}')
+    state = last.get(f'/sensors/livox/{role}/diagnostic_state')
+    if hb and state and hb['boot_id'] != state['boot_id']:
+        errors.add(f'{role}: heartbeat and diagnostic snapshot have different boot IDs')
 if node.count_publishers('/diagnostics/heartbeat/livox_dtc'):
     errors.add('retired aggregate heartbeat is still publishing; stop the old aggregator')
 result = dict(duration=time.monotonic()-start, counts=dict(counts),
+              publisher_counts=publisher_counts,
+              observed_active_faults={topic: sorted(codes) for topic, codes in observed_faults.items()},
               bounded_warning_counts=dict(bounded_counts), sync_fault_counts=dict(sync_fault_counts),
               reported_offset_range_ns=offset_ranges,
               safety_states=dict(states), max_gap_sec=gaps, errors=sorted(errors), last=last)
