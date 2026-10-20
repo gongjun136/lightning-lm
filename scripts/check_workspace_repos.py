@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only check that workspace dependency sources match the delivery manifests."""
+"""Read-only check that workspace dependency sources match the delivery manifest."""
 import argparse
 from pathlib import Path
 import re
@@ -11,11 +11,7 @@ import yaml
 
 def check(repo, workspace):
     dependencies = yaml.safe_load((repo / "workspace.repos").read_text())["repositories"]
-    messages = yaml.safe_load((repo / "common_msgs.repos").read_text())["repositories"]
     errors = []
-    for name, spec in messages.items():
-        if dependencies.get(name) != spec:
-            errors.append(f"{name}: common_msgs.repos differs from workspace.repos")
     for name, spec in dependencies.items():
         version = str(spec.get("version", ""))
         if spec.get("type") != "git" or not re.fullmatch(r"[0-9a-f]{40}", version):
@@ -42,7 +38,7 @@ def check(repo, workspace):
     for error in errors:
         print(f"ERROR: {error}", file=sys.stderr)
     if not errors:
-        print("PASS: dependency sources match both manifests (installed overlays not checked)")
+        print("PASS: dependency sources match workspace.repos (installed overlays not checked)")
     return 1 if errors else 0
 
 

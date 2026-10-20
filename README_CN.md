@@ -122,12 +122,13 @@ Ubuntu 20.04 应该也可行，未测试。
 
 ### 编译
 
-请把定位仓库与消息仓库放在同一工作空间。可使用仓库内的清单自动导入 GitHub 消息仓库：
+先将定位仓库克隆到 `lightning_lm_ws/src/lightning-lm`，再使用唯一清单 `workspace.repos` 导入配套消息、驱动和 SDK：
 
 ```bash
 cd lightning_lm_ws
-vcs import src < src/lightning-lm/common_msgs.repos
+vcs import src < src/lightning-lm/workspace.repos
 rosdep install --from-paths src --ignore-src -r -y
+python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
 ```
 
 工作空间结构和历史路径映射见 [docs/getting_started/workspace_layout.md](docs/getting_started/workspace_layout.md)。在工作空间根目录限制并发构建：

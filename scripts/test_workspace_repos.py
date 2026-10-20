@@ -35,11 +35,10 @@ class DependencyGateTest(unittest.TestCase):
             ["git", "-C", str(self.dep), *args], stderr=subprocess.STDOUT, text=True
         ).strip()
 
-    def manifest(self, version, filename=None):
+    def manifest(self, version):
         data = {"repositories": {"common_msgs": {
             "type": "git", "url": "example.invalid/common_msgs.git", "version": version}}}
-        for name in ([filename] if filename else ["workspace.repos", "common_msgs.repos"]):
-            (self.repo / name).write_text(yaml.safe_dump(data))
+        (self.repo / "workspace.repos").write_text(yaml.safe_dump(data))
 
     def result(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -55,9 +54,9 @@ class DependencyGateTest(unittest.TestCase):
         self.manifest(self.git("rev-parse", "HEAD"))
         self.assertEqual(self.result(), 0)
 
-    def test_conflicting_manifests_fail(self):
-        self.manifest("0" * 40, "common_msgs.repos")
-        self.assertEqual(self.result(), 1)
+    def test_single_manifest_is_sufficient(self):
+        self.assertEqual([p.name for p in self.repo.iterdir()], ["workspace.repos"])
+        self.assertEqual(self.result(), 0)
 
     def test_dirty_dependency_fails(self):
         (self.dep / "message").write_text("uncommitted interface\n")

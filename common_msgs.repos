@@ -1,5 +1,0 @@
-repositories:
-  common_msgs:
-    type: git
-    url: git@github.com:gongjun136/common_msgs.git
-    version: b7c005f95c7313c1a410c58f13f772ae05315dae

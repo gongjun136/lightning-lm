@@ -4,7 +4,7 @@
   `workspace.repos` and the actual dependency Git HEADs. A successful build against
   an existing install overlay does not prove the pinned dependencies are compatible.
 - When a dependency changes, update its exact commit in `workspace.repos` in the
-  same delivery. Keep `common_msgs.repos` consistent for shared entries. Ensure the
+  same delivery. Use `workspace.repos` as the only dependency manifest. Ensure the
   dependency commit is available on the declared remote before pushing the consumer.
 - Before build validation and before committing/pushing, run
   `python3 scripts/check_workspace_repos.py --workspace <workspace-root>`.

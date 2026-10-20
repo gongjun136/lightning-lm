@@ -139,13 +139,14 @@ On Ubuntu 22.04, run: ```bash ./scripts/install_dep.sh```.
 
 ### Build
 
-Clone both repositories into the same workspace. The `common_msgs.repos` manifest can import the public message
-repository automatically:
+Clone lightning-lm into `lightning_lm_ws/src/lightning-lm`, then import the pinned message,
+driver, and SDK dependencies using the single `workspace.repos` manifest:
 
 ```bash
 cd lightning_lm_ws
-vcs import src < src/lightning-lm/common_msgs.repos
+vcs import src < src/lightning-lm/workspace.repos
 rosdep install --from-paths src --ignore-src -r -y
+python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
 ```
 
 The workspace and historical-path mapping are documented in

@@ -25,20 +25,20 @@ vcs import src < src/lightning-lm/workspace.repos
 bash src/lightning-lm/scripts/build_workspace.sh
 ```
 
-`workspace.repos` 固定配套源码版本；`common_msgs.repos` 仍保留仅导入消息仓库的用途。不要把旧 `livox_sdk/src/common_msgs` 再复制进来，每个包名在工作区中只能出现一次。
+`workspace.repos` 是唯一依赖清单，固定消息、驱动和 SDK 的配套源码版本。不要把旧 `livox_sdk/src/common_msgs` 再复制进来，每个包名在工作区中只能出现一次。
 
 更新定位分支后，依赖应重新按该分支的清单检出。`git fetch` 会获取远端提交，
 清单中的固定 SHA 决定实际使用版本；重复导入同一份清单不会自动改用依赖的 `main`。
 2026-10-13 的 DTC 配套版本为 `common_msgs@3f918b3` 和 `livox_ros_driver2@713e92e`，
 分别提供 DTC 消息与四雷达 DTC 聚合节点；`/safety/throstle` 复用已有的
-`geosun_msgs/msg/Safety` 的 `runstate` 字段，两个消息清单已同步到同一版本。
+`geosun_msgs/msg/Safety` 的 `runstate` 字段。
 发布新的跨仓库接口时，须同时更新配套清单并核对导入后的实际 HEAD。
 源码检出完成后，还须重新构建并加载当前工作区的安装环境。
 
 2026-10-20 修正：当前消息依赖固定为 `common_msgs@b7c005f`，包含心跳代码
 使用的 `NodeHeartbeat.active_fault`。旧版本 `3f918b3` 不包含该字段。
-两个消息清单必须同步更新；仅更新定位仓库或复用本机旧安装目录不构成验证。
-构建脚本会先检查依赖 HEAD、未提交修改和两份清单的一致性。手工构建前也应执行：
+依赖变更必须同步更新 `workspace.repos`；仅更新定位仓库或复用本机旧安装目录不构成验证。
+构建脚本会先检查依赖 HEAD、未提交修改及其与 `workspace.repos` 的一致性。手工构建前也应执行：
 
 ```bash
 python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
