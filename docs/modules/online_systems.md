@@ -37,6 +37,12 @@
 
 这个模板是在线定位数据面的公共线程原语：`Start()` 创建一个 worker；`AddMessage()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数。超过 `max_size_` 时淘汰最旧待处理消息；`Quit()` 会继续处理到队列为空再 join。队列、运行标志和统计量均封装在对象内部。
 
+`SetThreadInit()` 在启动前设置 worker 初始化回调，worker 进入消息循环前执行一次。
+在线定位用它设置传感器、地图匹配及输出线程的 CPU 角色；绑定失败不静默继续。
+`run_loc_online` 在日志和 ROS 线程创建前建立默认后台掩码，`LocSystem::Spin()` 再绑定执行线程。
+OpenMP 工作线程（含未分到迭代的线程）进入并行区时绑定后台核，主线程保留传感器核。
+环境变量、适用硬件、重启与现场核验见 @ref dtc_delivery 。
+
 **代码依据：** `src/core/system/async_message_process.h`（`Start()`、`AddMessage()`、`ProcLoop()`、`Quit()`）
 
 ## 线程关系

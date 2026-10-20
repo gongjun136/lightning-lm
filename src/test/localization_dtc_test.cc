@@ -61,13 +61,21 @@ int main() {
     Require(curve.Evaluate(false, At(1000)).observations[0].condition == kPass, "independent curved integration");
     Feed(normal, 1020, Pose(3.02));
     Require(normal.Evaluate(false, At(1020)).observations[0].condition == kFail, "position jump fails without debounce");
+    Require(normal.Evaluate(false, At(1140)).observations[0].condition == kFail,
+            "input expiry must not overwrite a definite motion failure");
+    Require(SafetyValue(normal.Evaluate(false, At(1140)), false, false, true) == 4,
+            "definite failure remains a stop while output is fresh");
     const SE3 hidden = Pose(4.04);
     Feed(curve, 1020, Pose(std::sin(0.204) / 0.2, (1 - std::cos(0.204)) / 0.2, 0.204), 1, 0.2, 1, &hidden);
     Require(curve.Evaluate(false, At(1020)).observations[0].condition == kFail, "smoothing cannot hide a raw jump");
     Feed(normal, 1040, Pose(20), 1, 0, 2);
     Require(normal.Evaluate(false, At(1040)).observations[0].condition == kUnknown, "relocalization starts a new warmup epoch");
+    Require(normal.Evaluate(false, At(1040)).confirmed_failure,
+            "new epoch warmup cannot clear a confirmed fault");
     for (int ms = 1060; ms <= 1600; ms += 20) Feed(normal, ms, Pose(20 + (ms - 1040) * 0.001), 1, 0, 2);
     Require(normal.Evaluate(false, At(1600)).observations[0].condition == kPass, "fresh epoch recovers with complete evidence");
+    Require(!normal.Evaluate(false, At(1600)).confirmed_failure,
+            "fresh passing evidence clears a confirmed fault");
     for (int ms = 1620; ms <= 1740; ms += 20) {
         normal.ObserveSpeed(101.6, 1, At(ms));  // frozen sensor clock
         normal.ObserveGyro(100 + ms * 0.001, 0, At(ms));
@@ -87,6 +95,65 @@ int main() {
     Require(reverse.Evaluate(false, At(1060)).observations[1].condition == kFail, "unobservable graph is an uncertainty fault");
     reverse.ObservePose(101.08, Pose(-1.08), Pose(-1.08), SmallCov(), false, false, 1, At(1080));
     Require(reverse.Evaluate(false, At(1080)).observations[1].condition == kUnknown, "missing covariance cannot pass");
+    Require(SafetyValue(reverse.Evaluate(false, At(1080)), false, false, true) == 4,
+            "missing covariance cannot clear the prior unobservable failure");
+
+    Config grace_cfg = cfg;
+    grace_cfg.consistency_unknown_grace_sec = 0.1;
+    Monitor grace(grace_cfg, At(0));
+    Require(!grace.Evaluate(false, At(0)).consistency_unknown_tolerated,
+            "startup without evidence never receives grace");
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(grace, ms, Pose(ms * 0.001));
+    // A small hole in independent wheel-speed samples makes integration
+    // unknown, while newest input, output, and prior PASS remain fresh.
+    Monitor hole(grace_cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(hole, ms, Pose(ms * 0.001));
+    hole.ObserveSpeed(101.11, 1, At(1020));
+    hole.ObserveGyro(101.02, 0, At(1020));
+    hole.ObservePose(101.02, Pose(1.02), Pose(1.02), SmallCov(), true, false, 1, At(1020));
+    const auto short_hole = hole.Evaluate(false, At(1020));
+    Require(short_hole.observations[0].condition == kUnknown &&
+            short_hole.consistency_unknown_tolerated &&
+            SafetyValue(short_hole, false, false, true) == 0,
+            "bounded missing integration evidence remains UNKNOWN without immediate stop");
+    Require(!hole.Evaluate(false, At(1101)).consistency_unknown_tolerated,
+            "UNKNOWN cannot extend its own evidence deadline");
+    hole.ObserveSpeed(104.6, 1, At(1040));
+    hole.ObserveGyro(104.6, 0, At(1040));
+    hole.ObservePose(104.6, Pose(1.04), Pose(1.04), SmallCov(), true, false, 1, At(1040));
+    Require(!hole.Evaluate(false, At(1040)).consistency_unknown_tolerated,
+            "simultaneous sensor clock jump cannot reuse pre-jump passing evidence");
+    auto tolerated = grace.Evaluate(false, At(1000));
+    tolerated.observations[0].condition = kUnknown;
+    tolerated.consistency_unknown_tolerated = true;
+    Require(SafetyValue(tolerated, false, false, true) == 0,
+            "eligible UNKNOWN keeps its raw state while allowing bounded operation");
+    tolerated.confirmed_failure = true;
+    Require(SafetyValue(tolerated, false, false, true) == 4,
+            "grace never overrides a confirmed fault");
+    tolerated.severe = true;
+    Require(SafetyValue(tolerated, false, false, true) == -9,
+            "grace never overrides severe conditions");
+    for (int ms = 1020; ms <= 1160; ms += 20) {
+        grace.ObserveGyro(100 + ms * 0.001, 0, At(ms));
+        grace.ObservePose(100 + ms * 0.001, Pose(ms * 0.001), Pose(ms * 0.001),
+                          SmallCov(), true, false, 1, At(ms));
+    }
+    Require(!grace.Evaluate(false, At(1160)).consistency_unknown_tolerated &&
+            SafetyValue(grace.Evaluate(false, At(1160)), false, false, true) == 4,
+            "frozen CAN cannot be hidden by continuous fresh poses");
+    Require(grace.Evaluate(false, At(1461)).severe,
+            "grace does not extend the 300 ms output timeout");
+    Feed(grace, 1180, Pose(1.18), 1, 0, 2);
+    Require(!grace.Evaluate(false, At(1180)).consistency_unknown_tolerated,
+            "epoch change invalidates prior passing evidence");
+    bool invalid_grace_rejected = false;
+    try {
+        auto invalid = cfg;
+        invalid.consistency_unknown_grace_sec = 0.2;
+        Monitor rejected(invalid, At(0));
+    } catch (const std::invalid_argument&) { invalid_grace_rejected = true; }
+    Require(invalid_grace_rejected, "grace cannot exceed the independent input freshness budget");
     reverse.ObservePose(101.10, Pose(-1.10), Pose(-1.10), Mat6d::Zero(), true, false, 1, At(1100));
     Require(reverse.Evaluate(false, At(1100)).observations[1].condition == kUnknown, "placeholder zero covariance cannot pass");
 

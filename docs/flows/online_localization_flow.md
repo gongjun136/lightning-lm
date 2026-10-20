@@ -100,6 +100,11 @@ ${SANY_WS}/run.sh：加载集中路径配置，选择 lidar 分支
 
 `main()` 初始化系统、地图和初始位姿后才进入正常输入处理；`LocSystem::SetInitPose()` 会打开 `loc_started_`。完整初始化和对象关系见 @ref online_loc_runtime_reference "按需参考"。
 
+设置在线 CPU 角色时，`run_loc_online.cc` 首先调用 `InitializeOnlineThreadPolicy()`，
+在创建日志、可选因果追踪写入线程和 ROS 对象前缩小默认继承掩码。
+角色配置不完整、超出启动允许集合或后台核与关键核重叠时拒绝启动。
+未设置角色环境变量时保留原启动行为；Orin 配置与验证步骤见 @ref dtc_delivery 。
+
 # 2. IMU 与 LiDAR 输入路径
 
 ## IMU

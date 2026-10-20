@@ -285,3 +285,105 @@ Safety 为 -9/4/0 分别 2942/28/35 条。切换前的 10 s 基线同样没有�
 旧定位日志已有 pose_enabled=0、stale=1；新日志显示匹配失败及重复重定位。
 本次未改 NDT/PGO 源码或放宽定位门限，不能把 DTC 接口正确表述为定位连续性或整车健康验收通过。
 主机原有 radar_fault_mask_enabled=true 已原样保留，也不能用 Safety=0 证明雷达健康。
+
+@section dtc_unknown_and_cpu_20261020 Unknown、明确失败与关键线程隔离
+
+Safety 的判定顺序为：
+
+| 条件 | runstate | 本次边界 |
+|---|---|---|
+| 定位发布门禁丢失、输出超时，或全部雷达不可用 | -9 | 保留原条件、阈值和优先级 |
+| 一致性或不确定度明确 Fail，或已确认故障尚无对应 Pass 恢复证据 | 4 | Unknown 不得清除明确故障 |
+| 不确定度 Unknown，或一致性 Unknown 不满足有限容忍条件 | 4 | 启动、重定位预热、无效协方差仍停车 |
+| 仅一致性 Unknown，且满足下述证据条件 | 继续检查雷达分支 | 原始观测仍为 Unknown，不伪造 Pass |
+| 雷达故障或雷达证据未全部通过，且未启用雷达屏蔽 | 2 | 保留原策略 |
+| 其余情况 | 0 | 不代表独立验证的整车安全结论 |
+
+`diagnostics.consistency_unknown_grace_sec` 默认为 0，保持原停车行为。
+非零值不得超过 `max_input_gap_sec`，且必须小于 `output_timeout_sec`。
+计时基准是本定位 epoch 中**最后一次明确一致性 Pass 的单调时间**，
+不是首次 Unknown 或定时器每次评估时间；Unknown 自身不能续期。
+只有输出新鲜、CAN/IMU 到达新鲜、输入与位姿时间戳差均受限、
+不确定度当前 Pass、没有待恢复明确故障且没有 severe 时，才可使用旧的通过证据。
+epoch 切换和非法输入会取消旧证据；明确 Fail 必须由该检查后续 Pass 清除。
+300 ms 输出超时、定位门禁丢失和全雷达不可用均不受容忍参数影响。
+
+运行日志新增 `confirmed_failure`、`unknown_tolerated`、
+`consistency_pass_age_sec`、`output_age_sec`、CAN/IMU 到达年龄、
+`output_stale` 和 `localization_lost`，区分证据缺失、明确失败与急停来源。
+无证据的年龄为 infinity，不应解释为零。
+
+2026-10-20 的 `sany_lidar_20261020_144934` 包标记提交为 `2b27e3a`。
+与 `49daa6d` 对比，定位 DTC 算法未变化，设备诊断接入有变化。
+`scripts/analyze_safety_timing.py <run-directory>` 可复现以下**日志证据**：
+30 次 wall/steady 偏移突增约 3.584 s；33 段 -9 中 31 段开始于最近一次
+跳变后的约 2.3–4.2 wall seconds；4 的 1917 条审计日志中 1898 条为
+一致性 Unknown、不确定度 Pass。日志按变化加周期记录，计数不是故障时间占比。
+wall 时间段含跳变，不可直接据其分位数标定容忍时间，也不能仅凭相关性断言 Chrony 是根因。
+首段 -9 前有 stale lidar correction 约 3.1 s 和发布门禁关闭记录；
+另外两段分别在 15:00:35 与 15:04:46，门禁匹配年龄约 0.50/0.60 s，
+不能用同一时钟跳变解释所有急停。当前仍保持容忍参数为 0，等待稳定授时下的负载验证。
+
+Orin 12 核部署候选使用 `config/sany/orin_cpu_roles.bash`：
+CPU 10 为 `loc_sensor`，CPU 11 为 `loc_executor`/`loc_output`，
+CPU 0–9 为地图匹配、OpenMP 工作线程、日志和其他后台线程。
+进程先以 0–11 启动，初始化前将默认继承掩码缩为 0–9；
+仅上述具名关键角色可使用启动时验证过的专用掩码。
+LIO 的 OpenMP 每个工作线程（包括没有分到迭代的线程）在 parallel 区域中转至后台核，
+主线程保留传感器核。`OMP_WAIT_POLICY=PASSIVE` 避免空闲团队持续自旋。
+绑定失败或读回不一致会报错，不能静默视为成功。
+
+`scripts/configure_orin_localization_isolation.py` 默认只预览，
+`--apply` 需要 root，备份 extlinux 配置并仅修改 primary APPEND：
+`isolcpus=domain,managed_irq,10-11 irqaffinity=0-9`；脚本不重启。
+现场内核未启用 CONFIG_NO_HZ_FULL，因此不承诺无调度滴答或无中断。
+回滚为恢复脚本输出的备份并重启；上线前还需保存旧启动入口及旧安装前缀。
+重启后运行 `scripts/verify_localization_affinity.py <pid> --require-isolation`，
+核对 /proc 中每条线程的实际 CPU 掩码及 /sys 中的隔离核。
+该检查不能替代 IRQ 增量、实际运行 CPU、输入/发布延迟和实车负载测试。
+
+当前候选验证记录：独立 C++ 核心回归、ARM CTest 两项、九项接口检查、
+两项 extlinux 修改测试通过。ARM 真实节点在 localhost-only、ROS domain 172
+验证了启动 Unknown、超时急停与约 50 Hz Safety 发布。
+测试须显式检查 `ldd`：加载旧 install 库会造成结构 ABI/符号不匹配，
+不能把该错误归因于判定算法，也不能把未核实库路径的测试视为候选验证。
+现场最小候选只包含 `run_loc_online`、两个启动检查工具及同版内部库，
+避免把旧离线可执行文件与新内部 ABI 混装；它不是完整离线工具发行包。
+
+切换前 20 s 实收基线（编译期间、现场原 production 配置）收到 918 条 Safety，
+全部为 0；位姿最大接收间隔约 0.074 s，设备身份/发布者/实收检查通过。
+第一次探针没有加载现场 Fast DDS XML，未发现发布者，因此该次结果不是车辆无输出证据；
+加载与运行进程相同的配置后才得到以上基线。
+这些结果不能证明原问题已消失，也不能作为 CPU 隔离后的效果。
+
+2026-10-20 现场候选启动补充：本地正式 CMake/CTest 两项均通过。
+CAN 恢复过程中短暂出现旧 SpeThrCAN4（无 comm_header）与新布局不匹配；
+随后现场切换到 wheel_loader/ROS2_CAN 桥接，实收 source_id=3、有效时间戳，
+五路输入检查通过（CAN-IMU 时间差约 -13 ms）。不要将“进程已启动”视作接口兼容证据。
+候选运行目录 safety_cpu_validation_can_20261020，启动 PID 167457。
+逐线程亲和性读回通过，包括 LIO OpenMP 与 SOLID 工作线程；内核隔离列表仍为空，尚待重启。
+启动后地图初始化尚未通过，日志 pose_enabled=0、output_age_sec=inf，当前 -9
+属于没有有效定位输出，不能据此评价运行中调度改善；等待现场确认初始位姿流程。
+容忍参数仍为 0，急停触发条件未放宽。
+车辆换位置后，原候选已自行恢复定位（pose_enabled=1、Safety=0）。
+随后应现场要求正常重启定位，运行目录 safety_cpu_new_position_20261020_1833，PID 180402。
+五路输入检查通过，CAN-IMU 时间差约 -14 ms；启动 18:33:45，18:33:51.269 Safety 转为 0。
+首段 25 s 实收 1252 条 Safety（142 条 4、1110 条 0），无 -9；
+日志中的 4 出现在初始化完成前。收到 3303 条位姿，最大接收间隔约 55 ms。
+重启后 24 条线程亲和性核验通过，内核 isolated 列表仍为空。
+初始化后另采 40 s：2003 条 Safety 全部为 0；5900 条位姿，最大实收间隔约 92 ms。
+Safety 与位姿各 1 个发布者。该结果仅代表当前短时运行，不能替代隔核重启及实车负载验证。
+
+
+整机重启后验证（2026-10-20）：boot ID 105b42b2-61f5-4a99-803a-e78253fbb34a，
+内核 isolated=10-11，默认 IRQ mask=3ff。运行 safety_cpu_postboot_20261020，PID 7058。
+24 条线程通过 --require-isolation；30 s 采样关键角色的实际 CPU 与分配一致。
+隔离核上仅观察到 arch_timer/IPI 增量，未观察到其他设备中断；不承诺无中断。
+40 s 稳定实收：Safety 2003 条全部为 0，位姿 5171 条，最大接收间隔约 71 ms。
+启动五路输入通过；后雷达诊断在该窗口没有实收，雷达屏蔽仍为用户已有 true。
+日志仍有雷达诊断告警，不能将 Safety=0 解释成全雷达健康。
+启动初期 PTP 等待 Chrony，随后门禁通过且三路服务 active，没有绕过门禁。
+另发现 BottomLevel_X 两个订阅端为 lightning_interfaces/msg/VehiclePose，
+定位发布端为 lightning/msg/VehiclePose；本轮不修改控制侧，控制端实收仍需单独验收。
+证据在 localization_safety_stage_20261020/postboot-*.json（本地同名副本）。
+内核隔核及线程绑定已验证，动态负载和非零 Unknown 容忍仍未验收。

@@ -18,6 +18,7 @@
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
 #include "utils/causal_trace.h"
+#include "utils/thread_scheduling.h"
 
 namespace lightning::loc {
 
@@ -180,6 +181,15 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     lidar_loc_proc_cloud_.SetName("激光定位");
     high_frequency_output_proc_.SetName("高频定位输出");
     high_frequency_output_proc_.SetMaxSize(1);
+    sensor_proc_.SetThreadInit([] {
+        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kSensor, "loc_sensor");
+    });
+    high_frequency_output_proc_.SetThreadInit([] {
+        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kOutput, "loc_output");
+    });
+    lidar_loc_proc_cloud_.SetThreadInit([] {
+        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kBackground, "loc_match");
+    });
 
     // 允许跳帧
     lidar_loc_proc_cloud_.SetSkipParam(options_.enable_lidar_loc_skip_, options_.lidar_loc_skip_num_);

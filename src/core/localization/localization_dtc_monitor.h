@@ -20,6 +20,7 @@ struct Config {
     double covariance_scale = 1.0;  ///< Additional variance inflation; calibrate against independent error evidence.
     double position_sigma_floor_m = 0.10, angle_sigma_floor_rad = 0.5 * M_PI / 180.0;
     double output_timeout_sec = 0.3, evaluation_timeout_sec = 0.3, startup_grace_sec = 8.0;
+    double consistency_unknown_grace_sec = 0.0;  ///< Disabled by default; maximum age of confirmed passing motion evidence, steady seconds.
     double max_speed_mps = 30.0, max_yaw_rate_radps = 3.0;
 };
 struct Observation {
@@ -30,6 +31,12 @@ struct Observation {
 struct Snapshot {
     std::array<Observation, 2> observations;
     bool severe = false;
+    bool confirmed_failure = false;  ///< A definite failure remains active until the corresponding check passes again.
+    bool consistency_unknown_tolerated = false;  ///< Only motion UNKNOWN may use bounded prior passing evidence.
+    double output_age_sec = 0.0;  ///< Steady time since the last accepted output.
+    double speed_arrival_age_sec = 0.0, gyro_arrival_age_sec = 0.0;
+    double consistency_pass_age_sec = 0.0;  ///< Steady age of last PASS; infinity before first PASS in this epoch.
+    bool output_stale = false, localization_lost = false;  ///< Independent severe causes, not relaxed by grace.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
     double major_sigma_m = 0, lateral_sigma_m = 0, yaw_sigma_rad = 0;
     double speed_stamp_lag_sec = std::numeric_limits<double>::quiet_NaN();  ///< Latest pose minus latest CAN stamp; NaN if absent.
@@ -59,6 +66,9 @@ class Monitor {
     Clock::time_point start_, output_time_, evaluation_time_;
     uint64_t epoch_ = 0;
     bool output_seen_ = false;
+    std::array<bool, 2> failed_checks_{{false, false}};  ///< UNKNOWN never clears confirmed failures.
+    bool consistency_pass_seen_ = false;
+    Clock::time_point consistency_pass_time_{};
     Snapshot snapshot_;
 };
 // Severe > localization > lidar > normal. An explicit radar-only override

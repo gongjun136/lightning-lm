@@ -1,4 +1,5 @@
 #include <pcl/common/transforms.h>
+#include "utils/thread_scheduling.h"
 #include "common/imu_body_velocity.h"
 #include <yaml-cpp/yaml.h>
 #include <algorithm>
@@ -1667,7 +1668,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             Mat3f R_wl = (s.rot_.matrix() * offset_R_lidar_fixed_).cast<float>();
             Vec3f t_wl = (s.rot_ * offset_t_lidar_fixed_ + s.pos_).cast<float>();
 
-#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+#pragma omp parallel num_threads(lio_parallel_threads_)
+            {
+            threading::ApplyOnlineParallelWorkerPolicy();
+#pragma omp for schedule(static)
             for (std::int64_t raw_index = 0; raw_index < cnt_pts; ++raw_index) {
                 const std::size_t i = static_cast<std::size_t>(raw_index);
                 PointType &point_lidar = scan_down_lidar_->points[i];
@@ -1711,6 +1715,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                         point_selected_surf_[i] = false;
                     }
                 }
+            }
             }
         },
         "    ObsModel (Lidar Match)");
@@ -1765,7 +1770,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     observation_gradient_blocks_.resize(plane_blocks);
     observation_residual_squared_.resize(effect_feat_surf_);
 
-#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+#pragma omp parallel num_threads(lio_parallel_threads_)
+    {
+    threading::ApplyOnlineParallelWorkerPolicy();
+#pragma omp for schedule(static)
     for (int block = 0; block < plane_blocks; ++block) {
         Mat6d hessian = Mat6d::Zero();
         Vec6d gradient = Vec6d::Zero();
@@ -1809,6 +1817,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         observation_gradient_blocks_[block] = gradient;
     }
 
+    }
     // Fixed block order, including when OpenMP uses fewer workers than requested.
     for (int block = 0; block < plane_blocks; ++block) {
         obs.HTH_ += observation_hessian_blocks_[block];
@@ -1836,7 +1845,10 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         observation_gradient_blocks_.resize(icp_blocks);
         const Mat3d rotation = s.rot_.matrix() * offset_R_lidar_fixed_;
 
-#pragma omp parallel for num_threads(lio_parallel_threads_) schedule(static)
+#pragma omp parallel num_threads(lio_parallel_threads_)
+        {
+        threading::ApplyOnlineParallelWorkerPolicy();
+#pragma omp for schedule(static)
         for (int block = 0; block < icp_blocks; ++block) {
             Mat6d hessian = Mat6d::Zero();
             Vec6d gradient = Vec6d::Zero();
@@ -1875,6 +1887,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             observation_gradient_blocks_[block] = gradient;
         }
 
+        }
         // 将点到点ICP的信息量累加到同一个6维位姿观测中。
         for (int block = 0; block < icp_blocks; ++block) {
             obs.HTH_ += observation_hessian_blocks_[block];

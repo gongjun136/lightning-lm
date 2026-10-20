@@ -22,6 +22,7 @@
 #include "core/localization/localization.h"
 #include "core/localization/pose_covariance.h"
 #include "utils/localization_dtc_reporting.h"
+#include "utils/thread_scheduling.h"
 #include "core/maps/map_manifest.h"
 #include "common/debug_event.h"
 #include "io/yaml_io.h"
@@ -240,6 +241,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     dtc_config.angle_sigma_floor_rad = value("angle_sigma_floor_deg", 0.5) * M_PI / 180.0;
     dtc_config.output_timeout_sec = value("output_timeout_sec", dtc_config.output_timeout_sec);
     dtc_config.evaluation_timeout_sec = value("evaluation_timeout_sec", dtc_config.evaluation_timeout_sec);
+    dtc_config.consistency_unknown_grace_sec =
+        value("consistency_unknown_grace_sec", dtc_config.consistency_unknown_grace_sec);
     dtc_config.startup_grace_sec = value("startup_grace_sec", dtc_config.startup_grace_sec);
     dtc_config.max_speed_mps = value("max_speed_mps", dtc_config.max_speed_mps);
     dtc_config.max_yaw_rate_radps = value("max_yaw_rate_radps", dtc_config.max_yaw_rate_radps);
@@ -543,6 +546,7 @@ void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr 
 
 void LocSystem::Spin() {
     if (node_ != nullptr) {
+        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kExecutor, "loc_executor");
         spin(node_);
     }
 }
@@ -1196,7 +1200,15 @@ void LocSystem::UpdateDtcHeartbeat() {
         << " error_yaw_rad=" << snapshot.error_yaw_rad << " major_sigma=" << snapshot.major_sigma_m
         << " lateral_sigma=" << snapshot.lateral_sigma_m << " yaw_sigma_rad=" << snapshot.yaw_sigma_rad
         << " can_stamp_lag_sec=" << snapshot.speed_stamp_lag_sec
-        << " imu_stamp_lag_sec=" << snapshot.gyro_stamp_lag_sec;
+        << " imu_stamp_lag_sec=" << snapshot.gyro_stamp_lag_sec
+        << " confirmed_failure=" << snapshot.confirmed_failure
+        << " unknown_tolerated=" << snapshot.consistency_unknown_tolerated
+        << " consistency_pass_age_sec=" << snapshot.consistency_pass_age_sec
+        << " output_age_sec=" << snapshot.output_age_sec
+        << " can_arrival_age_sec=" << snapshot.speed_arrival_age_sec
+        << " imu_arrival_age_sec=" << snapshot.gyro_arrival_age_sec
+        << " output_stale=" << snapshot.output_stale
+        << " localization_lost=" << snapshot.localization_lost;
 }
 void LocSystem::PublishSafety() {
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
@@ -1233,7 +1245,17 @@ void LocSystem::PublishSafety() {
                       << " non_sync_all_pass=" << radar.all_pass_without_time_sync
                       << " localization_consistency=" << int(localization.observations[0].condition)
                       << " localization_uncertainty=" << int(localization.observations[1].condition)
-                      << " severe=" << localization.severe;
+                      << " severe=" << localization.severe
+                      << " confirmed_failure=" << localization.confirmed_failure
+                      << " unknown_tolerated=" << localization.consistency_unknown_tolerated
+                      << " consistency_pass_age_sec=" << localization.consistency_pass_age_sec
+                      << " output_age_sec=" << localization.output_age_sec
+                      << " can_arrival_age_sec=" << localization.speed_arrival_age_sec
+                      << " imu_arrival_age_sec=" << localization.gyro_arrival_age_sec
+                      << " can_stamp_lag_sec=" << localization.speed_stamp_lag_sec
+                      << " imu_stamp_lag_sec=" << localization.gyro_stamp_lag_sec
+                      << " output_stale=" << localization.output_stale
+                      << " localization_lost=" << localization.localization_lost;
         }
         last_safety_strict_ = strict;
         last_safety_shadow_ = shadow;

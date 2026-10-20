@@ -5,6 +5,11 @@
 #include <charconv>
 #include <cstring>
 #include <string>
+#include <array>
+#include <cstdlib>
+#include <stdexcept>
+#include <iostream>
+#include <omp.h>
 
 #include <pthread.h>
 #include <sched.h>
@@ -16,6 +21,8 @@ namespace lightning::threading {
 namespace {
 
 constexpr int kMaxNice = 19;
+std::array<std::vector<int>, 4> online_masks;
+bool online_policy_enabled = false;
 
 std::string_view Trim(std::string_view text) {
     while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
@@ -177,6 +184,67 @@ bool ConfigureCurrentThread(const std::string& name, int nice_floor,
         }
     }
     return success;
+}
+
+bool InitializeOnlineThreadPolicy(std::string* error) {
+    const std::array<const char*, 4> names{{
+        "LIGHTNING_LM_BACKGROUND_CPUS", "LIGHTNING_LM_SENSOR_CPUS",
+        "LIGHTNING_LM_OUTPUT_CPUS", "LIGHTNING_LM_EXECUTOR_CPUS"}};
+    bool requested = false;
+    for (const auto* name : names) requested |= std::getenv(name) != nullptr;
+    if (!requested) return true;
+    cpu_set_t original;
+    CPU_ZERO(&original);
+    if (sched_getaffinity(0, sizeof(original), &original) != 0) {
+        SetError(error, "cannot read startup affinity"); return false;
+    }
+    std::array<std::vector<int>, 4> candidate;
+    for (size_t i = 0; i < names.size(); ++i) {
+        const char* value = std::getenv(names[i]);
+        if (!value || !ParseCpuList(value, candidate[i], error) || candidate[i].empty()) {
+            SetError(error, std::string("all online CPU roles must be specified: ") + names[i]);
+            return false;
+        }
+        for (int cpu : candidate[i]) {
+            if (!CPU_ISSET(cpu, &original)) {
+                SetError(error, "online CPU role exceeds startup affinity"); return false;
+            }
+            if (i && std::find(candidate[0].begin(), candidate[0].end(), cpu) != candidate[0].end()) {
+                SetError(error, "background and critical CPU roles overlap"); return false;
+            }
+        }
+    }
+    if (!ConfigureCurrentThread("loc_init", 0, candidate[0], error)) return false;
+    online_masks = std::move(candidate);
+    online_policy_enabled = true;
+    return true;
+}
+
+void ApplyOnlineThreadRole(OnlineThreadRole role, const std::string& name) {
+    if (!online_policy_enabled) return;
+    const auto& cpus = online_masks.at(static_cast<size_t>(role));
+    cpu_set_t requested, actual;
+    CPU_ZERO(&requested);
+    for (int cpu : cpus) CPU_SET(cpu, &requested);
+    if (sched_setaffinity(0, sizeof(requested), &requested) != 0 ||
+        sched_getaffinity(0, sizeof(actual), &actual) != 0 ||
+        !CPU_EQUAL(&requested, &actual)) {
+        throw std::runtime_error("online affinity application/readback failed for " + name);
+    }
+    const int status = pthread_setname_np(pthread_self(), name.substr(0, 15).c_str());
+    if (status) throw std::runtime_error("online thread naming failed for " + name);
+    // One record per role assignment; usable before ROS/glog initialization.
+    std::cerr << "ONLINE_THREAD_AFFINITY tid=" << syscall(SYS_gettid)
+              << " name=" << name << " cpus=" << FormatCpuList(cpus) << std::endl;
+}
+
+void ApplyOnlineParallelWorkerPolicy() {
+    if (!online_policy_enabled || omp_get_thread_num() == 0) return;
+    thread_local bool configured = false;
+    if (!configured) {
+        ApplyOnlineThreadRole(OnlineThreadRole::kBackground, "loc_lio_worker");
+        configured = true;
+    }
 }
 
 }  // namespace lightning::threading

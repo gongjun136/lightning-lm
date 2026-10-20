@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
+#include <omp.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -89,5 +91,43 @@ int main() {
     });
     worker.join();
     Require(thread_success, "thread scheduling test completes");
+    cpu_set_t original;
+    CPU_ZERO(&original);
+    Require(sched_getaffinity(0, sizeof(original), &original) == 0, "read startup mask");
+    std::vector<int> available;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
+        if (CPU_ISSET(cpu, &original)) available.push_back(cpu);
+    if (available.size() >= 3) {
+        setenv("LIGHTNING_LM_BACKGROUND_CPUS", std::to_string(available[0]).c_str(), 1);
+        setenv("LIGHTNING_LM_SENSOR_CPUS", std::to_string(available[1]).c_str(), 1);
+        setenv("LIGHTNING_LM_OUTPUT_CPUS", std::to_string(available[2]).c_str(), 1);
+        setenv("LIGHTNING_LM_EXECUTOR_CPUS", std::to_string(available[2]).c_str(), 1);
+        Require(lightning::threading::InitializeOnlineThreadPolicy(&error),
+                "role policy validates against original startup mask");
+        auto expect_cpu = [&](int expected) {
+            cpu_set_t mask;
+            CPU_ZERO(&mask);
+            Require(sched_getaffinity(0, sizeof(mask), &mask) == 0 &&
+                    CPU_COUNT(&mask) == 1 && CPU_ISSET(expected, &mask),
+                    "actual mask matches assigned role exactly");
+        };
+        expect_cpu(available[0]);
+        std::thread sensor([&] {
+            using namespace lightning::threading;
+            expect_cpu(available[0]);
+            ApplyOnlineThreadRole(OnlineThreadRole::kSensor, "loc_sensor");
+            expect_cpu(available[1]);
+#pragma omp parallel num_threads(2)
+            {
+                ApplyOnlineParallelWorkerPolicy();
+                expect_cpu(omp_get_thread_num() == 0 ? available[1] : available[0]);
+            }
+        });
+        sensor.join();
+        expect_cpu(available[0]);
+        lightning::threading::ApplyOnlineThreadRole(
+            lightning::threading::OnlineThreadRole::kExecutor, "loc_executor");
+        expect_cpu(available[2]);
+    }
     return 0;
 }

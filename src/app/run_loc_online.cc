@@ -35,6 +35,8 @@
 #include "ui/pangolin_window.h"
 #include "wrapper/ros_utils.h"
 #include "utils/online_logging.h"
+#include "utils/thread_scheduling.h"
+#include "utils/causal_trace.h"
 
 DEFINE_string(config, "./config/default.yaml", "配置文件");
 DEFINE_string(map, "", "地图目录；非空时覆盖配置中的 system.map_path");
@@ -99,7 +101,16 @@ int main(int argc, char** argv) {
     google::ParseCommandLineFlags(&argc, &argv, true);
     using namespace lightning;
 
+    std::string scheduling_error;
+    if (!threading::InitializeOnlineThreadPolicy(&scheduling_error)) {
+        LOG(ERROR) << scheduling_error;
+        return 2;
+    }
     OnlineLogging online_logging;
+    // Start the optional trace writer while the main thread still has the
+    // background mask; lazy initialization from a critical callback would
+    // otherwise inherit the critical mask.
+    (void)profiling::CausalTraceEnabled();
     rclcpp::init(argc, argv);
 
     try {

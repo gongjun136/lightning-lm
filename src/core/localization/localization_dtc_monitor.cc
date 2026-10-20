@@ -17,6 +17,10 @@ Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_
                     config.startup_grace_sec, config.max_speed_mps, config.max_yaw_rate_radps})
         if (!std::isfinite(v) || v <= 0) throw std::invalid_argument("DTC thresholds must be finite and positive");
     if (!std::isfinite(config.covariance_scale) || config.covariance_scale < 1.0 ||
+        !std::isfinite(config.consistency_unknown_grace_sec) ||
+        config.consistency_unknown_grace_sec < 0 ||
+        config.consistency_unknown_grace_sec > config.max_input_gap_sec ||
+        config.consistency_unknown_grace_sec >= config.output_timeout_sec ||
         !std::isfinite(config.distance_ratio) || config.distance_ratio < 0 ||
         !std::isfinite(config.angle_ratio) || config.angle_ratio < 0 ||
         !std::isfinite(config.position_sigma_floor_m) || config.position_sigma_floor_m < 0 ||
@@ -27,7 +31,7 @@ Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_
 }
 void Monitor::Observe(std::deque<Sample>& q, double stamp, double value, double limit, Clock::time_point now) {
     if (!std::isfinite(stamp) || stamp <= 0 || !std::isfinite(value) || std::abs(value) > limit) {
-        q.clear(); return;
+        q.clear(); consistency_pass_seen_ = false; return;
     }
     if (!q.empty() && stamp <= q.back().stamp) return;  // frozen/replayed input cannot refresh validity
     q.push_back({stamp, value, now});
@@ -122,8 +126,13 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
                           bool valid, bool unobservable, uint64_t epoch, Clock::time_point now) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!std::isfinite(stamp) || stamp <= 0 || !pose.matrix().allFinite() || !raw.matrix().allFinite()) return;
-    if (epoch != epoch_) { poses_.clear(); epoch_ = epoch; }
+    if (epoch != epoch_) {
+        poses_.clear(); epoch_ = epoch;
+        consistency_pass_seen_ = false;
+    }
     if (!poses_.empty() && stamp <= poses_.back().stamp) return;
+    if (!poses_.empty() && stamp - poses_.back().stamp > config_.max_input_gap_sec)
+        consistency_pass_seen_ = false;
     output_time_ = evaluation_time_ = now;
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
@@ -140,6 +149,14 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
     } else if (condition != kFail) condition = kUnknown;
     snapshot_.observations[0].condition = condition;
     Uncertainty(pose, covariance, valid, unobservable);
+    for (size_t i = 0; i < failed_checks_.size(); ++i) {
+        if (snapshot_.observations[i].condition == kFail) failed_checks_[i] = true;
+        if (snapshot_.observations[i].condition == kPass) failed_checks_[i] = false;
+    }
+    if (condition == kPass) {
+        consistency_pass_seen_ = true;
+        consistency_pass_time_ = now;
+    }
     poses_.push_back(current);
     while (poses_.size() > 1 && poses_[1].stamp < stamp - 2 * config_.window_sec) poses_.pop_front();
 }
@@ -152,18 +169,46 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
     }
     const bool stale = output_seen_ ? Age(now, output_time_) > config_.output_timeout_sec : Age(now, start_) > config_.startup_grace_sec;
     out.severe = lost || stale;
+    out.output_stale = stale;
+    out.localization_lost = lost;
+    const double missing = std::numeric_limits<double>::infinity();
+    out.output_age_sec = output_seen_ ? Age(now, output_time_) : missing;
+    out.speed_arrival_age_sec = speeds_.empty() ? missing : Age(now, speeds_.back().arrival);
+    out.gyro_arrival_age_sec = gyros_.empty() ? missing : Age(now, gyros_.back().arrival);
+    out.consistency_pass_age_sec = consistency_pass_seen_ ? Age(now, consistency_pass_time_) : missing;
+    out.confirmed_failure = failed_checks_[0] || failed_checks_[1];
     for (auto& obs : out.observations) {
         obs.age_us = output_seen_ ? static_cast<uint64_t>(std::max(0.0, Age(now, evaluation_time_)) * 1e6) : std::numeric_limits<uint64_t>::max();
-        if (!output_seen_ || Age(now, evaluation_time_) > config_.evaluation_timeout_sec || lost) obs.condition = kUnknown;
+        if (obs.condition != kFail &&
+            (!output_seen_ || Age(now, evaluation_time_) > config_.evaluation_timeout_sec || lost))
+            obs.condition = kUnknown;
     }
     // Fresh poses do not compensate for a frozen independent CAN/IMU stream.
     if (speeds_.empty() || gyros_.empty() || Age(now, speeds_.back().arrival) > config_.max_input_gap_sec ||
-        Age(now, gyros_.back().arrival) > config_.max_input_gap_sec) out.observations[0].condition = kUnknown;
+        Age(now, gyros_.back().arrival) > config_.max_input_gap_sec) {
+        if (out.observations[0].condition != kFail) out.observations[0].condition = kUnknown;
+    }
+    // Do not report UNKNOWN as PASS. Grace affects only the stop decision and
+    // cannot refresh itself, survive an epoch change, hide a failure, stale
+    // output, missing uncertainty, or a clock/input discontinuity.
+    const double grace = config_.consistency_unknown_grace_sec;
+    out.consistency_unknown_tolerated =
+        grace > 0 && !out.severe && !out.confirmed_failure &&
+        out.observations[0].condition == kUnknown &&
+        out.observations[1].condition == kPass &&
+        out.consistency_pass_age_sec <= grace &&
+        out.output_age_sec <= config_.max_input_gap_sec &&
+        out.speed_arrival_age_sec <= config_.max_input_gap_sec &&
+        out.gyro_arrival_age_sec <= config_.max_input_gap_sec &&
+        std::abs(out.speed_stamp_lag_sec) <= config_.max_input_gap_sec &&
+        std::abs(out.gyro_stamp_lag_sec) <= config_.max_input_gap_sec;
     return out;
 }
 int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass, bool mask_radar_fault) {
     if (loc.severe || all_failed) return -9;
-    if (loc.observations[0].condition != kPass || loc.observations[1].condition != kPass) return 4;
+    if (loc.confirmed_failure || loc.observations[0].condition == kFail ||
+        loc.observations[1].condition != kPass) return 4;
+    if (loc.observations[0].condition != kPass && !loc.consistency_unknown_tolerated) return 4;
     if (!mask_radar_fault && (radar_fault || !radar_all_pass)) return 2;
     return 0;
 }

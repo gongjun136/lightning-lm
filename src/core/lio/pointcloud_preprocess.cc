@@ -1,4 +1,5 @@
 #include "pointcloud_preprocess.h"
+#include "utils/thread_scheduling.h"
 #include <cstdint>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include "common/constant.h"
@@ -126,7 +127,10 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
     std::vector<char> is_valid_pt(plsize, 0);
     // 因为Livox需要做重复点检测，而检测需要与前一个点比较，
     // 所以从索引1开始处理，避免访问cloud_full_[-1]造成数组越界。
-#pragma omp parallel for num_threads(parallel_threads_) schedule(static)
+#pragma omp parallel num_threads(parallel_threads_)
+    {
+    threading::ApplyOnlineParallelWorkerPolicy();
+#pragma omp for schedule(static)
     for (std::int64_t raw_index = 1; raw_index < static_cast<std::int64_t>(plsize);
          ++raw_index) {
         const std::size_t i = static_cast<std::size_t>(raw_index);
@@ -164,6 +168,7 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
         }
     }
 
+    }
     for (std::size_t i = 1; i < plsize; i++) {
         if (is_valid_pt[i]) {
             cloud_out_.points.push_back(cloud_full_[i]);

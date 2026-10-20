@@ -38,6 +38,8 @@ class AsyncMessageProcess {
 
     /// @brief 设置工作线程使用的处理函数，应在 Start() 前完成。
     void SetProcFunc(ProcFunc proc_func) { custom_func_ = proc_func; }
+    /// Run once on the worker before processing messages; configure before Start().
+    void SetThreadInit(std::function<void()> init) { thread_init_ = std::move(init); }
 
     /**
      * @brief 设置后续入队使用的容量上限，不包括正在执行的那一条消息。
@@ -103,6 +105,7 @@ class AsyncMessageProcess {
     void operator=(const AsyncMessageProcess&) = delete;
 
    private:
+    std::function<void()> thread_init_;  ///< Optional worker affinity/name initialization.
     /**
      * @brief 等待消息，逐条执行回调，直到退出请求已提出且队列为空。
      * @details 回调执行期间不持有队列锁；容量限制仅作用于等待中的消息。
@@ -163,6 +166,7 @@ void AsyncMessageProcess<T>::Start() {
 
 template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
+    if (thread_init_) thread_init_();
     while (true) {
         UL lock(mutex_);
         cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
