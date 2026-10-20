@@ -281,8 +281,6 @@ diagnostics:
   # Explicit override of runstate=2 only, including unknown/stale radar evidence.
   # Native DTCs, localization runstate=4 and severe/all-lidar-failed -9 remain active.
   radar_fault_mask_enabled: false
-  internal_radar_topic: /internal/diagnostics/livox_dtc
-  radar_source_id: 13
   radar_role_source_ids: [7, 12, 8, 9]  # front, rear, left, right
   radar_snapshot_timeout_sec: 0.5
   radar_hms_timeout_sec: 2.5

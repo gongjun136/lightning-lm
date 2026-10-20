@@ -110,7 +110,10 @@ def main():
                 assert 45 <= median_hz <= 55 and 43 <= average_hz <= 57, (median_hz, average_hz)
                 assert not snapshots, 'legacy localization DTC must not be published'
                 assert node.count_publishers('/diagnostics/source_dtc/localization') == 0
-                assert node.count_subscribers('/internal/diagnostics/livox_dtc') == 1, 'Safety must retain its internal radar subscription'
+                assert node.count_subscribers('/internal/diagnostics/livox_dtc') == 0, 'Safety must not depend on the retired aggregator'
+                assert node.count_publishers('/diagnostics/heartbeat/livox_dtc') == 0
+                for role in ('front', 'rear', 'left', 'right'):
+                    assert node.count_subscribers(f'/sensors/livox/{role}/diagnostic_state') == 1, 'Safety requires four direct source subscriptions'
                 assert node.count_subscribers('/diagnostics/source_dtc/livox') == 0, 'Safety must not use the retired external topic'
                 assert len(heartbeats) >= 20, 'heartbeat must continue during UNKNOWN'
                 assert all(msg.node_id == 6 and msg.boot_id and not msg.active_fault for msg in heartbeats)

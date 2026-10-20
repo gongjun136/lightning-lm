@@ -1,4 +1,5 @@
 #include "utils/functional_safety_heartbeat.h"
+#include "utils/localization_dtc_reporting.h"
 #include <stdexcept>
 #include <iostream>
 
@@ -42,6 +43,35 @@ int main(int argc, char** argv) {
         }
     };
     check({}, 0); // Startup UNKNOWN does not invent faults.
+    // Exercise the actual localization detector -> production adapter -> ROS
+    // heartbeat path, rather than supplying fault codes only to the serializer.
+    using namespace lightning;
+    using namespace lightning::loc::dtc;
+    Monitor monitor(Config{}, Clock::time_point{});
+    auto feed = [&](int ms, double x, bool large_covariance = false) {
+        const auto now = Clock::time_point{} + std::chrono::milliseconds(ms);
+        const double stamp = 100.0 + ms * 0.001;
+        const SE3 pose(SO3(), Vec3d(x, 0, 0));
+        Mat6d covariance = 0.0001 * Mat6d::Identity();
+        if (large_covariance) covariance(1, 1) = 0.31 * 0.31;
+        monitor.ObserveSpeed(stamp, 1.0, now);
+        monitor.ObserveGyro(stamp, 0.0, now);
+        monitor.ObservePose(stamp, pose, pose, covariance, true, false, 1, now);
+        functional_safety::UpdateLocalizationFaults(publisher, monitor.Evaluate(false, now));
+    };
+    functional_safety::UpdateLocalizationFaults(publisher, monitor.Evaluate(false, Clock::time_point{}));
+    check({}, 0);
+    for (int ms = 0; ms <= 1000; ms += 20) feed(ms, ms * 0.001);
+    check({}, 0);
+    feed(1020, 3.02, true);
+    check({0x30811813, 0x40450198}, 0);
+    functional_safety::UpdateLocalizationFaults(publisher,
+        monitor.Evaluate(false, Clock::time_point{} + std::chrono::milliseconds(1400)));
+    check({0x30811813, 0x40450198}, 0); // UNKNOWN/stale cannot clear an established fault.
+    feed(1420, 3.42);
+    check({0x30811813}, 0); // Fresh uncertainty PASS clears only its own code.
+    for (int ms = 1440; ms <= 2020; ms += 20) feed(ms, 2.0 + ms * 0.001);
+    check({}, 0);
     publisher.UpdateFaults({0x40450198, 0x30811813, 0x30811813, 0}, {});
     check({0x30811813, 0x40450198}, 0); // Sorted, unique, no zero.
     const auto first_seq = latest.heartbeat_seq;

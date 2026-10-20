@@ -21,6 +21,7 @@
 
 #include "core/localization/localization.h"
 #include "core/localization/pose_covariance.h"
+#include "utils/localization_dtc_reporting.h"
 #include "core/maps/map_manifest.h"
 #include "common/debug_event.h"
 #include "io/yaml_io.h"
@@ -255,11 +256,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                                                  : false;
         radar_fault_mask_enabled_ = dtc && dtc["radar_fault_mask_enabled"]
                                         ? dtc["radar_fault_mask_enabled"].as<bool>() : false;
-        const auto radar_id = dtc && dtc["radar_source_id"] ? dtc["radar_source_id"].as<int>() : 13;
         const double radar_timeout = value("radar_snapshot_timeout_sec", 0.5);
         const double hms_timeout = value("radar_hms_timeout_sec", 2.5);
-        if (radar_id <= 0 || radar_id > 65535 || radar_id == heartbeat_->NodeId() ||
-            !std::isfinite(radar_timeout) || radar_timeout <= 0 ||
+        if (!std::isfinite(radar_timeout) || radar_timeout <= 0 ||
             !std::isfinite(hms_timeout) || hms_timeout < radar_timeout)
             throw std::invalid_argument("invalid radar DTC source or timeout");
         std::array<uint16_t, 4> radar_ids{{7, 12, 8, 9}};
@@ -268,12 +267,13 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             if (ids.size() != 4 || std::set<int>(ids.begin(), ids.end()).size() != 4)
                 throw std::invalid_argument("four unique radar role IDs required");
             for (size_t i = 0; i < 4; ++i) {
-                if (ids[i] <= 0 || ids[i] > 65535 || ids[i] == radar_id || ids[i] == heartbeat_->NodeId())
+                if (ids[i] <= 0 || ids[i] > 65535 || ids[i] == heartbeat_->NodeId())
                     throw std::invalid_argument("invalid radar role source ID");
                 radar_ids[i] = ids[i];
             }
         }
-        radar_dtc_state_ = std::make_unique<functional_safety::RadarDtcState>(radar_id, radar_timeout, hms_timeout, true, radar_ids);
+        radar_dtc_state_ = std::make_unique<functional_safety::RadarDtcState>(
+            radar_timeout, hms_timeout, radar_ids, dtc_config.startup_grace_sec);
         if (dtc && dtc["config_version"]) dtc_config_version_ = dtc["config_version"].as<std::string>();
         if (dtc_config_version_.empty()) throw std::invalid_argument("empty DTC config version");
     } catch (const std::exception& error) {
@@ -293,17 +293,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     };
     safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safety>(
         topic("safety_topic", "/safety/throstle"), dtc_qos);
-    radar_dtc_sub_ = node_->create_subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>(
-        topic("internal_radar_topic", "/internal/diagnostics/livox_dtc"), dtc_qos,
-        [this](const diagnostic_monitor_interfaces::msg::DtcObservationArray::SharedPtr msg) {
-            radar_dtc_state_->Observe(*msg);
-        });
     const std::array<std::string, 4> radar_roles{{"front", "rear", "left", "right"}};
     for (size_t i = 0; i < 4; ++i)
         radar_availability_subs_[i] = node_->create_subscription<livox_ros_driver2::msg::LidarDiagnosticState>(
             "/sensors/livox/" + radar_roles[i] + "/diagnostic_state", dtc_qos,
             [this, i](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
-                if (msg->role == i) radar_dtc_state_->ObserveAvailability(*msg);
+                if (msg->role == i) radar_dtc_state_->Observe(*msg);
             });
     dtc_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { UpdateDtcHeartbeat(); });
     safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(20), [this]() {
@@ -1190,14 +1185,11 @@ void LocSystem::UpdateDtcHeartbeat() {
     if (!dtc_monitor_ || !heartbeat_) return;
     const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
     std::lock_guard<std::mutex> lock(dtc_publish_mutex_);
-    std::vector<uint32_t> failed, passed;
+    functional_safety::UpdateLocalizationFaults(*heartbeat_, snapshot);
     for (size_t i = 0; i < 2; ++i) {
         const auto& check = snapshot.observations[i];
-        if (check.condition == loc::dtc::kFail) failed.push_back(check.code);
-        if (check.condition == loc::dtc::kPass) passed.push_back(check.code);
         last_dtc_conditions_[i] = check.condition;
     }
-    heartbeat_->UpdateFaults(failed, passed);
     LOG_EVERY_N(INFO, 10) << "LOCALIZATION_DTC consistency=" << int(snapshot.observations[0].condition)
         << " uncertainty=" << int(snapshot.observations[1].condition) << " severe=" << snapshot.severe
         << " error_x=" << snapshot.error_longitudinal_m << " error_y=" << snapshot.error_lateral_m

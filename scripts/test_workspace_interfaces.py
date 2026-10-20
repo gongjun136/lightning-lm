@@ -16,25 +16,21 @@ class InterfaceTest(unittest.TestCase):
         self.ws = Path(self.temp.name)
         self.repo = self.ws / "src/lightning-lm"
         self.loc = self.repo / "config/sany/localization.yaml"
-        self.config = self.ws / "src/livox_ros_driver2/config/dtc_aggregator.yaml"
-        self.source = self.ws / "src/livox_ros_driver2/src/lidar_dtc_aggregator.cpp"
+        self.source = self.ws / "src/livox_ros_driver2/src/livox_ros_driver2.cpp"
+        self.launch_dir = self.ws / "src/livox_ros_driver2/launch_ROS2"
         self.msg = self.ws / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg"
         self.lidar_msg = self.ws / "src/common_msgs/livox_ros_driver/msg/LidarDiagnosticState.msg"
-        for path in (self.loc, self.config, self.source, self.msg, self.lidar_msg):
+        for path in (self.loc, self.source, self.msg, self.lidar_msg):
             path.parent.mkdir(parents=True, exist_ok=True)
-        self.loc.write_text(yaml.safe_dump({"diagnostics": {
-            "internal_radar_topic": "/internal/diagnostics/livox_dtc",
-            "radar_source_id": 13, "radar_role_source_ids": [7, 12, 8, 9]}}))
-        self.params = {"internal_output_topic": "/internal/diagnostics/livox_dtc",
-                       "functional_safety.node_id": 13, "expected_source_ids": [7, 12, 8, 9],
-                       "config_version": "livox-dtc-v3-bounded-sync"}
-        self.write_config()
-        self.source.write_text('declare_parameter<std::string>("internal_output_topic", "default");')
+        self.launch_dir.mkdir(parents=True)
+        self.loc.write_text(yaml.safe_dump({"diagnostics": {"radar_role_source_ids": [7, 12, 8, 9]}}))
+        self.source.write_text('"livox-dtc-v3-bounded-sync"; dtc::PublishDiagnosticSnapshot();')
+        for role, node_id in zip(("front", "rear", "left", "right"), (7, 12, 8, 9)):
+            (self.launch_dir / f"lidar_{role}.launch.py").write_text(
+                f"heartbeat_node_id = {node_id}\nheartbeat_topic = '/diagnostics/heartbeat/livox_{role}'\n")
+        (self.launch_dir / "master_lidar.launch.py").write_text("# Four source drivers only\n")
         self.msg.write_text("uint32[] active_fault\n")
         self.lidar_msg.write_text("bool bounded_time_sync_warning\nint64 time_sync_offset_ns\nuint64 time_sync_evidence_age_us\n")
-
-    def write_config(self):
-        self.config.write_text(yaml.safe_dump({"lidar_dtc_aggregator": {"ros__parameters": self.params}}))
 
     def result(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -48,32 +44,33 @@ class InterfaceTest(unittest.TestCase):
         self.assertEqual(self.result(), 1)
 
     def test_old_driver_semantics(self):
-        self.params["config_version"] = "livox-dtc-v2-sync-source"
-        self.write_config()
+        self.source.write_text('"livox-dtc-v2-sync-source"; dtc::PublishDiagnosticSnapshot();')
         self.assertEqual(self.result(), 1)
 
-    def test_old_driver_topic(self):
-        self.params["output_topic"] = "/diagnostics/source_dtc/livox"
-        del self.params["internal_output_topic"]
-        self.write_config()
+    def test_driver_without_own_dtc_reporting(self):
+        self.source.write_text('"livox-dtc-v3-bounded-sync";')
         self.assertEqual(self.result(), 1)
 
     def test_old_message(self):
         self.msg.write_text("uint8 state\n")
         self.assertEqual(self.result(), 1)
 
-    def test_old_producer_ignores_new_yaml(self):
-        self.source.write_text('declare_parameter<std::string>("output_topic", "old");')
+    def test_unregistered_aggregate_node(self):
+        (self.launch_dir / "master_lidar.launch.py").write_text("lidar_dtc_aggregator.launch.py")
         self.assertEqual(self.result(), 1)
 
     def test_wrong_source(self):
-        self.params["functional_safety.node_id"] = 12
-        self.write_config()
+        p = self.launch_dir / "lidar_front.launch.py"
+        p.write_text(p.read_text().replace("= 7", "= 12"))
         self.assertEqual(self.result(), 1)
 
     def test_wrong_role_order(self):
-        self.params["expected_source_ids"] = [7, 8, 9, 12]
-        self.write_config()
+        self.loc.write_text(yaml.safe_dump({"diagnostics": {"radar_role_source_ids": [7, 8, 9, 12]}}))
+        self.assertEqual(self.result(), 1)
+
+    def test_retired_aggregate_dependency(self):
+        self.loc.write_text(yaml.safe_dump({"diagnostics": {
+            "radar_role_source_ids": [7, 12, 8, 9], "radar_source_id": 13}}))
         self.assertEqual(self.result(), 1)
 
 

@@ -7,12 +7,16 @@ https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 @section dtc_interfaces 接口与职责
 
 对外 DTC 统一通过 diagnostic_monitor_interfaces/msg/NodeHeartbeat.active_fault 上报。
-使用 common/message dev 的既有定义（73e8a24b），不增加公共字段。
+使用 workspace.repos 固定的 common_msgs 既有定义，不增加公共字段。
 定位 ID 6 的 /diagnostics/heartbeat/lightning_slam 负责
 0x30811813（一致性异常）、0x40450198（不确定度超限）；
-雷达聚合 ID 13 的 /diagnostics/heartbeat/livox_dtc 负责各设备当前故障及
-0x10F00001（至少两台不可用）、0x10F00002（四台不可用）。
-四台驱动的心跳不重复上报设备 DTC；部署时须把相应非历史码登记到 ID 13。
+四台雷达各自在自己的心跳 active_fault 上报自身九类当前设备 DTC：
+前 /diagnostics/heartbeat/livox_front（ID 7）、后 livox_rear（ID 12）、
+左 livox_left（ID 8）、右 livox_right（ID 9），均使用 /diagnostics/heartbeat/ 前缀。
+每台驱动的检测快照直接更新自己的心跳，设备码不集中上报。
+不再创建未登记的聚合节点 ID 13 或 /diagnostics/heartbeat/livox_dtc。
+0x10F00001/0x10F00002 没有已登记的节点归属，不自行挂到定位或其他设备心跳；
+多台/全雷达不可用仍在定位 Safety 内部组合判定，不依赖这些外部汇总码。
 心跳默认 10 Hz、best_effort、volatile、KeepLast(1)，每次携带排序去重后的完整活动集合。
 FAIL 加入，明确且新鲜的 PASS 才移除，UNKNOWN、缺项或过期保留此前活动状态。
 零码和历史码不进入 active_fault；雷达四角色的 base+12/base+13 仅保留在内部观测。
@@ -20,11 +24,13 @@ FAIL 加入，明确且新鲜的 PASS 才移除，UNKNOWN、缺项或过期保�
 HeartbeatPublisher::UpdateFaults 原子更新一批判定，发布线程复制快照，发送不推进 work_seq。
 
 旧 /diagnostics/source_dtc/localization 和 /diagnostics/source_dtc/livox 不再发布。
-雷达完整 46 项 DtcObservationArray 移到 /internal/diagnostics/livox_dtc，
-仍为 10 Hz 加状态改变发布，reliable、volatile、KeepLast(10)，供定位 Safety 消费。
+定位直接消费四路 /sensors/livox/{front,rear,left,right}/diagnostic_state，
+每台为 livox_ros_driver2/msg/LidarDiagnosticState，10 Hz、reliable、volatile、KeepLast(10)。
+每路保留十一项 DTC 观测、设备可用性和独立同步证据；
 physical_condition：0 UNKNOWN，1 PASS，2 FAIL；保留检测序号、证据年龄和历史观测。
-定位配置改用 diagnostics.internal_radar_topic，聚合节点改用 internal_output_topic；
-旧 output_topic/radar_topic 配置不再控制该链路，定制话题必须同步迁移两端。
+已移除独立聚合进程和 /internal/diagnostics/livox_dtc；
+旧 diagnostics.internal_radar_topic、radar_source_id 与聚合器配置不再使用。
+升级须同步主从驱动和定位，并停止旧聚合进程；使用新的安装目录以避开残留旧可执行文件。
 现有 /localization/fault_status 留作兼容遥测，统一诊断节点只消费心跳 DTC，
 不得把内部观测或兼容状态再次接入故障确认/动作链路。
 
@@ -40,7 +46,7 @@ physical_condition：0 UNKNOWN，1 PASS，2 FAIL；保留检测序号、证据�
 接收方应同时检查来源、版本、完整码集合、启动标识、序号及证据年龄。
 UNKNOWN、缺项、超时、重启不能当作 PASS，也不能清除已确认故障。
 定位源 ID 默认 6，四台雷达 ID 为前 7、后 12、左 8、右 9；
-新增聚合节点 ID 默认 13，部署前须与统一诊断节点登记，保持唯一。
+诊断中心保持上述已有节点 ID 与各自设备 DTC 的对应关系，不新增汇总节点。
 
 定位另发布 /safety/throstle，复用既有 geosun_msgs/msg/Safety，字段 int8 runstate，50 Hz。
 Safety.msg 定义保持不变，不新增兼容消息类型；header.stamp 为发布时的 ROS 时间，
@@ -80,13 +86,13 @@ hms_code 必须是完整 8 个 uint32；高 16 位为 HMS ID，低 8 位为原�
 未知 native fatal 仍计入不可用，不杜撰新的系统 DTC。
 两台以上与四台全故障可同时成立，按四个物理角色去重统计。
 
-master_lidar.launch.py 启动一次聚合节点，master_4lidar 间接复用它；
+master_lidar.launch.py 启动前、左、右三台驱动，master_4lidar 间接复用它；
 slave_lidar 只运行后雷达。主从部署须确保四个 diagnostic_state Topic 跨主机可达。
-配置为 livox_ros_driver2_core/config/dtc_aggregator.yaml，驱动 dtc.* 参数
+驱动 dtc.* 参数
 可设置角色、超时、有效点数和配置版本。默认点包/点云 500 ms、HMS 2500 ms、
 内部状态 500 ms、启动等待 8 s，设备状态每 1 s 查询。
 遗漏设备在启动宽限后按不可用处理，因此三雷达实车必须显式补齐后雷达输入才能正常。
-主、从驱动与聚合节点须一起升级到 `livox-dtc-v2-sync-source` 并重新构建、重启后生效；
+主、从驱动与定位须使用 `livox-dtc-v3-bounded-sync` 语义并重新构建、重启后生效；
 混合配置版本的设备状态会被拒绝，不得只更新主机就宣称后雷达完成修复。
 
 2026-10-15 现场只读查询确认前、左、右三台 `work_state=1`、`lidar_diag_status=0`，
@@ -151,14 +157,14 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
 需在联调后冻结 config_version。不得将建议阈值当作已验收的安全响应指标。
 
 1. 采集静止、低速、倒车、弯道、颠簸、各坡度及地图边缘场景，
-   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志、两个节点心跳及雷达内部观测。
+   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志、五路节点心跳及四路设备观测。
 2. 正常数据统计纵/横/航向残差分布，按速度、转弯、坡度分层标定基础容差和比例容差。
    时间不同步或参考自身无效的片段单独处理，不能用于放宽容差。
 3. 用独立参考误差标定协方差方差倍率、下限及过程噪声，检查二维椭圆和航向覆盖率；
    窗口相关性及静止保持偏差必须纳入。推荐以 95% 覆盖率为起点，项目另行确定验收目标。
 4. 注入单设备 HMS 多原因及清除、未知 fatal、断网、空点云、冻结时间戳、
    两台/四台失效、驱动退出、内部消息重放、进程重启及乱序。
-   验证 44+2 条完整性、同设备不重复计数、UNKNOWN 不解除故障。
+   验证四路各十一项完整性、各自心跳九类当前故障的归属、UNKNOWN 不解除故障及全失效 Safety。
 5. 注入位姿/航向跳变、轮速/IMU 停止或冻结、协方差超限/无效、重定位及定位输出停止。
    验证 0/2/4/-9 优先级、故障发生与恢复时间、50 Hz 输出及接收端消息兼容。
 6. 用稳态时钟测量故障注入到源 DTC、兼容状态和诊断中心安全动作的各段延迟。
@@ -169,13 +175,17 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
    检测变化只更新缓存，不额外插发心跳。Safety 仍使用独立的 20 ms 发布周期。
    这些是配置预算，最终最大响应时间必须在目标硬件负载及网络环境中实测验收。
 
-自动回归：lidar_dtc_monitor_test、localization_dtc_test、localization_pgo_test。
-PGO 回归直接将实际优化器的后验送入 DTC，覆盖五帧窗口边缘化后的健康轨迹；
+自动回归：雷达 lidar_dtc_monitor_test、heartbeat_dtc_test、driver_dtc_reporting_test；
+定位 localization_dtc_test、radar_dtc_state_test、heartbeat_dtc_test、localization_pgo_test。
+驱动回归通过生产发布函数向真实四路 ROS 心跳注入九类 HMS，覆盖角色隔离、历史过滤、
+UNKNOWN/过期保持、逐码恢复和有界告警仍保留原 DTC。
+定位心跳回归使用真实运动一致性和协方差检测器产生两项 DTC，验证真实 ROS 接收及独立恢复。
+PGO 回归直接将实际优化器后验送入 DTC，覆盖五帧窗口边缘化后的健康轨迹；
 定位回归另外验证 0.31 m 横向、2.1° 航向超限仍为 FAIL。
-test/dtc_ros_integration.py 验证实际聚合节点的 ROS 输入、恢复、重放和断流行为，
-并校验心跳当前码、历史过滤、UNKNOWN/过期 PASS 不清除、内部快照保留和旧话题停发。
-两包的 heartbeat_dtc_test 使用真实 ROS 发布/订阅检查集合去重、逐码恢复、
-并发快照一致性、心跳与工作序号分离及启动标识。
+radar_dtc_state_test 验证直接消费四路设备快照的角色/码集合/版本校验、重放和过期拒绝、
+重启 UNKNOWN 保持严重状态、历史过滤、真实可用性以及有界 PTP 边界与证据年龄。
+src/test/dtc_online_smoke.py 检查实际 run_loc_online 的心跳、50 Hz Safety、四路直接订阅
+以及旧聚合/旧源 DTC 话题停用。历史 2026-10-19 的聚合器验证记录仅适用于当时实现。
 
 历史 SANY bag 的 `SpeThrCAN4` 可能只有 `Header+x+y`，新版多了 `TopicCommHeader`。
 `OnlineBagPlayer` 原样发布 CDR 字节，由在线输入已有的新旧布局解码器校验，
@@ -232,7 +242,7 @@ ROS 稳态时钟实现参考 https://github.com/ros2/rcutils/blob/humble/src/tim
 @verbatim
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=173 python3 src/livox_ros_driver2/test/dtc_ros_integration.py
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=173 ctest --test-dir build/livox_ros_driver2_core --output-on-failure -R '^(driver_dtc_reporting_test|heartbeat_dtc_test|lidar_dtc_monitor_test)$'
 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=172 python3 src/lightning-lm/src/test/dtc_online_smoke.py build/lightning_lm/bin/run_loc_online
 @endverbatim
 

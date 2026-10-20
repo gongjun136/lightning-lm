@@ -14,7 +14,6 @@ def check_interfaces(repo, workspace):
     try:
         loc = yaml.safe_load((repo / "config/sany/localization.yaml").read_text())["diagnostics"]
         driver = workspace / "src/livox_ros_driver2"
-        radar = yaml.safe_load((driver / "config/dtc_aggregator.yaml").read_text())["lidar_dtc_aggregator"]["ros__parameters"]
         heartbeat = (workspace / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg").read_text()
         lidar_state = (workspace / "src/common_msgs/livox_ros_driver/msg/LidarDiagnosticState.msg").read_text()
         errors = []
@@ -22,27 +21,32 @@ def check_interfaces(repo, workspace):
                       "uint64 time_sync_evidence_age_us"):
             if not re.search(r"^" + field.replace(" ", r"\s+") + r"\s*(?:#.*)?$", lidar_state, re.MULTILINE):
                 errors.append(f"LidarDiagnosticState.msg lacks {field}")
-        if radar.get("config_version") != "livox-dtc-v3-bounded-sync":
+        source = (driver / "src/livox_ros_driver2.cpp").read_text()
+        if '"livox-dtc-v3-bounded-sync"' not in source:
             errors.append("radar bounded-warning evidence requires livox-dtc-v3-bounded-sync")
         if not re.search(r"^uint32\[\]\s+active_fault\s*(?:#.*)?$", heartbeat, re.MULTILINE):
             errors.append("NodeHeartbeat.msg lacks uint32[] active_fault")
-        topic = radar.get("internal_output_topic")
-        if not topic or topic != loc.get("internal_radar_topic"):
-            errors.append(f"radar topic mismatch: producer={topic!r}, consumer={loc.get('internal_radar_topic')!r}")
-        if radar.get("functional_safety.node_id") != loc.get("radar_source_id"):
-            errors.append("radar aggregator source ID mismatch")
-        if radar.get("expected_source_ids") != loc.get("radar_role_source_ids"):
+        ids = []
+        for role in ("front", "rear", "left", "right"):
+            launch = (driver / f"launch_ROS2/lidar_{role}.launch.py").read_text()
+            match = re.search(r"^heartbeat_node_id\s*=\s*(\d+)\s*$", launch, re.MULTILINE)
+            ids.append(int(match[1]) if match else None)
+            if f"'/diagnostics/heartbeat/livox_{role}'" not in launch:
+                errors.append(f"{role}: heartbeat topic mismatch")
+        if None in ids or len(set(ids)) != 4 or ids != loc.get("radar_role_source_ids"):
             errors.append("radar role source IDs mismatch")
-        # A matching YAML key alone is insufficient if an old producer ignores it.
-        source = (driver / "src/lidar_dtc_aggregator.cpp").read_text()
-        if not re.search(r'declare_parameter<std::string>\(\s*"internal_output_topic"', source):
-            errors.append("radar producer does not declare internal_output_topic")
+        if "dtc::PublishDiagnosticSnapshot(" not in source:
+            errors.append("driver does not update its own heartbeat DTCs")
+        if "lidar_dtc_aggregator" in (driver / "launch_ROS2/master_lidar.launch.py").read_text():
+            errors.append("master launch still starts the unregistered aggregate node")
+        if "radar_source_id" in loc or "internal_radar_topic" in loc:
+            errors.append("localization still depends on the retired aggregate source")
     except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
         errors = [f"cannot inspect interface contract: {exc}"]
     for error in errors:
         print(f"ERROR: {error}", file=sys.stderr)
     if not errors:
-        print("PASS: heartbeat, bounded PTP proof schema/version and radar topic/source-ID contracts match (runtime still requires verification)")
+        print("PASS: active_fault, bounded PTP schema/version and four per-device heartbeat identities match (runtime still requires verification)")
     return 1 if errors else 0
 
 

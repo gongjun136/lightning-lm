@@ -44,13 +44,12 @@ bash src/lightning-lm/scripts/build_workspace.sh
 python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
 ```
 
-雷达驱动配套固定为 `c021113`：旧版 `9ffb961` 发布到
-`/diagnostics/source_dtc/livox`，而定位订阅 `/internal/diagnostics/livox_dtc`，
-会因诊断缺失持续输出 `Safety.runstate=2`，即使点云与定位正常。
-检查器同时验证心跳 `active_fault` 字段、雷达内部话题、生产端参数声明及源 ID。
+雷达依赖以 workspace.repos 的精确哈希为准。四台驱动各自在自身心跳 active_fault
+上报 DTC，定位直接消费四路 diagnostic_state；独立聚合节点及 ID 13 已移除。
+检查器同时验证心跳字段、同步证据结构/版本、四路心跳 ID 和上报路径。
 用 `python3 src/lightning-lm/scripts/test_workspace_interfaces.py` 运行接口回归测试。
-部署后仍须验证内部话题有发布者和定位订阅者、实际收到消息，并检查 Safety 与位姿；
-静态接口检查不能替代现场消息和故障恢复验收。不要通过关闭 Safety 故障上报消除告警。
+部署时停止旧聚合进程，使用新的安装目录，实测四路诊断、五路心跳、Safety 与位姿；
+静态接口检查不能替代现场消息和故障恢复验收。
 
 四雷达部署还必须同步从 Orin 的后雷达。节点启动稳定后，在与生产节点相同的
 ROS 域和 FastDDS 配置环境中执行：
@@ -60,7 +59,7 @@ python3 src/lightning-lm/scripts/check_runtime_interfaces.py --workspace "$PWD" 
 ```
 
 该只读探针不订阅点云；要求四路实际诊断的角色、源 ID 和 `config_version` 一致，
-聚合消息结构有效，Safety 和位姿持续收到。健康验收要求采样开始 5 秒后 Safety 为 0、
+各设备 active_fault 仅含自身当前码，Safety、五路心跳和位姿持续收到。健康验收要求采样开始 5 秒后 Safety 为 0、
 四路可用性为 1。失败返回非零，输出 JSON 原始快照和错误。当前用于四雷达拓扑。
 图发现不等于消息可接收；尤其要与生产节点使用相同的 DDS 网卡白名单。
 

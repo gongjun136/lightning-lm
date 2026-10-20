@@ -13,7 +13,6 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geosun_msgs/msg/safety.hpp>
-#include <diagnostic_monitor_interfaces/msg/dtc_observation_array.hpp>
 #include <geosun_msgs/msg/spe_thr_can4.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -304,7 +303,6 @@ class LocSystem {
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};
     rclcpp::Publisher<geosun_msgs::msg::Safety>::SharedPtr safety_pub_;
-    rclcpp::Subscription<diagnostic_monitor_interfaces::msg::DtcObservationArray>::SharedPtr radar_dtc_sub_;
     std::array<rclcpp::Subscription<livox_ros_driver2::msg::LidarDiagnosticState>::SharedPtr, 4> radar_availability_subs_;
     rclcpp::TimerBase::SharedPtr dtc_timer_, safety_timer_;
 
