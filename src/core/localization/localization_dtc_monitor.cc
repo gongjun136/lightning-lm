@@ -19,7 +19,6 @@ Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_
     if (!std::isfinite(config.covariance_scale) || config.covariance_scale < 1.0 ||
         !std::isfinite(config.consistency_unknown_grace_sec) ||
         config.consistency_unknown_grace_sec < 0 ||
-        config.consistency_unknown_grace_sec > config.max_input_gap_sec ||
         config.consistency_unknown_grace_sec >= config.output_timeout_sec ||
         !std::isfinite(config.distance_ratio) || config.distance_ratio < 0 ||
         !std::isfinite(config.angle_ratio) || config.angle_ratio < 0 ||
@@ -131,8 +130,14 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
         consistency_pass_seen_ = false;
     }
     if (!poses_.empty() && stamp <= poses_.back().stamp) return;
-    if (!poses_.empty() && stamp - poses_.back().stamp > config_.max_input_gap_sec)
-        consistency_pass_seen_ = false;
+    if (!poses_.empty()) {
+        // A delivery gap alone is not a clock jump. Compare source progress
+        // with steady elapsed time before reusing any earlier passing evidence.
+        const double stamp_step = stamp - poses_.back().stamp;
+        const double arrival_step = Age(now, output_time_);
+        if (std::abs(stamp_step - arrival_step) > config_.max_input_gap_sec)
+            consistency_pass_seen_ = false;
+    }
     output_time_ = evaluation_time_ = now;
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
@@ -190,18 +195,20 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
     }
     // Do not report UNKNOWN as PASS. Grace affects only the stop decision and
     // cannot refresh itself, survive an epoch change, hide a failure, stale
-    // output, missing uncertainty, or a clock/input discontinuity.
+    // output, missing uncertainty, or a detected clock discontinuity. The
+    // integration gap limit decides whether evidence is complete; the separate
+    // grace is a TOTAL evidence-age limit, not extra time after that gap limit.
     const double grace = config_.consistency_unknown_grace_sec;
     out.consistency_unknown_tolerated =
         grace > 0 && !out.severe && !out.confirmed_failure &&
         out.observations[0].condition == kUnknown &&
         out.observations[1].condition == kPass &&
         out.consistency_pass_age_sec <= grace &&
-        out.output_age_sec <= config_.max_input_gap_sec &&
-        out.speed_arrival_age_sec <= config_.max_input_gap_sec &&
-        out.gyro_arrival_age_sec <= config_.max_input_gap_sec &&
-        std::abs(out.speed_stamp_lag_sec) <= config_.max_input_gap_sec &&
-        std::abs(out.gyro_stamp_lag_sec) <= config_.max_input_gap_sec;
+        out.output_age_sec <= grace &&
+        out.speed_arrival_age_sec <= grace &&
+        out.gyro_arrival_age_sec <= grace &&
+        std::abs(out.speed_stamp_lag_sec) <= grace &&
+        std::abs(out.gyro_stamp_lag_sec) <= grace;
     return out;
 }
 int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass, bool mask_radar_fault) {

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 import yaml
-from resolve_sany_config import resolve
+from resolve_sany_config import resolve, required_radar_roles
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config/sany"
@@ -32,6 +32,9 @@ class SanyConfigTest(unittest.TestCase):
                         self.vehicle_config(vin, layout)
                         result = resolve(CONFIG / f"{mode}.yaml", self.vehicle)
                         multi = result["multi_lidar"]
+                        self.assertEqual(required_radar_roles(result),
+                                         ["front", "left", "right"] if count == 3
+                                         else ["front", "rear", "left", "right"])
                         self.assertEqual(len(multi["topics"]), count * 2)
                         self.assertEqual(multi["extrinsics"], {f"lidar{i}": profile["extrinsics"][f"lidar{i}"] for i in range(count)})
                         self.assertEqual(multi["match_tolerance"], 0.02)
@@ -49,6 +52,26 @@ class SanyConfigTest(unittest.TestCase):
                             self.assertEqual(load["relocalization_min_lidars"], 1)
                             self.assertEqual(load["tracking_lidar_count"], 0)
                             self.assertEqual(load["lio_point_budgets"], [2200, 1804, 1500])
+
+    def test_radar_topology_rejects_inconsistent_snapshot(self):
+        self.vehicle_config()
+        resolved = resolve(CONFIG / "localization.yaml", self.vehicle)
+        for mutation in (
+            lambda c: c.update(vehicle_configuration=None),
+            lambda c: c["vehicle_configuration"].update(lidar_count=4),
+            lambda c: c["vehicle_configuration"].update(LIDAR="SLAVE"),
+            lambda c: c["multi_lidar"].update(enabled=False),
+            lambda c: c["multi_lidar"]["topics"].pop("lidar_2"),
+            lambda c: c["multi_lidar"]["topics"].update(lidar_3="/extra"),
+            lambda c: c["multi_lidar"]["topics"].update(lidar_2=c["multi_lidar"]["topics"]["lidar_1"]),
+        ):
+            broken = copy.deepcopy(resolved)
+            mutation(broken)
+            with self.assertRaises(ValueError):
+                required_radar_roles(broken)
+        with self.assertRaises(ValueError):
+            required_radar_roles(yaml.safe_load((CONFIG / "localization.yaml").read_text()))
+        self.assertEqual(required_radar_roles({}), ["front", "rear", "left", "right"])
 
     def test_algorithm_parameters_are_shared_across_vehicles(self):
         self.vehicle_config()

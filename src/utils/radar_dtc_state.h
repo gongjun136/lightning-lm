@@ -4,10 +4,11 @@
 #include <chrono>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <livox_ros_driver2/msg/lidar_diagnostic_state.hpp>
 
 namespace lightning::functional_safety {
-/// Safety consumes four device snapshots directly, without an aggregate node ID.
+/// Safety consumes the configured devices directly, preserving all four role IDs.
 class RadarDtcState {
  public:
     using Clock = std::chrono::steady_clock;
@@ -20,14 +21,18 @@ class RadarDtcState {
     };
     RadarDtcState(double timeout, double hms_timeout,
                   std::array<uint16_t, 4> ids = {{7, 12, 8, 9}}, double startup_grace = 8.0,
-                  Clock::time_point start = Clock::now())
+                  Clock::time_point start = Clock::now(),
+                  std::array<bool, 4> required = {{true, true, true, true}})
         : timeout_(timeout), hms_timeout_(hms_timeout), ids_(ids),
-          startup_grace_(startup_grace), start_(start) {}
+          startup_grace_(startup_grace), start_(start), required_(required) {
+        if (std::none_of(required_.begin(), required_.end(), [](bool enabled) { return enabled; }))
+            throw std::invalid_argument("at least one radar must be required");
+    }
 
     bool Observe(const livox_ros_driver2::msg::LidarDiagnosticState& msg,
                  Clock::time_point now = Clock::now()) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (msg.role >= 4 || msg.comm_header.source_id != ids_[msg.role] ||
+        if (msg.role >= 4 || !required_[msg.role] || msg.comm_header.source_id != ids_[msg.role] ||
             msg.boot_id == 0 || msg.config_version != "livox-dtc-v3-bounded-sync" ||
             msg.usability > 2 || msg.observations.size() != offsets_.size()) return false;
         for (size_t i = 0; i < offsets_.size(); ++i)
@@ -47,8 +52,10 @@ class RadarDtcState {
         std::lock_guard<std::mutex> lock(mutex_);
         Status result;
         result.all_pass = result.all_pass_without_time_sync = result.bounded_all_pass = true;
-        size_t unusable = 0, usable = 0;
+        size_t unusable = 0, usable = 0, required_count = 0;
         for (size_t i = 0; i < sources_.size(); ++i) {
+            if (!required_[i]) continue;
+            ++required_count;
             const auto& source = sources_[i];
             const double age = std::chrono::duration<double>(now - source.received).count();
             const bool fresh = source.seen && age <= timeout_;
@@ -89,7 +96,7 @@ class RadarDtcState {
         }
         // A restart/UNKNOWN cannot recover a previously established all-failed
         // state. At least one fresh usable device proves that it is no longer all.
-        if (unusable == sources_.size()) all_failed_ = true;
+        if (unusable == required_count) all_failed_ = true;
         if (usable != 0) all_failed_ = false;
         result.all_failed = all_failed_;
         return result;
@@ -108,6 +115,7 @@ class RadarDtcState {
     std::array<uint16_t, 4> ids_;  ///< Registered front/rear/left/right source IDs.
     double startup_grace_;  ///< Missing devices become unavailable after this many seconds.
     Clock::time_point start_;  ///< Steady-clock start of the receiver's grace period.
+    const std::array<bool, 4> required_;  ///< Immutable front/rear/left/right deployment topology.
     mutable std::mutex mutex_;  ///< Protects source snapshots and the severe-state latch.
     mutable bool all_failed_ = false;  ///< Held across UNKNOWN until a fresh usable device arrives.
     std::array<Source, 4> sources_;  ///< Latest validated per-device evidence and retired boots.

@@ -301,9 +301,11 @@ diagnostics:
   angle_sigma_floor_deg: 0.5
   output_timeout_sec: 0.3
   evaluation_timeout_sec: 0.3
-  # Maximum age of prior passing motion evidence; 0 keeps strict stopping.
-  # Enable only after clock stability and loaded-vehicle timing validation.
-  consistency_unknown_grace_sec: 0.0
+  # TOTAL steady age of prior passing motion evidence, not extra time after
+  # max_input_gap_sec. 150 ms is a commissioning candidate from the 2026-10-21
+  # stationary load capture; validate under driving load before acceptance.
+  # UNKNOWN cannot renew this deadline or override a confirmed failure/-9.
+  consistency_unknown_grace_sec: 0.15
   startup_grace_sec: 8.0
   max_speed_mps: 30.0
   max_yaw_rate_radps: 3.0

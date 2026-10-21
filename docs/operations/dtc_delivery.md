@@ -24,7 +24,7 @@ FAIL 加入，明确且新鲜的 PASS 才移除，UNKNOWN、缺项或过期保�
 HeartbeatPublisher::UpdateFaults 原子更新一批判定，发布线程复制快照，发送不推进 work_seq。
 
 旧 /diagnostics/source_dtc/localization 和 /diagnostics/source_dtc/livox 不再发布。
-定位直接消费四路 /sensors/livox/{front,rear,left,right}/diagnostic_state，
+定位按本次启用的物理角色消费 /sensors/livox/{front,rear,left,right}/diagnostic_state，
 每台为 livox_ros_driver2/msg/LidarDiagnosticState，10 Hz、reliable、volatile、KeepLast(10)。
 每路保留十一项 DTC 观测、设备可用性和独立同步证据；
 physical_condition：0 UNKNOWN，1 PASS，2 FAIL；保留检测序号、证据年龄和历史观测。
@@ -57,19 +57,60 @@ Topic 拼写 throstle 保留；接收端订阅 Safety 并读取 runstate。
 @ref lightning::LocSystem::PublishSafety() 始终以 50 Hz 发布 `runstate=0`，
 包括启动 UNKNOWN、定位失锁、超时及雷达故障；时间戳仍正常更新。
 该开关只覆盖 Safety 输出，不改变源 DTC、心跳或 `/localization/fault_status`。
-开关为 `true` 时使用以下原有判定规则。
-优先级 -9 > 4 > 2 > 0：定位失锁/有效输出超时或四雷达不可用给 -9；
-定位 DTC FAIL 给 4；其他雷达故障给 2；全部检测有效且正常才给 0。
-定位检测 UNKNOWN 给 4；仅雷达检测 UNKNOWN/过期给 2。
+开关为 `true` 时使用以下判定规则。
+优先级 -9 > 4 > 2 > 0：定位失锁/有效输出超时或本次启用的雷达全部不可用给 -9；
+定位 DTC FAIL 或尚未恢复的明确故障给 4；其他雷达故障给 2。
+定位检测 UNKNOWN 不满足 @ref dtc_unknown_and_cpu_20261020 的有限证据条件时给 4；
+满足条件的一致性 UNKNOWN 继续检查雷达分支，全部分支允许时给 0，原始观测仍为 UNKNOWN。
+仅雷达检测 UNKNOWN/过期给 2。
 已恢复通信历史（四个角色码的 base+12）与同步历史（base+13）仍保留在源 DTC 中，
 但新鲜的历史 FAIL 不单独参与当前 Safety 故障判定；历史 UNKNOWN、过期、其他当前 DTC
-以及四台设备实际可用性仍须校验。因此历史事件本身不会让正常设备永久保持 runstate=2。
-已接收的四雷达 FAIL 在重启 UNKNOWN 或通信中断时维持 -9，直至新鲜 PASS。
-该兼容接口表达实时原始状态，不承担诊断中心的等级与恢复消抖策略。
-兼容接口同时读取四台 diagnostic_state 的设备可用性，因此单台未映射 native fatal
+以及本次启用设备的实际可用性仍须校验。因此历史事件本身不会让正常设备永久保持 runstate=2。
+已确认的全雷达不可用在重启 UNKNOWN 或通信中断时维持 -9，直至至少一路启用雷达恢复新鲜可用证据。
+该兼容接口执行本地实时停车判定；内部原始观测及诊断中心的等级与恢复策略仍各自保留。
+兼容接口同时读取启用雷达 diagnostic_state 的设备可用性，因此单台未映射 native fatal
 或实际不可用也给 2；设备可用性未知时不能给 0，不新增未定义的系统 DTC。
 
 @section dtc_lidar 雷达实现与部署
+
+标准启动脚本通过 `/opt/conf/vehicle_config.yaml` 解析本次有效配置。
+沿用现有约定：`LIDAR: MASTER AND SLAVE` 为前、左、右三雷达，`LIDAR: MASTER` 为前、左、右、后四雷达。
+Safety 从同一运行快照的 `vehicle_configuration` 和 `multi_lidar.topics` 确定必检角色，
+不在运行中重新读取车辆文件，也不根据话题在线状态或自适应点云抽样减少必检雷达。
+三雷达配置不订阅后雷达诊断，不因后雷达缺失给 2；三路全部不可用仍给 -9。
+配置矛盾、缺失所需话题或未经解析的 SANY 模板会拒绝启动。
+不含 SANY 车辆快照的旧配置保留四路检查。角色 ID 和同步故障掩码仍按前、后、左、右排列，不能按启用数量重新编号。
+启动日志逐项输出 `LOCALIZATION_RADAR_REQUIRED role=... required=...`，用于核对实际检查范围。
+
+运行检查优先指定同次定位使用的有效配置：
+`python3 scripts/check_runtime_interfaces.py --workspace ~/Sany/lightning_lm_ws --config /path/to/run/config.yaml`。
+未传 `--config` 时，脚本用共享模板和当前 `/opt/conf/vehicle_config.yaml` 解析所需雷达；
+若启动后改过车辆文件，必须传运行快照，避免检查范围与正在运行的进程不同。
+检查结果记录 `required_radar_roles` 和车辆配置来源，仍要求每个启用雷达收到真实诊断和心跳数据。
+
+2026-10-21 静止包 `sany_lidar_20261021_111553`（旧二进制源码 `d187c2e`）仍固定检查四路，
+实际为三雷达，缺少后雷达会阻止 Safety 恢复 0；前、右雷达另有同步告警，不能将全部 2 都归为拓扑问题。
+用户提供的 PID 100549 核验与包内资源元数据一致：关键线程绑核正确，稳定阶段 894 个资源样本中未发现线程掩码越界；
+但内核 `isolated_cpus=[]`、启动参数缺失隔核项、默认 IRQ 掩码 `fff`，这台域控的隔核尚未生效。
+约 15 分钟保留日志中，启动阶段约 5.16 s 为 4；随后仅在 11:28:00.527773 记录一次 4，
+到 11:28:00.536057 恢复 2，日志切换间隔约 8.28 ms。该次一致性为 UNKNOWN、非确认 FAIL，
+CAN/IMU 接收年龄约 107 ms，位姿输出年龄约 0.37 ms；同秒执行器/传感器线程累计运行队列等待约 214/216 ms。
+附近一次雷达处理墙钟耗时 188 ms、线程 CPU 耗时约 15 ms，支持排查调度及等待，但这不能替代对停车分级的审查。
+旧版本代码中的直接触发链为：接收年龄超过 `max_input_gap_sec=0.1` → 一致性 UNKNOWN →
+未获有限容忍的 UNKNOWN 映射为 4；本次 `consistency_unknown_grace_sec=0`。
+旧版本有限容忍还要求 CAN/IMU 接收年龄均不超过 100 ms，因此仅开启该参数也不能覆盖本次 107 ms 事件。
+同事件附近高频 TUM 的相邻源时间戳从 `1792553280.310244` 跳到 `1792553280.416021`，
+间隔约 105.8 ms，也会触发旧代码清除此前一致性 Pass 的分支；源时间戳间隔并不等于 ROS 实际发布间隔。
+这条日志证明的是短时失去一致性校验依据，并未检测到明确定位不一致；应分别定义校验有效性与持续失去校验依据的停车边界。
+静止包不足以单独标定自动行驶的容忍上限，仍需运行车速边界及实际负载验证；明确 FAIL 与原有 -9 条件保持。
+用户补充自动行驶上限为 3–5 m/s，且控制端收到 runstate=2 同样停车；不能将 4 降为 2 作为继续行驶的缓冲。
+5 m/s 下 107 ms 对应约 0.54 m 行程，这不是已测得的定位误差，也不能直接用行程代替误差预算。
+资源采样同时出现名为 `ros2` 的进程，具体命令不明，不能认定其为唯一原因。
+因果追踪未发现超过 100 ms 的系统时钟跳变。保留日志未见 -9，但有 13 条异步日志丢失（含 1 条 critical）
+和 32 条因果记录丢失，不能作为无损的控制端接收验收。
+后续先按本机硬件核验并应用隔核、重启，确认 `isolated=10-11` 和默认 IRQ 掩码 `3ff`，
+再在相同生产负载和采样设置下复测。本次保留定位 -9 条件，将 SANY 的一致性 UNKNOWN
+总证据年龄上限设为待实车验证的 150 ms；不能据此宣称行驶安全或此前所有停车均已消除。
 
 每台驱动只绑定一个配置设备，读取 Livox SDK2 状态 JSON 和周期内部信息查询。
 hms_code 必须是完整 8 个 uint32；高 16 位为 HMS ID，低 8 位为原生等级。
@@ -84,10 +125,11 @@ hms_code 必须是完整 8 个 uint32；高 16 位为 HMS ID，低 8 位为原�
 缺字段、查询超时、同步时刻冻结/回退时不应用该排除。PTP 故障、低精度、PTP/gPTP 冲突、
 原生 Error/Fatal 保持上报。原始 HMS 历史信息不清除，也不把真实断流当作历史故障。
 未知 native fatal 仍计入不可用，不杜撰新的系统 DTC。
-两台以上与四台全故障可同时成立，按四个物理角色去重统计。
+多台与全部启用雷达故障可同时成立，按启用的物理角色去重统计。
 
 master_lidar.launch.py 启动前、左、右三台驱动，master_4lidar 间接复用它；
-slave_lidar 只运行后雷达。主从部署须确保四个 diagnostic_state Topic 跨主机可达。
+slave_lidar 只运行后雷达。四雷达部署须确保四个 diagnostic_state Topic 跨主机可达；
+三雷达部署仅要求前、左、右三路。
 驱动 dtc.* 参数
 可设置角色、超时、有效点数和配置版本。默认点包/点云 500 ms、HMS 2500 ms、
 内部状态 500 ms、启动等待 8 s，设备状态每 1 s 查询。
@@ -157,14 +199,14 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
 需在联调后冻结 config_version。不得将建议阈值当作已验收的安全响应指标。
 
 1. 采集静止、低速、倒车、弯道、颠簸、各坡度及地图边缘场景，
-   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志、五路节点心跳及四路设备观测。
+   同步独立 RTK/全站仪参考、输入时间戳、LOCALIZATION_DTC 日志、定位及启用雷达的心跳与设备观测。
 2. 正常数据统计纵/横/航向残差分布，按速度、转弯、坡度分层标定基础容差和比例容差。
    时间不同步或参考自身无效的片段单独处理，不能用于放宽容差。
 3. 用独立参考误差标定协方差方差倍率、下限及过程噪声，检查二维椭圆和航向覆盖率；
    窗口相关性及静止保持偏差必须纳入。推荐以 95% 覆盖率为起点，项目另行确定验收目标。
 4. 注入单设备 HMS 多原因及清除、未知 fatal、断网、空点云、冻结时间戳、
-   两台/四台失效、驱动退出、内部消息重放、进程重启及乱序。
-   验证四路各十一项完整性、各自心跳九类当前故障的归属、UNKNOWN 不解除故障及全失效 Safety。
+   部分/全部启用雷达失效、驱动退出、内部消息重放、进程重启及乱序。
+   分别验证三/四雷达布局下各路十一项完整性、各自心跳九类当前故障的归属、UNKNOWN 不解除故障及全失效 Safety。
 5. 注入位姿/航向跳变、轮速/IMU 停止或冻结、协方差超限/无效、重定位及定位输出停止。
    验证 0/2/4/-9 优先级、故障发生与恢复时间、50 Hz 输出及接收端消息兼容。
 6. 用稳态时钟测量故障注入到源 DTC、兼容状态和诊断中心安全动作的各段延迟。
@@ -182,9 +224,9 @@ UNKNOWN/过期保持、逐码恢复和有界告警仍保留原 DTC。
 定位心跳回归使用真实运动一致性和协方差检测器产生两项 DTC，验证真实 ROS 接收及独立恢复。
 PGO 回归直接将实际优化器后验送入 DTC，覆盖五帧窗口边缘化后的健康轨迹；
 定位回归另外验证 0.31 m 横向、2.1° 航向超限仍为 FAIL。
-radar_dtc_state_test 验证直接消费四路设备快照的角色/码集合/版本校验、重放和过期拒绝、
+radar_dtc_state_test 验证三/四雷达配置、无效配置拒绝、未启用雷达不参与判定，以及设备快照的角色/码集合/版本校验、重放和过期拒绝、
 重启 UNKNOWN 保持严重状态、历史过滤、真实可用性以及有界 PTP 边界与证据年龄。
-src/test/dtc_online_smoke.py 检查实际 run_loc_online 的心跳、50 Hz Safety、四路直接订阅
+src/test/dtc_online_smoke.py 检查实际 run_loc_online 的心跳、50 Hz Safety、按配置直接订阅（`--sany-lidars 3` 或 `4`）
 以及旧聚合/旧源 DTC 话题停用。历史 2026-10-19 的聚合器验证记录仅适用于当时实现。
 
 历史 SANY bag 的 `SpeThrCAN4` 可能只有 `Header+x+y`，新版多了 `TopicCommHeader`。
@@ -299,19 +341,34 @@ Safety 的判定顺序为：
 | 雷达故障或雷达证据未全部通过，且未启用雷达屏蔽 | 2 | 保留原策略 |
 | 其余情况 | 0 | 不代表独立验证的整车安全结论 |
 
-`diagnostics.consistency_unknown_grace_sec` 默认为 0，保持原停车行为。
-非零值不得超过 `max_input_gap_sec`，且必须小于 `output_timeout_sec`。
+`diagnostics.consistency_unknown_grace_sec` 的代码默认值为 0，保持原停车行为。
+2026-10-21 SANY 模板采用 0.15 s 作为部署调试候选：接收年龄超过 100 ms 仍将一致性判为 UNKNOWN，
+但停车判断独立使用下述有限证据条件。150 ms 高于本次约 107 ms 的接收年龄，并在原 300 ms 输出急停之前截止；
+是否可以容忍仍取决于最后一次 Pass 的年龄及全部条件，不能只比较接收年龄。
+这是初始调试值，不是仅凭静止数据完成的行驶验收。非零值必须小于 `output_timeout_sec`。
 计时基准是本定位 epoch 中**最后一次明确一致性 Pass 的单调时间**，
 不是首次 Unknown 或定时器每次评估时间；Unknown 自身不能续期。
-只有输出新鲜、CAN/IMU 到达新鲜、输入与位姿时间戳差均受限、
+输出年龄、CAN/IMU 到达年龄和输入与位姿时间戳差均不得超过该总上限；
 不确定度当前 Pass、没有待恢复明确故障且没有 severe 时，才可使用旧的通过证据。
-epoch 切换和非法输入会取消旧证据；明确 Fail 必须由该检查后续 Pass 清除。
+epoch 切换和非法输入会取消旧证据；位姿源时间增量与单调到达时间增量相差超过 100 ms 也取消旧证据。
+单纯源时间间隔超过 100 ms 不再独立等同于时钟跳变，但旧 Pass 仍会在总上限到期后失效。
+明确 Fail 必须由该检查后续 Pass 清除。
 300 ms 输出超时、定位门禁丢失和全雷达不可用均不受容忍参数影响。
 
 运行日志新增 `confirmed_failure`、`unknown_tolerated`、
 `consistency_pass_age_sec`、`output_age_sec`、CAN/IMU 到达年龄、
 `output_stale` 和 `localization_lost`，区分证据缺失、明确失败与急停来源。
 无证据的年龄为 infinity，不应解释为零。
+
+2026-10-21 本地 WSL Ubuntu 22.04 / ROS Humble 构建及验证：
+`localization_dtc_test`、`radar_dtc_state_test`、`thread_scheduling_test` 全部通过；
+覆盖 107 ms 缺口、150 ms 总上限、延迟位姿不续期、持续缺失、时钟异常、明确故障保持，
+以及三/四雷达的缺失、恢复和全失效。107 ms 用例及 5 m/s 输入为构造的边界测试，不是本次数据包的完整回放。
+真实 `run_loc_online` 三/四雷达 smoke 均通过，ROS steady 平均 Safety 频率分别为 49.5/50.1 Hz，
+并验证实际订阅集合、启动 UNKNOWN=4 和无有效输出后的 -9。
+两个 smoke 的 header 时间间隔中位数折算均为 55.6 Hz；这是本地 WSL ROS 时钟观测，不能据此验收域控授时。
+车辆配置解析测试 9 项、工作区接口测试 9 项通过，依赖源码与 `workspace.repos` 一致。
+此验证不包含新域控 ARM64 部署、内核隔核或实际行驶验收。
 
 2026-10-20 的 `sany_lidar_20261020_144934` 包标记提交为 `2b27e3a`。
 与 `49daa6d` 对比，定位 DTC 算法未变化，设备诊断接入有变化。

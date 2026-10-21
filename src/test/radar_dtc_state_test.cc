@@ -1,4 +1,5 @@
 #include "utils/radar_dtc_state.h"
+#include "utils/sany_radar_topology.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -22,6 +23,77 @@ Message Healthy(uint8_t role) {
 }
 }
 int main() {
+    using lightning::functional_safety::RequiredSanyRadarRoles;
+    const std::array<bool, 4> three_roles{{true, false, true, true}};
+    auto config = YAML::Load(R"(
+vehicle_configuration: {LIDAR: MASTER AND SLAVE, lidar_count: 3}
+multi_lidar:
+  enabled: true
+  primary_lidar_id: 0
+  topics: {lidar_0: /front, imu_0: /imu0, lidar_1: /left, imu_1: /imu1, lidar_2: /right, imu_2: /imu2}
+)");
+    Require(RequiredSanyRadarRoles(config) == three_roles, "three-lidar snapshot preserves physical DTC roles");
+    auto four = YAML::Clone(config);
+    four["vehicle_configuration"]["LIDAR"] = "MASTER";
+    four["vehicle_configuration"]["lidar_count"] = 4;
+    four["multi_lidar"]["topics"]["lidar_3"] = "/rear";
+    four["multi_lidar"]["topics"]["imu_3"] = "/imu3";
+    Require(RequiredSanyRadarRoles(four) == std::array<bool, 4>{{true, true, true, true}},
+            "four-lidar snapshot requires rear");
+    Require(RequiredSanyRadarRoles(YAML::Load("{}")) == RequiredSanyRadarRoles(four),
+            "legacy non-SANY configuration retains four roles");
+    for (int failure = 0; failure < 7; ++failure) {
+        auto broken = YAML::Clone(config);
+        switch (failure) {
+            case 0: broken["vehicle_configuration"]["lidar_count"] = 4; break;
+            case 1: broken["vehicle_configuration"]["LIDAR"] = "SLAVE"; break;
+            case 2: broken["multi_lidar"]["enabled"] = false; break;
+            case 3: broken["multi_lidar"]["topics"].remove("lidar_2"); break;
+            case 4: broken["multi_lidar"]["topics"]["lidar_3"] = "/extra"; break;
+            case 5: broken["sany_vehicle_config"]["calibrations"] = "unresolved"; break;
+            case 6: broken["multi_lidar"]["topics"]["lidar_2"] = "/left"; break;
+        }
+        bool rejected = false;
+        try { RequiredSanyRadarRoles(broken); } catch (const std::exception&) { rejected = true; }
+        Require(rejected, "inconsistent topology must reject startup rather than omit a required radar");
+    }
+    bool empty_rejected = false;
+    try { RadarDtcState empty(0.5, 2.5, ids, 8.0, At(0), {{false, false, false, false}}); }
+    catch (const std::invalid_argument&) { empty_rejected = true; }
+    Require(empty_rejected, "empty required set cannot fabricate healthy Safety");
+
+    RadarDtcState three(0.5, 2.5, ids, 8.0, At(0), RequiredSanyRadarRoles(config));
+    Require(!three.Evaluate(At(7999)).all_failed && three.Evaluate(At(8000)).all_failed,
+            "three missing required devices retain startup grace and severe timeout");
+    for (uint8_t role : {0, 2, 3}) Require(three.Observe(Healthy(role), At(8010)), "three active roles accepted");
+    Require(three.Evaluate(At(8010)).all_pass && !three.Evaluate(At(8010)).fault,
+            "healthy front left right pass without rear");
+    auto rear = Healthy(1); rear.usability = 2;
+    Require(!three.Observe(rear, At(8010)) && three.Evaluate(At(8010)).all_pass,
+            "inactive rear cannot introduce fault");
+    auto left = Healthy(2); left.comm_header.seq = 2; left.usability = 2;
+    Require(three.Observe(left, At(8020)) && three.Evaluate(At(8020)).fault &&
+            !three.Evaluate(At(8020)).all_failed, "one active radar fault remains blocking");
+    for (uint8_t role : {0, 2, 3}) {
+        auto failed = Healthy(role); failed.comm_header.seq = 3; failed.usability = 2;
+        Require(three.Observe(failed, At(8030)), "three failed sources accepted");
+    }
+    Require(three.Evaluate(At(8030)).all_failed, "all configured radars failed remains severe");
+    Require(!three.Observe(Healthy(1), At(8040)) && three.Evaluate(At(8040)).all_failed,
+            "inactive rear cannot clear severe state");
+    auto restarted = Healthy(0); restarted.boot_id = 2; restarted.usability = 0;
+    Require(three.Observe(restarted, At(8050)) && three.Evaluate(At(8050)).all_failed,
+            "active restart UNKNOWN cannot clear severe state");
+    restarted.usability = 1; ++restarted.comm_header.seq;
+    Require(three.Observe(restarted, At(8060)) && !three.Evaluate(At(8060)).all_failed &&
+            !three.Evaluate(At(8060)).all_pass, "active usable recovery disproves all failed only");
+    for (uint8_t role : {0, 2, 3}) {
+        auto healthy = Healthy(role); healthy.boot_id = 2; healthy.comm_header.seq = 4;
+        Require(three.Observe(healthy, At(8070)), "three recovered sources accepted");
+    }
+    Require(three.Evaluate(At(8070)).all_pass && three.Evaluate(At(8571)).all_failed,
+            "three-source outage still becomes severe");
+
     RadarDtcState startup(0.5, 2.5, ids, 8.0, At(0));
     Require(!startup.Evaluate(At(0)).all_pass && !startup.Evaluate(At(7999)).all_failed,
             "startup missing evidence is UNKNOWN during grace");
@@ -123,5 +195,5 @@ int main() {
         Require(audit.Observe(proof, At(2040)) && !audit.Evaluate(At(2040)).all_pass_without_time_sync, "stale HMS blocks even with fresh transport");
         Require(!audit.Evaluate(At(2541)).bounded_all_pass, "expired transport blocks bounded policy");
     }
-    std::cout << "radar_dtc_state_test passed: four-source Safety, startup/outage/restart, identity, history and bounded PTP\n";
+    std::cout << "radar_dtc_state_test passed: three/four-source Safety, topology, startup/outage/restart, identity, history and bounded PTP\n";
 }

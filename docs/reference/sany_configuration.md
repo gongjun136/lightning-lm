@@ -50,6 +50,8 @@ python3 scripts/resolve_sany_config.py \
 
 运行快照记录 VIN、布局、标定版本以及三个源文件的 SHA-256，已有快照禁止覆盖。纯 INS 的 SANY Shell 入口也解析其 `cloud.lidar_config`，保持对共用标定的引用。
 
+定位 Safety 和 `scripts/check_runtime_interfaces.py --config /absolute/new_run/config.yaml` 也沿用同一有效配置：三雷达检查前、左、右，四雷达增加后雷达。未启用的后雷达不作为缺失故障；已启用雷达缺失、过期、真实故障仍参与判定，全部启用雷达不可用仍给 -9。该集合不随自适应降载或话题在线状态缩减，详见 @ref dtc_delivery。
+
 ## 观测与点云发布
 
 定位最低允许前主雷达一台提供观测。健康时使用全部可用雷达，先按 2200/1804/1500 点预算降载，再逐级减少辅助雷达，始终保留前雷达；恢复负载后逐级恢复。质量下降时恢复全部可用来源和未限额点云。观测能否被接受仍由实际匹配质量决定。

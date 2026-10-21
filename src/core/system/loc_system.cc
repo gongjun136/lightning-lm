@@ -22,6 +22,7 @@
 #include "core/localization/localization.h"
 #include "core/localization/pose_covariance.h"
 #include "utils/localization_dtc_reporting.h"
+#include "utils/sany_radar_topology.h"
 #include "utils/thread_scheduling.h"
 #include "core/maps/map_manifest.h"
 #include "common/debug_event.h"
@@ -246,7 +247,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     dtc_config.startup_grace_sec = value("startup_grace_sec", dtc_config.startup_grace_sec);
     dtc_config.max_speed_mps = value("max_speed_mps", dtc_config.max_speed_mps);
     dtc_config.max_yaw_rate_radps = value("max_yaw_rate_radps", dtc_config.max_yaw_rate_radps);
+    std::array<bool, 4> required_radar_roles;
     try {
+        required_radar_roles = functional_safety::RequiredSanyRadarRoles(root);
         dtc_monitor_ = std::make_unique<loc::dtc::Monitor>(dtc_config);
         safety_fault_reporting_enabled_ = dtc && dtc["safety_fault_reporting_enabled"]
                                               ? dtc["safety_fault_reporting_enabled"].as<bool>()
@@ -276,7 +279,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             }
         }
         radar_dtc_state_ = std::make_unique<functional_safety::RadarDtcState>(
-            radar_timeout, hms_timeout, radar_ids, dtc_config.startup_grace_sec);
+            radar_timeout, hms_timeout, radar_ids, dtc_config.startup_grace_sec,
+            functional_safety::RadarDtcState::Clock::now(), required_radar_roles);
         if (dtc && dtc["config_version"]) dtc_config_version_ = dtc["config_version"].as<std::string>();
         if (dtc_config_version_.empty()) throw std::invalid_argument("empty DTC config version");
     } catch (const std::exception& error) {
@@ -286,6 +290,9 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << " safety_fault_reporting_enabled=" << safety_fault_reporting_enabled_
               << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_
               << " radar_bounded_sync_warning_enabled=" << radar_bounded_sync_warning_enabled_
+              << " max_input_gap_sec=" << dtc_config.max_input_gap_sec
+              << " consistency_unknown_grace_sec=" << dtc_config.consistency_unknown_grace_sec
+              << " output_timeout_sec=" << dtc_config.output_timeout_sec
               << " covariance_variance_scale=" << dtc_config.covariance_scale
               << " major_sigma_limit_m=" << dtc_config.major_sigma_m
               << " lateral_sigma_limit_m=" << dtc_config.lateral_sigma_m
@@ -297,12 +304,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safety>(
         topic("safety_topic", "/safety/throstle"), dtc_qos);
     const std::array<std::string, 4> radar_roles{{"front", "rear", "left", "right"}};
-    for (size_t i = 0; i < 4; ++i)
+    for (size_t i = 0; i < 4; ++i) {
+        LOG(INFO) << "LOCALIZATION_RADAR_REQUIRED role=" << radar_roles[i]
+                  << " required=" << required_radar_roles[i];
+        if (!required_radar_roles[i]) continue;
         radar_availability_subs_[i] = node_->create_subscription<livox_ros_driver2::msg::LidarDiagnosticState>(
             "/sensors/livox/" + radar_roles[i] + "/diagnostic_state", dtc_qos,
             [this, i](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
                 if (msg->role == i) radar_dtc_state_->Observe(*msg);
             });
+    }
     dtc_timer_ = node_->create_wall_timer(std::chrono::milliseconds(100), [this]() { UpdateDtcHeartbeat(); });
     safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(20), [this]() {
         PublishSafety();
@@ -1233,7 +1244,8 @@ void LocSystem::PublishSafety() {
                              radar.time_sync_fault_mask != last_safety_sync_mask_ ||
                              msg.runstate != last_safety_published_ ||
                              radar.bounded_sync_warning_mask != last_safety_bounded_mask_;
-        if (changed || ++safety_shadow_ticks_ % 50 == 0) {
+        // Retain a short tolerated UNKNOWN even when Safety remains unchanged.
+        if (changed || localization.consistency_unknown_tolerated || ++safety_shadow_ticks_ % 50 == 0) {
             LOG(INFO) << "SAFETY_TIME_SYNC_SHADOW published_runstate=" << int(msg.runstate)
                       << " strict_runstate=" << strict << " shadow_runstate=" << shadow
                       << " bounded_runstate=" << bounded

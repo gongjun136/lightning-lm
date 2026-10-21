@@ -20,6 +20,31 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def required_radar_roles(config):
+    """Match Safety's immutable vehicle snapshot; never infer deployment from live topics."""
+    if "sany_vehicle_config" in config:
+        raise ValueError("Resolve SANY vehicle configuration before checking radar diagnostics")
+    if "vehicle_configuration" not in config:
+        return ["front", "rear", "left", "right"]
+    vehicle = config["vehicle_configuration"]
+    if not isinstance(vehicle, dict):
+        raise ValueError("SANY vehicle_configuration must be a mapping")
+    count = {"MASTER AND SLAVE": 3, "MASTER": 4}.get(vehicle.get("LIDAR"))
+    if count is None or vehicle.get("lidar_count") != count:
+        raise ValueError("Inconsistent SANY LIDAR layout/count")
+    multi = config.get("multi_lidar", {})
+    if (not isinstance(multi, dict) or multi.get("enabled") is not True
+            or type(multi.get("primary_lidar_id")) is not int or multi["primary_lidar_id"] != 0):
+        raise ValueError("SANY radar diagnostics require enabled multi_lidar with primary 0")
+    topics = multi.get("topics", {})
+    expected = {f"{kind}_{i}" for i in range(count) for kind in ("lidar", "imu")}
+    if (not isinstance(topics, dict) or set(topics) != expected
+            or any(not isinstance(v, str) or not v for v in topics.values())
+            or len({topics[f"lidar_{i}"] for i in range(count)}) != count):
+        raise ValueError("SANY radar topics do not match vehicle layout")
+    return ["front", "rear", "left", "right"] if count == 4 else ["front", "left", "right"]
+
+
 def resolve(base_path, vehicle_path, calibration_path=None, fixed_map_transform=None):
     base_path, vehicle_path = Path(base_path).resolve(), Path(vehicle_path).resolve()
     base, vehicle = load(base_path), load(vehicle_path)
@@ -88,6 +113,7 @@ def resolve(base_path, vehicle_path, calibration_path=None, fixed_map_transform=
             raise ValueError("output.fixed_map_transform is required for the site override")
         transform["enabled"] = bool(fixed_map_transform)
         result["vehicle_configuration"]["fixed_map_transform_override"] = bool(fixed_map_transform)
+    required_radar_roles(result)
     return result
 
 

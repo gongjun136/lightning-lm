@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('executable', type=Path)
     parser.add_argument('--safety-fault-reporting', choices=('default', 'true', 'false'), default='default')
+    parser.add_argument('--sany-lidars', type=int, choices=(3, 4), help='Test a resolved SANY deployment topology')
     args = parser.parse_args()
     os.environ.setdefault('ROS_DOMAIN_ID', '172')
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
@@ -35,6 +36,21 @@ def main():
     config['map_export'] = {'normalize_start_ground_z': False}
     config['maps']['save_dyn_when_quit'] = False
     config['diagnostics'] = {'startup_grace_sec': 2.0, 'config_version': 'smoke-test'}
+    if args.sany_lidars:
+        sany = yaml.safe_load((source_root / 'config/sany/localization.yaml').read_text())
+        config['diagnostics']['consistency_unknown_grace_sec'] = sany['diagnostics']['consistency_unknown_grace_sec']
+        config['multi_lidar'] = sany['multi_lidar']
+        config['multi_lidar']['topics'] = {
+            key: config['multi_lidar']['topics'][key] for i in range(args.sany_lidars)
+            for key in (f'lidar_{i}', f'imu_{i}')}
+        config['multi_lidar']['extrinsics'] = {
+            key: value for key, value in yaml.safe_load(
+                (source_root / 'config/sany/calibrations.yaml').read_text())['vehicles']['SANLV77EXSH000858']['extrinsics'].items()
+            if key in {f'lidar{i}' for i in range(args.sany_lidars)}}
+        config['multi_lidar']['adaptive_load']['cloud_publish_min_lidars'] = args.sany_lidars
+        config['vehicle_configuration'] = {
+            'LIDAR': 'MASTER' if args.sany_lidars == 4 else 'MASTER AND SLAVE',
+            'lidar_count': args.sany_lidars}
     if args.safety_fault_reporting != 'default':
         config['diagnostics']['safety_fault_reporting_enabled'] = args.safety_fault_reporting == 'true'
     with tempfile.TemporaryDirectory(prefix='dtc_online_', dir=executable.parent.parent) as directory:
@@ -113,7 +129,8 @@ def main():
                 assert node.count_subscribers('/internal/diagnostics/livox_dtc') == 0, 'Safety must not depend on the retired aggregator'
                 assert node.count_publishers('/diagnostics/heartbeat/livox_dtc') == 0
                 for role in ('front', 'rear', 'left', 'right'):
-                    assert node.count_subscribers(f'/sensors/livox/{role}/diagnostic_state') == 1, 'Safety requires four direct source subscriptions'
+                    expected = 0 if args.sany_lidars == 3 and role == 'rear' else 1
+                    assert node.count_subscribers(f'/sensors/livox/{role}/diagnostic_state') == expected, f'incorrect required radar: {role}'
                 assert node.count_subscribers('/diagnostics/source_dtc/livox') == 0, 'Safety must not use the retired external topic'
                 assert len(heartbeats) >= 20, 'heartbeat must continue during UNKNOWN'
                 assert all(msg.node_id == 6 and msg.boot_id and not msg.active_fault for msg in heartbeats)

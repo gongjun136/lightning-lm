@@ -150,10 +150,79 @@ int main() {
     bool invalid_grace_rejected = false;
     try {
         auto invalid = cfg;
-        invalid.consistency_unknown_grace_sec = 0.2;
+        invalid.consistency_unknown_grace_sec = invalid.output_timeout_sec;
         Monitor rejected(invalid, At(0));
     } catch (const std::invalid_argument&) { invalid_grace_rejected = true; }
-    Require(invalid_grace_rejected, "grace cannot exceed the independent input freshness budget");
+    Require(invalid_grace_rejected, "grace must remain below the unchanged severe output timeout");
+
+    // Reproduce the stationary 2026-10-21 11:28 event: both independent
+    // arrivals are 107 ms old, a pose just arrived, covariance still passes.
+    Config bounded_cfg = cfg;
+    bounded_cfg.consistency_unknown_grace_sec = 0.15;
+    Monitor strict_gap(cfg, At(0)), bounded_gap(bounded_cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) {
+        Feed(strict_gap, ms, Pose(0), 0);
+        Feed(bounded_gap, ms, Pose(0), 0);
+    }
+    for (auto* monitor : {&strict_gap, &bounded_gap})
+        monitor->ObservePose(101.107, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1107));
+    const auto delayed = bounded_gap.Evaluate(false, At(1107));
+    Require(SafetyValue(strict_gap.Evaluate(false, At(1107)), false, false, true) == 4,
+            "zero grace reproduces the original stop at 107 ms");
+    Require(delayed.observations[0].condition == kUnknown &&
+            delayed.observations[1].condition == kPass && delayed.consistency_unknown_tolerated &&
+            SafetyValue(delayed, false, false, true) == 0,
+            "107 ms arrival gap may use bounded prior evidence without pretending consistency passed");
+    Require(SafetyValue(delayed, false, true, false) == 2 &&
+            SafetyValue(delayed, true, true, false) == -9,
+            "motion grace never bypasses radar faults or all-radar failure");
+    Monitor delayed_delivery(bounded_cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(delayed_delivery, ms, Pose(0), 0);
+    delayed_delivery.ObserveSpeed(101.108674, 0, At(1035));
+    delayed_delivery.ObserveGyro(101.105777, 0, At(1035));
+    delayed_delivery.ObservePose(101.105777, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1142));
+    Require(delayed_delivery.Evaluate(false, At(1142)).consistency_unknown_tolerated &&
+            !delayed_delivery.Evaluate(false, At(1151)).consistency_unknown_tolerated,
+            "a delayed pose may share the last IMU stamp, but the deadline remains anchored to the older PASS");
+    Require(bounded_gap.Evaluate(false, At(1150)).consistency_unknown_tolerated,
+            "150 ms total evidence-age boundary is inclusive");
+    bounded_gap.ObservePose(101.151, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1151));
+    Require(!bounded_gap.Evaluate(false, At(1151)).consistency_unknown_tolerated &&
+            SafetyValue(bounded_gap.Evaluate(false, At(1151)), false, false, true) == 4,
+            "fresh poses and repeated UNKNOWN cannot extend the 150 ms total deadline");
+    Require(bounded_gap.Evaluate(false, At(1452)).severe && delayed.confirmed_failure == false,
+            "output timeout remains 300 ms and missing evidence is not a confirmed failure");
+    Feed(bounded_gap, 1160, Pose(0), 0);
+    Require(bounded_gap.Evaluate(false, At(1160)).observations[0].condition == kUnknown,
+            "receiving one new input does not prove a missing integration window is complete");
+    for (int ms = 1180; ms <= 1800; ms += 20) Feed(bounded_gap, ms, Pose(0), 0);
+    Require(SafetyValue(bounded_gap.Evaluate(false, At(1800)), false, false, true) == 0,
+            "complete fresh evidence recovers after the missing interval leaves the window");
+
+    Monitor clock_jump(bounded_cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(clock_jump, ms, Pose(0), 0);
+    clock_jump.ObserveSpeed(101.14, 0, At(1020));
+    clock_jump.ObserveGyro(101.14, 0, At(1020));
+    clock_jump.ObservePose(101.14, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1020));
+    Require(!clock_jump.Evaluate(false, At(1020)).consistency_unknown_tolerated,
+            "a source-clock jump cannot borrow pre-jump PASS even inside the grace interval");
+
+    Monitor moving_gap(bounded_cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(moving_gap, ms, Pose(ms * 0.005), 5);
+    moving_gap.ObservePose(101.107, Pose(5.535), Pose(5.535), SmallCov(), true, false, 1, At(1107));
+    Require(moving_gap.Evaluate(false, At(1107)).consistency_unknown_tolerated,
+            "the same bounded timing rule applies at the stated 5 m/s operating limit");
+    // A new definite mismatch must still stop immediately, even with grace enabled.
+    for (int ms = 1120; ms <= 1800; ms += 20) Feed(moving_gap, ms, Pose(ms * 0.005), 5);
+    Feed(moving_gap, 1820, Pose(12.1), 5);
+    Require(moving_gap.Evaluate(false, At(1820)).confirmed_failure &&
+            SafetyValue(moving_gap.Evaluate(false, At(1820)), false, false, true) == 4,
+            "a definite moving-vehicle jump remains an immediate stop");
+    moving_gap.ObservePose(101.927, Pose(12.635), Pose(12.635), SmallCov(), true, false, 1, At(1927));
+    Require(moving_gap.Evaluate(false, At(1927)).confirmed_failure &&
+            !moving_gap.Evaluate(false, At(1927)).consistency_unknown_tolerated &&
+            SafetyValue(moving_gap.Evaluate(false, At(1927)), false, false, true) == 4,
+            "a later input gap cannot hide the confirmed moving-vehicle jump");
     reverse.ObservePose(101.10, Pose(-1.10), Pose(-1.10), Mat6d::Zero(), true, false, 1, At(1100));
     Require(reverse.Evaluate(false, At(1100)).observations[1].condition == kUnknown, "placeholder zero covariance cannot pass");
 

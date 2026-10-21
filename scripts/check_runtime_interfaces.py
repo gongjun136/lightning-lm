@@ -10,15 +10,25 @@ import rclpy
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosidl_runtime_py.utilities import get_message
 from rosidl_runtime_py.convert import message_to_ordereddict
+from resolve_sany_config import load, resolve, required_radar_roles
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--workspace', type=Path, required=True)
 parser.add_argument('--duration', type=float, default=25)
 parser.add_argument('--require-healthy', action='store_true')
+parser.add_argument('--config', type=Path, help='Effective configuration snapshot from this localization run')
+parser.add_argument('--vehicle-config', type=Path, default=Path('/opt/conf/vehicle_config.yaml'),
+                    help='Used to resolve the shared template when --config is omitted')
 args = parser.parse_args()
 if args.duration < 10:
     parser.error('--duration must be at least 10 seconds')
-params = yaml.safe_load((args.workspace / 'src/lightning-lm/config/sany/localization.yaml').read_text())['diagnostics']
+try:
+    config = (load(args.config) if args.config else
+              resolve(args.workspace / 'src/lightning-lm/config/sany/localization.yaml', args.vehicle_config))
+    active_roles = required_radar_roles(config)
+    params = config['diagnostics']
+except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
+    parser.error(str(error))
 rclpy.init()
 node = rclpy.create_node('safety_repair_probe')
 topics = {
@@ -26,7 +36,7 @@ topics = {
  '/localization/pose_vel': 'lightning/msg/VehiclePose',
  '/diagnostics/heartbeat/lightning_slam': 'diagnostic_monitor_interfaces/msg/NodeHeartbeat',
 }
-for role in ['front', 'rear', 'left', 'right']:
+for role in active_roles:
     topics[f'/sensors/livox/{role}/diagnostic_state'] = 'livox_ros_driver2/msg/LidarDiagnosticState'
     topics[f'/diagnostics/heartbeat/livox_{role}'] = 'diagnostic_monitor_interfaces/msg/NodeHeartbeat'
 counts, last, states, gaps, previous = Counter(), {}, Counter(), {}, {}
@@ -104,7 +114,7 @@ publisher_counts = {topic: node.count_publishers(topic) for topic in topics}
 for topic, count in publisher_counts.items():
     if count != 1:
         errors.add(f'{topic}: expected one publisher, found {count}')
-for role in roles:
+for role in active_roles:
     hb = last.get(f'/diagnostics/heartbeat/livox_{role}')
     state = last.get(f'/sensors/livox/{role}/diagnostic_state')
     if hb and state and hb['boot_id'] != state['boot_id']:
@@ -112,6 +122,9 @@ for role in roles:
 if node.count_publishers('/diagnostics/heartbeat/livox_dtc'):
     errors.add('retired aggregate heartbeat is still publishing; stop the old aggregator')
 result = dict(duration=time.monotonic()-start, counts=dict(counts),
+              required_radar_roles=active_roles,
+              config=str(args.config) if args.config else None,
+              vehicle_configuration=config.get('vehicle_configuration'),
               publisher_counts=publisher_counts,
               observed_active_faults={topic: sorted(codes) for topic, codes in observed_faults.items()},
               bounded_warning_counts=dict(bounded_counts), sync_fault_counts=dict(sync_fault_counts),
