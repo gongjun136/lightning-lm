@@ -6,6 +6,33 @@ https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 
 @section dtc_interfaces 接口与职责
 
+2026-10-21 动态联调后的 CAN 可选输入修订：CAN 未接入、冻结、过期或历史窗口缺口，
+本身不再触发 `runstate=4`。平移轮速一致性仍记录 UNKNOWN，航向独立使用 IMU 检查；
+必须有当前航向 Pass（含预热窗口）及有效不确定度，且不存在待恢复的明确故障。
+短时 IMU 证据缺失仍受下文 150 ms 总证据年龄约束，输出超时、门禁丢失、全雷达失效的 -9 条件不变。
+无 CAN 时缺少独立平移验证，不能把 UNKNOWN 解读成平移精度已通过。
+SANY 模板及代码默认诊断版本为 `localization-dtc-v3-optional-can`；更新后核对启动版本及配置快照。
+
+平移、航向、不确定度分别保存明确故障。CAN 断开不能解除已确认平移故障，
+需恢复完整有效 CAN 窗口并重新通过；航向故障可在无 CAN 时由独立航向 Pass 恢复。
+对外保留原 DTC 码及消息定义；心跳清除一致性码时要求没有任何待恢复子项且必需检查已通过。
+日志增加 `translation_condition`、`yaw_condition`、`optional_can_unavailable`、`yaw_pass_age_sec`。
+CAN 单独不可用不计入 `unknown_tolerated`，该字段只表示必需 IMU 证据的有限容忍。
+
+启动入口使用 `check_localization_inputs --optional-wheel-speed`，缺 CAN 不阻止启动，
+仍检查实际 LiDAR/IMU 收包；单独手动使用旧 `--wheel-speed` 仍可做严格 CAN 检查。
+融合保留既有 250 ms 传感器时间年龄门限、未来时间容差和创新门限，不因本次修订放宽。
+CAN 恢复后仅有效且符合时间门限的样本参与融合，不能以新接收时间替代旧 Header 时间。
+LIO 共享工作线程等待及两核调度对照方案见 [动态联调 LIO 调度说明](lio_scheduling_20261021.md)。
+
+本轮本地 WSL Ubuntu 22.04 / ROS Humble 验证：`run_loc_online`、启动探针及三个回归目标构建成功；
+`localization_dtc_test`、`localization_pgo_test`、`heartbeat_dtc_test` 3/3 通过。
+真实 ROS 输入探针验证四项：可选 CAN 缺失通过、严格 CAN 缺失失败、必需 IMU 缺失失败、必需 LiDAR 缺失失败。
+启动脚本回归 8/8、依赖接口回归 9/9 通过；真实三雷达进程 smoke 通过，Safety steady 平均约 50.1 Hz。
+挂载盘启动脚本测试使用 `LIGHTNING_TEST_LAUNCH_TIMEOUT_SEC=120`（默认测试预算仍为 30 秒）；
+初次 30 秒预算发生 TimeoutExpired，未作为通过记录，不修改实车超时参数。
+这些验证包含构造的无 CAN、5 m/s 输入、故障保持/恢复及停走回归，不是 ARM 实车负载验收或整包原始数据回放。
+
 对外 DTC 统一通过 diagnostic_monitor_interfaces/msg/NodeHeartbeat.active_fault 上报。
 使用 workspace.repos 固定的 common_msgs 既有定义，不增加公共字段。
 定位 ID 6 的 /diagnostics/heartbeat/lightning_slam 负责
@@ -160,6 +187,7 @@ HMS 为 0x04050002 与 0x04090002，属于上述同类误报。12 s 内后角色
 积分到与最终后轴位姿相同的时间窗口，检查纵向、横向及航向误差。
 同时检查平滑前位姿和最终发布位姿；相邻增量检查覆盖窗口预热时的突跳。
 输入间隙、无效值、重复/回退时间戳、缺少完整窗口均为 UNKNOWN。
+CAN 缺失只使平移子项 UNKNOWN，航向继续独立检查；UNKNOWN 不自动等于停车，详见上方 CAN 可选输入修订。
 重定位/图重置推进 pose_epoch，跨 epoch 不比较，重新预热检测。
 rpm 比例、轮速符号、时间对齐、陀螺偏差和安装方向须用实车独立参考标定；
 平面运动近似需在项目道路坡度范围内验证。
@@ -336,21 +364,22 @@ Safety 的判定顺序为：
 |---|---|---|
 | 定位发布门禁丢失、输出超时，或全部雷达不可用 | -9 | 保留原条件、阈值和优先级 |
 | 一致性或不确定度明确 Fail，或已确认故障尚无对应 Pass 恢复证据 | 4 | Unknown 不得清除明确故障 |
-| 不确定度 Unknown，或一致性 Unknown 不满足有限容忍条件 | 4 | 启动、重定位预热、无效协方差仍停车 |
+| 不确定度 Unknown，或必需航向 Unknown 不满足有限容忍条件 | 4 | 启动、重定位预热、无效协方差仍停车 |
+| 仅可选 CAN 平移检查 Unknown，必需航向和不确定度 Pass，无待恢复故障 | 继续检查雷达分支 | 不为 CAN 缺失设置停车计时器，观测保留 Unknown |
 | 仅一致性 Unknown，且满足下述证据条件 | 继续检查雷达分支 | 原始观测仍为 Unknown，不伪造 Pass |
 | 雷达故障或雷达证据未全部通过，且未启用雷达屏蔽 | 2 | 保留原策略 |
 | 其余情况 | 0 | 不代表独立验证的整车安全结论 |
 
-`diagnostics.consistency_unknown_grace_sec` 的代码默认值为 0，保持原停车行为。
+`diagnostics.consistency_unknown_grace_sec` 的代码默认值为 0，必需航向 Unknown 不使用旧证据。
 2026-10-21 SANY 模板采用 0.15 s 作为部署调试候选：接收年龄超过 100 ms 仍将一致性判为 UNKNOWN，
 但停车判断独立使用下述有限证据条件。150 ms 高于本次约 107 ms 的接收年龄，并在原 300 ms 输出急停之前截止；
 是否可以容忍仍取决于最后一次 Pass 的年龄及全部条件，不能只比较接收年龄。
 这是初始调试值，不是仅凭静止数据完成的行驶验收。非零值必须小于 `output_timeout_sec`。
-计时基准是本定位 epoch 中**最后一次明确一致性 Pass 的单调时间**，
+CAN 可选修订后的计时基准是本定位 epoch 中**最后一次明确航向一致性 Pass 的单调时间**，
 不是首次 Unknown 或定时器每次评估时间；Unknown 自身不能续期。
-输出年龄、CAN/IMU 到达年龄和输入与位姿时间戳差均不得超过该总上限；
+输出年龄、IMU 到达年龄和 IMU 与位姿时间戳差均不得超过该总上限；CAN 不参与这一必需证据计时；
 不确定度当前 Pass、没有待恢复明确故障且没有 severe 时，才可使用旧的通过证据。
-epoch 切换和非法输入会取消旧证据；位姿源时间增量与单调到达时间增量相差超过 100 ms 也取消旧证据。
+epoch 切换和非法 IMU 输入会取消旧航向证据；位姿源时间增量与单调到达时间增量相差超过 100 ms 也取消旧证据。
 单纯源时间间隔超过 100 ms 不再独立等同于时钟跳变，但旧 Pass 仍会在总上限到期后失效。
 明确 Fail 必须由该检查后续 Pass 清除。
 300 ms 输出超时、定位门禁丢失和全雷达不可用均不受容忍参数影响。

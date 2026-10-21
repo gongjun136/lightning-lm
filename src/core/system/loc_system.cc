@@ -1214,6 +1214,10 @@ void LocSystem::UpdateDtcHeartbeat() {
         << " imu_stamp_lag_sec=" << snapshot.gyro_stamp_lag_sec
         << " confirmed_failure=" << snapshot.confirmed_failure
         << " unknown_tolerated=" << snapshot.consistency_unknown_tolerated
+        << " optional_can_unavailable=" << snapshot.optional_can_unavailable
+        << " translation_condition=" << int(snapshot.translation_condition)
+        << " yaw_condition=" << int(snapshot.yaw_condition)
+        << " yaw_pass_age_sec=" << snapshot.yaw_pass_age_sec
         << " consistency_pass_age_sec=" << snapshot.consistency_pass_age_sec
         << " output_age_sec=" << snapshot.output_age_sec
         << " can_arrival_age_sec=" << snapshot.speed_arrival_age_sec
@@ -1260,6 +1264,10 @@ void LocSystem::PublishSafety() {
                       << " severe=" << localization.severe
                       << " confirmed_failure=" << localization.confirmed_failure
                       << " unknown_tolerated=" << localization.consistency_unknown_tolerated
+                      << " optional_can_unavailable=" << localization.optional_can_unavailable
+                      << " translation_condition=" << int(localization.translation_condition)
+                      << " yaw_condition=" << int(localization.yaw_condition)
+                      << " yaw_pass_age_sec=" << localization.yaw_pass_age_sec
                       << " consistency_pass_age_sec=" << localization.consistency_pass_age_sec
                       << " output_age_sec=" << localization.output_age_sec
                       << " can_arrival_age_sec=" << localization.speed_arrival_age_sec

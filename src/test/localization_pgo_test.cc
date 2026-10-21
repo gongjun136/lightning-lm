@@ -322,6 +322,45 @@ int main() {
                     .norm() < 1e-9,
             "delayed parked lidar match cannot release a pose jump after hold exit");
 
+    // A second stop must not reuse the first stop's raw pose after travelling.
+    // Exercise the first held output before a new map frame can refresh it.
+    dtc::Monitor stop_go_monitor(dtc::Config{});
+    const auto stop_go_start = dtc::Clock::now();
+    const double stop_go_stamp = moving_dr.timestamp_;
+    const auto observe_stop_go = [&](double speed) {
+        const auto now = stop_go_start + std::chrono::duration_cast<dtc::Clock::duration>(
+            std::chrono::duration<double>(velocity_output.timestamp_ - stop_go_stamp));
+        stop_go_monitor.ObserveSpeed(velocity_output.timestamp_, speed, now);
+        stop_go_monitor.ObserveGyro(velocity_output.timestamp_, 0.0, now);
+        stop_go_monitor.ObservePose(
+            velocity_output.timestamp_, velocity_output.pose_,
+            velocity_output.unsmoothed_pose_valid_ ? velocity_output.unsmoothed_pose_ : velocity_output.pose_,
+            velocity_output.pose_covariance_, velocity_output.pose_covariance_valid_,
+            velocity_output.pose_unobservable_, velocity_output.pose_epoch_, now);
+        return stop_go_monitor.Evaluate(false, now).observations[0].condition;
+    };
+    observe_stop_go(2.0);
+    for (int index = 0; index < 50; ++index) {
+        moving_dr.timestamp_ += 0.02;
+        moving_dr.pos_ += body_rotation * Vec3d(0.04, 0.0, 0.0);
+        moving_dr.SetVel(body_rotation * Vec3d(2.0, 0.0, 0.0));
+        Require(velocity_pgo.ProcessDR(moving_dr), "advance between two stationary holds");
+        const auto condition = observe_stop_go(2.0);
+        if (index >= 30) Require(condition == dtc::kPass, "moving pose passes independent motion check");
+    }
+    Require((velocity_output.pose_.translation() - parked_output_pose.translation()).norm() > 1.0,
+            "second stop is at a different location");
+    NavState second_stop = moving_dr;
+    second_stop.timestamp_ += 0.01;
+    second_stop.is_parking_ = true;
+    second_stop.SetVel(Vec3d::Zero());
+    Require(velocity_pgo.ProcessDR(second_stop), "enter second stationary hold before a map update");
+    Require(observe_stop_go(0.0) == dtc::kPass,
+            "second hold must not create a false motion fault from the first hold's raw pose");
+    Require(velocity_output.unsmoothed_pose_valid_ &&
+                (velocity_output.unsmoothed_pose_.inverse() * velocity_output.pose_).log().norm() < 1e-9,
+            "first held output carries its own unsmoothed pose");
+
     // Reproduce a hold long enough to evict the pre-hold fused timestamp from
     // the bounded DR queue.  The first moving result must continue from the
     // held sensor-time epoch rather than publishing that evicted old result.

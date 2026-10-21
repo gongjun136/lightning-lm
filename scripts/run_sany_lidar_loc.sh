@@ -90,8 +90,8 @@ Usage:
 Required before launch:
   1. Start every Livox driver configured by LIGHTNING_LM_CONFIG.
      No-bag mode requires the primary IMU; bag mode requires all configured IMUs.
-  2. When CAN observation is enabled, start the CAN bridge that publishes
-     /SpeThrCAN4_topic.
+  2. CAN wheel speed on /SpeThrCAN4_topic is optional; fresh valid samples
+     are used when CAN observation is enabled. Missing CAN does not block startup.
 
 Useful environment variables:
   SANY_MAP_PATH              Absolute map path; field entry must select the released map
@@ -412,9 +412,6 @@ if [[ "${record_bag}" == "1" ]]; then
 fi
 # [sany-lidar-required-inputs]
 required_topics=("${lidar_topics[@]}" "${required_imu_topics[@]}")
-if [[ "${enable_can_observation}" == "1" ]]; then
-  required_topics+=("${wheel_speed_topic}")
-fi
 # [sany-lidar-required-inputs]
 
 wait_for_inputs() {
@@ -429,7 +426,7 @@ wait_for_inputs() {
     [[ "${topic}" == "${imu_topic}" ]] || args+=(--imu "${topic}")
   done
   if [[ "${enable_can_observation}" == "1" ]]; then
-    args+=(--wheel-speed "${wheel_speed_topic}")
+    args+=(--optional-wheel-speed "${wheel_speed_topic}")
   fi
   timeout --signal=TERM --kill-after=3 "$((topic_wait_seconds + 5))" \
     ros2 run lightning_lm check_localization_inputs "${args[@]}" \
@@ -594,13 +591,13 @@ trap stop_children EXIT
 
 if [[ "${record_bag}" == "1" ]]; then
   if [[ "${enable_can_observation}" == "1" ]]; then
-    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, ${#record_imu_topics[@]} IMU topics, and CAN wheel speed..."
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and ${#record_imu_topics[@]} IMU topics; CAN wheel speed is optional."
   else
     echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and ${#record_imu_topics[@]} IMU topics; CAN observation is disabled."
   fi
 else
   if [[ "${enable_can_observation}" == "1" ]]; then
-    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics, the primary IMU, and CAN wheel speed..."
+    echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU; CAN wheel speed is optional."
   else
     echo "Waiting for ${#lidar_topics[@]} raw LiDAR topics and the primary IMU; CAN observation is disabled."
   fi

@@ -11,6 +11,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST_TOOL = Path(os.environ.get("LIGHTNING_TEST_MAP_MANIFEST_TOOL",
                      str(REPO.parent / "lightning_lm_ws/build/lightning_lm/bin/export_map_manifest")))
+LAUNCH_TIMEOUT = float(os.environ.get("LIGHTNING_TEST_LAUNCH_TIMEOUT_SEC", "30"))
 
 
 class LauncherFailureTest(unittest.TestCase):
@@ -45,6 +46,7 @@ if [[ "$1 $2 $3" == 'run lightning_lm export_map_manifest' ]]; then
   exec "$MAP_MANIFEST_TOOL" "${@:4}"
 elif [[ "$1 $2 $3" == 'run lightning_lm check_localization_inputs' ]]; then
   echo 'mock input delivery check'
+  echo "probe arguments: ${*:4}"
   exit "${PROBE_EXIT}"
 elif [[ "$1 $2 $3" == 'run lightning_lm run_loc_online' ]]; then
   echo 'mock algorithm failure' >&2
@@ -81,7 +83,7 @@ exit 91
             # Allow cold Python/NumPy imports and metadata I/O on mounted workspaces.
             result = subprocess.run(
                 ["bash", str(REPO / "scripts/run_sany_lidar_loc.sh"), "test"],
-                env=env, text=True, capture_output=True, timeout=30)
+                env=env, text=True, capture_output=True, timeout=LAUNCH_TIMEOUT)
             run = root / "runs/test"
             files = {str(path.relative_to(run)): path.read_text()
                      for path in run.rglob("*") if path.is_file()}
@@ -100,6 +102,15 @@ exit 91
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertIn("algorithm_exit_code=23", files["run_metadata.txt"])
         self.assertIn("mock algorithm failure", files["logs/run_loc_online.stderr.log"])
+
+    def test_can_is_optional_in_startup_probe(self):
+        result, files = self.run_launcher(0, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        probe = files["logs/input_check.log"]
+        self.assertIn("--optional-wheel-speed /SpeThrCAN4_topic", probe)
+        self.assertNotIn("--wheel-speed ", probe)
+        self.assertIn("--imu ", probe)
+        self.assertIn("--lidar ", probe)
 
     def test_site_transform_is_enabled_only_in_run_snapshot(self):
         result, files = self.run_launcher(0, 0, "1")

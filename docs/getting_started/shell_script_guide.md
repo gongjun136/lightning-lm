@@ -152,7 +152,7 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-required-inputs
 
-CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是稍后等待输入的依据，`record_topics` 是可选录包的采集清单，两者用途不同。首次阅读先理解这两个结果，再按需展开 YAML 解析细节。
+CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针仍订阅轮速并报告收到的消息，但缺失、错时 CAN 不阻塞启动；算法只使用有效且未过期的样本。`required_topics` 保存必需输入清单，`record_topics` 是可选录包的采集清单。
 
 @anchor sany_lidar_artifacts
 ### 4. 建立本次运行目录并保存配置
@@ -176,11 +176,11 @@ CAN 观测启用时，将轮速话题加入必需输入。`required_topics` 是�
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-register-cleanup
 
-然后调用 `wait_for_inputs` 等待必需话题，并检查 LiDAR、IMU 和启用的 CAN 输入类型：
+然后调用 `wait_for_inputs` 验证必需 LiDAR/IMU 实际收包，并观察可选 CAN：
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-check-inputs
 
-这一关检查话题存在和类型，不代表已经完成频率、时延或定位质量验收。通过后才进入采集与算法启动阶段。
+这一关要求各必需话题至少三条时间递增、最近一秒内收到的有效消息；仅有 ROS 图中的话题名不够。通过不代表已经完成持续频率、时延或定位质量验收。
 
 **函数定义与执行顺序：** `wait_for_inputs()`、`watch_pose_vel()` 和 `stop_children()` 出现在前面时只是定义函数；定义处不会执行函数体。上面这段 `wait_for_inputs || fail ...` 才是等待输入的调用点。首次阅读沿阶段表看调用点，遇到需要理解的细节再回到函数定义。
 

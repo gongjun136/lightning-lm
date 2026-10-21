@@ -20,7 +20,7 @@ struct Config {
     double covariance_scale = 1.0;  ///< Additional variance inflation; calibrate against independent error evidence.
     double position_sigma_floor_m = 0.10, angle_sigma_floor_rad = 0.5 * M_PI / 180.0;
     double output_timeout_sec = 0.3, evaluation_timeout_sec = 0.3, startup_grace_sec = 8.0;
-    double consistency_unknown_grace_sec = 0.0;  ///< Disabled by default; maximum age of confirmed passing motion evidence, steady seconds.
+    double consistency_unknown_grace_sec = 0.0;  ///< Disabled by default; maximum age of required passing yaw evidence, steady seconds.
     double max_speed_mps = 30.0, max_yaw_rate_radps = 3.0;
 };
 struct Observation {
@@ -33,9 +33,12 @@ struct Snapshot {
     bool severe = false;
     bool confirmed_failure = false;  ///< A definite failure remains active until the corresponding check passes again.
     bool consistency_unknown_tolerated = false;  ///< Only motion UNKNOWN may use bounded prior passing evidence.
+    bool optional_can_unavailable = false;  ///< Translation UNKNOWN alone does not stop when required yaw evidence passes.
+    Condition translation_condition = kUnknown, yaw_condition = kUnknown;
     double output_age_sec = 0.0;  ///< Steady time since the last accepted output.
     double speed_arrival_age_sec = 0.0, gyro_arrival_age_sec = 0.0;
     double consistency_pass_age_sec = 0.0;  ///< Steady age of last PASS; infinity before first PASS in this epoch.
+    double yaw_pass_age_sec = 0.0;  ///< Age of required IMU/pose evidence, independent of optional CAN.
     bool output_stale = false, localization_lost = false;  ///< Independent severe causes, not relaxed by grace.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
     double major_sigma_m = 0, lateral_sigma_m = 0, yaw_sigma_rad = 0;
@@ -55,9 +58,10 @@ class Monitor {
  private:
     struct Sample { double stamp, value; Clock::time_point arrival; };
     struct Pose { double stamp; SE3 final, raw; };
+    struct MotionResult { Condition translation = kUnknown, yaw = kUnknown; };
     void Observe(std::deque<Sample>& queue, double stamp, double value, double limit, Clock::time_point now);
     bool Interpolate(const std::deque<Sample>& queue, double stamp, double& value, Clock::time_point now) const;
-    Condition Motion(const Pose& from, const Pose& to, Clock::time_point now);
+    MotionResult Motion(const Pose& from, const Pose& to, Clock::time_point now);
     void Uncertainty(const SE3& pose, const Mat6d& covariance, bool valid, bool unobservable);
     Config config_;
     mutable std::mutex mutex_;
@@ -66,9 +70,11 @@ class Monitor {
     Clock::time_point start_, output_time_, evaluation_time_;
     uint64_t epoch_ = 0;
     bool output_seen_ = false;
-    std::array<bool, 2> failed_checks_{{false, false}};  ///< UNKNOWN never clears confirmed failures.
+    std::array<bool, 3> failed_checks_{{false, false, false}};  ///< Translation, yaw, uncertainty; UNKNOWN never clears failure.
     bool consistency_pass_seen_ = false;
     Clock::time_point consistency_pass_time_{};
+    bool yaw_pass_seen_ = false;
+    Clock::time_point yaw_pass_time_{};
     Snapshot snapshot_;
 };
 // Severe > localization > lidar > normal. An explicit radar-only override

@@ -290,7 +290,7 @@ class LocSystem {
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;  ///< 独立发布功能安全心跳并记录有效工作进度。
     std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
-    std::string dtc_config_version_ = "localization-dtc-v2-model-scale";
+    std::string dtc_config_version_ = "localization-dtc-v3-optional-can";
     bool safety_fault_reporting_enabled_ = true;  ///< 关闭时 Safety.runstate 固定为正常值 0，源 DTC 不受影响。
     bool radar_time_sync_shadow_enabled_ = true;  ///< 仅记录反事实判定，不改变真实 Safety。
     bool radar_bounded_sync_warning_enabled_ = false;

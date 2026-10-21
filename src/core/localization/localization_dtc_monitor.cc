@@ -9,6 +9,10 @@ namespace {
 double Yaw(const SE3& pose) { return std::atan2(pose.rotationMatrix()(1, 0), pose.rotationMatrix()(0, 0)); }
 double Wrap(double a) { return std::atan2(std::sin(a), std::cos(a)); }
 double Age(Clock::time_point now, Clock::time_point time) { return std::chrono::duration<double>(now - time).count(); }
+Condition Combined(Condition translation, Condition yaw) {
+    if (translation == kFail || yaw == kFail) return kFail;
+    return translation == kPass && yaw == kPass ? kPass : kUnknown;
+}
 }
 Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_(now) {
     for (double v : {config.window_sec, config.max_input_gap_sec, config.longitudinal_m,
@@ -30,6 +34,7 @@ Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_
 }
 void Monitor::Observe(std::deque<Sample>& q, double stamp, double value, double limit, Clock::time_point now) {
     if (!std::isfinite(stamp) || stamp <= 0 || !std::isfinite(value) || std::abs(value) > limit) {
+        if (&q == &gyros_) yaw_pass_seen_ = false;
         q.clear(); consistency_pass_seen_ = false; return;
     }
     if (!q.empty() && stamp <= q.back().stamp) return;  // frozen/replayed input cannot refresh validity
@@ -57,23 +62,25 @@ bool Monitor::Interpolate(const std::deque<Sample>& q, double stamp, double& val
     value = lower->value + ratio * (upper->value - lower->value);
     return std::isfinite(value);
 }
-Condition Monitor::Motion(const Pose& from, const Pose& to, Clock::time_point now) {
+Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::time_point now) {
     const double dt = to.stamp - from.stamp;
-    if (dt <= 0 || dt > 2 * config_.window_sec + config_.max_input_gap_sec) return kUnknown;
+    if (dt <= 0 || dt > 2 * config_.window_sec + config_.max_input_gap_sec) return {};
     double dx = 0, dy = 0, theta = 0, distance = 0, turn = 0;
+    bool translation_available = true;
     const int steps = std::max(1, static_cast<int>(std::ceil(dt / std::min(0.02, config_.max_input_gap_sec / 4))));
     const double step = dt / steps;
     for (int i = 0; i < steps; ++i) {
-        double speed, omega;
+        double speed = 0, omega;
         const double stamp = from.stamp + (i + 0.5) * step;
-        if (!Interpolate(speeds_, stamp, speed, now) || !Interpolate(gyros_, stamp, omega, now)) return kUnknown;
+        if (!Interpolate(gyros_, stamp, omega, now)) return {};
+        translation_available &= Interpolate(speeds_, stamp, speed, now);
         dx += speed * step * std::cos(theta + omega * step / 2);
         dy += speed * step * std::sin(theta + omega * step / 2);
         theta += omega * step;
         distance += std::abs(speed) * step;
         turn += std::abs(omega) * step;
     }
-    bool fail = false;
+    bool translation_fail = false, yaw_fail = false;
     for (bool raw : {false, true}) {
         const SE3& base = raw ? from.raw : from.final;
         const SE3& current = raw ? to.raw : to.final;
@@ -83,14 +90,17 @@ Condition Monitor::Motion(const Pose& from, const Pose& to, Clock::time_point no
         const double y = -std::sin(yaw) * delta.x() + std::cos(yaw) * delta.y();
         const double ex = std::abs(x - dx), ey = std::abs(y - dy);
         const double ea = std::abs(Wrap(Yaw(current) - yaw - theta));
-        snapshot_.error_longitudinal_m = std::max(snapshot_.error_longitudinal_m, ex);
-        snapshot_.error_lateral_m = std::max(snapshot_.error_lateral_m, ey);
+        if (translation_available) {
+            snapshot_.error_longitudinal_m = std::max(snapshot_.error_longitudinal_m, ex);
+            snapshot_.error_lateral_m = std::max(snapshot_.error_lateral_m, ey);
+            translation_fail |= ex > config_.longitudinal_m + config_.distance_ratio * distance ||
+                                ey > config_.lateral_m + config_.distance_ratio * distance;
+        }
         snapshot_.error_yaw_rad = std::max(snapshot_.error_yaw_rad, ea);
-        fail |= ex > config_.longitudinal_m + config_.distance_ratio * distance ||
-                ey > config_.lateral_m + config_.distance_ratio * distance ||
-                ea > config_.yaw_rad + config_.angle_ratio * turn;
+        yaw_fail |= ea > config_.yaw_rad + config_.angle_ratio * turn;
     }
-    return fail ? kFail : kPass;
+    return {translation_available ? (translation_fail ? kFail : kPass) : kUnknown,
+            yaw_fail ? kFail : kPass};
 }
 void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unobservable) {
     auto& condition = snapshot_.observations[1].condition;
@@ -128,6 +138,7 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
     if (epoch != epoch_) {
         poses_.clear(); epoch_ = epoch;
         consistency_pass_seen_ = false;
+        yaw_pass_seen_ = false;
     }
     if (!poses_.empty() && stamp <= poses_.back().stamp) return;
     if (!poses_.empty()) {
@@ -135,32 +146,46 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
         // with steady elapsed time before reusing any earlier passing evidence.
         const double stamp_step = stamp - poses_.back().stamp;
         const double arrival_step = Age(now, output_time_);
-        if (std::abs(stamp_step - arrival_step) > config_.max_input_gap_sec)
+        if (std::abs(stamp_step - arrival_step) > config_.max_input_gap_sec) {
             consistency_pass_seen_ = false;
+            yaw_pass_seen_ = false;
+        }
     }
     output_time_ = evaluation_time_ = now;
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
     snapshot_.error_longitudinal_m = snapshot_.error_lateral_m = snapshot_.error_yaw_rad = 0;
     const Pose current{stamp, pose, raw};
-    Condition condition = kUnknown;
+    MotionResult motion;
     // Check adjacent increments as well, so a jump is detected during window warmup.
-    if (!poses_.empty()) condition = Motion(poses_.back(), current, now);
+    if (!poses_.empty()) motion = Motion(poses_.back(), current, now);
     auto anchor = poses_.end();
     for (auto it = poses_.begin(); it != poses_.end() && it->stamp <= stamp - config_.window_sec; ++it) anchor = it;
     if (anchor != poses_.end()) {
-        const Condition window = Motion(*anchor, current, now);
-        if (condition != kFail) condition = window;
-    } else if (condition != kFail) condition = kUnknown;
+        const auto window = Motion(*anchor, current, now);
+        if (motion.translation != kFail) motion.translation = window.translation;
+        if (motion.yaw != kFail) motion.yaw = window.yaw;
+    } else {
+        if (motion.translation != kFail) motion.translation = kUnknown;
+        if (motion.yaw != kFail) motion.yaw = kUnknown;
+    }
+    snapshot_.translation_condition = motion.translation;
+    snapshot_.yaw_condition = motion.yaw;
+    const Condition condition = Combined(motion.translation, motion.yaw);
     snapshot_.observations[0].condition = condition;
     Uncertainty(pose, covariance, valid, unobservable);
+    const std::array<Condition, 3> checks{{motion.translation, motion.yaw, snapshot_.observations[1].condition}};
     for (size_t i = 0; i < failed_checks_.size(); ++i) {
-        if (snapshot_.observations[i].condition == kFail) failed_checks_[i] = true;
-        if (snapshot_.observations[i].condition == kPass) failed_checks_[i] = false;
+        if (checks[i] == kFail) failed_checks_[i] = true;
+        if (checks[i] == kPass) failed_checks_[i] = false;
     }
     if (condition == kPass) {
         consistency_pass_seen_ = true;
         consistency_pass_time_ = now;
+    }
+    if (motion.yaw == kPass) {
+        yaw_pass_seen_ = true;
+        yaw_pass_time_ = now;
     }
     poses_.push_back(current);
     while (poses_.size() > 1 && poses_[1].stamp < stamp - 2 * config_.window_sec) poses_.pop_front();
@@ -181,18 +206,29 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
     out.speed_arrival_age_sec = speeds_.empty() ? missing : Age(now, speeds_.back().arrival);
     out.gyro_arrival_age_sec = gyros_.empty() ? missing : Age(now, gyros_.back().arrival);
     out.consistency_pass_age_sec = consistency_pass_seen_ ? Age(now, consistency_pass_time_) : missing;
-    out.confirmed_failure = failed_checks_[0] || failed_checks_[1];
+    out.yaw_pass_age_sec = yaw_pass_seen_ ? Age(now, yaw_pass_time_) : missing;
+    out.confirmed_failure = failed_checks_[0] || failed_checks_[1] || failed_checks_[2];
     for (auto& obs : out.observations) {
         obs.age_us = output_seen_ ? static_cast<uint64_t>(std::max(0.0, Age(now, evaluation_time_)) * 1e6) : std::numeric_limits<uint64_t>::max();
         if (obs.condition != kFail &&
             (!output_seen_ || Age(now, evaluation_time_) > config_.evaluation_timeout_sec || lost))
             obs.condition = kUnknown;
     }
-    // Fresh poses do not compensate for a frozen independent CAN/IMU stream.
-    if (speeds_.empty() || gyros_.empty() || Age(now, speeds_.back().arrival) > config_.max_input_gap_sec ||
-        Age(now, gyros_.back().arrival) > config_.max_input_gap_sec) {
-        if (out.observations[0].condition != kFail) out.observations[0].condition = kUnknown;
+    const auto expire = [](Condition& condition) { if (condition != kFail) condition = kUnknown; };
+    if (!output_seen_ || Age(now, evaluation_time_) > config_.evaluation_timeout_sec || lost) {
+        expire(out.translation_condition);
+        expire(out.yaw_condition);
     }
+    // Missing CAN disables translation evidence only. IMU remains required.
+    if (out.speed_arrival_age_sec > config_.max_input_gap_sec) expire(out.translation_condition);
+    if (out.gyro_arrival_age_sec > config_.max_input_gap_sec) {
+        expire(out.translation_condition);
+        expire(out.yaw_condition);
+    }
+    out.observations[0].condition = Combined(out.translation_condition, out.yaw_condition);
+    out.optional_can_unavailable = !out.severe && !out.confirmed_failure &&
+        out.observations[1].condition == kPass && out.translation_condition == kUnknown &&
+        out.yaw_condition == kPass;
     // Do not report UNKNOWN as PASS. Grace affects only the stop decision and
     // cannot refresh itself, survive an epoch change, hide a failure, stale
     // output, missing uncertainty, or a detected clock discontinuity. The
@@ -203,11 +239,10 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
         grace > 0 && !out.severe && !out.confirmed_failure &&
         out.observations[0].condition == kUnknown &&
         out.observations[1].condition == kPass &&
-        out.consistency_pass_age_sec <= grace &&
+        out.yaw_pass_age_sec <= grace &&
         out.output_age_sec <= grace &&
-        out.speed_arrival_age_sec <= grace &&
         out.gyro_arrival_age_sec <= grace &&
-        std::abs(out.speed_stamp_lag_sec) <= grace &&
+        out.yaw_condition == kUnknown &&
         std::abs(out.gyro_stamp_lag_sec) <= grace;
     return out;
 }
@@ -215,7 +250,8 @@ int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool 
     if (loc.severe || all_failed) return -9;
     if (loc.confirmed_failure || loc.observations[0].condition == kFail ||
         loc.observations[1].condition != kPass) return 4;
-    if (loc.observations[0].condition != kPass && !loc.consistency_unknown_tolerated) return 4;
+    if (loc.observations[0].condition != kPass && !loc.consistency_unknown_tolerated &&
+        !loc.optional_can_unavailable) return 4;
     if (!mask_radar_fault && (radar_fault || !radar_all_pass)) return 2;
     return 0;
 }

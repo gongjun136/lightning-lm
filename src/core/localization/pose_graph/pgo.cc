@@ -226,6 +226,11 @@ bool PGO::ProcessDR(const NavState& dr_result) {
         static_hold_start_stamp_ = dr_result.timestamp_;
         parking_result_ = impl_->result_;
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(parking_result_);
+        // A previous hold can leave an older raw pose in impl_->result_.
+        // Initialize both views at this stop before the next map update;
+        // otherwise the consistency monitor sees a fictitious jump back.
+        parking_result_.unsmoothed_pose_ = parking_result_.pose_;
+        parking_result_.unsmoothed_pose_valid_ = true;
         parking_result_.is_parking_ = true;
         parking_result_.vel_b_ = Vec3d::Zero();
     } else if (!is_parking_ && was_parking) {

@@ -72,6 +72,31 @@ int main(int argc, char** argv) {
     check({0x30811813}, 0); // Fresh uncertainty PASS clears only its own code.
     for (int ms = 1440; ms <= 2020; ms += 20) feed(ms, 2.0 + ms * 0.001);
     check({}, 0);
+    // A yaw fault can recover without optional CAN, but a translation fault
+    // must remain active until translation itself is verified again.
+    Monitor optional_monitor(Config{}, Clock::time_point{});
+    auto optional_feed = [&](int ms, double x, double yaw, bool can) {
+        const auto now = Clock::time_point{} + std::chrono::milliseconds(ms);
+        const double stamp = 100.0 + ms * 0.001;
+        const SE3 pose(SO3::exp(Vec3d(0, 0, yaw)), Vec3d(x, 0, 0));
+        if (can) optional_monitor.ObserveSpeed(stamp, 0.0, now);
+        optional_monitor.ObserveGyro(stamp, 0.0, now);
+        optional_monitor.ObservePose(stamp, pose, pose, 0.0001 * Mat6d::Identity(), true, false, 1, now);
+        functional_safety::UpdateLocalizationFaults(publisher, optional_monitor.Evaluate(false, now));
+    };
+    for (int ms = 0; ms <= 1000; ms += 20) optional_feed(ms, 0, 0, false);
+    check({}, 0);
+    optional_feed(1020, 0, .2, false);
+    check({0x30811813}, 0);
+    for (int ms = 1040; ms <= 1800; ms += 20) optional_feed(ms, 0, 0, false);
+    check({}, 0);
+    for (int ms = 1820; ms <= 2500; ms += 20) optional_feed(ms, 0, 0, true);
+    optional_feed(2520, 2, 0, true);
+    check({0x30811813}, 0);
+    for (int ms = 2540; ms <= 3300; ms += 20) optional_feed(ms, 2, 0, false);
+    check({0x30811813}, 0);
+    for (int ms = 3320; ms <= 4000; ms += 20) optional_feed(ms, 2, 0, true);
+    check({}, 0);
     publisher.UpdateFaults({0x40450198, 0x30811813, 0x30811813, 0}, {});
     check({0x30811813, 0x40450198}, 0); // Sorted, unique, no zero.
     const auto first_seq = latest.heartbeat_seq;

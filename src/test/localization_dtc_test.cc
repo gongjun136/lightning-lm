@@ -20,6 +20,12 @@ void Feed(Monitor& monitor, int ms, const SE3& pose, double speed = 1, double gy
     monitor.ObserveGyro(stamp, gyro, At(ms));
     monitor.ObservePose(stamp, pose, raw ? *raw : pose, covariance ? *covariance : SmallCov(), true, false, epoch, At(ms));
 }
+void FeedWithoutCan(Monitor& monitor, int ms, const SE3& pose, double gyro = 0,
+                    const SE3* raw = nullptr) {
+    const double stamp = 100 + ms * 1e-3;
+    monitor.ObserveGyro(stamp, gyro, At(ms));
+    monitor.ObservePose(stamp, pose, raw ? *raw : pose, SmallCov(), true, false, 1, At(ms));
+}
 }
 int main() {
     Config cfg;
@@ -113,9 +119,9 @@ int main() {
     hole.ObservePose(101.02, Pose(1.02), Pose(1.02), SmallCov(), true, false, 1, At(1020));
     const auto short_hole = hole.Evaluate(false, At(1020));
     Require(short_hole.observations[0].condition == kUnknown &&
-            short_hole.consistency_unknown_tolerated &&
+            short_hole.optional_can_unavailable &&
             SafetyValue(short_hole, false, false, true) == 0,
-            "bounded missing integration evidence remains UNKNOWN without immediate stop");
+            "CAN-only integration hole remains UNKNOWN without stopping required healthy checks");
     Require(!hole.Evaluate(false, At(1101)).consistency_unknown_tolerated,
             "UNKNOWN cannot extend its own evidence deadline");
     hole.ObserveSpeed(104.6, 1, At(1040));
@@ -140,8 +146,9 @@ int main() {
                           SmallCov(), true, false, 1, At(ms));
     }
     Require(!grace.Evaluate(false, At(1160)).consistency_unknown_tolerated &&
-            SafetyValue(grace.Evaluate(false, At(1160)), false, false, true) == 4,
-            "frozen CAN cannot be hidden by continuous fresh poses");
+            grace.Evaluate(false, At(1160)).optional_can_unavailable &&
+            SafetyValue(grace.Evaluate(false, At(1160)), false, false, true) == 0,
+            "frozen optional CAN does not stop while independent yaw and uncertainty pass");
     Require(grace.Evaluate(false, At(1461)).severe,
             "grace does not extend the 300 ms output timeout");
     Feed(grace, 1180, Pose(1.18), 1, 0, 2);
@@ -223,6 +230,65 @@ int main() {
             !moving_gap.Evaluate(false, At(1927)).consistency_unknown_tolerated &&
             SafetyValue(moving_gap.Evaluate(false, At(1927)), false, false, true) == 4,
             "a later input gap cannot hide the confirmed moving-vehicle jump");
+
+    // CAN is optional even from startup or after a prolonged loss; the missing
+    // independent translation check must stay UNKNOWN rather than become PASS.
+    Monitor no_can(bounded_cfg, At(0));
+    FeedWithoutCan(no_can, 0, Pose(0));
+    Require(SafetyValue(no_can.Evaluate(false, At(0)), false, false, true) == 4,
+            "no CAN does not bypass required yaw warmup");
+    for (int ms = 20; ms <= 60000; ms += 20) FeedWithoutCan(no_can, ms, Pose(ms * 0.005));
+    const auto optional = no_can.Evaluate(false, At(60000));
+    Require(optional.translation_condition == kUnknown && optional.yaw_condition == kPass &&
+            optional.observations[0].condition == kUnknown && optional.optional_can_unavailable &&
+            SafetyValue(optional, false, false, true) == 0,
+            "long-term absent CAN allows 5 m/s motion with explicit unavailable translation evidence");
+    Require(SafetyValue(optional, false, true, false) == 2 &&
+            SafetyValue(optional, true, true, false) == -9,
+            "optional CAN cannot mask radar faults");
+    no_can.ObservePose(160.107, Pose(300.535), Pose(300.535), SmallCov(), true, false, 1, At(60107));
+    Require(no_can.Evaluate(false, At(60107)).consistency_unknown_tolerated,
+            "required IMU still uses bounded prior yaw evidence without CAN");
+    no_can.ObservePose(160.151, Pose(300.755), Pose(300.755), SmallCov(), true, false, 1, At(60151));
+    Require(SafetyValue(no_can.Evaluate(false, At(60151)), false, false, true) == 4,
+            "fresh poses cannot hide required IMU loss beyond its deadline");
+    Require(SafetyValue(no_can.Evaluate(false, At(60452)), false, false, true) == -9 &&
+            SafetyValue(no_can.Evaluate(true, At(60151)), false, false, true) == -9,
+            "optional CAN never changes output timeout or lost-gate emergency stop");
+
+    Monitor no_can_yaw(cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) FeedWithoutCan(no_can_yaw, ms, Pose(ms * .001));
+    const SE3 raw_yaw_jump = Pose(1.02, 0, 0.2);
+    FeedWithoutCan(no_can_yaw, 1020, Pose(1.02), 0, &raw_yaw_jump);
+    Require(no_can_yaw.Evaluate(false, At(1020)).yaw_condition == kFail &&
+            SafetyValue(no_can_yaw.Evaluate(false, At(1020)), false, false, true) == 4,
+            "raw yaw mismatch still stops with CAN absent");
+    for (int ms = 1040; ms <= 1800; ms += 20) FeedWithoutCan(no_can_yaw, ms, Pose(ms * .001));
+    Require(SafetyValue(no_can_yaw.Evaluate(false, At(1800)), false, false, true) == 0,
+            "independently verified yaw recovery can clear its own failure without CAN");
+    Mat6d bad_optional_cov = SmallCov(); bad_optional_cov(0, 0) = 1;
+    no_can_yaw.ObservePose(101.82, Pose(1.82), Pose(1.82), bad_optional_cov, true, false, 1, At(1820));
+    Require(SafetyValue(no_can_yaw.Evaluate(false, At(1820)), false, false, true) == 4,
+            "uncertainty failure still stops without CAN");
+
+    Monitor dropout(cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(dropout, ms, Pose(ms * .001));
+    Feed(dropout, 1020, Pose(3.02));
+    for (int ms = 1040; ms <= 2200; ms += 20) FeedWithoutCan(dropout, ms, Pose(2 + ms * .001));
+    Require(dropout.Evaluate(false, At(2200)).confirmed_failure &&
+            SafetyValue(dropout.Evaluate(false, At(2200)), false, false, true) == 4,
+            "CAN loss and fresh yaw cannot clear a confirmed translation failure");
+    Feed(dropout, 2220, Pose(4.22));
+    Require(dropout.Evaluate(false, At(2220)).confirmed_failure,
+            "one recovered CAN sample cannot certify a missing translation window");
+    for (int ms = 2240; ms <= 2900; ms += 20) Feed(dropout, ms, Pose(2 + ms * .001));
+    Require(SafetyValue(dropout.Evaluate(false, At(2900)), false, false, true) == 0 &&
+            dropout.Evaluate(false, At(2900)).translation_condition == kPass,
+            "complete recovered CAN evidence clears only the verified translation failure");
+    Feed(dropout, 2920, Pose(8.92));
+    Require(SafetyValue(dropout.Evaluate(false, At(2920)), false, false, true) == 4,
+            "translation checking resumes after CAN recovers");
+
     reverse.ObservePose(101.10, Pose(-1.10), Pose(-1.10), Mat6d::Zero(), true, false, 1, At(1100));
     Require(reverse.Evaluate(false, At(1100)).observations[1].condition == kUnknown, "placeholder zero covariance cannot pass");
 

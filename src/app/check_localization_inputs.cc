@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
         std::map<std::string, Input> inputs;
         std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions;
         std::string primary_imu, wheel_topic;
+        bool optional_wheel = false;
         double timeout = 60;
         size_t malformed_can = 0;
         const auto start = std::chrono::steady_clock::now();
@@ -53,8 +54,9 @@ int main(int argc, char** argv) {
                     topic, qos, [&, topic](sensor_msgs::msg::Imu::ConstSharedPtr msg) {
                         observe(topic, double(msg->header.stamp.sec) + msg->header.stamp.nanosec * 1e-9);
                     }));
-            } else if (option == "--wheel-speed") {
+            } else if (option == "--wheel-speed" || option == "--optional-wheel-speed") {
                 wheel_topic = topic;
+                optional_wheel = option == "--optional-wheel-speed";
                 subscriptions.push_back(node->create_generic_subscription(
                     topic, "geosun_msgs/msg/SpeThrCAN4", qos,
                     [&, topic](std::shared_ptr<rclcpp::SerializedMessage> msg) {
@@ -78,18 +80,21 @@ int main(int argc, char** argv) {
                           << ", arrival_age_sec=" << (entry.second.received < 0 ? -1 : elapsed() - entry.second.received) << '\n';
             if (!wheel_topic.empty())
                 std::cerr << "  CAN-IMU stamp delta_sec=" << inputs.at(wheel_topic).stamp - inputs.at(primary_imu).stamp
-                          << ", malformed_CAN=" << malformed_can << '\n';
+                          << ", malformed_CAN=" << malformed_can << ", optional=" << optional_wheel << '\n';
         };
         double next_report = 5;
         while (rclcpp::ok() && elapsed() < timeout) {
             rclcpp::spin_some(node);
             bool ready = true;
-            for (const auto& entry : inputs)
+            for (const auto& entry : inputs) {
+                if (optional_wheel && entry.first == wheel_topic) continue;
                 ready = ready && entry.second.count >= 3 && elapsed() - entry.second.received < 1;
-            if (!wheel_topic.empty())
+            }
+            if (!wheel_topic.empty() && !optional_wheel)
                 ready = ready && std::abs(inputs.at(wheel_topic).stamp - inputs.at(primary_imu).stamp) < 0.25;
             if (ready) {
-                std::cout << "Sensor delivery check passed for " << inputs.size() << " topics." << std::endl;
+                std::cout << "Sensor delivery check passed for " << inputs.size() - (optional_wheel ? 1 : 0)
+                          << " required topics; optional CAN availability does not gate startup." << std::endl;
                 report();
                 rclcpp::shutdown();
                 return 0;

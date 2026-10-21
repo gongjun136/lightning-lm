@@ -268,7 +268,7 @@ loop_closing:
   with_height: false
 diagnostics:
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v2-model-scale
+  config_version: localization-dtc-v3-optional-can
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
@@ -301,7 +301,8 @@ diagnostics:
   angle_sigma_floor_deg: 0.5
   output_timeout_sec: 0.3
   evaluation_timeout_sec: 0.3
-  # TOTAL steady age of prior passing motion evidence, not extra time after
+  # TOTAL steady age of prior passing required yaw evidence; CAN is optional.
+  # This is not extra time after
   # max_input_gap_sec. 150 ms is a commissioning candidate from the 2026-10-21
   # stationary load capture; validate under driving load before acceptance.
   # UNKNOWN cannot renew this deadline or override a confirmed failure/-9.
