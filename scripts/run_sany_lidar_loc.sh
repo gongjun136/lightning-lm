@@ -26,6 +26,7 @@ export SANY_POSE_VEL_TIMEOUT_SECONDS="${SANY_POSE_VEL_TIMEOUT_SECONDS:-5}"
 export SANY_MIN_FREE_GB="${SANY_MIN_FREE_GB:-20}"
 export SANY_ENABLE_POSE_VEL_WATCHDOG="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 export LIGHTNING_LM_RUN_MODE="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
+export LIGHTNING_LM_LIO_THREADS="${LIGHTNING_LM_LIO_THREADS:-1}"
 # [sany-lidar-field-defaults]
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${REPO}"
@@ -125,7 +126,7 @@ Useful environment variables:
   LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD
                               Skip high-rate diagnostic I/O: 1=yes, 0=no
                               (mode default: diagnostic=0, production=1)
-  LIGHTNING_LM_LIO_THREADS    Override compute_budget.lio_threads
+  LIGHTNING_LM_LIO_THREADS    Override compute_budget.lio_threads (SANY default: 1)
   LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
   LIGHTNING_LM_NDT_MAX_POINTS Override NDT point cap only; LIO budgets come from YAML
   LIGHTNING_LM_RESOURCE_PROFILE

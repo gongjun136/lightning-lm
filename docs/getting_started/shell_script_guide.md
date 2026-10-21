@@ -279,7 +279,7 @@ CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针�
 
 `LIGHTNING_LM_RUN_MODE` 缺省 `diagnostic`；显式子开关优先于模式默认值。录包与 watchdog 有独立开关，切到 diagnostic 不会自动开启它们。安装了 `tegrastats` 时，脚本还会记录 Orin 资源信息。
 
-计算资源覆盖包括 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、`LIGHTNING_LM_NDT_MAX_POINTS`、`LIGHTNING_LM_SOLID_ICP_WORKERS`、`LIGHTNING_LM_SOLID_WORKER_NICE`。`LIGHTNING_LM_CPU_AFFINITY` 限定算法进程的核心，`LIGHTNING_LM_SOLID_CPU_AFFINITY` 限定 SOLiD worker 且须为前者有效核心的子集。`LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 缺省 1 秒，范围 0.5–60 秒。实际预算同时受 YAML `compute_budget` 控制，见 @ref configuration "配置入口"。
+计算资源覆盖包括 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、`LIGHTNING_LM_NDT_MAX_POINTS`、`LIGHTNING_LM_SOLID_ICP_WORKERS`、`LIGHTNING_LM_SOLID_WORKER_NICE`。SANY 启动脚本默认设置 `LIGHTNING_LM_LIO_THREADS=1`，优先于 YAML 中的线程数；显式设置环境变量可覆盖此默认值，例如 `LIGHTNING_LM_LIO_THREADS=6 bash ~/Sany/run_loc.sh`。三个诊断采集开关仍按运行模式及显式环境变量决定，不随单线程默认值改变。`LIGHTNING_LM_CPU_AFFINITY` 限定算法进程的核心，`LIGHTNING_LM_SOLID_CPU_AFFINITY` 限定 SOLiD worker 且须为前者有效核心的子集。`LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 缺省 1 秒，范围 0.5–60 秒。实际预算同时受 YAML `compute_budget` 控制，见 @ref configuration "配置入口"。
 
 两种模式的默认开关在脚本中集中选择：
 

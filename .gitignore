@@ -8,6 +8,7 @@
 **/.vscode/
 bin
 build_*/
+/build_docs
 install_*/
 log_*/
 __pycache__/
