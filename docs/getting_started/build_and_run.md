@@ -66,6 +66,74 @@ LIGHTNING_BUILD_JOBS=16 bash src/lightning-lm/scripts/build_workspace.sh
 
 不要在同一工作区同时运行两次构建。服务器的二进制和 build/install 缓存不能直接复制到 WSL 复用。
 
+## WSL 2 本机部署
+
+Windows 上同时存在 Ubuntu 20.04 和 22.04 时，显式选择 `Ubuntu-22.04`，避免进入默认的旧发行版。在 PowerShell 中检查并进入：
+
+```powershell
+wsl.exe --list --verbose
+wsl.exe -d Ubuntu-22.04
+```
+
+本机使用 Ubuntu 22.04、ROS Humble，源码工作区为
+`/mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws`。
+`src/` 中的定位、CGI、Livox 驱动和 SDK 链接复用历史源码目录；不要用复制目录替换这些链接。
+`build`、`install`、`log` 链接到 `/home/gj/.cache/lightning_lm_ws/` 下对应目录，
+构建和安装文件实际存储在 Linux 文件系统。移动工作区前应检查 `readlink -f build install log`，
+保留有效链接和原有输出；缓存目录不是源码，也不能从服务器直接复制使用。
+
+在 WSL 中完整构建并加载安装环境：
+
+```bash
+cd /mnt/f/SLAM_AI_KnowledgeBase/code/WSL_Ubuntu_22.04/lightning_lm_ws
+python3 src/lightning-lm/scripts/check_workspace_repos.py --workspace "$PWD"
+python3 src/lightning-lm/scripts/test_workspace_interfaces.py
+LIGHTNING_BUILD_JOBS=2 bash src/lightning-lm/scripts/build_workspace.sh
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+ros2 pkg prefix lightning_lm
+ros2 pkg executables lightning_lm
+ros2 pkg executables cgi430_driver
+ros2 pkg executables livox_ros_driver2_core
+```
+
+本机约 15 GiB 内存时使用缺省的 2 个编译任务。脚本以 Release 模式构建整个工作区，
+并启用 `BUILD_TESTING`；构建通过后，还需运行已有测试和安装检查：
+
+```bash
+colcon test --executor sequential --event-handlers desktop_notification- \
+  --return-code-on-test-failure --ctest-args --output-on-failure --timeout 120
+colcon test-result --verbose
+```
+
+依赖检查报告脏工作区时，先检查实际 diff，不要直接 reset。在 Windows 挂载盘上，
+若 `git diff --raw` 只显示 `100644` 到 `100755` 的变化，且
+`git -c core.filemode=false diff --exit-code` 确认文件内容没有变化，
+可在该依赖仓库设置 `git config --local core.filemode false`。
+生成目录的符号链接需要按链接本身排除：例如 `.gitignore` 的 `build_docs/` 只匹配目录，
+本机 `build_docs` 链接可在该仓库的 `.git/info/exclude` 添加 `/build_docs`。
+只排除确认过的生成缓存，不排除源码修改；修复后重新运行依赖检查。
+
+定位和 Livox 驱动手册分别使用各自的独立文档入口生成：
+
+```bash
+cmake -S src/lightning-lm/docs -B src/lightning-lm/build_docs
+cmake --build src/lightning-lm/build_docs --target docs
+python3 src/lightning-lm/docs/maintenance/check_links.py \
+  --html src/lightning-lm/build_docs/docs/html
+cmake -S src/livox_ros_driver2/docs -B src/livox_ros_driver2/build_docs
+cmake --build src/livox_ros_driver2/build_docs --target docs
+```
+
+入口分别为 `src/lightning-lm/build_docs/docs/html/index.html` 和
+`src/livox_ros_driver2/build_docs/docs/html/index.html`。
+这两个 `build_docs` 在本机链接到 Linux 缓存；Windows 可通过
+`\\wsl.localhost\Ubuntu-22.04\home\gj\.cache\lightning_lm_ws\docs\` 访问生成站点。
+如需复制到 Windows 目录供浏览器直接打开，须复制整个 `html/` 目录，保留导航脚本、样式和图像。
+
+上述步骤验证本机源码、编译、测试、安装空间和文档。四雷达、CGI 串口、PTP 同步与
+Safety 健康状态还需要实际设备和运行数据，验收要求见 @ref workspace_layout "运行接口检查"。
+
 ## 源码目录改名后的缓存修复
 
 若 `src/lightning_lm_msgs` 改为 `src/common_msgs`、`src/cgi430_sdk` 改为 `src/cgi430_driver`，或驱动源码从旧 SDK 工作区迁入当前工作区，旧 CMake cache 可能保留原绝对路径。出现 `The source ... does not match the source ... used to generate cache` 时，在完整统一工作区执行一次：

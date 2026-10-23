@@ -16,6 +16,7 @@
 10. @subpage incident_20261020_ptp "雷达诊断接口与 PTP 同步故障"：区分接口不兼容与真实同步中断，查看现场证据、优先级试验及回退结果。
 11. @subpage incident_20261020_bounded_sync_policy "有界同步告警与雷达停车开关"：核对有界放行条件、独立屏蔽开关和现场验证边界。
 12. @subpage lidar_ins_accuracy "建图与纯雷达定位精度评估"：旁路录制 CGI 参考，以独立数据冻结地图配准，比较完整三维位姿和采样覆盖。
+13. @subpage lio_scheduling_20261021 "动态联调的 LIO 调度方案与复测"：区分计算耗时与调度等待，核对单线程候选的适用条件及现场验证边界。
 
 先记录配置、提交、地图版本、输入时间和实际发布结果，再用 @ref online_localization_flow "在线定位流程" 定位边界。公式对应模块仍从 @ref guide_lio "LIO" 和 @ref guide_localization "地图定位" 回查，故障专题保存运行证据与方法。
 
