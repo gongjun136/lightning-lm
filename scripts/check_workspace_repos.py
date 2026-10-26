@@ -17,6 +17,11 @@ def check_interfaces(repo, workspace):
         heartbeat = (workspace / "src/common_msgs/diagnostic_monitor_interfaces/msg/NodeHeartbeat.msg").read_text()
         lidar_state = (workspace / "src/common_msgs/livox_ros_driver/msg/LidarDiagnosticState.msg").read_text()
         errors = []
+        identity = (workspace / "src/common_msgs/livox_ros_driver/msg/LidarDeviceInfo.msg").read_text()
+        for field in ("std_msgs/Header header", "string role", "string ip", "string serial_number",
+                      "uint8 device_type", "bool identity_valid"):
+            if not re.search(r"^" + field.replace(" ", r"\s+") + r"\s*(?:#.*)?$", identity, re.MULTILINE):
+                errors.append(f"LidarDeviceInfo.msg lacks {field}")
         for field in ("bool bounded_time_sync_warning", "int64 time_sync_offset_ns",
                       "uint64 time_sync_evidence_age_us"):
             if not re.search(r"^" + field.replace(" ", r"\s+") + r"\s*(?:#.*)?$", lidar_state, re.MULTILINE):
@@ -46,7 +51,7 @@ def check_interfaces(repo, workspace):
     for error in errors:
         print(f"ERROR: {error}", file=sys.stderr)
     if not errors:
-        print("PASS: active_fault, bounded PTP schema/version and four per-device heartbeat identities match (runtime still requires verification)")
+        print("PASS: active_fault, bounded PTP schema/version, LiDAR SN schema and four per-device heartbeat identities match (runtime still requires verification)")
     return 1 if errors else 0
 
 

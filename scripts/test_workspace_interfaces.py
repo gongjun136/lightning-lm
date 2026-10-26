@@ -31,6 +31,8 @@ class InterfaceTest(unittest.TestCase):
         (self.launch_dir / "master_lidar.launch.py").write_text("# Four source drivers only\n")
         self.msg.write_text("uint32[] active_fault\n")
         self.lidar_msg.write_text("bool bounded_time_sync_warning\nint64 time_sync_offset_ns\nuint64 time_sync_evidence_age_us\n")
+        self.identity_msg = self.lidar_msg.with_name("LidarDeviceInfo.msg")
+        self.identity_msg.write_text("std_msgs/Header header\nstring role\nstring ip\nstring serial_number\nuint8 device_type\nbool identity_valid\n")
 
     def result(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -38,6 +40,14 @@ class InterfaceTest(unittest.TestCase):
 
     def test_compatible(self):
         self.assertEqual(self.result(), 0)
+
+    def test_missing_identity_interface(self):
+        self.identity_msg.unlink()
+        self.assertEqual(self.result(), 1)
+
+    def test_incomplete_identity_interface(self):
+        self.identity_msg.write_text("string serial_number\n")
+        self.assertEqual(self.result(), 1)
 
     def test_old_bounded_proof_schema(self):
         self.lidar_msg.write_text("uint8 usability\n")

@@ -2,6 +2,13 @@
 
 # 统一定位与驱动工作区
 
+Livox SN 功能新增 `livox_ros_driver2/msg/LidarDeviceInfo`，驱动按角色发布
+`/sensors/livox/<role>/device_info`。接口只表示最近一次 SDK 确认的身份，在线状态仍查诊断话题。
+更新时按 `workspace.repos` 同步 common_msgs 和 Livox 驱动并配套重编；接口检查器会拒绝缺失的 SN 消息。
+安装后可运行 `ros2 run livox_ros_driver2_core collect_lidar_identity.py --output /tmp/lidar_identity.json`。
+主从 DDS 不互通时，分别使用 `--roles front left right` 和 `--roles rear` 导出。
+实机部署需要驱动重启窗口；代码构建与合成测试不代表车辆已经升级。
+
 同一工作区包含 16 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 12 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
 
 2026-10-06 同步公司 `main` 后新增 `diagnostic_runtime_interfaces` 与 `driving_evaluation_interfaces`；`CurrentGear` 迁入 `geosun_msgs`，旧 `domain_vcu_can_bridge` 接口包退出源码。部分现有 CAN 消息新增 `comm_header`，部署时需同步重编发布端和订阅端。旧录包兼容性不由本次编译验证保证。
