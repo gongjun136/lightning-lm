@@ -24,7 +24,7 @@ class InterfaceTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
         self.launch_dir.mkdir(parents=True)
         self.loc.write_text(yaml.safe_dump({"diagnostics": {"radar_role_source_ids": [7, 12, 8, 9]}}))
-        self.source.write_text('"livox-dtc-v3-bounded-sync"; dtc::PublishDiagnosticSnapshot();')
+        self.source.write_text('"livox-dtc-v3-bounded-sync"; dtc::PublishDiagnosticSnapshot(); identity::Parameters;')
         for role, node_id in zip(("front", "rear", "left", "right"), (7, 12, 8, 9)):
             (self.launch_dir / f"lidar_{role}.launch.py").write_text(
                 f"heartbeat_node_id = {node_id}\nheartbeat_topic = '/diagnostics/heartbeat/livox_{role}'\n")
@@ -32,7 +32,6 @@ class InterfaceTest(unittest.TestCase):
         self.msg.write_text("uint32[] active_fault\n")
         self.lidar_msg.write_text("bool bounded_time_sync_warning\nint64 time_sync_offset_ns\nuint64 time_sync_evidence_age_us\n")
         self.identity_msg = self.lidar_msg.with_name("LidarDeviceInfo.msg")
-        self.identity_msg.write_text("std_msgs/Header header\nstring role\nstring ip\nstring serial_number\nuint8 device_type\nbool identity_valid\n")
 
     def result(self):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -41,12 +40,12 @@ class InterfaceTest(unittest.TestCase):
     def test_compatible(self):
         self.assertEqual(self.result(), 0)
 
-    def test_missing_identity_interface(self):
-        self.identity_msg.unlink()
+    def test_retired_identity_interface(self):
+        self.identity_msg.write_text("string serial_number")
         self.assertEqual(self.result(), 1)
 
-    def test_incomplete_identity_interface(self):
-        self.identity_msg.write_text("string serial_number\n")
+    def test_old_identity_publisher(self):
+        self.source.write_text(self.source.read_text().replace("identity::Parameters", "identity::Publisher"))
         self.assertEqual(self.result(), 1)
 
     def test_old_bounded_proof_schema(self):
