@@ -353,6 +353,7 @@ int main(int argc, char** argv) {
         frame_stats_csv << '\n';
     };
 
+    // [offline-slam-drain-status]
     auto drain = [&]() {
         while (!debug::flg_exit) {
             const auto status = lio.RunDetailed();
@@ -367,6 +368,9 @@ int main(int argc, char** argv) {
                     frame_poses.push_back({state.timestamp_, state.GetPose()});
                 }
             }
+            // [offline-slam-drain-status]
+            // 游标跨 drain 调用保留，仅分发尚未交给后端的关键帧。
+            // [offline-slam-keyframe-cursor]
             const auto current_keyframes = lio.GetAllKeyframes();
             while (dispatched_keyframes < current_keyframes.size()) {
                 const auto& keyframe = current_keyframes[dispatched_keyframes++];
@@ -376,6 +380,7 @@ int main(int argc, char** argv) {
             if (FLAGS_max_lidar_frames > 0 && consumed_frames >= FLAGS_max_lidar_frames) {
                 debug::flg_exit = true;
             }
+            // [offline-slam-keyframe-cursor]
         }
     };
 
@@ -422,6 +427,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // [offline-slam-final-drain]
     Timer::Evaluate([&]() { rosbag.Go(); }, "Offline SLAM Bag Playback");
     Timer::Evaluate(
         [&]() {
@@ -433,6 +439,7 @@ int main(int argc, char** argv) {
     if (new_backend) {
         Timer::Evaluate([&]() { new_backend->WaitUntilIdle(true); }, "Offline Backend Final Optimization");
     }
+    // [offline-slam-final-drain]
 
     const auto keyframes = lio.GetAllKeyframes();
     if (keyframes.empty()) {
@@ -453,6 +460,7 @@ int main(int argc, char** argv) {
                     backend_mode == backend::BackendMode::kDisabled;
                 const auto global_map =
                     lio.GetGlobalMap(use_lio_pose, true, 0.1F, true);
+                // [offline-slam-export-replace]
                 if (!map_frame::EstimateStartGroundFrame(
                         global_map, keyframes.front()->GetOptPose(), map_export_options,
                         map_metadata, map_frame_error)) {
@@ -463,6 +471,7 @@ int main(int argc, char** argv) {
                     std::filesystem::remove_all(map_dir);
                 }
                 std::filesystem::create_directories(map_dir);
+                // [offline-slam-export-replace]
                 TiledMap::Options tm_options;
                 tm_options.map_path_ = map_dir.string();
                 TiledMap tiled_map(tm_options);
@@ -527,6 +536,7 @@ int main(int argc, char** argv) {
     const map_frame::Metadata* metadata =
         map_metadata.normalized ? &map_metadata : nullptr;
 
+    // [offline-slam-rewrite-trajectories]
     if (!FLAGS_output_tum.empty()) {
         if (tum.is_open()) tum.close();
         const std::filesystem::path tum_path(FLAGS_output_tum);
@@ -547,6 +557,7 @@ int main(int argc, char** argv) {
             return 4;
         }
     }
+    // [offline-slam-rewrite-trajectories]
 
     if (new_backend) {
         const std::string diagnostics = FLAGS_output_backend_diagnostics.empty()
@@ -569,6 +580,7 @@ int main(int argc, char** argv) {
             return 4;
         }
     }
+    // [offline-slam-finalize-map]
     if (!FLAGS_backend_evaluation_only &&
         (!map_frame::SaveMetadata(map_dir.string(), map_metadata, map_frame_error) ||
          !map_manifest::SaveExportManifest(map_dir.string(), manifest_options, map_frame_error))) {
@@ -576,6 +588,7 @@ int main(int argc, char** argv) {
         Timer::PrintAll();
         return 4;
     }
+    // [offline-slam-finalize-map]
 
     Timer::PrintAll();
     if (ui && FLAGS_wait_ui) {

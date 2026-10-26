@@ -2,6 +2,8 @@
 
 以在线定位建立系统心智模型：ROS 输入进入 LIO，去畸变点云与里程计进入地图匹配，定位 PGO 融合相对运动和地图约束，输出边界决定坐标转换和是否发布。
 
+第一次对照实现时，直接进入 @ref online_loc_code_reading "按问题核对代码"。短片段、阅读提示和输入例子放在对应正文中；先确认“哪条语句证明这个结论”，再按需展开完整函数。
+
 **阅读顺序**
 
 1. @subpage online_localization_flow "在线定位：输入到业务输出"：优先读单帧数据流、跟踪/重定位、PGO 与发布门控。
@@ -20,5 +22,7 @@
 **阅读重点**
 
 每一步都区分“收到输入”“算法形成结果”“匹配被接受”“业务输出被放行”。高频输出可以来自相对运动外推，消息频率并不代表地图匹配频率。队列与时间约束影响结果新鲜度，应和算法一起理解。
+
+退出行为从 @ref online_queue_quit_reading "退出请求是否排空队列" → @ref online_finish_order_reading "三个队列与外层资源的关闭顺序" 核对。纯 INS 另走 @ref ins_input_acceptance_reading "导航输入接受" → @ref ins_cloud_interpolation_reading "点云插值与覆盖" → @ref ins_output_validity_reading "恢复计数与实际发布"，不能套用 LIO/PGO 的有效性判断。
 
 先完成这一章的主路径，再依次进入 @ref guide_lio "LIO 前端"、@ref guide_localization "地图定位" 和 @ref guide_map_output "地图、坐标与输出"。所有权图和关闭顺序留作改线程、重初始化或退出逻辑时的参考。

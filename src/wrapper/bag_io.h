@@ -29,9 +29,9 @@
 namespace lightning {
 
 /**
- * ROSBAG IO
- * 指定一个包名，添加一些回调函数，就可以顺序遍历这个包
- * 现在可以指定ROS2
+ * @brief 在调用线程中顺序读取 ROS 2 bag，并按注册话题同步派发。
+ * @note 回调 bool 返回值不控制 Go/GoRealtime；异常向调用者传播。
+ * 构造参数 dataset_type 为兼容接口保留，当前未用于分发或消息转换。
  */
 class RosbagIO {
    public:
@@ -55,16 +55,18 @@ class RosbagIO {
     using OdomHandle = std::function<bool(const OdomPtr &)>;
 
     /**
-     * 遍历文件内容，调用回调函数
-     * @param sleep_usec 每调用一个回调后的等待时间
+     * @brief 顺序读取消息并同步派发；回调后检查全局退出标志。
+     * @param sleep_usec 每条读出消息之后的固定等待微秒数；未注册话题也等待，非正值不等待。
      */
     void Go(int sleep_usec = 0);
 
-    /// 通用处理函数
+    /// 注册话题回调；同一话题重复注册保留首次回调，不覆盖旧值。
+    // [bag-topic-registration]
     RosbagIO &AddHandle(const std::string &topic_name, MessageProcessFunction func) {
         process_func_.emplace(topic_name, func);
         return *this;
     }
+    // [bag-topic-registration]
 
     /// point cloud 2 处理
     RosbagIO &AddPointCloud2Handle(const std::string &topic_name, PointCloud2Handle f) {
@@ -131,7 +133,7 @@ class RosbagIO {
     /// 清除现有的处理函数
     void CleanProcessFunc() { process_func_.clear(); }
 
-    /// Replay using bag storage timestamps while preserving original message headers.
+    /// 按 bag 存储时间与正倍率安排 steady_clock 目标时间；保留消息 header，不保证实时期限。
     void GoRealtime(double playback_rate = 1.0);
 
    private:
@@ -144,7 +146,7 @@ class RosbagIO {
     rclcpp::Serialization<livox_ros_driver2::msg::CustomMsg> seri_livox_;  ///< Livox CustomMsg bag 消息的反序列化器。
 
     std::string bag_file_;  ///< 输入 rosbag 文件或目录路径。
-    DatasetType dataset_type_ = DatasetType::NCLT;  ///< 影响话题与消息解释的数据集类型。
+    DatasetType dataset_type_ = DatasetType::NCLT;  ///< 兼容字段；当前回放与消息转换不读取它。
 };
 }  // namespace lightning
 

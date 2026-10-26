@@ -517,18 +517,22 @@ void LocSystem::SetInitPose(const SE3 &pose) {
     LOG(INFO) << "set init pose: " << pose.translation().transpose() << ", "
               << pose.unit_quaternion().coeffs().transpose();
 
+    // [online-loc-start-input]
     loc_->SetExternalPose(pose.unit_quaternion(), pose.translation());
     loc_started_ = true;
     if (telemetry_) telemetry_->Start();
+    // [online-loc-start-input]
 }
 
 void LocSystem::ProcessIMU(const IMUPtr &imu) {
     ObserveImuInput(imu ? imu->timestamp : 0.0);
     if (imu && dtc_monitor_)
         dtc_monitor_->ObserveGyro(imu->timestamp, (loc_->GetImuToBodyRotation() * imu->angular_velocity).z());
+    // [online-loc-imu-start-gate]
     if (loc_started_) {
         loc_->ProcessIMUMsg(imu);
     }
+    // [online-loc-imu-start-gate]
 }
 
 void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &cloud) {
@@ -563,6 +567,7 @@ void LocSystem::Spin() {
 }
 
 void LocSystem::Finish() {
+    // [loc-system-finish-resources]
     if (finished_) return;
     if (dtc_timer_) dtc_timer_->cancel();
     if (safety_timer_) safety_timer_->cancel();
@@ -571,6 +576,7 @@ void LocSystem::Finish() {
     if (heartbeat_) heartbeat_->Stop();
     ClosePublishedTrajectoryTum();
     finished_ = true;
+    // [loc-system-finish-resources]
 }
 
 bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
@@ -694,6 +700,8 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 }
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
+    // [output-result-publication-gates]
+    // 结果有效、时间递增、地图匹配可用是三个独立条件；依次通过后才构造业务消息。
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_timer(profiling_enabled);
@@ -715,6 +723,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         speed_smoothing_shadow_.Reset();
         return;
     }
+    // [output-result-publication-gates]
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -725,10 +734,12 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     if (!pose_pub_ && !vehicle_pose_pub_) return;
 
     profiling::Stopwatch pose_transform_timer(profiling_enabled);
+    // [output-rear-pose-boundary]
     const SE3 localization_rear_axle_pose = sany_output::MakeMapRearAxlePose(
         result.pose_, loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_);
     const SE3 map_rear_axle_pose =
         sany_output::TransformPoseForOutput(localization_rear_axle_pose, fixed_map_transform_);
+    // [output-rear-pose-boundary]
     if (dtc_monitor_) {
         const SE3 right = sany_output::MakeRearAxleLidarTransform(
             loc_->GetInitialLidarRotation(), primary_lidar_position_in_body_).inverse();
@@ -747,11 +758,13 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     // the estimator state at the downstream output boundary.
     profiling::Stopwatch message_build_timer(profiling_enabled);
     // PGO retains IMU-frame velocity internally; rotate only at the output boundary.
+    // [output-rear-speed-message]
     const double vehicle_speed =
         ImuVelocityToBody(loc_->GetImuToBodyRotation(), result.vel_b_).x() - result.RearAxleSpeedOffset();
     auto vehicle_pose = sany_output::MakeVehiclePoseMessage(
         map_rear_axle_pose, vehicle_speed, result.timestamp_, map_frame_);
     const auto pose = sany_output::MakePoseMessage(vehicle_pose);
+    // [output-rear-speed-message]
     vehicle_pose.comm_header.source_id = heartbeat_->NodeId();
     vehicle_pose.comm_header.seq =
         functional_safety::HeartbeatPublisher::Advance(pose_vel_comm_seq_);
@@ -766,10 +779,12 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         if (telemetry_) telemetry_->ObservePose(pose);
     }
     if (vehicle_pose_pub_) {
+        // [dtc-business-work-progress]
         vehicle_pose_pub_->publish(vehicle_pose);
         position_published = true;
         last_published_pose_stamp_ = result.timestamp_;
         heartbeat_->RecordWork();
+        // [dtc-business-work-progress]
         const auto heartbeat_state = heartbeat_->State();
         if (heartbeat_state == functional_safety::NodeState::kNotReady ||
             heartbeat_state == functional_safety::NodeState::kIdle) {
@@ -839,7 +854,9 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     {
         // Serialize invalidation with the complete group of business pose publishes.
         std::lock_guard<std::mutex> lock(pose_publish_mutex_);
+        // [output-observe-lidar-match]
         publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_);
+        // [output-observe-lidar-match]
         if (telemetry_) {
             telemetry_->ObserveLocalization(result.status_, publication_gate_.ConsecutiveLostFrames());
             telemetry_->ObserveLocalizationStale(publication_gate_.LidarMatchStale(result.timestamp_));
@@ -985,11 +1002,14 @@ void LocSystem::PublishHealthStatus() {
     const auto localization_status = telemetry_->MakeLocalizationStatus(stamp);
     fault_status_pub_->publish(fault_status);
     loc_status_pub_->publish(localization_status);
+    // Running here reflects nonzero completed work, not a fresh DTC PASS.
+    // [dtc-heartbeat-state-from-work]
     if (heartbeat_->WorkSequence() == 0) {
         heartbeat_->SetState(functional_safety::NodeState::kIdle);
     } else {
         heartbeat_->SetState(functional_safety::NodeState::kRunning);
     }
+    // [dtc-heartbeat-state-from-work]
     const auto runtime = loc_->GetRuntimeStats();
     diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
     diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;
@@ -1192,10 +1212,12 @@ void LocSystem::PublishPath() {
     path_pub_->publish(telemetry_->MakePath(stamp));
 }
 
+// [dtc-publication-gate-loss]
 bool LocSystem::DtcLocalizationLost() const {
     return last_published_pose_stamp_.load() > 0.0 &&
            !publication_gate_.PoseOutputsEnabled(last_localization_stamp_.load());
 }
+// [dtc-publication-gate-loss]
 void LocSystem::UpdateDtcHeartbeat() {
     if (!dtc_monitor_ || !heartbeat_) return;
     const auto snapshot = dtc_monitor_->Evaluate(DtcLocalizationLost());
@@ -1234,6 +1256,7 @@ void LocSystem::PublishSafety() {
     const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
     const int bounded = loc::dtc::SafetyValue(localization, radar.all_failed,
         radar.bounded_fault, radar.bounded_all_pass);
+    // [dtc-safety-output-switches]
     msg.runstate = safety_fault_reporting_enabled_
                        ? loc::dtc::SafetyValue(localization, radar.all_failed,
                              radar_bounded_sync_warning_enabled_ ? radar.bounded_fault : radar.fault,
@@ -1241,6 +1264,7 @@ void LocSystem::PublishSafety() {
                              radar_fault_mask_enabled_)
                        : 0;
     safety_pub_->publish(msg);
+    // [dtc-safety-output-switches]
     if (radar_time_sync_shadow_enabled_ || radar_fault_mask_enabled_) {
         const int shadow = loc::dtc::SafetyValue(localization, radar.all_failed,
             radar.fault_without_time_sync, radar.all_pass_without_time_sync);

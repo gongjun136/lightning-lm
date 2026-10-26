@@ -45,9 +45,9 @@ class ImuProcess {
         int min_samples = 20;  ///< 完成初始化所需的最少样本数。
         double max_mean_gyro_norm = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的平均角速度模长上限（rad/s）。
         double max_gyro_std = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的角速度标准差上限（rad/s）。
-        double max_acc_std = std::numeric_limits<double>::infinity();  ///< 静止初始化允许的加速度标准差上限（m/s²）。
-        double min_mean_acc_norm = 0.0;  ///< 初始化允许的平均加速度模长下限（m/s²）。
-        double max_mean_acc_norm = std::numeric_limits<double>::infinity();  ///< 初始化允许的平均加速度模长上限（m/s²）。
+        double max_acc_std = std::numeric_limits<double>::infinity();  ///< 加速度标准差上限，单位与原始输入一致，尚未应用初始化后的尺度修正。
+        double min_mean_acc_norm = 0.0;  ///< 平均加速度模长下限，单位与原始输入一致。
+        double max_mean_acc_norm = std::numeric_limits<double>::infinity();  ///< 平均加速度模长上限，单位与原始输入一致。
         double initial_yaw_deg = 0.0;  ///< 初始化使用的航向角（deg）。
     };
 
@@ -92,7 +92,7 @@ class ImuProcess {
 
     /// 返回IMU初始化是否已经完成。imu_need_init_为false表示可进入正常预测/去畸变流程。
     bool IsIMUInited() const { return imu_need_init_ == false; }
-    /// 开关IMU量测滤波。开启时，去畸变前会对当前帧IMU拷贝做滤波。
+    /// 开关IMU量测滤波。开启时会通过共享指针改写参与积分的IMU对象。
     void SetUseIMUFilter(bool b) { use_imu_filter_ = b; }
 
     /// 获取初始化阶段估计出的加速度均值模长，可用于检查静止初始化是否接近重力加速度。
@@ -133,12 +133,12 @@ class ImuProcess {
     double acc_scale_factor_ = 1.0;           ///< IMU加速度计缩放因子，初始化后用于修正加速度量测尺度
 
     double last_lidar_end_time_ = 0;  ///< 上一帧Lidar扫描结束时刻，用于避免跨帧IMU重复积分
-    int init_iter_num_ = 1;           ///< IMU初始化累计次数，达到max_init_count_后结束初始化
+    int init_iter_num_ = 1;           ///< 当前初始化保留窗口中的样本数；是否就绪由InitializationReady判断。
     bool b_first_frame_ = true;       ///< 标记是否为第一帧，第一帧通常只用于建立初始时间和缓存
     bool imu_need_init_ = true;       ///< 是否仍处于IMU初始化阶段
 
     bool use_imu_filter_ = true;  ///< 是否对参与积分的IMU量测做滤波
-    IMUFilter filter_;            ///< IMU滤波器实例，仅处理当前帧IMU拷贝
+    IMUFilter filter_;            ///< IMU滤波器实例，通过共享指针更新参与积分的IMU对象。
     InitializationOptions init_options_;  ///< 静止 IMU 初始化的样本与噪声约束。
     std::deque<lightning::IMUPtr> init_samples_;  ///< 等待完成初始化判定的 IMU 样本窗口。
     SO3 initial_rotation_;  ///< 由初始重力和配置航向得到的初始姿态。
@@ -205,11 +205,11 @@ inline void ImuProcess::SetAccBiasCov(const Vec3d &b_a) { cov_bias_acc_ = b_a; }
  *
  * @param meas 当前Lidar帧对应的IMU量测集合。
  * @param kf_state 待初始化的ESKF状态，函数会写入重力方向、陀螺零偏和初始协方差。
- * @param N 初始化阶段累计使用的IMU样本数，函数内会随量测递增。
+ * @param N 当前初始化保留窗口中的IMU样本数，函数重新统计后写回。
  *
  * @details 初始化阶段假设载体基本静止：加速度均值主要反映重力方向，
- *          角速度均值作为初始陀螺零偏。函数同时用增量形式估计加速度计
- *          和陀螺仪噪声方差，避免保存全部历史IMU样本。
+ *          角速度均值作为初始陀螺零偏。函数在有限保留窗口内重新计算
+ *          均值和样本方差；窗口外旧样本被淘汰，不保存全部历史IMU样本。
  */
 inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N) {
     if (b_first_frame_) {
@@ -246,6 +246,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     // 将静止统计结果写入ESKF：用加速度均值对齐初始姿态，重力固定在世界系-z，角速度均值为陀螺零偏。
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
+    // [imu-init-orientation]
     const double mean_acc_norm = mean_acc_.norm();
     if (mean_acc_norm > 1e-6) {
         const Vec3d acc_dir = mean_acc_ / mean_acc_norm;
@@ -255,11 +256,14 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
         init_state.rot_ = heading_alignment * gravity_alignment;
     }
     initial_rotation_ = init_state.rot_;
+    // [imu-init-orientation]
 
+    // [imu-init-gravity-bias]
     init_state.grav_ = Vec3d(0.0, 0.0, -G_m_s2);
     init_state.bg_ = mean_gyr_;
     init_state.ba_ = Vec3d::Zero();
     kf_state.ChangeX(init_state);
+    // [imu-init-gravity-bias]
 
     // 计算并缓存IMU缩放因子
     // meas_acc_scale_ = G_m_s2 / mean_acc_.norm();  // TODO，解决冲突
@@ -283,6 +287,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     last_imu_ = meas.imu_.back();
 }
 
+// [imu-init-ready]
 inline bool ImuProcess::InitializationReady() const {
     if (init_samples_.size() < static_cast<std::size_t>(std::max(1, init_options_.min_samples))) return false;
     if (init_samples_.back()->timestamp - init_samples_.front()->timestamp < init_options_.min_duration) return false;
@@ -293,24 +298,28 @@ inline bool ImuProcess::InitializationReady() const {
            acc_std <= init_options_.max_acc_std && mean_acc_norm >= init_options_.min_mean_acc_norm &&
            mean_acc_norm <= init_options_.max_mean_acc_norm;
 }
+// [imu-init-ready]
 
 /**
  * @brief 使用IMU前向积分对当前Lidar点云做运动畸变补偿。
  *
  * 本函数做两件事：
  * 1. 用IMU量测把ESKF状态从上一帧末尾积分到当前Lidar扫描结束时刻；
- * 2. 根据积分过程中保存的IMU位姿，把每个点补偿到扫描结束时刻，减小运动畸变。
+ * 2. 根据积分过程中保存的IMU位姿，将进入逐点循环且时间有效的点补偿到扫描结束时刻。
  *
  * @param meas 当前帧Lidar点云和对应时间段内的IMU量测。
  * @param kf_state ESKF状态，会在函数内预测到当前Lidar扫描结束时刻。
- * @param pcl_out 输出的去畸变点云，所有点被补偿到扫描结束时刻的Lidar坐标系。
+ * @param pcl_out 输出点云；进入补偿分支的点表达在扫描结束时刻的Lidar系。
+ * @note 当前逐点循环排除points.begin()，不能据此保证每一个点都执行了补偿。
  */
 inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &pcl_out) {
     /*** add the imu_ of the last frame-tail to the of current frame-head ***/
     // 这里把上一帧最后一个IMU插到当前帧IMU序列头部，是为了形成跨帧的第一个积分区间。
     // 否则当前帧起点到第一条IMU之间会缺少约束，点云开头附近的运动补偿容易不连续。
+    // [imu-cross-frame-bridge]
     auto v_imu = meas.imu_;
     v_imu.push_front(last_imu_);
+    // [imu-cross-frame-bridge]
 
     // 点云时间戳使用“本帧扫描开始时刻”为零点，后面保存IMU位姿时也统一转成该相对时间。
     const double &pcl_beg_time = meas.lidar_begin_time_;
@@ -333,7 +342,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     Vec3d gyro = Vec3d::Zero();
 
     if (use_imu_filter_) {
-        // 可选滤波只作用于本次用于积分的IMU拷贝，避免改写meas里的原始量测。
+        // 容器拷贝仍共享IMU对象；解引用赋值会改写meas或last_imu_指向的同一对象。
         for (auto &imu : v_imu) {
             auto imu_f = filter_.Filter(*imu);
             *imu = imu_f;
@@ -351,6 +360,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             continue;
         }
 
+        // [imu-interval-end]
         angvel_avr = .5 * (head->angular_velocity + tail->angular_velocity);
         acc_avr = .5 * (head->linear_acceleration + tail->linear_acceleration);
 
@@ -367,6 +377,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         if (dt <= 0.0) {
             continue;
         }
+        // [imu-interval-end]
 
         const double warn_dt = std::max(0.1, 1.5 * static_cast<double>(lo::lidar_time_interval));
         if (dt > warn_dt) {
@@ -415,9 +426,11 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     /*** 计算帧结束时刻的位姿预测，确保IMU积分覆盖整个点云扫描周期 ***/
     // Integrate only the remaining positive interval; never turn a negative
     // difference into a forward prediction beyond the scan end.
+    // [imu-predict-scan-end]
     if (kf_state.PredictTo(pcl_end_time, Q_, gyro, acc) && post_predict_callback_) {
         post_predict_callback_(kf_state, kf_state.GetX().timestamp_);
     }
+    // [imu-predict-scan-end]
 
     imu_state = kf_state.GetX();  // 获取最终的位姿状态（作为运动补偿的参考帧）
     last_imu_ = meas.imu_.back();
@@ -434,7 +447,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     if (pcl_out->empty()) {
         return;
     }
-    // 从后向前处理点云，将所有点补偿到扫描结束时刻
+    // 从后向前处理满足内层循环条件的点，补偿到扫描结束时刻；points.begin() 不进入该循环。
     auto it_pcl = pcl_out->points.end() - 1;
     for (auto it_kp = imu_pose_.end() - 1; it_kp != imu_pose_.begin(); it_kp--) {
         auto head = it_kp - 1;  // 当前时间区间起始位姿
@@ -446,7 +459,8 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         pos_imu = (head->pos);
         acc_imu = (tail->acc);     // 区间内的加速度（平均）
         angvel_avr = (tail->gyr);  // 区间内的角速度（平均）
-        // 处理当前时间区间内的所有点云点
+        // 处理当前时间区间内且满足下面循环条件的点。
+        // [imu-point-time-gate]
         for (; it_pcl->time / double(1000) > head->offset_time && it_pcl != pcl_out->points.begin(); it_pcl--) {
             // 点的time通常是毫秒，这里转成秒，并得到它相对当前IMU区间起点head的时间差。
             dt = it_pcl->time / double(1000) - head->offset_time;
@@ -456,6 +470,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
                 // LOG(WARNING) << "find abnormal dt in cloud: " << dt;
                 continue;
             }
+            // [imu-point-time-gate]
 
             /* Transform to the 'end' frame, using only the rotation
              * Note: Compensation direction is INVERSE of Frame's moving direction
@@ -463,7 +478,9 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
              * p_compensate = R_imu_e ^ T * (R_i * P_i + T_ei) where T_ei is represented in global frame */
             // [gj-2025-11-26] 修正：使用 0.5*dt 以匹配 exp 的 2*scale*|vec| 定义
             // R_i表示该点采集时刻的IMU姿态：从区间起点姿态R_imu按角速度积分dt得到。
+            // [imu-point-rotation]
             Mat3d R_i(R_imu * math::exp(angvel_avr, 0.5 * dt).matrix());  // 计算点采集时刻的IMU旋转矩阵
+            // [imu-point-rotation]
             // Mat3d R_i(R_imu * math::exp(angvel_avr, dt).matrix());
 
             Vec3d P_i(it_pcl->x, it_pcl->y, it_pcl->z);  // 点云原始位置
@@ -472,11 +489,13 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             // 1. 用外参把原始Lidar点P_i转到IMU系；
             // 2. 用点采集时刻的IMU位姿变到世界系，并平移到扫描结束参考位置；
             // 3. 用扫描结束时刻的IMU位姿和外参逆变换，回到扫描结束时刻的Lidar系。
+            // [imu-point-compensation]
             Vec3d T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt -
-                       imu_state.pos_);  // 从点采集时刻到扫描结束时刻的平移向量
+                       imu_state.pos_);  // p_world_imu(t) - p_world_imu(end)，表达在世界系。
             Vec3d p_compensate = R_lidar_imu_.transpose() *
                                  (imu_state.rot_.inverse() * (R_i * (R_lidar_imu_ * P_i + t_lidar_mu_) + T_ei) -
                                   t_lidar_mu_);  // 执行运动补偿变换（将点补偿到扫描结束时刻）
+            // [imu-point-compensation]
 
             // 更新点云坐标
             it_pcl->x = p_compensate(0);
@@ -509,11 +528,12 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
         return;
     }
 
+    // [imu-init-ready-transition]
     if (imu_need_init_) {
         // 初始化阶段每来一帧Lidar，就把该帧对应的IMU继续累积到均值/方差估计里。
         IMUInit(meas, kf_state, init_iter_num_);
 
-        // IMUInit内部会递增init_iter_num_，但是否结束初始化由下面的阈值判断统一决定。
+        // IMUInit重算保留窗口样本数；是否结束初始化还要检查持续时间和静止统计。
         imu_need_init_ = true;
 
         // 缓存当前帧最后一条IMU，初始化结束后的第一帧去畸变仍需要跨帧连续积分。
@@ -522,11 +542,12 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
         auto imu_state = kf_state.GetX();
         if (InitializationReady()) {
             // cov_acc_ *= pow(meas_acc_scale_, 2);  // 使用缓存的缩放因子，方差则需要平方
-            // 初始化累计足够多帧后，切换到正常预测/去畸变流程。
+            // 就绪后清除标志；本次仍从初始化分支末尾返回，后续调用才进入去畸变。
             imu_need_init_ = false;
+            // [imu-init-ready-transition]
 
             // 最终预测噪声使用外部配置的尺度参数，避免静止初始化统计值过小导致滤波器过度自信。
-            // 这发生在 IMU 初始化累计次数超过 max_init_count_ 后。
+            // 这发生在 InitializationReady() 的所有条件通过后。
             // 前面 IMUInit() 里在线估计出来的 cov_acc_ / cov_gyr_，到了这里会被外部配置的 cov_acc_scale_ / cov_gyr_scale_ 覆盖掉。
             cov_acc_ = cov_acc_scale_;
             cov_gyr_ = cov_gyr_scale_;
@@ -561,11 +582,13 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
                       << std::sqrt(std::max(0.0, cov_acc_.maxCoeff()));
         }
 
+        // [imu-init-return-before-deskew]
         return;
     }
 
     // 正常运行阶段：用当前帧IMU推进ESKF，并把点云补偿到扫描结束时刻。
     Timer::Evaluate([&, this]() { UndistortPcl(meas, kf_state, scan); }, "Undistort Pcl");
+    // [imu-init-return-before-deskew]
 }
 }  // namespace lightning
 

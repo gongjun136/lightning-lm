@@ -18,4 +18,18 @@
 
 两条关系的公式与实现分别见地图包和输出专题。几何页可随 LIO、配准和图优化阅读反复查阅；无需在进入主线前读完所有雅可比推导。
 
+对照旋转公式时，先核对 @ref geometry_half_angle_reading "自定义旋转指数函数的半角输入" 与 @ref geometry_jacobian_reading "左右雅可比符号"。分析离线结果时，再核对 @ref support_bag_dispatch_reading "回调返回值是否影响派发" 和 @ref support_bag_clock_reading "固定 sleep 与录包时间节拍"，避免把播放速度当成算法的实时性。
+
+<b>带着地图文件核对：</b>
+
+| 想验证的问题 | 源码片段入口 |
+|---|---|
+| 地图清单检查了哪些文件，哪里拒绝启动？ | @ref map_manifest_validation_reading "manifest 与哈希校验" |
+| 新旧地图变换会不会应用两遍？ | @ref map_alignment_once_reading "变换声明与应用状态" |
+| 点云、位姿和 PCD 元数据如何使用同一坐标？ | @ref map_frame_normalization_reading "归一化与 VIEWPOINT" |
+| tile 离开活动范围，是否已经释放或写盘？ | @ref map_tile_lifecycle_reading "活动地图与持久化" |
+| 对齐最高分为什么仍然失败，失败前写过哪些文件？ | @ref alignment_acceptance_reading "独立接受门限"、@ref alignment_persistence_reading "配置与清单的写入顺序" |
+
+完整保存流程见 @ref offline_slam_export_reading "离线地图包导出" 与 @ref online_slam_save_reading "在线地图服务"。
+
 模式差异：@ref ins_only_operation "CGI-430 导航的坐标与参考点契约"。下一章：@ref guide_diagnostics "诊断与排障"。

@@ -277,12 +277,14 @@ bool SlamSystem::SaveMap(const std::string& path) {
     }
 
     LOG(INFO) << "slam map saving to " << save_path;
+    // [online-slam-save-preconditions]
     if (backend_) backend_->WaitUntilIdle(true);
     const auto keyframes = lio_->GetAllKeyframes();
     if (keyframes.empty()) {
         LOG(ERROR) << "cannot save a map without keyframes";
         return false;
     }
+    // [online-slam-save-preconditions]
 
     // auto global_map_no_loop = lio_->GetGlobalMap(true);
     /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
@@ -290,18 +292,21 @@ bool SlamSystem::SaveMap(const std::string& path) {
     auto global_map = lio_->GetGlobalMap(use_lio_pose, true, 0.1F, true);
     map_frame::Metadata map_metadata;
     std::string map_frame_error;
+    // [online-slam-export-frame-check]
     if (!map_frame::EstimateStartGroundFrame(
             global_map, keyframes.front()->GetOptPose(), map_export_options_,
             map_metadata, map_frame_error)) {
         LOG(ERROR) << "map export aborted: " << map_frame_error;
         return false;
     }
+    // [online-slam-export-frame-check]
     map_frame::TransformCloudInPlace(map_metadata, global_map);
     const map_frame::Metadata* metadata =
         map_metadata.normalized ? &map_metadata : nullptr;
     // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
 
     /// 地面估计成功后再重建目录，避免失败的导出破坏已有地图。
+    // [online-slam-replace-and-write]
     if (!std::filesystem::exists(save_path)) {
         std::filesystem::create_directories(save_path);
     } else {
@@ -326,6 +331,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
         LOG(ERROR) << "failed to save global map";
         return false;
     }
+    // [online-slam-replace-and-write]
     if (backend_) {
         if (!backend_->SaveDiagnostics(
                 save_path + "/backend_diagnostics", metadata) ||

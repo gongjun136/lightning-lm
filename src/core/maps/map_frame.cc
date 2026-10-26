@@ -285,6 +285,7 @@ bool EstimateStartGroundFrame(const CloudPtr& map, const SE3& start_pose,
         return false;
     }
 
+    // [map-ground-plane-transform]
     const double ground_z =
         -(ground_normal.x() * start.x() + ground_normal.y() * start.y() +
           ground_offset) /
@@ -297,6 +298,7 @@ bool EstimateStartGroundFrame(const CloudPtr& map, const SE3& start_pose,
     metadata.T_export_slam = transform;
     metadata.ground_z_slam = ground_z;
     metadata.ground_z_export = 0.0;
+    // [map-ground-plane-transform]
     metadata.start_xy = start.head<2>();
     metadata.expected_ground_z = expected_ground_z;
     metadata.search_radius = options.start_ground_search_radius;
@@ -311,6 +313,8 @@ bool EstimateStartGroundFrame(const CloudPtr& map, const SE3& start_pose,
     return true;
 }
 
+// normalized enables the transform; it is not a per-cloud "already transformed" flag.
+// [map-ground-transform-cloud]
 void TransformCloudInPlace(const Metadata& metadata, const CloudPtr& cloud) {
     if (!metadata.normalized || !cloud) return;
     for (auto& point : cloud->points) {
@@ -327,6 +331,7 @@ void TransformCloudInPlace(const Metadata& metadata, const CloudPtr& cloud) {
          cloud->sensor_orientation_)
             .normalized();
 }
+// [map-ground-transform-cloud]
 
 YAML::Node MakeTransformReference(const Metadata& metadata) {
     YAML::Node node;

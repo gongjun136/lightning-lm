@@ -12,6 +12,8 @@ bool Sigma(const Vec3d& v) { return v.allFinite() && (v.array() >= 0).all(); }
 }
 
 std::string CheckSample(const Sample& s, const QualityPolicy& p, double now, double steady) {
+    // ROS 时间域与单调接收时间域分别检查；不能用暂停的 /clock 掩盖输入断流。
+    // [ins-receive-time-quality]
     if (!std::isfinite(now) || !std::isfinite(steady)) return "invalid_clock";
     double earliest = s.time[0], latest = s.time[0];
     for (std::size_t i = 0; i < FieldCount; ++i) {
@@ -26,6 +28,7 @@ std::string CheckSample(const Sample& s, const QualityPolicy& p, double now, dou
     if (latest - earliest > p.max_skew) return "field_time_skew";
     if (s.system_state != 2) return "not_integrated_navigation";
     if (s.satellite_status != 4) return "not_rtk_fixed_and_heading_valid";
+    // [ins-receive-time-quality]
     if (!std::isfinite(s.latitude) || std::abs(s.latitude) > 90 ||
         !std::isfinite(s.longitude) || std::abs(s.longitude) > 180 ||
         !std::isfinite(s.altitude) || !std::isfinite(s.heading) || s.heading < 0 || s.heading >= 360 ||
@@ -43,12 +46,14 @@ std::string CheckSample(const Sample& s, const QualityPolicy& p, double now, dou
     return {};
 }
 
+// [ins-recovery-count]
 bool RecoveryGate::Observe(double stamp, bool valid) {
     if (!valid || !PositiveFinite(stamp) || stamp <= last_stamp_) { Reject(); return false; }
     last_stamp_ = stamp;
     count_ = std::min(required_, count_ + 1);
     return good_ = count_ >= required_;
 }
+// [ins-recovery-count]
 
 GeoReference::GeoReference(double lat, double lon, double height) : local_(lat, lon, height) {
     if (!std::isfinite(lat) || std::abs(lat) >= 90 || !std::isfinite(lon) ||
@@ -98,6 +103,7 @@ bool PoseBuffer::Add(const Pose& p) {
     while (poses_.size() > 10000) poses_.pop_front();
     return true;
 }
+// [ins-pose-interpolation]
 bool PoseBuffer::At(double t, Pose& result, bool global) const {
     if (!std::isfinite(t) || poses_.empty() || t < poses_.front().stamp || t > poses_.back().stamp)
         return false;
@@ -116,6 +122,9 @@ bool PoseBuffer::At(double t, Pose& result, bool global) const {
     result.global_valid = lo.global_valid && hi->global_valid;
     return true;
 }
+// [ins-pose-interpolation]
+// 两端可查询仍不够：扫描内部跨过的每个相邻区间也要满足间隔与有效性条件。
+// [ins-scan-coverage]
 bool PoseBuffer::Covers(double begin, double end, bool global) const {
     Pose p;
     if (begin > end || !At(begin,p,global) || !At(end,p,global)) return false;
@@ -126,4 +135,5 @@ bool PoseBuffer::Covers(double begin, double end, bool global) const {
     }
     return true;
 }
+// [ins-scan-coverage]
 }  // namespace lightning::ins

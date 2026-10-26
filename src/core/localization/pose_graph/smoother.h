@@ -100,15 +100,18 @@ class PoseSmoother {
 
     void PushPose(const SE3& pose) {
         UL lock(data_mutex_);
+        // [pgo-smoothing-warmup]
         if (pose_queue_.size() < 3) {
             pose_queue_.push_back(pose);
             output_pose_ = pose;
             return;
         }
+        // [pgo-smoothing-warmup]
 
         int n = dr_queue_.size();
         SE3 motion, pred;
 
+        // [pgo-smoothing-prediction]
         if (motion_effective_) {
             if (n >= 2) {
                 motion = dr_queue_[n - 2].pose.inverse() * dr_queue_[n - 1].pose;
@@ -125,7 +128,10 @@ class PoseSmoother {
             pred = pose;
             output_pose_ = pose;
         }
+        // [pgo-smoothing-prediction]
 
+        // [pgo-smoothing-next-factor]
+        // 本帧插值已完成；此处选出的因子在下一次插值时使用。
         double dn = (output_pose_.translation() - pose.translation()).head<2>().norm();
         if (dn > smoother_trans_limit_) {
             // 平滑器差别太大，直接跳过去并重置
@@ -148,6 +154,7 @@ class PoseSmoother {
             // 回到默认值
             smooth_factor_ = 0.01;
         }
+        // [pgo-smoothing-next-factor]
 
         pose_queue_.emplace_back(output_pose_);
 

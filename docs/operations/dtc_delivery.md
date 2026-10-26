@@ -4,6 +4,90 @@
 https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 及 https://rs2flu7c17.work.sany.com.cn/sheets/shtk5ejY5B0puSUC3dbBtmCE0ec?sheet=1dfnNH 。
 
+下面三段先核对当前 `lidar` 定位进程的运行证据；接口参数与部署记录保留在后文。手算例子假定同一进程启动周期、没有序列号回绕，不是现场验证结果。`ins_only` 的有效性和恢复计数见 @ref ins_only_operation "纯组合导航模式"。
+
+@section dtc_heartbeat_evidence_reading 1. 心跳在跳、状态为 Running，就能证明定位正常吗？
+
+先比较心跳发送时对两个序列号的操作：
+
+@snippet{lineno} utils/functional_safety_heartbeat.cc dtc-heartbeat-publish
+
+<b>只读 `Advance` 和 `load` 的区别</b>：每次发送推进 `heartbeat_seq`，`work_seq` 只是读取已有值。后者由另一个调用推进：
+
+@snippet{lineno} utils/functional_safety_heartbeat.cc dtc-heartbeat-record-work
+
+在 `LocSystem::PublishLocalizationResult()` 中，它位于业务 `VehiclePose` 的发布调用之后；进入此前还需通过 @ref output_gate_reading "位姿发布门控"：
+
+@snippet{lineno} core/system/loc_system.cc dtc-business-work-progress
+
+再看定时健康发布中的节点状态设置：
+
+@snippet{lineno} core/system/loc_system.cc dtc-heartbeat-state-from-work
+
+<b>状态例子</b>：已有一次业务发布，`work_seq=1`。之后位姿门控关闭，但心跳线程继续运行，后续心跳可能是 `(heartbeat_seq, work_seq)=(20,1),(21,1),(22,1)`；健康定时器仍按非零工作序列设置 `Running`。这组数值只能证明新的心跳产生过和此前完成过一次发布，不能证明新的定位结果仍在推进。
+
+| 观察到的证据 | 在本实现中能确认什么 | 仍需继续检查什么 |
+|---|---|---|
+| 同一 `boot_id` 的 `heartbeat_seq` 推进 | 心跳发送路径继续执行 | 算法进度、输入/输出年龄 |
+| `work_seq` 推进 | 业务 `VehiclePose` 的 `publish()` 调用已返回 | 接收端是否收到、位姿是否准确、DTC 是否通过 |
+| `state=Running` | 健康回调看到非零工作序列 | 最近一次工作是否过期，不能代替原始诊断 |
+| `active_fault` 为空 | 当前进程没有保留活动故障码 | 是否尚未完成检测、证据是否仍新鲜 |
+| 新鲜的 DTC PASS | 对应检查在其模型与门限下通过 | 位姿发布门控与独立实测精度 |
+
+<b>边界与停止点</b>：启动时 UNKNOWN 可以对应空故障集合；重启后的新 `boot_id` 不能直接续接旧序列。ROS `publish()` 返回也不是订阅端确认。读到两个计数器及 `WorkSequence()` 分支即可停止；要查“为何不出位姿”，转到输出门控，不能只看心跳频率。完整源码：@ref lightning::functional_safety::HeartbeatPublisher "HeartbeatPublisher"、@ref lightning::LocSystem::PublishLocalizationResult() "PublishLocalizationResult()"、@ref lightning::LocSystem::PublishHealthStatus() "PublishHealthStatus()"。
+
+@section dtc_failure_recovery_reading 2. 检测变成 UNKNOWN，为什么故障码和停车状态还没恢复？
+
+`Monitor::ObservePose()` 分别记住平移、航向和不确定度三个检查的明确故障：
+
+@snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-confirmed-failure-latch
+
+<b>注意没有 UNKNOWN 分支</b>：FAIL 写入 `true`，对应子项的 PASS 才写回 `false`；缺证据不能清除此前故障。`Evaluate()` 将三个标志的或值作为 `confirmed_failure`。转交心跳时，又将当前检查结果分成两个集合：
+
+@snippet{lineno} utils/localization_dtc_reporting.h dtc-observations-to-heartbeat
+
+心跳活动集合的更新规则如下：
+
+@snippet{lineno} utils/functional_safety_heartbeat.cc dtc-heartbeat-fault-update
+
+先移除 `passed`，再加入 `failed`；未出现的码保持原状态，同批矛盾时 FAIL 优先。`optional_can_unavailable` 是一个有条件的例外：只有必需航向、不确定度通过且没有待恢复故障时，才允许清除一致性码，条件见下一节。
+
+<b>状态例子</b>：先出现明确平移 FAIL，一致性码进入活动集合。后续位姿评估因 CAN 缺失将平移判为 UNKNOWN，即使航向和不确定度为 PASS，平移的 `failed_checks_` 仍为 `true`，不能靠断开 CAN 恢复。恢复完整有效 CAN 窗口并得到平移 PASS 后，该标志才清除；若其余检查也通过，心跳才收到用于清除一致性码的通过证据。
+
+<b>边界与停止点</b>：活动集合是本进程内的保持状态，不表示每个码此刻都有新 FAIL，也不跨重启持久化。原始三态、新鲜度和保持标志共同参与 Safety；不能把“没有新报错”当作恢复。读到两个集合如何加入/移除即可停止，外部诊断中心的消抖不在这几段里。完整源码：@ref lightning::loc::dtc::Monitor::ObservePose() "ObservePose()"、@ref lightning::loc::dtc::Monitor::Evaluate() "Evaluate()"、@ref localization_dtc_reporting.h "定位 DTC 转交"、@ref lightning::functional_safety::HeartbeatPublisher::UpdateFaults() "UpdateFaults()"。
+
+@section dtc_safety_decision_reading 3. Safety 怎样选择 -9、4、2、0，哪些开关会改变含义？
+
+先看门控丢失如何进入诊断，再看输出年龄怎样成为严重条件。这里的年龄使用单调时钟；计时点是监测器接受位姿观测，不是下游收到 ROS 消息的时刻。
+
+@snippet{lineno} core/system/loc_system.cc dtc-publication-gate-loss
+
+@snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-output-severity
+
+曾发布过位姿后，发布门控关闭会令 `lost=true`；还没见过位姿时则使用启动宽限。最终判定按下面的提前返回顺序执行：
+
+@snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-safety-priority
+
+<b>从上往下读</b>：严重定位条件或全部启用雷达不可用优先给 `-9`；待恢复故障、一致性 FAIL、不确定度非 PASS 给 `4`；其余一致性未通过若没有明确允许条件也给 `4`；最后才检查雷达分支并决定 `2/0`。`mask_radar_fault` 仅跳过最后的雷达分支，不能越过前面的 `-9/4`。
+
+CAN 可选不是把 UNKNOWN 改成 PASS，它要求以下所有条件同时成立：
+
+@snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-optional-can-evidence
+
+必需航向也变成 UNKNOWN 时，只能再检查有限的旧通过证据：
+
+@snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-unknown-evidence-age
+
+`grace` 限制的是最后一次航向 PASS、输出观测、IMU 到达和 IMU 时间戳差的总年龄；不是每次 UNKNOWN 后重新获得一段宽限。所有条件以 `&&` 连接。
+
+<b>手算例子</b>：假设无严重条件和待恢复故障、不确定度 PASS、启用雷达全部通过。仅 CAN 平移 UNKNOWN、航向 PASS 时，`optional_can_unavailable=true`，可以走到 `0`；若此前平移 FAIL 未恢复，则先得到 `4`。再假设 `grace=0.15 s`，航向 UNKNOWN 且四项年龄均为 `0.12 s`，可有限容忍；最后一次航向 PASS 年龄达到 `0.16 s` 时，即使其他项仍是 `0.12 s`，也会给 `4`。若曾有输出、之后超过配置的 `output_timeout_sec`，则严重条件优先给 `-9`。
+
+最后核对实际发布的选择，避免把内部判定值当成对外消息值：
+
+@snippet{lineno} core/system/loc_system.cc dtc-safety-output-switches
+
+<b>边界与停止点</b>：`safety_fault_reporting_enabled_=false` 会直接发布 `0`；雷达屏蔽和有界同步选项也会改变所选雷达判定。因而单独看到 `runstate=0`，不能证明位姿在发布或全部诊断健康。Safety 是独立输出；`4` 也不等于位姿发布门控必然关闭。读到实际 `msg.runstate` 和 `publish()` 即完成本节，具体配置及历史验证继续看 @ref dtc_interfaces "接口与职责"、@ref dtc_unknown_and_cpu_20261020 "证据年龄与部署边界"。完整源码：@ref lightning::loc::dtc::SafetyValue() "SafetyValue()"、@ref lightning::loc::dtc::Monitor::Evaluate() "Evaluate()"、@ref lightning::LocSystem::PublishSafety() "PublishSafety()"。
+
 @section dtc_interfaces 接口与职责
 
 2026-10-21 动态联调后的 CAN 可选输入修订：CAN 未接入、冻结、过期或历史窗口缺口，

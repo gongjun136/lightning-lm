@@ -24,7 +24,7 @@ F:/datasets/SANY/
 
 `vehicle.yaml` 记录稳定车辆编号、VIN/域控 ID、主雷达、各雷达 ID/位置/序列号/话题。IP 可重复使用，不能作为车辆身份。`metadata.yaml` 记录版本、车辆归属、来源、提供时间、实际标定时间、矩阵约定、单位和 `extrinsics.yaml` 的 SHA-256。未知字段保留 null，提供时间不能代替标定时间。
 
-本批数据临时档案为 `new_vehicle_20260922`，版本为 `user_provided_20261010_v1`，VIN、域控 ID、雷达序列号等待确认。这个名称只标识这次采集，不是已核实的车辆编号。确认身份后关联正式编号，并保留旧标识或别名，避免既往实验来源失效。
+历史数据集使用临时档案名 `new_vehicle_20260922`，版本为 `user_provided_20261010_v1`。当前 `config/sany/calibrations.yaml` 已将这一标定版本关联到正式 VIN `SANLU77E8TH000006`，车辆选择见 @ref md_config_sany_README "现行 VIN 映射"；临时档案名仍是采集别名，不能用它代替域控文件中的 VIN。旧档案关联正式编号时保留旧标识，未有来源证据的域控 ID、雷达序列号继续保留 null；配置中的映射本身不能证明当前硬件身份。
 
 标定矩阵文件按版本冻结。修改、重新标定、拆装雷达均新建版本，不覆盖旧矩阵。验收记录单独存放并引用版本哈希；不要为了更新验收状态改写冻结的矩阵。每个录包同级 `.source.json` 关联车辆档案。每次实验保留完整运行 YAML、输入哈希、代码版本、车辆/标定版本和结果，地图 `build_info.json` 保存同一关联。
 
@@ -42,6 +42,8 @@ python3 -s scripts/resolve_vehicle_config.py \
 ```
 
 定位配置用本场地定位基础 YAML 再生成一次。脚本要求显式车辆和显式版本，校验归属、SHA-256、话题 ID、主雷达、有限数值、齐次矩阵和旋转矩阵。输出已存在时拒绝覆盖。它只替换 `multi_lidar.extrinsics` 并增加 `calibration_reference`，不会修改融合、时间单位、闭环或重定位门限。`base_config` 必须是本次采集适用的场地/算法配置。
+
+这层档案校验与 C++ 配置读取器的数值接受条件不同：前者要求完整 4×4 矩阵和主雷达单位变换，旋转容差也更严格。直接交给 C++ 的 YAML 能加载，不代表通过了这些档案检查；两层源码条件与一个逆变换反例见 @ref config_extrinsic_matrix_reading "外参读取导读"。
 
 当前约定为行优先 `T_primary_from_lidar`，平移单位 m，即 `p_primary = R * p_lidar + t`；lidar0 为主雷达，其矩阵为单位阵。主雷达原生坐标可能有安装倾角，不能当成车体 x 前/y 左/z 上坐标，也不能直接把雷达外参用作两张地图之间的坐标变换。单位与右手坐标约定可参考 [ROS REP-103](https://github.com/ros-infrastructure/rep/blob/master/rep-0103.rst)。
 

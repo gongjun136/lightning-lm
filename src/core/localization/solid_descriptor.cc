@@ -78,6 +78,7 @@ std::optional<SolidDescriptor> SolidDescriptorEngine::Compute(
     }
 
     if (accepted_points == 0) return std::nullopt;
+    // [relocalization-solid-descriptor-projection]
     VecXd elevation_counts = range_height.colwise().sum().transpose();
     const double minimum = elevation_counts.minCoeff();
     const double maximum = elevation_counts.maxCoeff();
@@ -94,6 +95,7 @@ std::optional<SolidDescriptor> SolidDescriptorEngine::Compute(
     SolidDescriptor descriptor;
     descriptor.range = range_height * elevation_weights;
     descriptor.angle = angle_height * elevation_weights;
+    // [relocalization-solid-descriptor-projection]
     descriptor.accepted_points = accepted_points;
     if (!descriptor.range.allFinite() || !descriptor.angle.allFinite() ||
         descriptor.range.norm() <= std::numeric_limits<double>::epsilon() ||
@@ -109,9 +111,12 @@ double SolidDescriptorEngine::Similarity(const SolidDescriptor& query,
         !query.range.allFinite() || !candidate.range.allFinite()) {
         return -1.0;
     }
+    // 地点分数只比较 range；angle 留给后续 query -> candidate 航向估计。
+    // [relocalization-solid-range-score]
     const double denominator = query.range.norm() * candidate.range.norm();
     if (denominator <= std::numeric_limits<double>::epsilon()) return -1.0;
     return std::clamp(query.range.dot(candidate.range) / denominator, -1.0, 1.0);
+    // [relocalization-solid-range-score]
 }
 
 std::optional<double> SolidDescriptorEngine::EstimateCandidateFromQueryYaw(
@@ -120,6 +125,7 @@ std::optional<double> SolidDescriptorEngine::EstimateCandidateFromQueryYaw(
         !query.angle.allFinite() || !candidate.angle.allFinite()) {
         return std::nullopt;
     }
+    // [relocalization-solid-yaw-direction]
     const int count = static_cast<int>(query.angle.size());
     double best_distance = std::numeric_limits<double>::infinity();
     int best_shift = 0;
@@ -136,6 +142,7 @@ std::optional<double> SolidDescriptorEngine::EstimateCandidateFromQueryYaw(
     }
     if (best_shift * 2 >= count) best_shift -= count;
     return best_shift * (2.0 * kPi / count);
+    // [relocalization-solid-yaw-direction]
 }
 
 }  // namespace lightning::loc

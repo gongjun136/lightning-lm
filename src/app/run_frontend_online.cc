@@ -149,6 +149,7 @@ class FrontendNode : public rclcpp::Node {
         state_publish_thread_ = std::thread([this]() { StatePublishLoop(); });
     }
 
+    // [frontend-online-shutdown]
     ~FrontendNode() override {
         publishing_.store(false);
         {
@@ -159,6 +160,7 @@ class FrontendNode : public rclcpp::Node {
         if (output_publish_thread_.joinable()) output_publish_thread_.join();
         if (state_publish_thread_.joinable()) state_publish_thread_.join();
     }
+    // [frontend-online-shutdown]
 
    private:
     struct OutputSnapshot {
@@ -198,6 +200,7 @@ class FrontendNode : public rclcpp::Node {
                 consecutive_good_ = 0;
                 if (consecutive_bad_ >= 3) tracking_normal_ = false;
             }
+            // [frontend-online-enqueue]
             if (output) {
                 const auto state = lio_.GetState();
                 if (state.pose_is_ok_ && !output_publish_failed_) {
@@ -215,6 +218,7 @@ class FrontendNode : public rclcpp::Node {
                     output_ready_.notify_one();
                 }
             }
+            // [frontend-online-enqueue]
         }
     }
 
@@ -231,20 +235,24 @@ class FrontendNode : public rclcpp::Node {
                         output_queue_.clear();
                         break;
                     }
+                    // [frontend-online-publish]
                     snapshot = std::move(output_queue_.front());
                     output_queue_.pop_front();
                 }
                 pose_pub_->publish(MakePoseMessage(snapshot.rear_pose, snapshot.end_time, map_frame_));
                 cloud_pub_->publish(
                     MakeCloudMessage(snapshot.cloud, snapshot.begin_time, snapshot.end_time, lidar_frame_));
+                // [frontend-online-publish]
             }
         } catch (const std::exception& error) {
             if (publishing_.load() && rclcpp::ok()) {
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);
+                    // [frontend-online-publish-failure]
                     output_publish_failed_ = true;
                     tracking_normal_ = false;
                     output_queue_.clear();
+                    // [frontend-online-publish-failure]
                 }
                 LOG(ERROR) << "output publishing thread failed: " << error.what();
             }

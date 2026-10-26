@@ -77,6 +77,7 @@ bool PGOImpl::Reset() {
                  << " active_edges=" << optimizer_->ActiveEdges().size()
                  << " accumulated_frame_id=" << accumulated_frame_id_;
     LOG(WARNING) << "PGO is reset";
+    // [pgo-reset-watermark]
     relative_pose_reset_watermark_ = -1.0;
     if (!dr_pose_queue_.empty()) {
         relative_pose_reset_watermark_ =
@@ -86,6 +87,7 @@ bool PGOImpl::Reset() {
         relative_pose_reset_watermark_ =
             std::max(relative_pose_reset_watermark_, lidar_odom_pose_queue_.back().timestamp_);
     }
+    // [pgo-reset-watermark]
     CleanProblem();
     frames_.clear();
     frames_by_id_.clear();
@@ -94,6 +96,7 @@ bool PGOImpl::Reset() {
     // A global relocalization starts a new temporal epoch. Keeping relative
     // pose samples from the failed epoch can create non-monotonic constraints
     // and a singular graph immediately after recovery.
+    // [pgo-reset-history]
     dr_pose_queue_.clear();
     lidar_odom_pose_queue_.clear();
     lidar_loc_pose_queue_.clear();
@@ -101,6 +104,7 @@ bool PGOImpl::Reset() {
     accumulated_frame_id_ = 0;
     result_ = LocalizationResult{};
     ++pose_epoch_;
+    // [pgo-reset-history]
     is_in_map_ = false;
     lidar_odom_valid_ = true;
     lidar_odom_valid_cnt_ = 0;
@@ -119,6 +123,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     assert(pgo_frame != nullptr);
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
+    // [pgo-frame-time-check]
     if (last_frame_ != nullptr) {
         const double adjacent_dalta_t = pgo_frame->timestamp_ - last_frame_->timestamp_;
         if (adjacent_dalta_t < 0.) {
@@ -127,6 +132,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
         }
         pgo_frame->lidar_loc_delta_t_ = adjacent_dalta_t;
     }
+    // [pgo-frame-time-check]
 
     if (debug_) {
         LOG(INFO) << "inserting pgo frame, it's timestamp is " << std::setprecision(18) << pgo_frame->timestamp_;
@@ -135,6 +141,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     // 这里尝试设置相对位姿观测，如果上游（通常是激光定位）给了就跳过；
     // 如果 LidarOdom 和 DR 都设置失败，结束本函数。
     profiling::Stopwatch assign_profile_timer(profiling_enabled);
+    // [pgo-frame-observation-check]
     bool interp_lio_success = AssignLidarOdomPoseIfNeeded(pgo_frame);
     bool interp_dr_success = AssignDRPoseIfNeeded(pgo_frame);
     const profiling::TimingSample assign_timing = assign_profile_timer.Stop();
@@ -154,6 +161,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
                    << "), lidar_loc_valid_(" << pgo_frame->lidar_loc_valid_ << "); Reject It!";
         return false;
     }
+    // [pgo-frame-observation-check]
 
     pgo_frame->frame_id_ = accumulated_frame_id_++;
     current_frame_ = pgo_frame;
@@ -164,6 +172,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
 
     /// 触发一次优化
     profiling::Stopwatch optimize_profile_timer(profiling_enabled);
+    // [pgo-optimization-failure]
     if (!RunOptimization()) {
         LOG(ERROR) << "PGO_OPTIMIZATION_FAILURE"
                    << " timestamp=" << std::setprecision(18) << pgo_frame->timestamp_
@@ -189,6 +198,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
         is_in_map_ = false;
         return false;
     }
+    // [pgo-optimization-failure]
     const profiling::TimingSample optimize_timing = optimize_profile_timer.Stop();
 
     // // 根据优化更新一些状态量

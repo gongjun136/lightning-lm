@@ -140,12 +140,14 @@ namespace lightning {
  * @param acce 当前积分区间使用的加速度计输入。
  */
 bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
+    // [eskf-predict-time-gate]
     if (!std::isfinite(timestamp) || !std::isfinite(x_.timestamp_) ||
         timestamp <= x_.timestamp_ || !gyro.allFinite() || !acce.allFinite()) {
         return false;
     }
     Predict(timestamp - x_.timestamp_, Q, gyro, acce);
     x_.timestamp_ = timestamp;  // Align roundoff only after integrating the full interval.
+    // [eskf-predict-time-gate]
     x_.prediction_gyro_ = gyro;
     x_.prediction_gyro_timestamp_ = timestamp;
     return true;
@@ -154,11 +156,13 @@ bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& g
 void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
     // f_是名义状态连续时间导数 f(x,u)，例如位置导数、姿态角速度、速度导数。
     // f_x_是连续动力学对误差状态的雅可比 F_c，后面会通过 I + F_c * dt 做一阶离散化。
+    // [eskf-predict-velocity-switch]
     Eigen::Matrix<double, NavState::full_dim, 1> f_ = x_.get_f(gyro, acce);
     if (!options_.propagate_velocity_) {
         f_.template segment<NavState::kBlockDim>(NavState::kVelIdx).setZero();
     }
     Eigen::Matrix<double, NavState::full_dim, state_dim_> f_x_ = x_.df_dx(acce);
+    // [eskf-predict-velocity-switch]
 
     // f_w_是连续动力学对过程噪声的雅可比 G_c。
     // NavState为了兼容SO3/S2等流形，先在full_dim空间里组织导数；P_实际是state_dim_维。
@@ -229,10 +233,12 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     //   Phi ~= I + F_c * dt
     //   P_{k+1} = Phi P_k Phi^T + (G_c dt) Q (G_c dt)^T
     // 这里没有构造中点状态处的F_c，因此属于起点状态线性化的欧拉式协方差传播。
+    // [eskf-predict-covariance]
     F_x1_ += f_x_final * dt;
     P_ = (F_x1_)*P_ * (F_x1_).transpose() + (dt * f_w_final) * Q * (dt * f_w_final).transpose();
     // 轻微膨胀协方差，给线性化误差、时间同步误差和未建模误差留余量。
     P_ *= options_.predict_cov_inflation_;
+    // [eskf-predict-covariance]
     // 数值保护：强制协方差对称，并限制对角线范围，避免后续更新阶段数值不稳定。
     SymmetrizeAndFloorCovariance(P_, options_.min_cov_diag_);
     LogCovarianceStats(P_, "predict");
@@ -339,6 +345,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
     // P_propagated是IMU预测后的先验协方差。迭代过程中会多次临时变换P_，
     // 每一轮重新从这个先验协方差开始，避免把上一轮临时线性化结果重复叠加。
+    // [eskf-update-save-prior]
     CovType P_propagated = P_;  // 保存预测阶段的协方差矩阵
 
     Eigen::Matrix<double, state_dim_, 1> K_r;           // 卡尔曼增益与残差的乘积项 K*r
@@ -348,6 +355,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
     NavState start_x = x_;  // 迭代的起点
     NavState last_x = x_;   // last_x 不是上一次迭代的状态，而是AA算法优化后的状态
+    // [eskf-update-save-prior]
 
     int converged_times = 0;    // 连续收敛次数统计
     double last_lidar_res = 0;  // 上一轮迭代的激光雷达残差
@@ -356,6 +364,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
     static double iterated_num = 0;  // 总迭代次数统计
     static double update_num = 0;    // 总更新次数统计
     update_num += 1;
+    // [eskf-update-relinearize]
     for (int i = -1; i < maximum_iter_; i++) {
         custom_obs_model_.valid_ = true;
 
@@ -363,6 +372,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         /// x_ 在每次迭代中都会被boxplus()更新，所以观测模型的线性化点也随之更新。
         if (obs == ObsType::LIDAR || obs == ObsType::WHEEL_SPEED_AND_LIDAR) {
             lidar_obs_func_(x_, custom_obs_model_);
+            // [eskf-update-relinearize]
         } else if (obs == ObsType::WHEEL_SPEED) {
             wheelspeed_obs_func_(x_, custom_obs_model_);
         } else if (obs == ObsType::ACC_AS_GRAVITY) {
@@ -405,10 +415,12 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         iterations_ = i + 2;                                             // 迭代次数统计，i从-1开始，所以+2
         final_res_ = custom_obs_model_.lidar_residual_mean_ / init_res;  // 相对残差
 
+        // [eskf-update-reuse-prior]
         StateVecType dx = x_.boxminus(start_x);  // 当前x与起点之间的dx
         dx_current = dx;                         //
 
         P_ = P_propagated;  // 重置为预测阶段的协方差
+        // [eskf-update-reuse-prior]
 
         // TODO.custom_obs_model_.h_x_中应该还有姿态部分名义状态关于误差状态的导数
         /// 更新P 和 dx
@@ -678,9 +690,11 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             return;
         }
 
+        // [eskf-update-plain-injection]
         if (!use_aa_) {
             // 普通迭代：直接把误差状态增量施加到当前名义状态。
             x_ = x_.boxplus(dx_current);
+            // [eskf-update-plain-injection]
         } else {
             // 转到起点的线性空间
             x_ = x_.boxplus(dx_current);

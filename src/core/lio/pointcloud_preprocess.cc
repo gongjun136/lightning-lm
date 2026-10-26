@@ -43,8 +43,10 @@ void PointCloudPreprocess::LivoxPointCloud2Handler(const sensor_msgs::msg::Point
     cloud_out_.clear();
     cloud_full_.clear();
 
+    // [sensor-livox-time-reference]
     const double head_time = msg->header.stamp.sec + msg->header.stamp.nanosec / 1e9;
     constexpr double kAbsoluteTimeThreshold = 1e6;
+    // [sensor-livox-time-reference]
     const int filter_num = point_filter_num_ > 0 ? point_filter_num_ : 1;
     cloud_out_.reserve(msg->width * msg->height / filter_num);
 
@@ -90,6 +92,7 @@ void PointCloudPreprocess::LivoxPointCloud2Handler(const sensor_msgs::msg::Point
         added_pt.z = z;
         added_pt.intensity = *iter_intensity;
 
+        // [sensor-livox-pointcloud2-time]
         const double timestamp = *iter_timestamp * livox_point_time_scale_;
         if (timestamp > kAbsoluteTimeThreshold) {
             added_pt.time = (timestamp - head_time) * 1e3;
@@ -100,6 +103,7 @@ void PointCloudPreprocess::LivoxPointCloud2Handler(const sensor_msgs::msg::Point
         if (added_pt.time < -1e-3) {
             continue;
         }
+        // [sensor-livox-pointcloud2-time]
 
         cloud_out_.points.push_back(added_pt);
     }
@@ -150,8 +154,10 @@ void PointCloudPreprocess::Process(const livox_ros_driver2::msg::CustomMsg::Shar
         cloud_full_[i].z = raw.z;
         cloud_full_[i].intensity = raw.reflectivity;
 
-        // use curvature as time of each laser points, curvature unit: ms
+        // [sensor-livox-custom-time]
+        // CustomMsg 的 offset_time 是纳秒偏移；内部 time 保存相对扫描开始的毫秒。
         cloud_full_[i].time = raw.offset_time / double(1000000);
+        // [sensor-livox-custom-time]
 
         if (cloud_full_[i].z < height_min_ || cloud_full_[i].z > height_max_) {
             continue;

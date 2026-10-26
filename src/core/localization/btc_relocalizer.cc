@@ -144,6 +144,8 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             LOG(ERROR) << "unsupported BTC relocalization database schema: " << manifest_path;
             return false;
         }
+        // 只有启用归一化时才强制核对数据库与地图包的变换引用。
+        // [relocalization-btc-map-frame-gate]
         if (export_options.normalize_start_ground_z) {
             if (schema_version < 2) {
                 LOG(ERROR) << "normalized map requires a map-frame-aware BTC database: "
@@ -159,6 +161,7 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
                 return false;
             }
         }
+        // [relocalization-btc-map-frame-gate]
         if (config && config["query_submap_sizes"]) {
             options_.query_submap_sizes = config["query_submap_sizes"].as<std::vector<int>>();
         } else {

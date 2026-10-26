@@ -64,7 +64,7 @@ class PointCloudPreprocess {
     int num_scans_ = 6;  ///< 雷达扫描线数量。
     double blind_ = 0.01;  ///< 丢弃近距离盲区点的距离阈值（m）。
     float time_scale_ = 1e-3;  ///< 标准点云时间字段到内部时间单位的换算系数。
-    double livox_point_time_scale_ = 1.0;  ///< Livox 点时间偏移到内部时间单位的换算系数。
+    double livox_point_time_scale_ = 1.0;  ///< Livox PointCloud2 的 timestamp 到秒的换算系数，随后再转为相对毫秒；不作用于 CustomMsg。
     int parallel_threads_ = 1;  ///< 预处理允许使用的并行线程数。
     bool given_offset_time_ = false;  ///< 输入是否提供逐点时间偏移。
 

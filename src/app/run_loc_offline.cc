@@ -269,6 +269,7 @@ void OpenOutput(std::ofstream& stream, const std::string& path, const char* labe
     if (!stream.is_open()) throw std::runtime_error(std::string("failed to open ") + label + ": " + path);
 }
 
+// [offline-loc-tum-write]
 void WriteTumPose(std::ofstream& stream, double timestamp, const lightning::SE3& pose, double& last_timestamp) {
     if (!stream.is_open() || timestamp <= 0.0 || timestamp <= last_timestamp) return;
     const auto q = pose.unit_quaternion();
@@ -277,6 +278,7 @@ void WriteTumPose(std::ofstream& stream, double timestamp, const lightning::SE3&
            << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << "\n";
     last_timestamp = timestamp;
 }
+// [offline-loc-tum-write]
 
 std::string JoinIds(const std::vector<int>& ids) {
     std::ostringstream output;
@@ -297,9 +299,11 @@ void WriteEmptyPoseCsvFields(std::ofstream& csv) {
     for (int i = 0; i < 7; ++i) csv << ',';
 }
 
+// [offline-loc-usable-result]
 bool IsUsableLocResult(const lightning::loc::LocalizationResult& result) {
     return result.valid_ || result.lidar_loc_valid_;
 }
+// [offline-loc-usable-result]
 
 bool ReadInitialPose(const std::string& config_path, const std::string& map_path,
                      lightning::SE3& pose) {
@@ -540,6 +544,7 @@ int main(int argc, char** argv) {
     LOG(INFO) << "localization PGO DR smoothing: " << (enable_dr_smoothing ? "enabled" : "disabled");
     LOG(INFO) << "localization PGO DR extrapolation: "
               << (enable_dr_extrapolation ? "enabled" : "disabled");
+    // [offline-loc-capture-pgo]
     loc::LocalizationResult latest_final_result;
     bool latest_final_result_set = false;
     auto capture_final_result = [&](const loc::LocalizationResult& result) {
@@ -552,6 +557,7 @@ int main(int argc, char** argv) {
         if (topic_publisher) topic_publisher->PublishPose(result, lio.GetInitialLidarRotation(),
                                                         lio.GetImuToBodyRotation());
     });
+    // [offline-loc-capture-pgo]
 
     std::ofstream fused_tum, lidar_loc_tum, csv, frame_stats_csv;
     try {
@@ -644,12 +650,15 @@ int main(int argc, char** argv) {
                     latest_final_result_set = false;
                     LOG(WARNING) << "reset localization PGO after accepted global relocalization";
                 }
+                // 本文件的 fused 轨迹允许回退到原始地图结果；需同时读时间选择条件。
+                // [offline-loc-fused-selection]
                 pgo.ProcessLidarLoc(loc_result);
 
                 loc::LocalizationResult final_result = loc_result;
                 if (latest_final_result_set && latest_final_result.timestamp_ >= loc_result.timestamp_ - 1e-6) {
                     final_result = latest_final_result;
                 }
+                // [offline-loc-fused-selection]
                 if (topic_publisher) {
                     if (lio.CanPublishCurrentCloud()) {
                         topic_publisher->PublishCloud(
@@ -660,6 +669,7 @@ int main(int argc, char** argv) {
                     topic_publisher->PublishTelemetry(loc_result.timestamp_);
                 }
 
+                // [offline-loc-trajectory-output]
                 ++loc_frames;
                 if (IsUsableLocResult(loc_result)) ++loc_valid_frames;
                 if (IsUsableLocResult(loc_result)) {
@@ -668,6 +678,7 @@ int main(int argc, char** argv) {
                 if (IsUsableLocResult(final_result)) {
                     WriteTumPose(fused_tum, loc_result.timestamp_, final_result.pose_, last_fused_tum);
                 }
+                // [offline-loc-trajectory-output]
 
                 if (IsUsableLocResult(final_result)) {
                     const NavState final_state = final_result.ToNavState();
@@ -826,5 +837,7 @@ int main(int argc, char** argv) {
                       << ", input_points=" << points_by_lidar[sensor.id];
         }
     }
+    // [offline-loc-exit-status]
     return loc_frames > 0 && loc_valid_frames > 0 ? 0 : 4;
+    // [offline-loc-exit-status]
 }

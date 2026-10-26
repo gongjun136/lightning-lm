@@ -155,10 +155,13 @@ bool TiledMap::LoadMapIndex() {
             // 将path改为yaml中配置的路径
             path = options_.map_path_ + "/" + std::to_string(id) + ".pcd";
 
+            // Static point clouds are read during index loading, before active-tile selection.
+            // [map-tile-index-preload]
             auto ck = std::make_shared<MapChunk>(id, grid, path);
             ck->LoadCloud();
             static_chunks_.emplace(grid, ck);
             id_to_grid_.emplace(id, grid);
+            // [map-tile-index-preload]
 
             if (id > chunk_id_) {
                 chunk_id_ = id;
@@ -289,18 +292,21 @@ void TiledMap::AddDynamicCloud(CloudPtr cloud) {
 }
 
 void TiledMap::LoadOnPose(const SE3& pose) {
+    // [map-tile-same-grid]
     Vec2d p = pose.translation().head<2>();
     auto this_grid = Pos2Grid(p);
     if (last_load_grid_set_ && last_load_grid_ == this_grid) {
         map_updated_ = false;
         return;
     }
+    // [map-tile-same-grid]
 
     // 加载近邻范围内的地图
     UL lock(static_data_mutex_);
     UL lock2(dynamic_data_mutex_);
 
     for (const auto& cp : static_chunks_) {
+        // [map-tile-load-radius]
         Vec2i d = cp.first - this_grid;
         int n = abs(d[0]) + abs(d[1]);
         if (n <= options_.load_map_size_) {
@@ -313,6 +319,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
 
                 loaded_chunks_.emplace(cp.first);
             }
+        // [map-tile-load-radius]
 
             auto dyn_iter = dynamic_chunks_.find(cp.first);
             if (dyn_iter == dynamic_chunks_.end()) {
@@ -335,14 +342,16 @@ void TiledMap::LoadOnPose(const SE3& pose) {
 
     // 卸载过远的点云
     for (auto iter = loaded_chunks_.begin(); iter != loaded_chunks_.end();) {
+        // [map-tile-active-removal]
         Vec2i g = *iter;
         Vec2i d = g - this_grid;
         int n = abs(d[0]) + abs(d[1]);
         if (n > options_.unload_map_size_) {
-            /// 卸载静态地图
+            // Remove the active selection; the static cloud remains cached below.
             map_updated_ = true;
             // static_chunks_[g]->Unload();
             iter = loaded_chunks_.erase(iter);
+        // [map-tile-active-removal]
 
             auto d = dynamic_chunks_.find(g);
             if (options_.policy_ == DynamicCloudPolicy::SHORT && d != dynamic_chunks_.end()) {
@@ -350,6 +359,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
                 dynamic_map_updated_ = true;
             }
 
+            // [map-tile-persistent-unload]
             if (options_.policy_ == DynamicCloudPolicy::PERSISTENT && d != dynamic_chunks_.end() &&
                 d->second->loaded_) {
                 if (d->second->cloud_ == nullptr || d->second->cloud_->empty()) {
@@ -367,6 +377,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
                     d->second->Unload();
                 }
             }
+            // [map-tile-persistent-unload]
         } else {
             iter++;
         }

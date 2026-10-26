@@ -33,7 +33,7 @@
 
 **代码依据：** `src/core/system/loc_system.h`（`Finish()` 和成员），`src/core/system/loc_system.cc`（`Init()`、输入转发、发布与析构），`src/core/localization/localization.cpp`（`Finish()`）
 
-# `AsyncMessageProcess<T>` 的队列契约
+# AsyncMessageProcess 的队列契约
 
 这个模板是在线定位数据面的公共线程原语：`Start()` 创建一个 worker；`AddMessage()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数。超过 `max_size_` 时淘汰最旧待处理消息；`Quit()` 会继续处理到队列为空再 join。队列、运行标志和统计量均封装在对象内部。
 
@@ -44,6 +44,42 @@ OpenMP 工作线程（含未分到迭代的线程）进入并行区时绑定后�
 环境变量、适用硬件、重启与现场核验见 @ref dtc_delivery 。
 
 **代码依据：** `src/core/system/async_message_process.h`（`Start()`、`AddMessage()`、`ProcLoop()`、`Quit()`）
+
+@anchor online_queue_quit_reading
+## 退出请求会立即丢掉所有待处理消息吗？
+
+本段只讨论在线定位使用的 `AsyncMessageProcess`。容量淘汰与“正在处理的一帧”先见 @ref lio_sensor_queue_reading "传感器队列导读"；退出时则从 `Quit()` 的这几行读起：
+
+@snippet{lineno} core/system/async_message_process.h async-message-quit-join
+
+先在锁内设置退出标志，再唤醒 worker，最后 `join()` 等它退出。这里没有 `clear()`，也没有取消正在运行的回调。是否排空由 worker 的退出条件决定：
+
+@snippet{lineno} core/system/async_message_process.h async-message-exit-condition
+
+两个条件用的是 `&&`：已经请求退出，而且等待队列为空，才 `break`。若队列还有消息，仍沿 @ref lio_sensor_queue_reading "逐条执行路径" 取出并执行回调。与此同时，新输入被拒绝：
+
+@snippet{lineno} core/system/async_message_process.h async-message-refuse-after-exit
+
+<b>时序例子：</b>假设 A 正在执行、B 和 C 仍在等待，此时所有者调用 Quit。A 不会被中断；A 完成后依次执行 B、C，队列为空才退出并让 join 返回。退出标志已置位后提交的 D 会直接返回，不进入等待队列。此前已因容量限制被淘汰的消息不会恢复。
+
+<b>边界与停止点：</b>这是正常回调能够返回时的时序；没有超时或强制终止，某条回调一直阻塞就会拖住退出。应由 worker 之外的所有者调用 Quit，并先停止生产输入。`ProcessedCount()` 只说明回调完成，不证明算法接受或 ROS 已发布。读到拒收、退出条件和 join 即可，完整源码见 @ref lightning::sys::AsyncMessageProcess "队列模板"。
+
+@anchor online_finish_order_reading
+## 为什么先退出传感器队列，再退出地图匹配和高频输出？
+
+`Localization::Finish()` 按数据传递的先后顺序关闭三个队列：
+
+@snippet{lineno} core/localization/localization.cpp localization-finish-order
+
+前一个 Quit 返回时，它的 worker 已完成当前和等待中的回调。传感器尾帧因而仍有机会进入尚未关闭的地图匹配与高频输出队列；随后才分别关闭它们。最后再拿生命周期独占锁，结束地图定位对象和 UI。队列容量、输入时效和各层接受条件仍可能拒绝尾帧，这个顺序不是“保证每帧产生输出”。
+
+外层资源的收尾也有顺序：
+
+@snippet{lineno} core/system/loc_system.cc loc-system-finish-resources
+
+<b>手工推演：</b>假设传感器尾帧生成一个有效定位结果，且后续容量与门控均允许处理，那么算法队列排空时，心跳与轨迹文件尚未由本函数关闭；`loc_->Finish()` 返回后才停止心跳、关闭轨迹流。若先关闭消费者，再让生产者排空，其新消息会命中上一节的退出后拒收分支。
+
+<b>边界与停止点：</b>外层先取消 DTC/Safety 定时器并清除 debug sink，因此尾部处理不代表这些定时诊断仍继续产出。`finished_` 支持完成后的顺序重复调用；这段普通标志不构成多个线程并发调用 Finish 的安全保证，也没有负责停止所有外部生产者。读到三队列 join 与外层资源关闭即可，完整接口见 @ref lightning::loc::Localization::Finish() "Localization::Finish()" 和 @ref lightning::LocSystem::Finish() "LocSystem::Finish()"。
 
 ## 线程关系
 

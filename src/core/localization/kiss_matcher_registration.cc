@@ -464,6 +464,8 @@ KissMatcherRegistration::Result KissMatcherRegistration::SolveCorrespondences(
         }
     }
 
+    // 内点比例以兼容图保留的 core 为分母；最少内点数另作硬门控。
+    // [relocalization-kiss-inlier-gate]
     std::vector<std::size_t> inlier_indices;
     for (const std::size_t index : core_indices) {
         if (SquaredResidual(correspondences[index], transform) <=
@@ -481,6 +483,7 @@ KissMatcherRegistration::Result KissMatcherRegistration::SolveCorrespondences(
         result.reason = "too_few_robust_inliers";
         return result;
     }
+    // [relocalization-kiss-inlier-gate]
 
     std::vector<double> inlier_weights(inlier_indices.size(), 1.0);
     if (!EstimateTransform(correspondences, inlier_indices, inlier_weights,
@@ -505,6 +508,8 @@ KissMatcherRegistration::Result KissMatcherRegistration::SolveCorrespondences(
             static_cast<int>(std::floor(point.x() / options.spatial_cell_size)),
             static_cast<int>(std::floor(point.y() / options.spatial_cell_size)));
     }
+    // 这些统计针对上面选出的内点；覆盖数是 target XY 网格数，不是三维体积。
+    // [relocalization-kiss-quality-gate]
     result.rmse =
         std::sqrt(squared_error_sum / static_cast<double>(inlier_indices.size()));
     result.spatial_cells = inlier_cells.size();
@@ -531,6 +536,7 @@ KissMatcherRegistration::Result KissMatcherRegistration::SolveCorrespondences(
     }
     result.success = true;
     result.reason = "accepted";
+    // [relocalization-kiss-quality-gate]
     return result;
 }
 

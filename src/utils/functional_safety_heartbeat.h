@@ -19,7 +19,7 @@ namespace lightning::functional_safety {
 enum class NodeState : std::uint8_t {
     kNotReady = 0,  // Localization initialization is in progress.
     kIdle = 1,      // Initialized, but no valid pose has been published.
-    kRunning = 2,   // Localization is healthy and publishing poses.
+    kRunning = 2,   // Caller-reported progress state, not a fresh diagnostic PASS.
     kDegraded = 3,  // P1: localization is degraded and DR remains available.
     kFault = 4,     // P0: localization is lost.
 };

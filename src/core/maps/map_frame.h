@@ -58,9 +58,11 @@ bool EstimateStartGroundFrame(const CloudPtr& map, const SE3& start_pose,
 
 void TransformCloudInPlace(const Metadata& metadata, const CloudPtr& cloud);
 
+// [map-ground-transform-pose]
 inline SE3 TransformPose(const Metadata& metadata, const SE3& pose) {
     return metadata.normalized ? metadata.T_export_slam * pose : pose;
 }
+// [map-ground-transform-pose]
 
 bool SaveMetadata(const std::string& map_directory, const Metadata& metadata,
                   std::string& error);

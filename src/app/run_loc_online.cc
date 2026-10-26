@@ -135,6 +135,7 @@ int main(int argc, char** argv) {
         LOG(ERROR) << error.what(); rclcpp::shutdown(); return 2;
     }
 
+    // [online-loc-create-system]
     LocSystem::Options opt;
     LocSystem loc(opt);
 
@@ -142,13 +143,15 @@ int main(int argc, char** argv) {
         LOG(ERROR) << "failed to init loc";
         return -1;
     }
+    // [online-loc-create-system]
     if (!FLAGS_output_published_tum.empty() &&
         !loc.StartPublishedTrajectoryTum(FLAGS_output_published_tum)) {
         LOG(ERROR) << "failed to start published rear-axle TUM recorder";
         return -1;
     }
 
-    /// 默认起点开始定位
+    // [online-loc-initial-pose]
+    /// 先提供初始位姿并打开输入处理，再进入 ROS 事件循环。
     SE3 initial_pose;
     try {
         if (FLAGS_use_config_initial_pose && ReadInitialPose(FLAGS_config, initial_pose)) {
@@ -161,6 +164,7 @@ int main(int argc, char** argv) {
         return -1;
     }
     loc.SetInitPose(initial_pose);
+    // [online-loc-initial-pose]
 
     std::shared_ptr<OnlineBagPlayer> bag_player;
     std::thread bag_thread;
@@ -176,9 +180,11 @@ int main(int argc, char** argv) {
             rclcpp::shutdown();
         });
     }
+    // [online-loc-spin-finish]
     loc.Spin();
     if (bag_thread.joinable()) bag_thread.join();
     loc.Finish();
+    // [online-loc-spin-finish]
     if (!FLAGS_output_tum.empty()) loc.SaveTrajectoryTum(FLAGS_output_tum);
     if (!FLAGS_output_high_frequency_tum.empty()) {
         loc.SaveHighFrequencyTrajectoryTum(FLAGS_output_high_frequency_tum);

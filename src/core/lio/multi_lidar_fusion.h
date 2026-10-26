@@ -32,8 +32,8 @@ struct AdaptiveLidarLoadConfig {
     bool cloud_publish_require_primary = true;  ///< 点云发布是否必须包含主雷达。
     double target_latency_sec = 0.2;  ///< 期望维持的点云处理滞后目标（s）。
     double hard_latency_sec = 0.3;  ///< 拒绝过期点云的硬滞后阈值（s）。
-    double degrade_processing_ratio = 0.8;  ///< 触发降载的处理耗时与帧周期比值。
-    double recover_processing_ratio = 0.6;  ///< 允许恢复的处理耗时与帧周期比值。
+    double degrade_processing_ratio = 0.8;  ///< 触发降载的处理耗时与 target_latency_sec 的比值阈值。
+    double recover_processing_ratio = 0.6;  ///< 恢复时处理耗时和滞后各自相对 target_latency_sec 的上限比例。
     int degrade_consecutive_frames = 3;  ///< 触发降载所需的连续过载帧数。
     int recover_consecutive_frames = 20;  ///< 恢复一个级别所需的连续健康帧数。
     std::vector<int> point_strides{1, 2, 3};  ///< 各降载级别的点采样步长。
@@ -46,10 +46,12 @@ struct AdaptiveLidarLoadConfig {
 };
 
 struct MultiLidarConfig {
-    bool enabled = false;  ///< 是否启用对应的组帧、降载或自反射过滤功能。
+    // [config-multi-default-disabled]
+    bool enabled = false;  ///< 是否启用多雷达组帧；缺少整个配置块时保持关闭。
+    // [config-multi-default-disabled]
     int primary_lidar_id = 0;  ///< 组帧与输出坐标系使用的主雷达 ID。
     double frame_period = 0.1;  ///< 组帧时间桶的周期（s）。
-    double match_tolerance = 0.002;  ///< 单雷达时间戳偏离桶时刻的允许容差（s）。
+    double match_tolerance = 0.002;  ///< 同一时间桶内各雷达扫描开始时间戳的最大允许跨度（s）。
     double reorder_window = 0.5;  ///< 等待乱序或晚到雷达输入的时间窗口（s）。
     int min_lidars = 1;  ///< 排出融合帧所需的最少雷达数。
     bool online_extrinsic_estimation = false;  ///< 是否配置在线外参估计。

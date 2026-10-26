@@ -23,6 +23,24 @@
 
 每个模块先看输入输出和主路径，再看公式、参数化及代码对应；对象所有权、锁和关闭顺序作为修改并发或退出逻辑时的参考。当前源码是行为依据，历史性能数字须结合记录版本阅读。
 
+**怎样快速核对代码**
+
+从 @ref online_loc_code_reading "在线定位的问题导读" 开始：先选一个要验证的问题，在正文旁阅读从真实源码提取的短片段，再用给出的例子检查条件和边界。能指出支持结论的语句即可继续主线，需要上下文时再进入完整 API/源码。页面顶部显示生成时的源码提交、未提交修改状态和时间；这些信息描述手册的来源，不代表当前已安装程序的版本。
+
+| 正在核对的内容 | 可直接进入的验证路径 |
+|---|---|
+| 配置是否真正生效 | @ref config_multilidar_enable_reading "多雷达启用分支"、@ref config_extrinsic_matrix_reading "矩阵读取与校验边界" |
+| 几何与回放约定 | @ref geometry_half_angle_reading "旋转增量的半角"、@ref geometry_jacobian_reading "左右雅可比"、@ref support_bag_dispatch_reading "bag 回调返回值"、@ref support_bag_clock_reading "回放节拍" |
+| 输入时间与多雷达融合 | @ref sensor_point_time_reading "点时间"、@ref sensor_frame_ready_reading "组帧等待"、@ref sensor_imu_sync_reading "IMU 覆盖" |
+| LIO 内部计算 | @ref imu_point_reading "去畸变"、@ref eskf_iteration_reading "迭代先验"、@ref lidar_plane_equation_reading "点面正规方程" |
+| 找回地图位置 | @ref relocalization_direction_reading "候选变换方向"、@ref relocalization_coarse_acceptance_reading "几何接受"、@ref loc_read_confirmation "连续确认" |
+| 融合与业务输出 | @ref pgo_smoothing_reading "PGO 平滑"、@ref output_gate_reading "发布门控"、@ref output_pose_reading "参考点转换" |
+| 地图来源与一致性 | @ref offline_slam_code_reading "离线建图到地图包"、@ref map_manifest_validation_reading "地图清单校验" |
+| 离线结果是否足以作结论 | @ref offline_loc_fused_reading "轨迹来源"、@ref offline_loc_success_reading "退出成功的含义" |
+| 独立运行分支 | @ref frontend_online_delivery_reading "纯前端发布队列"、@ref ins_input_acceptance_reading "纯 INS 输入接受"、@ref ins_output_validity_reading "导航恢复与发布" |
+| 退出与多文件保存 | @ref online_finish_order_reading "队列关闭顺序"、@ref alignment_persistence_reading "对齐配置与清单的部分失败" |
+| 进程健康与安全状态 | @ref dtc_heartbeat_evidence_reading "心跳是否代表工作推进"、@ref dtc_failure_recovery_reading "故障保持与恢复"、@ref dtc_safety_decision_reading "Safety 的真实含义" |
+
 **运行模式入口**
 
 | 运行模式与阅读入口 | 程序 | 编排者 | 主要边界 |

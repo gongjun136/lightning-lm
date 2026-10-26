@@ -20,4 +20,6 @@
 
 答案从 @ref architecture "架构页" 与 @ref index "首页运行模式表" 对照。已具备构建环境时，可直接进入下一章，再按需回查工作区与脚本。
 
+改配置之前，先用 @ref config_multilidar_enable_reading "显式关闭多雷达时的解析分支" 和 @ref config_extrinsic_matrix_reading "外参矩阵读取的实际校验范围" 核对“写进 YAML”与“通过验证并生效”的区别。
+
 下一章：@ref guide_online "在线定位主线"。

@@ -174,11 +174,13 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
     const Condition condition = Combined(motion.translation, motion.yaw);
     snapshot_.observations[0].condition = condition;
     Uncertainty(pose, covariance, valid, unobservable);
+    // [dtc-confirmed-failure-latch]
     const std::array<Condition, 3> checks{{motion.translation, motion.yaw, snapshot_.observations[1].condition}};
     for (size_t i = 0; i < failed_checks_.size(); ++i) {
         if (checks[i] == kFail) failed_checks_[i] = true;
         if (checks[i] == kPass) failed_checks_[i] = false;
     }
+    // [dtc-confirmed-failure-latch]
     if (condition == kPass) {
         consistency_pass_seen_ = true;
         consistency_pass_time_ = now;
@@ -197,10 +199,12 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
         if (!speeds_.empty()) out.speed_stamp_lag_sec = poses_.back().stamp - speeds_.back().stamp;
         if (!gyros_.empty()) out.gyro_stamp_lag_sec = poses_.back().stamp - gyros_.back().stamp;
     }
+    // [dtc-output-severity]
     const bool stale = output_seen_ ? Age(now, output_time_) > config_.output_timeout_sec : Age(now, start_) > config_.startup_grace_sec;
     out.severe = lost || stale;
     out.output_stale = stale;
     out.localization_lost = lost;
+    // [dtc-output-severity]
     const double missing = std::numeric_limits<double>::infinity();
     out.output_age_sec = output_seen_ ? Age(now, output_time_) : missing;
     out.speed_arrival_age_sec = speeds_.empty() ? missing : Age(now, speeds_.back().arrival);
@@ -226,14 +230,17 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
         expire(out.yaw_condition);
     }
     out.observations[0].condition = Combined(out.translation_condition, out.yaw_condition);
+    // [dtc-optional-can-evidence]
     out.optional_can_unavailable = !out.severe && !out.confirmed_failure &&
         out.observations[1].condition == kPass && out.translation_condition == kUnknown &&
         out.yaw_condition == kPass;
+    // [dtc-optional-can-evidence]
     // Do not report UNKNOWN as PASS. Grace affects only the stop decision and
     // cannot refresh itself, survive an epoch change, hide a failure, stale
     // output, missing uncertainty, or a detected clock discontinuity. The
     // integration gap limit decides whether evidence is complete; the separate
     // grace is a TOTAL evidence-age limit, not extra time after that gap limit.
+    // [dtc-unknown-evidence-age]
     const double grace = config_.consistency_unknown_grace_sec;
     out.consistency_unknown_tolerated =
         grace > 0 && !out.severe && !out.confirmed_failure &&
@@ -244,8 +251,10 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
         out.gyro_arrival_age_sec <= grace &&
         out.yaw_condition == kUnknown &&
         std::abs(out.gyro_stamp_lag_sec) <= grace;
+    // [dtc-unknown-evidence-age]
     return out;
 }
+// [dtc-safety-priority]
 int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass, bool mask_radar_fault) {
     if (loc.severe || all_failed) return -9;
     if (loc.confirmed_failure || loc.observations[0].condition == kFail ||
@@ -255,4 +264,5 @@ int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool 
     if (!mask_radar_fault && (radar_fault || !radar_all_pass)) return 2;
     return 0;
 }
+// [dtc-safety-priority]
 }

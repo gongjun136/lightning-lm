@@ -35,6 +35,7 @@ void RosbagIO::Go(int sleep_usec) {
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
     reader.open({bag_file_, StorageIdForBag(bag_file_)}, cv_options);
 
+    // [bag-dispatch-stop]
     while (reader.has_next()) {
         auto msg = reader.read_next();
         auto iter = process_func_.find(msg->topic_name);
@@ -51,14 +52,17 @@ void RosbagIO::Go(int sleep_usec) {
             return;
         }
     }
+    // [bag-dispatch-stop]
 
     LOG(INFO) << "bag " << bag_file_ << " finished.";
 }
 
 void RosbagIO::GoRealtime(double playback_rate) {
+    // [bag-realtime-rate]
     if (!std::isfinite(playback_rate) || playback_rate <= 0.0) {
         throw std::invalid_argument("playback rate must be finite and positive");
     }
+    // [bag-realtime-rate]
 
     rosbag2_cpp::Reader reader(std::make_unique<rosbag2_cpp::readers::SequentialReader>());
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
@@ -67,6 +71,7 @@ void RosbagIO::GoRealtime(double playback_rate) {
     std::optional<rcutils_time_point_value_t> first_bag_time;
     std::chrono::steady_clock::time_point first_wall_time;
     while (reader.has_next()) {
+        // [bag-realtime-clock]
         auto msg = reader.read_next();
         if (!first_bag_time) {
             first_bag_time = msg->time_stamp;
@@ -81,6 +86,7 @@ void RosbagIO::GoRealtime(double playback_rate) {
             LOG(INFO) << "realtime bag " << bag_file_ << " exit.";
             return;
         }
+        // [bag-realtime-clock]
     }
     LOG(INFO) << "realtime bag " << bag_file_ << " finished.";
 }

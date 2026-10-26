@@ -166,6 +166,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     // Online localization must operate on the freshest projected scan. A
     // backlog is harmful here: global relocalization can be expensive, and
     // replaying stale scans afterwards prevents timely confirmation.
+    // [localization-map-queue-limit]
     const size_t default_loc_queue_size = 1;
     const size_t loc_queue_size =
         system && system["online_lidar_loc_queue_size"]
@@ -176,6 +177,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         return false;
     }
     lidar_loc_proc_cloud_.SetMaxSize(loc_queue_size);
+    // [localization-map-queue-limit]
 
     sensor_proc_.SetName("传感器顺序队列");
     lidar_loc_proc_cloud_.SetName("激光定位");
@@ -331,11 +333,13 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     }
     if (!process_lidar_odom) return;
     profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
+    // [localization-lidar-enqueue]
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
         sensor_proc_.AddMessage({nullptr, laser_cloud, lidar_id, false,
                                 profiling_enabled ? std::chrono::steady_clock::now()
                                                   : std::chrono::steady_clock::time_point{}});
+        // [localization-lidar-enqueue]
         input_lock.unlock();
         lifecycle_lock.unlock();
     } else {
@@ -458,11 +462,13 @@ void Localization::ProcessSensorInput(const SensorInput& input) {
     const double timestamp = input.is_imu && input.imu
                                  ? input.imu->timestamp
                                  : (input.cloud ? static_cast<double>(input.cloud->header.stamp) * 1e-9 : 0.0);
+    // [localization-sensor-dispatch]
     if (input.is_imu) {
         ProcessIMUData(input.imu);
     } else {
         LidarOdomProcCloud(input.cloud, input.lidar_id);
     }
+    // [localization-sensor-dispatch]
     // This frontier means callback completion, not merely dequeue/start.
     ObserveSensorProcessed(timestamp);
     if (trace) {
@@ -511,6 +517,7 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
 }
 
 void Localization::DrainLioOutputs() {
+    // [localization-drain-status]
     while (true) {
         const auto status = lio_->RunDetailed();
         if (status == LaserMapping::RunStatus::kNoData) break;
@@ -521,6 +528,7 @@ void Localization::DrainLioOutputs() {
 
         lidar_loc_->ProcessLO(lo_state);
         pgo_->ProcessLidarOdom(lo_state);
+        // [localization-drain-status]
 
         // LOG(INFO) << "LO pose: " << std::setprecision(12) << lo_state.timestamp_ << " "
         //           << lo_state.GetPose().translation().transpose();
@@ -571,12 +579,14 @@ void Localization::DrainLioOutputs() {
             runtime_stats_.wheel_speed_dr_stats = wheel_stats;
         }
 
+        // [localization-keyframe-selection]
         if (options_.loc_on_kf_) {
             auto kf = lio_->GetKeyframe();
             if (kf == lio_kf_) {
-                /// 关键帧未更新，那就只更新IMU状态
+                // LO 状态已交给定位和 PGO；关键帧未变化时只跳过本帧地图匹配。
                 continue;
             }
+            // [localization-keyframe-selection]
 
             // if (ui_) {
             //     ui_->UpdateKF(kf);
@@ -586,6 +596,7 @@ void Localization::DrainLioOutputs() {
 
             // auto scan = lio_->GetScanUndist();
 
+            // [localization-map-enqueue]
             if (options_.online_mode_) {
                 if (profiling::ComputeProfilingEnabled()) {
                     lidar_loc_input.enqueued_at = std::chrono::steady_clock::now();
@@ -594,6 +605,7 @@ void Localization::DrainLioOutputs() {
             } else {
                 LidarLocProcCloud(lidar_loc_input);
             }
+            // [localization-map-enqueue]
         } else {
             // auto scan = cloud;   // 这个cloud应该差一个外参
 
@@ -1026,16 +1038,20 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
             runtime_stats_.last_relocalization_reason = match_stats.relocalization_reason;
         }
     }
+    // [localization-pgo-relocalization-reset]
     if (match_stats.relocalization_accepted) {
         pgo_->Reset();
         LOG(WARNING) << "reset localization PGO after accepted global relocalization";
     }
+    // [localization-pgo-relocalization-reset]
+    // [localization-pgo-stationary-conflict]
     const bool stationary_map_conflict = !pgo_->CheckStationaryMapConsistency(res);
     if (stationary_map_conflict) {
         res.lidar_loc_valid_ = false;
         res.valid_ = false;
         res.status_ = LocalizationStatus::FAIL;
     }
+    // [localization-pgo-stationary-conflict]
     ObserveLidarLocForStaticDetector(res);
     // LidarLoc owns lidar_loc_valid_; valid_ belongs to fused/DR outputs.
     lio_->SetLocalizationGood(res.lidar_loc_valid_ && res.status_ == LocalizationStatus::GOOD);
@@ -1047,6 +1063,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     }
     const profiling::TimingSample cloud_callback_timing = cloud_callback_profile_timer.Stop();
     profiling::Stopwatch pgo_profile_timer(profiling_enabled);
+    // [localization-pgo-map-result]
     if (stationary_map_conflict) {
         // Notify the publication/telemetry boundary above before starting recovery.
         pgo_->Reset();
@@ -1054,6 +1071,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     } else {
         pgo_->ProcessLidarLoc(res);
     }
+    // [localization-pgo-map-result]
     const profiling::TimingSample pgo_timing = pgo_profile_timer.Stop();
 
     double primary_to_pgo_ms = -1.0;
@@ -1131,6 +1149,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
 
 void Localization::ProcessIMUMsg(IMUPtr imu) {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    // [localization-imu-enqueue]
     if (options_.online_mode_) {
         ObserveSensorEnqueued(imu ? imu->timestamp : 0.0);
         sensor_proc_.AddMessage({imu, nullptr, 0, true,
@@ -1138,6 +1157,7 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
                                                                      : std::chrono::steady_clock::time_point{}});
         return;
     }
+    // [localization-imu-enqueue]
     lifecycle_lock.unlock();
     ProcessIMUData(std::move(imu));
 }
@@ -1182,6 +1202,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     }
     lio_->SetLatestInputTimestamp(latest_input_stamp);
     profiling::Stopwatch lio_imu_profile_timer(profiling_enabled);
+    // [localization-imu-drain]
     lio_->ProcessIMU(imu);
     const profiling::TimingSample lio_imu_timing = lio_imu_profile_timer.Stop();
 
@@ -1190,6 +1211,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     // relative poses in sensor-time order.
     profiling::Stopwatch drain_lio_profile_timer(profiling_enabled);
     DrainLioOutputs();
+    // [localization-imu-drain]
     const profiling::TimingSample drain_lio_timing = drain_lio_profile_timer.Stop();
 
     /// 这里需要 IMU predict，否则没法process DR了
@@ -1294,6 +1316,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
 // }
 
 void Localization::Finish() {
+    // [localization-finish-order]
     sensor_proc_.Quit();
     lidar_loc_proc_cloud_.Quit();
     high_frequency_output_proc_.Quit();
@@ -1302,6 +1325,7 @@ void Localization::Finish() {
     if (ui_) {
         ui_->Quit();
     }
+    // [localization-finish-order]
 }
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {

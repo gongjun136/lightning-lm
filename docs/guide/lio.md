@@ -15,10 +15,16 @@
 
 | 数学问题 | 代码落点 | 应能解释 |
 |---|---|---|
-| 扫描内运动补偿 | `ImuProcess::UndistortPcl` | 为什么统一到扫描末时刻，外参在哪一步使用 |
-| 名义状态与协方差预测 | `NavState::get_f/df_dx/df_dw`、`ESKF::Predict` | 状态分块、扰动方向、时间步和噪声尺度 |
-| 点面观测正规方程 | `LaserMapping::ObsModel` | 点到平面的误差怎样压缩成 `HTH/HTr` |
-| 迭代状态更新 | `ESKF::Update` | 为什么每轮保留同一个先验，六维观测如何影响 18 维状态 |
+| 扫描内运动补偿 | @ref imu_point_reading "逐点补偿的短片段" | 为什么统一到扫描末时刻，外参在哪一步使用 |
+| 名义状态与协方差预测 | @ref eskf_state_reading "状态与注入"、@ref eskf_prediction_reading "预测时间步" | 状态分块、扰动方向、时间步和噪声尺度 |
+| 点面观测正规方程 | @ref lidar_plane_equation_reading "从一个点写出 J、res、HTH/HTr" | 手算负号和一维修正方向，再对照真实累加语句 |
+| 迭代状态更新 | @ref eskf_iteration_reading "同一个先验怎样复用" | 为什么每轮保留同一个先验，六维观测如何影响 18 维状态 |
+
+若当前问题是“数据到齐为什么仍没输出”，先看 @ref imu_init_reading "IMU 初始化条件"、@ref imu_time_reading "跨帧时间范围" 和 @ref lidar_plane_gate_reading "点面数量门槛"。若要解释日志，直接核对 @ref lidar_residual_statistic_reading "residual mean 的实际统计"。每条路径都配有源码片段、手工例子和停止点，无需先通读整个类。
+
+更靠近输入的问题可以先从 @ref sensor_point_time_reading "点时间如何转成内部单位" → @ref sensor_frame_ready_reading "多雷达时间桶何时排出" → @ref sensor_fusion_coordinates_reading "融合点的坐标和时间基准" → @ref sensor_imu_sync_reading "IMU 覆盖与取出边界" 逐步核对。观测点数为什么变少，则看 @ref sensor_budget_reading "预算与完整云的区别"。
+
+运行纯前端时，另核对 @ref frontend_offline_output_reading "消费计数与三份轨迹"、@ref frontend_offline_finish_reading "PCD 与退出码的含义"、@ref frontend_online_delivery_reading "在线发布队列与退出"。这些入口行为与完整 SLAM、在线定位分别验证。
 
 先理解上述关系，Anderson 加速、协方差修复及锁的逐项细节可以第二遍阅读。符号与 API 链接集中在各专题中；修改某个公式时同时核对变量单位、状态索引和调用者的接受条件。
 

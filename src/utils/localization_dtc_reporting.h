@@ -3,6 +3,7 @@
 #include "utils/functional_safety_heartbeat.h"
 
 namespace lightning::functional_safety {
+// [dtc-observations-to-heartbeat]
 inline void UpdateLocalizationFaults(HeartbeatPublisher& heartbeat, const loc::dtc::Snapshot& snapshot) {
     std::vector<uint32_t> failed, passed;
     for (const auto& check : snapshot.observations) {
@@ -15,4 +16,5 @@ inline void UpdateLocalizationFaults(HeartbeatPublisher& heartbeat, const loc::d
     if (snapshot.optional_can_unavailable) passed.push_back(loc::dtc::kConsistency);
     heartbeat.UpdateFaults(failed, passed);
 }
+// [dtc-observations-to-heartbeat]
 }

@@ -43,7 +43,7 @@ struct BackendRuntimeSummary {
     std::size_t btc_descriptors = 0;  ///< 已生成的 BTC 描述子数量。
     std::size_t btc_candidates = 0;  ///< BTC 检索得到的回环候选数。
     std::size_t loops_accepted = 0;  ///< 通过几何与连续确认的回环数。
-    std::size_t loops_applied = 0;  ///< 已加入优化的回环数。
+    std::size_t loops_applied = 0;  ///< 累计写入图约束容器的回环数，不代表经过 PGO 检验仍为内点。
     std::size_t loops_graph_inliers = 0;  ///< 位姿图保留的回环内点数。
     std::size_t hba_runs = 0;  ///< HBA 执行次数。
     std::size_t hba_accepted = 0;  ///< HBA 接受结果的次数。
@@ -59,12 +59,17 @@ class BackendPipeline {
     ~BackendPipeline();
 
     bool Init(const std::string& yaml_path, bool online_mode);
+    /// @brief 在线入队，离线同步处理；未初始化或空关键帧直接返回。
+    /// @see @ref backend_queue_ba_reading
     void AddKeyframe(const Keyframe::Ptr& keyframe);
     void RequestGlobalOptimization(const std::string& reason = "manual");
     void WaitUntilIdle(bool force_global_optimization);
     void Shutdown();
 
     using OptimizedCallback = std::function<void()>;
+    /// @brief 设置关键帧处理或优化之后同步执行的通知函数。
+    /// @note 调用时已释放 data_mutex_，但调用者可能仍持 optimization_mutex_；回调不应等待后端空闲或重入同步优化。
+    /// @see @ref backend_map_callback_reading
     void SetOptimizedCallback(OptimizedCallback callback);
 
     SE3 GetMapToOdom() const;

@@ -51,16 +51,16 @@ class KissMatcherRegistration {
 
     struct Result {
         bool success = false;  ///< 粗配准是否通过质量门控。
-        bool converged = false;  ///< 鲁棒求解是否达到收敛条件。
+        bool converged = false;  ///< 达到迭代收敛条件，或完成末端统计且 iterations>0；接受以 success 为准。
         SE3 T_target_source;  ///< 将源点云坐标变换到目标点云坐标的配准结果。
         std::size_t source_points = 0;  ///< 查询点云预处理后的点数。
         std::size_t source_descriptors = 0;  ///< 查询点云生成的特征数量。
         std::size_t rough_correspondences = 0;  ///< 特征检索建立的初始对应数。
         std::size_t core_correspondences = 0;  ///< 一致性图剪枝后保留的对应数。
-        std::size_t inliers = 0;  ///< 最终几何内点数。
-        std::size_t spatial_cells = 0;  ///< 内点覆盖的空间网格数。
-        double inlier_ratio = 0.0;  ///< 最终几何内点占对应关系的比例。
-        double spatial_coverage = 0.0;  ///< 内点的空间覆盖指标。
+        std::size_t inliers = 0;  ///< 末次内点重拟合前选出的内点数，重拟合后不重新分类。
+        std::size_t spatial_cells = 0;  ///< 所选内点在目标坐标系中覆盖的 XY 网格数。
+        double inlier_ratio = 0.0;  ///< 所选内点数 / 兼容图保留的 core 对应数。
+        double spatial_coverage = 0.0;  ///< 内点占据的 target XY 网格数 / core 占据的网格数。
         double rmse = 0.0;  ///< 最终内点配准均方根误差（m）。
         double score = 0.0;  ///< 由配准质量计算的候选分值。
         int iterations = 0;  ///< 实际执行的鲁棒求解迭代次数。

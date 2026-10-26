@@ -274,7 +274,7 @@ inline std::pair<scalar, scalar> cos_sinc_sqrt(const scalar& x2) {
  * @brief 根据三维向量构造单位四元数形式的SO(3)旋转。
  *
  * @param[in] vec 旋转轴相关向量，方向表示旋转轴，模长参与计算四元数半角。
- * @param[in] scale 对 \p vec 的缩放系数，常用于传入时间步长或插值比例。
+ * @param[in] scale 四元数半角的缩放系数；vec 为角速度时应传入 dt/2。
  * @return 由单位四元数表示的SO(3)旋转。
  *
  * @details 记 a = scale * ||vec||，axis = vec / ||vec||。本函数构造的
@@ -287,6 +287,7 @@ inline std::pair<scalar, scalar> cos_sinc_sqrt(const scalar& x2) {
  *       期望旋转角 theta，则应传入 \p scale = 0.5，或在调用前将
  *       \p vec 缩放为一半。
  */
+// [geometry-half-angle-exp]
 inline SO3 exp(const Vec3d& vec, const double& scale = 1) {
     double norm2 = vec.squaredNorm();
     std::pair<double, double> cos_sinc = cos_sinc_sqrt(scale * scale * norm2);
@@ -296,6 +297,7 @@ inline SO3 exp(const Vec3d& vec, const double& scale = 1) {
     Vec3d result = mult * vec;
     return SO3(Quatd(cos_sinc.first, result[0], result[1], result[2]));
 }
+// [geometry-half-angle-exp]
 
 inline Eigen::Matrix<double, 2, 3> PseudoInverse(const Eigen::Matrix<double, 3, 2>& X) {
     Eigen::JacobiSVD<Eigen::Matrix<double, 3, 2>> svd(X, Eigen::ComputeFullU | Eigen::ComputeFullV);
@@ -312,10 +314,11 @@ inline Eigen::Matrix<double, 2, 3> PseudoInverse(const Eigen::Matrix<double, 3, 
 }
 
 /**
- * SO3 左雅可比，-v则为右雅可比
- * @param v
- * @return
+ * @brief SO3 左雅可比；传入 -v 得到右雅可比。
+ * @param v 标准旋转向量，模长单位 rad。
+ * @return ||v|| < 1e-5 时使用单位阵近似，否则计算解析左雅可比。
  */
+// [geometry-left-jacobian]
 inline Eigen::Matrix<double, 3, 3> A_matrix(const Vec3d& v) {
     Eigen::Matrix<double, 3, 3> res;
     double squaredNorm = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
@@ -328,6 +331,7 @@ inline Eigen::Matrix<double, 3, 3> A_matrix(const Vec3d& v) {
     }
     return res;
 }
+// [geometry-left-jacobian]
 
 /// SO3 Jlinv()
 inline Eigen::Matrix<double, 3, 3> A_inv(const Vec3d& v) {

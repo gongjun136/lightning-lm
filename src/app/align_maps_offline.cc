@@ -639,8 +639,10 @@ bool PatchConfig(const fs::path& config_path, const fs::path& output_dir,
         if (!line.empty() && line.back() == '\r') line.pop_back();
         lines.push_back(line);
     }
+    // [alignment-config-backup]
     fs::copy_file(config_path, output_dir / "localization_config_before.yaml",
                   fs::copy_options::overwrite_existing);
+    // [alignment-config-backup]
     const auto q = transform.unit_quaternion();
     std::ostringstream block;
     block << std::setprecision(15)
@@ -701,6 +703,7 @@ bool PatchConfig(const fs::path& config_path, const fs::path& output_dir,
         }
         lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertion), block_lines.begin(), block_lines.end());
     }
+    // [alignment-config-replace]
     const fs::path temporary = config_path.string() + ".map_alignment.tmp";
     std::ofstream output(temporary);
     for (const auto& value : lines) output << value << '\n';
@@ -717,6 +720,7 @@ bool PatchConfig(const fs::path& config_path, const fs::path& output_dir,
         error = exception.what();
         return false;
     }
+    // [alignment-config-replace]
 }
 
 }  // namespace
@@ -844,6 +848,7 @@ int main(int argc, char** argv) {
                 if (seed.origin == "btc") ++btc_support;
             }
         }
+        // [alignment-distinct-ambiguity]
         bool ambiguous = false;
         for (std::size_t index = 1; index < evaluated.size(); ++index) {
             const auto& alternative = evaluated[index];
@@ -853,7 +858,9 @@ int main(int argc, char** argv) {
                 break;
             }
         }
+        // [alignment-distinct-ambiguity]
 
+        // [alignment-metric-gates]
         std::vector<std::string> failed_gates;
         auto gate = [&](bool condition, const std::string& name) { if (!condition) failed_gates.push_back(name); };
         gate(best.global.overlap_05 >= 0.35, "global_symmetric_overlap_0_5m_below_0_35");
@@ -872,12 +879,15 @@ int main(int argc, char** argv) {
              "static_window_transform_spread_above_0_50m");
         gate(best.static_summary.max_transform_spread_rotation_deg <= 3.0,
              "static_window_rotation_spread_above_3deg");
+        // [alignment-metric-gates]
+        // [alignment-support-and-acceptance]
         const bool descriptor_support = solid_support >= 2 || btc_support >= 2;
         const bool strong_geometry_fallback = best.global.overlap_10 >= 0.70 &&
             best.static_summary.mean_overlap_05 >= 0.70 && best.regional_p10_overlap_10 >= 0.40;
         gate(descriptor_support || strong_geometry_fallback, "insufficient_independent_candidate_support");
         gate(!ambiguous, "ambiguous_distinct_transform_with_similar_quality");
         bool success = failed_gates.empty();
+        // [alignment-support-and-acceptance]
 
         SaveReviewClouds(output_dir, old_fine, new_fine, static_new, best.transform);
         std::ofstream candidates_csv(output_dir / "alignment_candidates.csv");
@@ -951,6 +961,7 @@ int main(int argc, char** argv) {
             "old_map_review.pcd", "new_map_aligned_review.pcd", "static_window_aligned.pcd",
             "alignment_candidates.csv"};
 
+        // [alignment-config-write-gate]
         bool config_written = false;
         std::string config_error;
         if (success && FLAGS_update_config) {
@@ -961,6 +972,8 @@ int main(int argc, char** argv) {
                 report["failed_gates"].push_back("config_update_failed: " + config_error);
             }
         }
+        // [alignment-config-write-gate]
+        // [alignment-manifest-write-gate]
         bool manifest_written = false;
         if (success && FLAGS_update_config) {
             manifest_written = lightning::map_manifest::SaveAlignmentManifest(
@@ -975,6 +988,7 @@ int main(int argc, char** argv) {
         }
         report["map_manifest_updated"] = manifest_written;
         report["config_updated"] = config_written;
+        // [alignment-manifest-write-gate]
         std::ofstream report_stream(output_dir / "alignment_report.yaml");
         report_stream << std::setprecision(15) << report;
 

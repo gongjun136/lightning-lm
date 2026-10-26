@@ -180,7 +180,9 @@ class LocSystem {
      * 2. <b>构建消息</b>：转换后轴位姿、输出地图坐标和车体纵向速度。
      * 3. <b>发布与记录</b>：发布位姿和速度消息，更新心跳，按运行策略记录审核轨迹。
      * @see PublishProcessedCloud(), RecordPublishedPoseTum(),
-     *      @ref output_contracts "定位状态、参考点与 ROS 输出"
+     *      @ref output_gate_reading "发布门控的源码导读",
+     *      @ref output_pose_reading "后轴位姿的源码导读",
+     *      @ref output_speed_reading "后轴速度的源码导读"
      */
     void PublishLocalizationResult(const loc::LocalizationResult& result);
     /// @brief 收集有效且时间递增的 PGO 全局校正结果，供 SaveTrajectoryTum() 导出。

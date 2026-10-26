@@ -11,6 +11,7 @@ namespace lightning::pcd_io {
 // PCD VIEWPOINT on import, so export these clouds with an identity viewpoint.
 // Keep in-memory sensor metadata and every point field unchanged. Local sensor
 // submaps should continue using their own frame and the regular PCL writer.
+// [map-world-pcd-viewpoint]
 template <typename PointT>
 int SaveWorldCloudBinaryCompressed(const std::string& filename,
                                    const pcl::PointCloud<PointT>& cloud) {
@@ -21,5 +22,6 @@ int SaveWorldCloudBinaryCompressed(const std::string& filename,
                                         Eigen::Vector4f::Zero(),
                                         Eigen::Quaternionf::Identity());
 }
+// [map-world-pcd-viewpoint]
 
 }  // namespace lightning::pcd_io

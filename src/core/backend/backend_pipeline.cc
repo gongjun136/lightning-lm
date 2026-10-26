@@ -234,6 +234,7 @@ bool BackendPipeline::Init(const std::string& yaml_path, bool online_mode) {
     return true;
 }
 
+// [backend-enqueue-mode]
 void BackendPipeline::AddKeyframe(const Keyframe::Ptr& keyframe) {
     if (!initialized_ || !keyframe) return;
     if (!options_.online_mode) {
@@ -246,6 +247,7 @@ void BackendPipeline::AddKeyframe(const Keyframe::Ptr& keyframe) {
     }
     queue_cv_.notify_one();
 }
+// [backend-enqueue-mode]
 
 void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
     std::vector<Keyframe::Ptr> local_window;
@@ -254,6 +256,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         if (!keyframes_.empty() && keyframes_.back() == keyframe) return;
         keyframes_.push_back(keyframe);
         runtime_.keyframes = keyframes_.size();
+        // [backend-local-window]
         const std::size_t window = static_cast<std::size_t>(std::max(2, options_.local_ba.window_size));
         if (keyframes_.size() >= window &&
             keyframes_.size() - last_local_ba_keyframe_count_ >=
@@ -261,8 +264,10 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
             local_window.assign(keyframes_.end() - window, keyframes_.end());
             last_local_ba_keyframe_count_ = keyframes_.size();
         }
+        // [backend-local-window]
     }
 
+    // [backend-local-ba-run]
     if (options_.local_ba.enabled && !local_window.empty()) {
         const auto begin = std::chrono::steady_clock::now();
         BundleAdjustmentSummary summary;
@@ -275,10 +280,12 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         runtime_.local_ba_accepted += summary.accepted ? 1 : 0;
         runtime_.local_ba_time_ms += ElapsedMs(begin);
     }
+    // [backend-local-ba-run]
 
     const auto btc_begin = std::chrono::steady_clock::now();
     const std::optional<BtcLoopResult> detection = btc_->AddKeyframe(keyframe, T_imu_lidar_);
     if (detection) {
+        // [backend-loop-constraint-commit]
         const bool accepted = detection->accepted;
         const bool apply_constraint = accepted && detection->optimization_warranted;
         {
@@ -297,6 +304,8 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
                 loop_constraints_.push_back(std::move(constraint));
             }
         }
+        // [backend-loop-constraint-commit]
+        // [backend-loop-optimization-trigger]
         if (apply_constraint) {
             {
                 std::lock_guard<std::mutex> lock(optimization_mutex_);
@@ -311,6 +320,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         if (apply_constraint) {
             RequestHba(false, "accepted_btc_loop");
         }
+        // [backend-loop-optimization-trigger]
     }
     UpdateMapToOdomAndNotify();
 }
@@ -383,6 +393,7 @@ bool BackendPipeline::OptimizePoseGraph() {
     optimizer->Optimize(std::max(1, options_.pose_graph_iterations));
     optimizer->ComputeActiveErrors();
 
+    // [backend-loop-graph-inliers]
     std::size_t inliers = 0;
     for (std::size_t index = 0; index < loop_edges.size(); ++index) {
         const bool inlier = std::isfinite(loop_edges[index]->Chi2()) &&
@@ -402,6 +413,7 @@ bool BackendPipeline::OptimizePoseGraph() {
         auto vertex = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer->GetVertex(static_cast<int>(id)));
         if (vertex && keyframe) keyframe->SetOptPose(vertex->Estimate());
     }
+    // [backend-loop-graph-inliers]
 
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
@@ -444,6 +456,7 @@ void BackendPipeline::RequestHba(bool rerun_pose_graph, const std::string& reaso
 void BackendPipeline::WorkerLoop() {
     while (true) {
         Keyframe::Ptr keyframe;
+        // [backend-worker-dispatch]
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this]() { return worker_stop_ || !queue_.empty(); });
@@ -453,6 +466,7 @@ void BackendPipeline::WorkerLoop() {
             worker_processing_ = true;
         }
         HandleKeyframe(keyframe);
+        // [backend-worker-dispatch]
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             worker_processing_ = false;
@@ -476,6 +490,7 @@ void BackendPipeline::HbaLoop() {
             reason = hba_reason_;
         }
 
+        // [backend-hba-loop-history]
         std::vector<Keyframe::Ptr> keyframes;
         bool has_applied_loop = false;
         {
@@ -483,11 +498,14 @@ void BackendPipeline::HbaLoop() {
             keyframes = keyframes_;
             has_applied_loop = runtime_.loops_applied > 0;
         }
+        // [backend-hba-loop-history]
         const auto begin = std::chrono::steady_clock::now();
         HierarchicalBundleAdjustmentSummary summary;
+        // [backend-hba-transaction]
         {
             std::lock_guard<std::mutex> lock(optimization_mutex_);
             if (rerun_pose_graph) OptimizePoseGraph();
+            // 快照记录前置 PGO 之后的位姿，提交门控只撤销本次 HBA 的修改。
             std::vector<SE3> poses_before_hba;
             poses_before_hba.reserve(keyframes.size());
             for (const auto& keyframe : keyframes) {
@@ -504,6 +522,7 @@ void BackendPipeline::HbaLoop() {
             }
             UpdateMapToOdomAndNotify();
         }
+        // [backend-hba-transaction]
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             ++runtime_.hba_runs;
@@ -525,6 +544,7 @@ void BackendPipeline::HbaLoop() {
     }
 }
 
+// [backend-map-callback]
 void BackendPipeline::UpdateMapToOdomAndNotify() {
     OptimizedCallback callback;
     {
@@ -536,6 +556,7 @@ void BackendPipeline::UpdateMapToOdomAndNotify() {
     }
     if (callback) callback();
 }
+// [backend-map-callback]
 
 void BackendPipeline::WaitUntilIdle(bool force_global_optimization) {
     if (!initialized_) return;

@@ -20,8 +20,9 @@ namespace lightning::miao {
  *        [0^T  , 1    ]
  *
  * 误差平移在前（与g2o保持一致，否则pose graph的info就不对）
- * 误差(旋转) = obs_R.inv * T12.rot
- * 误差(平移) = obs_t.inv - (R1^T t2 - R1^T t1)
+ * 令 delta = measurement.inverse() * T12，平移残差是 delta.translation()，
+ * 旋转残差是 delta 的单位四元数 xyz 部分，小角度下约为半个旋转向量。
+ * @see @ref pgo_edge_residual_reading "二元边与先验边的残差尺度"
  *
  */
 class EdgeSE3 : public BaseBinaryEdge<6, SE3, VertexSE3, VertexSE3> {
@@ -30,6 +31,7 @@ class EdgeSE3 : public BaseBinaryEdge<6, SE3, VertexSE3, VertexSE3> {
 
     /// 为了读g2o文件，这里的算法必须与g2o一致。
 
+    // [pgo-binary-edge-residual]
     void ComputeError() override {
         SE3 from = ((VertexSE3*)(vertices_[0]))->Estimate();
         SE3 to = ((VertexSE3*)(vertices_[1]))->Estimate();
@@ -40,6 +42,7 @@ class EdgeSE3 : public BaseBinaryEdge<6, SE3, VertexSE3, VertexSE3> {
         error_.head<3>() = delta.translation();
         error_.tail<3>() = delta.so3().unit_quaternion().coeffs().head<3>();
     }
+    // [pgo-binary-edge-residual]
 };
 
 }  // namespace lightning::miao

@@ -35,6 +35,7 @@ void HeartbeatPublisher::SetState(NodeState state) {
     state_.store(static_cast<std::uint8_t>(state), std::memory_order_relaxed);
 }
 
+// [dtc-heartbeat-fault-update]
 void HeartbeatPublisher::UpdateFaults(const std::vector<std::uint32_t>& failed,
                                       const std::vector<std::uint32_t>& passed) {
     std::lock_guard<std::mutex> lock(fault_mutex_);
@@ -42,11 +43,15 @@ void HeartbeatPublisher::UpdateFaults(const std::vector<std::uint32_t>& failed,
     // FAIL wins if a malformed batch contains both conditions; never emit zero.
     for (const auto code : failed) if (code != 0) active_faults_.insert(code);
 }
+// [dtc-heartbeat-fault-update]
 
+// [dtc-heartbeat-record-work]
 void HeartbeatPublisher::RecordWork() {
     Advance(work_seq_);
 }
+// [dtc-heartbeat-record-work]
 
+// [dtc-heartbeat-publish]
 void HeartbeatPublisher::PublishNow() {
     std::lock_guard<std::mutex> publish_lock(publish_mutex_);
     diagnostic_monitor_interfaces::msg::NodeHeartbeat message;
@@ -61,6 +66,7 @@ void HeartbeatPublisher::PublishNow() {
     }
     publisher_->publish(message);
 }
+// [dtc-heartbeat-publish]
 
 void HeartbeatPublisher::Stop() {
     const bool already_stopped = stop_requested_.exchange(true);

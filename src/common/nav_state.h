@@ -15,6 +15,7 @@ namespace lightning {
 /** @see @ref geometry */
 struct NavState {
     // Error-state layout: position, rotation, velocity, gyro bias, accel bias, gravity.
+    // [eskf-state-layout]
     constexpr static int dim = 18;  ///< 误差状态维度，按位置、姿态、速度、两种偏置和重力排列。
     constexpr static int full_dim = 18;  ///< 状态向量表示的总维度。
     constexpr static int kBlockDim = 3;  ///< 各三维状态块的维度。
@@ -24,6 +25,7 @@ struct NavState {
     constexpr static int kBgIdx = 9;  ///< 陀螺仪偏置块的起始索引。
     constexpr static int kBaIdx = 12;  ///< 加速度计偏置块的起始索引。
     constexpr static int kGravIdx = 15;  ///< 重力块在误差状态向量中的起始索引。
+    // [eskf-state-layout]
     constexpr static double kGravityNorm = 9.81;  ///< 状态约束使用的重力模长（m/s²）。
     constexpr static double kMaxGravityDelta = 0.02;  ///< 一次重力状态修正的幅度上限。
 
@@ -73,6 +75,7 @@ struct NavState {
         grav_ = NormalizeGravity(state.block<kBlockDim, 1>(kGravIdx, 0));
     }
 
+    // [eskf-state-derivative]
     inline FullVectState get_f(const Vec3d& gyro, const Vec3d& acce) const {
         FullVectState res = FullVectState::Zero();
         const Vec3d omega = gyro - bg_;
@@ -84,6 +87,7 @@ struct NavState {
         res.segment<kBlockDim>(kVelIdx) = a_inertial + grav_;
         return res;
     }
+    // [eskf-state-derivative]
 
     inline Eigen::Matrix<double, full_dim, dim> df_dx(const Vec3d& acce) const {
         Eigen::Matrix<double, full_dim, dim> cov = Eigen::Matrix<double, full_dim, dim>::Zero();
@@ -106,6 +110,7 @@ struct NavState {
         return cov;
     }
 
+    // [eskf-state-propagation]
     void oplus(const FullVectState& vec, double dt) {
         timestamp_ += dt;
         pos_ += vec.middleRows(kPosIdx, kBlockDim) * dt;
@@ -115,6 +120,7 @@ struct NavState {
         ba_ += vec.middleRows(kBaIdx, kBlockDim) * dt;
         grav_ = ApplyGravityDelta(grav_, vec.middleRows(kGravIdx, kBlockDim) * dt);
     }
+    // [eskf-state-propagation]
 
     VectState boxminus(const NavState& other) const {
         VectState result = VectState::Zero();
@@ -130,6 +136,7 @@ struct NavState {
         return result;
     }
 
+    // [eskf-state-injection]
     NavState boxplus(const VectState& dx) const {
         NavState ret = *this;
         ret.pos_ = pos_ + dx.middleRows(kPosIdx, kBlockDim);
@@ -140,6 +147,7 @@ struct NavState {
         ret.grav_ = ApplyGravityDelta(grav_, dx.middleRows(kGravIdx, kBlockDim));
         return ret;
     }
+    // [eskf-state-injection]
 
     struct MetaInfo {
         MetaInfo(int idx, int vdim, int dof) : idx_(idx), dim_(vdim), dof_(dof) {}

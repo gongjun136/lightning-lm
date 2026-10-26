@@ -157,6 +157,8 @@ PointCloudType ConvertCloud(const pcl::PointCloud<pcl::PointXYZI>& source) {
 
 SE3 MakePlanarMapOdom(const SE3& T_map_current_lidar,
                       const SE3& T_odom_current_lidar) {
+    // 只保留 map <- odom 的 yaw，并重新计算平移以保持当前 LiDAR 的地图位置。
+    // [relocalization-planar-map-odom]
     const SE3 T_map_odom_raw =
         T_map_current_lidar * T_odom_current_lidar.inverse();
     const Quatd planar_rotation(
@@ -165,6 +167,7 @@ SE3 MakePlanarMapOdom(const SE3& T_map_current_lidar,
         T_map_current_lidar.translation() -
         planar_rotation * T_odom_current_lidar.translation();
     return SE3(planar_rotation, planar_translation);
+    // [relocalization-planar-map-odom]
 }
 
 SolidRelocalizer::SolidRelocalizer() : descriptor_engine_(descriptor_options_) {}
@@ -617,6 +620,8 @@ bool SolidRelocalizer::RefineCandidateWithKissMatcher(
     fitness_score = match.rmse;
     candidate.rough_match_count = match.rough_correspondences;
     candidate.spatial_coverage = match.spatial_coverage;
+    // target 是数据库候选 LiDAR，source 是最新查询 LiDAR；最后再换到 IMU。
+    // [relocalization-kiss-pose-composition]
     const SE3 T_map_current_lidar =
         entry.T_world_lidar * match.T_target_source;
     const SE3 T_map_odom_planar = MakePlanarMapOdom(
@@ -624,6 +629,7 @@ bool SolidRelocalizer::RefineCandidateWithKissMatcher(
     candidate.T_world_imu =
         T_map_odom_planar * query_frames_.back().T_odom_lidar *
         T_imu_lidar_.inverse();
+    // [relocalization-kiss-pose-composition]
     LOG(INFO) << "SOLID_KISS_ACCEPT candidate=" << candidate.candidate_id
               << ", query_frames=" << candidate.query_submap_size
               << ", retrieval_score=" << candidate.score

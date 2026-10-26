@@ -32,15 +32,25 @@ digraph online_loc_overview {
 }
 @enddot
 
-最短阅读链如下：
+@anchor online_loc_code_reading
+## 带着一个问题核对代码
 
-1. @ref run_sany_lidar_loc.sh "run_sany_lidar_loc.sh"：确定 SANY 参数、输入预检、运行目录和启动 flags。@ref run_loc_online.sh "run_loc_online.sh" 是通用联调入口，不在这条现场调用链中。
-2. @ref run_loc_online.cc "run_loc_online.cc" 的 `main()`：创建 `LocSystem`、设置初始位姿、进入 ROS spin、最后保存轨迹并关闭。
-3. @ref lightning::LocSystem::Init() "LocSystem::Init()"：加载地图/输出约束，建立订阅、发布和回调桥接。
-4. @ref lightning::loc::Localization::ProcessIMUMsg() "ProcessIMUMsg()" 与 @ref lightning::loc::Localization::ProcessLidarMsg() "ProcessLidarMsg()"：把输入统一送入传感器队列。
-5. @ref lightning::loc::Localization::ProcessSensorInput() "ProcessSensorInput()"、@ref lightning::loc::Localization::LidarOdomProcCloud() "LidarOdomProcCloud()" 与 @ref lightning::loc::Localization::DrainLioOutputs() "DrainLioOutputs()"：保持时序并驱动 LIO。
-6. @ref lightning::loc::LidarLoc::ProcessCloud() "LidarLoc::ProcessCloud()"：在活动地图上跟踪，必要时转入全局重定位。
-7. @ref lightning::loc::Localization::LidarLocProcCloud() "LidarLocProcCloud()"：将定位结果交给 PGO，并通过回调回到 @ref lightning::LocSystem::PublishLocalizationResult() "PublishLocalizationResult()" 发布。
+先在本页读清模块怎样交接，再按下表进入对应的短片段。片段由构建时的真实源码提取并显示真实行号；段末的 API/文件链接用于查完整函数和源码上下文。第一次阅读只需解释关键条件和一个例子，达到该段的“读到这里”要求即可返回主线。
+
+| 要验证的问题 | 从这里开始 | 读完应能指出的代码证据 |
+|---|---|---|
+| 初始位姿设置后，输入为何才进入算法？ | @ref online_loc_start_reading "启动与输入开关" | `SetInitPose()` 改变哪个标志、输入函数在哪里检查它 |
+| 多雷达都到了，为什么仍在等待？ | @ref sensor_frame_ready_reading "组帧与 IMU 同步" | 同桶时间跨度、ready 条件与扫描末 IMU 覆盖 |
+| 一次点云输入为什么可能没有输出，或排出多个结果？ | @ref lio_drain_reading "LIO 排出结果" | `kNoData`、`kConsumed`、`kOutput` 的分支与循环 |
+| 定位慢时究竟丢哪一帧，是否取消正在计算的帧？ | @ref lio_localization_queue_reading "容量为 1 的定位队列" | 默认配置、入队淘汰和 worker 取出消息的三个位置 |
+| 局部匹配失败后，何时跟随 DR，何时重新找回？ | @ref loc_read_recovery "失败与恢复" | 无效结果、失败计数和重新初始化的条件 |
+| 检索候选怎样变成地图坐标中的位姿？ | @ref relocalization_direction_reading "候选变换方向" | 地图候选位姿、候选到当前帧相对变换的乘法顺序 |
+| 匹配结果如何进入 PGO？ | @ref online_loc_pgo_reading "地图结果交给融合器" | 重定位重置和正常结果交接的不同分支 |
+| 有内部位姿，为何业务 topic 仍可能没有位姿？ | @ref output_gate_reading "输出门控导读" | 发布前门控的 early return，以及参考点转换 |
+
+完成这条主线后，可继续核对内部计算：@ref imu_point_reading "一个点怎样补偿到扫描末时刻" → @ref eskf_prediction_reading "IMU 预测怎样使用 dt" → @ref lidar_plane_equation_reading "点面残差怎样累加" → @ref eskf_iteration_reading "ESKF 怎样复用先验" → @ref pgo_smoothing_reading "PGO 怎样平滑输出"。这些段落均包含可手工推演的例子与适用条件。
+
+页面顶部标明生成时的 Git 提交、是否含未提交修改和生成时间。核对当前编辑器里的实现前，先确认它和这一版页面来自同一工作区；旧部署目录里的 HTML 是当时的快照，不会随源码编辑自动刷新。
 
 # 学习重点：关键计算与代码入口
 
@@ -98,12 +108,27 @@ ${SANY_WS}/run.sh：加载集中路径配置，选择 lidar 分支
 
 ## 进入算法程序
 
-`main()` 初始化系统、地图和初始位姿后才进入正常输入处理；`LocSystem::SetInitPose()` 会打开 `loc_started_`。完整初始化和对象关系见 @ref online_loc_runtime_reference "按需参考"。
+@ref run_loc_online.cc "main()" 初始化系统、地图和初始位姿后才进入正常输入处理；`LocSystem::SetInitPose()` 会打开 `loc_started_`。完整初始化和对象关系见 @ref online_loc_runtime_reference "按需参考"。
 
 设置在线 CPU 角色时，`run_loc_online.cc` 首先调用 `InitializeOnlineThreadPolicy()`，
 在创建日志、可选因果追踪写入线程和 ROS 对象前缩小默认继承掩码。
 角色配置不完整、超出启动允许集合或后台核与关键核重叠时拒绝启动。
 未设置角色环境变量时保留原启动行为；Orin 配置与验证步骤见 @ref dtc_delivery 。
+
+@anchor online_loc_start_reading
+### 设置初始位姿为什么也是启动输入的开关？
+
+先在 @ref run_loc_online.cc "main 的完整源码" 中找到 `loc.Init()` → `loc.SetInitPose()` → `loc.Spin()`。初始化失败会提前返回；初始位姿配置非法并抛出异常时也不会进入 spin，未配置或禁用时则使用单位位姿继续。真正改变输入许可的位置在 `SetInitPose()` 内：
+
+@snippet{lineno} core/system/loc_system.cc online-loc-start-input
+
+这里同时完成两件事：向底层提供外部位姿，并将 `loc_started_` 设为 true。再读 IMU 入口的这几行，就能确认这个标志确实被消费：
+
+@snippet{lineno} core/system/loc_system.cc online-loc-imu-start-gate
+
+**例子与边界：** 标志为 false 时，即使调用 IMU 入口，也不会调用 `ProcessIMUMsg()`；true 时才进入后续处理。输入观测发生在这段条件之前，所以“尚未启动定位”不等于“完全没有记录输入”。而 true 只说明允许处理输入，不证明已经形成 LIO 状态或找到有效地图位置。
+
+**读到这里：** 能指出“谁写 `loc_started_`、谁读它”即可。继续进入 @ref lio_sensor_queue_reading "IMU 与点云如何交给统一 worker"；初始位姿优先级和关闭顺序留到 @ref online_loc_runtime_reference "生命周期参考"。
 
 # 2. IMU 与 LiDAR 输入路径
 
@@ -125,6 +150,8 @@ worker 在 `LidarOdomProcCloud()` 中调用 `LaserMapping::ProcessPointCloud2()`
 
 **代码依据：** `src/core/system/loc_system.cc` 的订阅 lambda、`ProcessIMU/ProcessLidar()` 与 `ObserveWheelSpeedInput()`；`src/core/localization/localization.cpp` 的 `ProcessLidarMsg()`、`ProcessIMUMsg()`、`ProcessIMUData()`、`ProcessWheelSpeed()`、`LidarOdomProcCloud()`
 
+**核对源码：** @ref lio_sensor_queue_reading "统一输入队列" 对照 IMU、点云入队和按类型派发的短片段；@ref lio_drain_reading "为什么输入与输出不是一一对应" 对照 `RunDetailed()` 的返回值。先确认消息怎样进入 worker，再追 ESKF 的计算。
+
 # 3. LIO 输出到地图匹配
 
 每次 `RunDetailed()` 产生 `kOutput` 时，`DrainLioOutputs()` 执行以下顺序：
@@ -137,6 +164,8 @@ worker 在 `LidarOdomProcCloud()` 中调用 `LaserMapping::ProcessPointCloud2()`
 `LidarLoc::ProcessLO()` 自己维护有界 LO pose queue，并根据 LIO 状态更新可靠性滞回；`Align()` 按点云结束时刻从该队列分配对应 LO pose。时间对不上时会记录警告，而不是把任意最新姿态静默当成同帧先验。
 
 **代码依据：** `src/core/localization/localization.cpp` 的 `DrainLioOutputs()`；`src/core/localization/lidar_loc/lidar_loc.cc` 的 `ProcessLO()`、`Align()`、`AssignLOPose()`
+
+**核对源码：** @ref lio_keyframe_reading "关键帧选择" 用相同/变化的关键帧指针解释何时跳过地图匹配；@ref lio_localization_queue_reading "队列容量与淘汰" 用 A 正在计算、B/C 先后到达的例子，区分等待队列和正在执行的任务。
 
 # 4. 跟踪、失锁与全局重定位
 
@@ -171,17 +200,42 @@ digraph localization_state {
 
 **代码依据：** `src/core/localization/lidar_loc/lidar_loc.cc` 的 `Align()`、`Localize()` 与 `TryGlobalRelocalization()`；`src/core/localization/global_relocalizer.h`；`src/core/localization/localization_result.h`
 
+**按问题核对：** @ref loc_read_prior "初值如何从 LIO 增量得到" → @ref loc_read_acceptance "配准结果为什么还需要验收" → @ref loc_read_recovery "被拒绝后怎样跟随 DR 与转入重定位" → @ref loc_read_confirmation "全局候选怎样得到确认"。每段只追与该结论相关的条件；返回 GOOD 的门槛和发现一个候选的门槛应分开验证。
+
 # 5. 地图加载与更新策略
 
 @ref lightning::TiledMap "TiledMap" 根据地图目录索引管理活动 tile。初始化/重定位可用 `LoadOnPose()` 载入候选附近地图；正常跟踪也按 LO guess 载入附近 tile。`maps.load_map_size` 与 `maps.unload_map_size` 控制活动范围，地图策略决定动态点云是否只在内存、短期/长期维护或持久化。
 
-`LidarLoc::Init()` 启动 `update_map_thread_`。它与匹配共享地图/NDT 资源，因此调用者不应绕过现有接口直接替换活动地图。`Finish()` 先要求线程退出并 join；只有策略为 `PERSISTENT`、允许退出保存且没有外部 set-pose 条件时，才调用 `SaveToBin(true)`。因此“在线定位一定只读地图”不是普遍事实，是否落盘取决于地图策略配置。
+`LidarLoc::Init()` 启动 `update_map_thread_`。它与匹配共享地图/NDT 资源，因此调用者不应绕过现有接口直接替换活动地图。`Finish()` 先要求线程退出并 join；只有策略为 `PERSISTENT`、允许退出保存且 `has_set_pose_` 为 false 时，才调用 `SaveToBin(true)`。因此“在线定位一定只读地图”不是普遍事实，是否落盘取决于地图策略配置。
+
+验证退出写回条件时，只需先读 `Finish()` 的这一段：
+
+@snippet{lineno} core/localization/lidar_loc/lidar_loc.cc online-loc-map-save
+
+三个条件之间是 `&&`。例如采用 `PERSISTENT` 但 `save_dyn_when_quit_` 为 false，就不会走这里的保存调用。当前 `has_set_pose_` 仅默认初始化为 false，`SetInitialPose()` 修改的是另一个字段 `initial_pose_set_`，不能仅凭名字推断“设置初始位姿就禁止保存”。这个片段只证明该退出保存分支的条件，不能单凭它推断所有运行期文件副作用。
 
 **代码依据：** `src/core/localization/lidar_loc/lidar_loc.cc` 的 `Init()`、`UpdateGlobalMap()`、`UpdateMapThread()`、`Finish()`；`src/core/maps/tiled_map.cc` 的 `LoadMapIndex()` 与 `LoadOnPose()`
 
 # 6. PGO、发布与输出门控
 
+@anchor online_loc_pgo_reading
+## 地图匹配结果如何交给 PGO？
+
 `LidarLocProcCloud()` 取得地图匹配结果后先更新运行统计。全局重定位成功会重置 PGO；静止地图冲突会把结果改为 `FAIL`、重置 PGO 并请求重新定位；正常结果进入 `PGO::ProcessLidarLoc()`。LIO 状态早已通过 `PGO::ProcessLidarOdom()` 进入同一融合器。
+
+先看重新找回位置时的分支：
+
+@snippet{lineno} core/localization/localization.cpp localization-pgo-relocalization-reset
+
+再看静止地图一致性检查怎样改变结果，以及后面的交接：
+
+@snippet{lineno} core/localization/localization.cpp localization-pgo-stationary-conflict
+
+@snippet{lineno} core/localization/localization.cpp localization-pgo-map-result
+
+第一段关注“刚完成全局重定位”的标志及 `Reset()`；第二段显示一致性检查不通过时清除两个有效标志并改为 `FAIL`；第三段确认冲突时重置并请求找回，否则才向融合器提交结果。中间省略的点云回调先将该结果交给输出边界，再进入第三段，完整顺序见 @ref lightning::loc::Localization::LidarLocProcCloud() "LidarLocProcCloud()"。调用 `ProcessLidarLoc()` 本身不表示业务输出一定有效。
+
+**读到这里：** 能分清重置与提交结果即可。PGO 内部约束如何构造见 @ref pose_graph_theory "定位图优化"；本轮先继续核对下面的发布边界。
 
 PGO 的高频结果进入容量 1 的输出队列。live output callback 用独立时间戳门拒绝非单调结果，再更新 `loc_result_`、TF/UI 和定位结果回调。全局优化结果走独立 callback，避免较旧全局结果让实时 ROS 输出时间倒退。
 
@@ -192,7 +246,7 @@ PGO 的高频结果进入容量 1 的输出队列。live output callback 用独�
 - 健康与可观测性：`/localization/fault_status`、`/localization/loc_status`、`/localization/pipeline_diagnostics`、`/localization/debug_message`、`/localization/path`。
 - 100 ms 健康 timer 与 2 s path timer。
 
-publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹配新鲜度和时间戳等条件，决定 map frame 输出是否继续发布。因此看到 LIO/DR 内部仍运行，并不意味着外部 map 定位输出一定被放行。
+publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹配新鲜度和时间戳等条件，决定 map frame 输出是否继续发布。当前位姿许可要求连续失败数为零，第一次拒绝的地图匹配就可能使业务位姿停发；不能把 `lost_frame_threshold` 当作允许继续发布若干失败帧的宽限。因此看到 LIO/DR 内部仍运行，并不意味着外部 map 定位输出一定被放行。继续核对 @ref output_gate_reading "发布入口与许可条件"，再看 @ref output_pose_reading "后轴参考点转换"。
 
 固定地图变换在输出边界应用；`output.fixed_map_transform.target_frame` 必须与 `output.map_frame` 一致。不要在算法内部再叠加一次同类变换。
 
@@ -209,7 +263,7 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 | `lidar_loc_proc_cloud_` worker | 同上 | LIO 投影点云的地图匹配 | 默认 1；慢定位时保留最新帧；可按配置跳帧；退出时 drain 后 join |
 | `high_frequency_output_proc_` worker | 同上 | PGO 高频结果到 live output callback | 固定 1；只保留最新待发布结果；退出时 drain 后 join |
 | `update_map_thread_` | `LidarLoc::Init()` | 根据当前位姿更新活动 tile/NDT 地图 | `LidarLoc::Finish()` 置退出标志并 join |
-| 可选 bag thread | `main()` | 进程内 ROS 2 bag 回放 | 播放后等待并 shutdown；主线程 join |
+| 可选 bag thread | @ref run_loc_online.cc "main()" | 进程内 ROS 2 bag 回放 | 播放后等待并 shutdown；主线程 join |
 
 @ref lightning::sys::AsyncMessageProcess "AsyncMessageProcess" 每次只从有界 deque 取一条消息到 worker 外执行。入队超过 `max_size_` 时从队头删除，因此丢弃的是最旧的尚未执行消息；`Quit()` 设置退出标志，但 `ProcLoop()` 仅在“退出且队列为空”时结束，故会 drain 已接收队列。正在执行的消息计入 pending，丢弃数和完成数可进入运行诊断。
 
@@ -223,7 +277,7 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 
 | 关注点 | 主要配置/环境 | 首个读取位置 |
 |---|---|---|
-| 地图与初始位姿 | `--map`, `system.map_path`, `online_localization.initial_pose` | `main()`、`LocSystem::Init()` |
+| 地图与初始位姿 | `--map`, `system.map_path`, `online_localization.initial_pose` | @ref run_loc_online.cc "main()"、`LocSystem::Init()` |
 | 输入 topic/QoS | `common.*_topic`, `system.lidar_qos`, multi-lidar 配置 | `LocSystem::Init()`、`LaserMapping::Init()` |
 | 统一队列积压 | `system.online_sensor_queue_size`, `online_sensor_*lag_sec` | `Localization::Init()` |
 | 定位队列新鲜度 | `system.online_lidar_loc_queue_size`, `enable_lidar_loc_skip`, `lidar_loc.loc_on_kf` | `Localization::Init()` |
@@ -238,7 +292,7 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 
 # 9. 建议的源码阅读顺序
 
-按下面的重点建立公式、算法步骤与代码的对应关系：
+先完成 @ref online_loc_code_reading "按问题核对代码"。能解释片段、例子与条件后，再按下面的顺序读完整实现和公式：
 
 1. **单帧数据流：** `ProcessLidarMsg` → `ProcessSensorInput` → `LidarOdomProcCloud` → `DrainLioOutputs` → `LidarLocProcCloud`。
 2. **前端计算：** `ImuProcess::UndistortPcl` → `ESKF::Predict/Update` ↔ `LaserMapping::ObsModel`；结合去畸变、预测和点面残差公式阅读。
@@ -262,7 +316,7 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 
 以下内容保留初始化、线程停止与对象管理的实现约束。第一次学习先完成上面的算法与数据主线；修改重初始化、并发或关闭行为时再核对本节。
 
-## `main()` 生命周期
+## 在线入口的生命周期
 
 @dot
 digraph online_loc_lifecycle {
@@ -280,7 +334,25 @@ digraph online_loc_lifecycle {
 }
 @enddot
 
-`main()` 在栈上持有 `LocSystem`。`Init()` 成功后才读取初始位姿；配置优先使用 `online_localization.initial_pose`，不存在时回退到 `offline_localization.initial_pose`，若均不可用则使用单位位姿。`SetInitPose()` 不只是保存位姿：它还把 `loc_started_` 置为 true，因此此前到达的传感器回调只做输入观测，不进入定位算法。
+@ref run_loc_online.cc "main()" 在栈上持有 `LocSystem`。`Init()` 成功后才读取初始位姿；配置优先使用 `online_localization.initial_pose`，不存在时回退到 `offline_localization.initial_pose`，若均不可用则使用单位位姿。`SetInitPose()` 不只是保存位姿：它还把 `loc_started_` 置为 true，因此此前到达的传感器回调只做输入观测，不进入定位算法。
+
+@htmlonly[block]
+<details><summary>核对 main 的初始化、初始位姿和退出代码</summary>
+@endhtmlonly
+
+先确认初始化失败会提前返回，再读 `try` 中的初始位姿选择；最后确认 `Spin()` 返回后先等待 bag 线程，再调用 `Finish()`。
+
+@snippet{lineno} app/run_loc_online.cc online-loc-create-system
+
+@snippet{lineno} app/run_loc_online.cc online-loc-initial-pose
+
+@snippet{lineno} app/run_loc_online.cc online-loc-spin-finish
+
+这些片段按原文件中的先后顺序排列，中间省略了轨迹配置和可选 bag 线程的创建；完整控制流见 @ref run_loc_online.cc "程序源码"。
+
+@htmlonly[block]
+</details>
+@endhtmlonly
 
 若传入 `--bag`，@ref lightning::OnlineBagPlayer "OnlineBagPlayer" 在额外线程中按 sensor time 发布消息，播放完成并等待 `--post_wait_seconds` 后调用 `rclcpp::shutdown()`，从而让主线程的 `Spin()` 返回。未传 `--bag` 时，进程持续 spin，直到外部 shutdown/信号结束 ROS 上下文。
 
@@ -291,7 +363,7 @@ CAN 回放保持原始序列化消息，不按当前 `SpeThrCAN4` 定义重新�
 
 `LocSystem` 析构函数还会调用 `Finish()`；`finished_` 让显式调用与析构调用保持幂等。
 
-**代码依据：** @ref run_loc_online.cc "run_loc_online.cc" 的 `ReadInitialPose()` 与 `main()`；@ref lightning::LocSystem::SetInitPose() "LocSystem::SetInitPose()"、@ref lightning::LocSystem::Finish() "LocSystem::Finish()"
+**代码依据：** @ref run_loc_online.cc "run_loc_online.cc" 的 `ReadInitialPose()` 与 @ref run_loc_online.cc "main()"；@ref lightning::LocSystem::SetInitPose() "LocSystem::SetInitPose()"、@ref lightning::LocSystem::Finish() "LocSystem::Finish()"
 
 ## 初始化与对象所有权
 
@@ -339,7 +411,7 @@ digraph online_loc_ownership {
 2. `LocSystem::Finish()` 清除 debug sink，调用 `Localization::Finish()`。
 3. `Localization::Finish()` 依次 `Quit()` sensor、LiDAR 定位、高频输出队列；每个 worker drain 并 join。
 4. 取得 lifecycle 独占锁后，`LidarLoc::Finish()` 停止并 join 地图更新线程；随后退出 UI。
-5. `LocSystem` 停止 heartbeat、关闭在线 TUM 文件；`main()` 可导出 PGO/高频轨迹并关闭 ROS。
+5. `LocSystem` 停止 heartbeat、关闭在线 TUM 文件；@ref run_loc_online.cc "main()" 可导出 PGO/高频轨迹并关闭 ROS。
 
 这个顺序保证 worker 不再访问算法对象后才进入模块级清理。`Localization::Init()` 若在已运行对象上重新初始化，会先释放生命周期锁再调用 `Finish()`，避免持有独占锁等待正等待共享锁的 worker。
 

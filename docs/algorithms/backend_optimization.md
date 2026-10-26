@@ -4,6 +4,8 @@
 
 @ref backend_module "后端、回环与优化" 解释调度、锁与提交时机，本页解释目标函数。局部 BA 修正滑窗几何；BTC 提供远距离闭环候选；PGO 调整全局位姿关系；HBA 在更大尺度重新优化点云几何。四者不能用同一个“后端优化”标签代替。
 
+验证当前实现时，先读 @ref backend_queue_ba_reading "窗口与 stride 如何触发 BA"、@ref backend_loop_commit_reading "检测通过、入图与内点的区别"、@ref backend_hba_transaction_reading "HBA 快照与回滚条件"；这些入口直接展示真实短源码。本页继续解释这些计算的数学含义。
+
 # 平面体素为何可以消去平面参数
 
 将多个关键帧的点变到同一坐标系。设体素内 N 个点的均值和协方差为
@@ -34,7 +36,7 @@ d^2\lambda_0=n^T(d^2C)n+
 
 # 求解与接受
 
-BA 的每帧增量是 **旋转在前、平移在后**。首帧块固定以去掉全局刚体规范自由度。对当前 Hessian H 和梯度 g：
+BA 的每帧增量是 <b>旋转在前、平移在后</b>。首帧块固定以去掉全局刚体规范自由度。对当前 Hessian H 和梯度 g：
 \f[(H+\lambda D)\delta=-g,\quad D_{ii}=\max(|H_{ii}|,10^{-9}).\f]
 旋转右乘、平移直接相加。每帧步长先裁剪，再检查相对先验的总修正；只有代价下降且预测下降量为正才接受，接受后减小阻尼，拒绝则增大阻尼。`AddSmoothness` 约束相邻帧修正差；它不是增加 GNSS 真值观测。
 
@@ -42,8 +44,8 @@ BA 的每帧增量是 **旋转在前、平移在后**。首帧块固定以去掉
 
 # 回环图与 HBA
 
-BTC 提供相对 LiDAR 变换，经过检测和提交门控后转成 IMU 约束。图中邻接 LIO 边维持局部形状，回环边闭合累计漂移。残差参数化见 @ref pose_graph_theory "位姿图、增量求解与高频平滑"；当前 miao 旋转误差不是完整对数。
+BTC 提供相对 LiDAR 变换，经过检测和提交门控后转成 IMU 约束。图中邻接 LIO 边维持局部形状，回环边闭合累计漂移。残差参数化见 @ref pose_graph_theory "位姿图、增量求解与高频平滑"；这里的运动与回环二元边 `EdgeSE3` 使用单位四元数 xyz 旋转残差，不是旋转对数，不能把这一结论扩展到使用 `Log` 的 `EdgeSE3Prior`。
 
-HBA `BuildNode` 以组内最后一个关键帧作锚，将成员点变到锚 LiDAR 系，优化上层节点后把修正传播回成员。分层降低一次联合优化的变量规模，但不保证全局最优。`BackendPipeline::HbaLoop` 会检查 `require_applied_loop_for_commit`；即使求解成功，也可能恢复原位姿而不提交。
+HBA `BuildNode` 以组内最后一个关键帧作锚，将成员点变到锚 LiDAR 系，优化上层节点后把修正传播回成员。分层降低一次联合优化的变量规模，但不保证全局最优。`BackendPipeline::HbaLoop` 的额外提交检查使用累计 `loops_applied`，并非本轮图内点数；不满足要求时恢复 HBA 前的快照，该快照已包含可选的前置 PGO 更新。完整条件和状态例子见 @ref backend_hba_transaction_reading "HBA 提交导读"。
 
-**源码导航：** @ref voxel_bundle_adjustment.cc "voxel_bundle_adjustment.cc"（`PointCluster`、`EvaluateFactors`、`AddSmoothness`、`Optimize`），@ref hierarchical_bundle_adjustment.cc "hierarchical_bundle_adjustment.cc"（`BuildNode`、`ApplyCorrections`），@ref lightning::backend::BackendPipeline "BackendPipeline"。
+<b>源码导航：</b> @ref voxel_bundle_adjustment.cc "voxel_bundle_adjustment.cc"（`PointCluster`、`EvaluateFactors`、`AddSmoothness`、`Optimize`），@ref hierarchical_bundle_adjustment.cc "hierarchical_bundle_adjustment.cc"（`BuildNode`、`ApplyCorrections`），@ref lightning::backend::BackendPipeline "BackendPipeline"。

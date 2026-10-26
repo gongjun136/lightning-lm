@@ -85,11 +85,13 @@ bool LoadFixedMapTransform(const YAML::Node& root, FixedMapTransform& transform,
     }
 }
 
+// [output-fixed-map-transform]
 SE3 TransformPoseForOutput(const SE3& localization_pose,
                            const FixedMapTransform& transform) {
     return transform.enabled ? transform.T_target_localization * localization_pose
                              : localization_pose;
 }
+// [output-fixed-map-transform]
 
 geometry_msgs::msg::TransformStamped TransformTfForOutput(
     const geometry_msgs::msg::TransformStamped& localization_tf,
@@ -230,6 +232,7 @@ SE3 MakeMapLivoxPose(const SE3& map_lidar_pose, const SO3& initial_lidar_rotatio
     return map_lidar_pose * MakeLivoxLidarTransform(initial_lidar_rotation).inverse();
 }
 
+// [output-rear-pose-transform]
 SE3 MakeRearAxleLidarTransform(const SO3& initial_lidar_rotation,
                                const Vec3d& primary_lidar_position_in_body) {
     const SE3 T_rear_livox(SO3(), primary_lidar_position_in_body);
@@ -241,6 +244,7 @@ SE3 MakeMapRearAxlePose(const SE3& map_lidar_pose, const SO3& initial_lidar_rota
     return map_lidar_pose *
            MakeRearAxleLidarTransform(initial_lidar_rotation, primary_lidar_position_in_body).inverse();
 }
+// [output-rear-pose-transform]
 
 LocalizationPublicationGate::LocalizationPublicationGate(std::size_t lost_frame_threshold)
     : lost_frame_threshold_(std::max<std::size_t>(1, lost_frame_threshold)) {}
@@ -270,6 +274,7 @@ void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
     if (sensor_stamp > 0.0) {
         last_lidar_match_stamp_ = std::max(last_lidar_match_stamp_, sensor_stamp);
     }
+    // [output-match-state-update]
     if (valid) {
         has_valid_match_ = true;
         consecutive_lost_frames_ = 0;
@@ -282,8 +287,10 @@ void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
     } else if (has_valid_match_) {
         ++consecutive_lost_frames_;
     }
+    // [output-match-state-update]
 }
 
+// [output-publication-permission]
 bool LocalizationPublicationGate::PoseOutputsEnabled(double current_sensor_stamp,
                                                       Clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -295,7 +302,9 @@ bool LocalizationPublicationGate::MapOutputsEnabled(double current_sensor_stamp,
                                                      Clock::time_point now) const {
     return PoseOutputsEnabled(current_sensor_stamp, now);
 }
+// [output-publication-permission]
 
+// [output-match-freshness]
 bool LocalizationPublicationGate::MatchStaleLocked(double current_sensor_stamp,
                                                    Clock::time_point now) const {
     if (std::isfinite(current_sensor_stamp)) {
@@ -309,6 +318,7 @@ bool LocalizationPublicationGate::MatchStaleLocked(double current_sensor_stamp,
     if (stale) stale_latched_ = true;
     return stale_latched_;
 }
+// [output-match-freshness]
 
 bool LocalizationPublicationGate::LidarMatchStale(double current_sensor_stamp,
                                                  Clock::time_point now) const {

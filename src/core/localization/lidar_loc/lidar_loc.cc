@@ -1002,6 +1002,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         summary.relocalization_score = candidate.score;
         summary.relocalization_query_submap_size = candidate.query_submap_size;
 
+        // [loc-confirmation-consistency]
+        // 比较 map→odom 关系，让车辆自身运动不被误判为候选跳变。
         const SE3 T_map_odom = refined_pose * current_lo_pose_.inverse();
         const double confirmation_interval = pending_relocalization_.valid
                                                  ? current_timestamp_ - pending_relocalization_.timestamp
@@ -1020,6 +1022,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         const int confirmation_count = consistent
                                            ? pending_relocalization_.confirmation_count + 1
                                            : 1;
+        // [loc-confirmation-consistency]
         pending_relocalization_.valid = true;
         pending_relocalization_.T_map_odom = T_map_odom;
         pending_relocalization_.pose = refined_pose;
@@ -1031,6 +1034,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         pending_relocalization_.confirmation_count = confirmation_count;
         summary.relocalization_confirmation_count = confirmation_count;
 
+        // [loc-confirmation-commit]
         if (confirmation_count < options_.relocalization_confirmation_count_) {
             summary.relocalization_reason = "awaiting_consistent_window";
             last_match_stats_ = summary;
@@ -1052,6 +1056,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         loc_inited_ = true;
         current_abs_pose_ = refined_pose;
         last_abs_pose_ = refined_pose;
+        // [loc-confirmation-commit]
         last_abs_pose_set_ = true;
         current_score_ = refinement_score;
         map_height_ = refined_pose.translation().z();
@@ -1624,6 +1629,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     /// 4. 设置当前帧对应的 pose guess
     /// NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
 
+    // [loc-lo-prior]
     SE3 guess_from_lo = last_abs_pose_;
     if (last_lo_pose_set_ && current_lo_pose_set_) {
         // 如果有里程计，则用两个时刻的相对定位来递推，估计一个当前pose的初值
@@ -1639,6 +1645,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             LOG(INFO) << "loc using lo guess: " << guess_from_lo.translation().transpose();
         }
     }
+    // [loc-lo-prior]
 
     SE3 guess_from_self = guess_from_lo;
     if (lidar_loc_pose_queue_.size() >= 2) {
@@ -1679,8 +1686,8 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     }
     // }
 
-    /// 5. 载入地图, 与地图匹配定位
-    /// 尝试各种初始估计
+    /// 5. 由 LO 增量生成地图系初值，加载附近地图并匹配。
+    // [loc-map-match-dispatch]
     CloudPtr output_cloud(new PointCloudType);
     double fitness_score = 0;
     SE3 current_pose_esti = guess_from_lo;
@@ -1688,7 +1695,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     loc_success_lo = loc_success_self = loc_success_dr = false;
     bool loc_success = false;
 
-    /// 注意load on pose存在滞后，优先load on DR
+    // 按本帧 LO 外推初值加载地图；下方的 DR/self 试探分支当前被注释。
     profiling::Stopwatch map_load_profile_timer(profiling::ComputeProfilingEnabled());
     map_->LoadOnPose(guess_from_lo);
     frame_profiling_.map_load = map_load_profile_timer.Stop();
@@ -1697,6 +1704,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     double score_lo = fitness_score;
 
     SE3 res_of_lo = current_pose_esti;
+    // [loc-map-match-dispatch]
     SE3 res_of_dr = current_pose_esti;
     SE3 res_of_self = current_pose_esti;
     double score_dr = 0;
@@ -1768,6 +1776,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         }
     }
 
+    // [loc-tracking-acceptance]
     if (loc_success) {
         // Validate the raw registration, before the 0.1 smoothing above can
         // hide a large correction. Do not commit a rejected match as the next prior.
@@ -1782,6 +1791,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         ApplyMapConsistencyResult(consistency);
         loc_success = consistency.passed;
     }
+    // [loc-tracking-acceptance]
     last_match_stats_.success = loc_success;
     if (loc_success) {
         match_fail_count_ = 0;
@@ -1794,6 +1804,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                      << ", raw_odom_delta=" << delta_rel_abs_pose
                      << ", map_checked=" << last_match_stats_.map_consistency_evaluated
                      << ", map_overlap=" << last_match_stats_.map_overlap_ratio;
+        // [loc-rejected-match-fallback]
         ++match_fail_count_;
         // Do not propagate a rejected NDT transform. Lidar odometry remains
         // the short-term motion source while global relocalization starts.
@@ -1812,6 +1823,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             debug_event::Emit(message.str());
             relocalization_event_active_ = true;
         }
+        // [loc-rejected-match-fallback]
     }
 
     current_abs_pose_ = current_pose_esti;
@@ -1843,6 +1855,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         UL lock(result_mutex_);
         localization_result_.timestamp_ = current_timestamp_;
         localization_result_.confidence_ = fitness_score;
+        // [loc-tracking-status]
         if (!loc_inited_) {
             localization_result_.lidar_loc_valid_ = false;
             localization_result_.status_ = LocalizationStatus::INITIALIZING;
@@ -1853,6 +1866,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             localization_result_.lidar_loc_valid_ = false;
             localization_result_.status_ = LocalizationStatus::FOLLOWING_DR;
         }
+        // [loc-tracking-status]
 
         localization_result_.lidar_loc_odom_delta_ = delta_rel_abs_pose;
         localization_result_.lidar_loc_odom_error_normal_ = lidar_loc_odom_valid;
@@ -2003,10 +2017,12 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     last_match_stats_.confidence = confidence;
     last_match_stats_.iterations = ndt->getFinalNumIteration();
 
+    // [loc-ndt-acceptance]
     const double confidence_threshold =
         loc_inited_ ? options_.min_tracking_confidence_ : options_.min_init_confidence_;
     loc_success = ndt->hasConverged() && std::isfinite(confidence) && trans.allFinite() &&
                   confidence >= confidence_threshold;
+    // [loc-ndt-acceptance]
 
     if (options_.enable_icp_adjust_ && loc_inited_ && loc_success) {
         profiling::Stopwatch icp_adjust_profile_timer(
@@ -2160,11 +2176,13 @@ void LidarLoc::Finish() {
         update_map_thread_.join();
 
         /// 永久保存时，再存储地图
+        // [online-loc-map-save]
         if (options_.map_option_.policy_ == TiledMap::DynamicCloudPolicy::PERSISTENT &&
             options_.map_option_.save_dyn_when_quit_ && !has_set_pose_) {
             map_->SaveToBin(true);
             LOG(INFO) << "dynamic maps saved";
         }
+        // [online-loc-map-save]
     }
 }
 

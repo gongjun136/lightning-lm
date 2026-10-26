@@ -85,7 +85,7 @@ class LidarLoc {
         int relocalization_confirmation_count_ = 2;  ///< 接受候选所需的连续确认次数。
         double relocalization_confirmation_max_translation_ = 1.0;  ///< 连续确认之间允许的最大平移差（m）。
         double relocalization_confirmation_max_rotation_deg_ = 5.0;  ///< 连续确认之间允许的最大旋转差（deg）。
-        double relocalization_confirmation_max_interval_ = 1.0;  ///< 连续确认之间允许的最大时间间隔（s）。
+        double relocalization_confirmation_max_interval_ = 1.0;  ///< 保留的确认间隔配置（s），当前仅读取并校验，不作为候选接受门控。
         std::string relocalization_refinement_backend_ = "ndt";  ///< 候选精配后端名称。
         PointToPlaneRegistration::Options relocalization_plane_icp_options_;  ///< 点面 ICP 候选精配参数。
         std::string relocalization_debug_dir_;  ///< 候选验证的调试产物输出目录。
@@ -158,13 +158,14 @@ class LidarLoc {
     void ResetLastPose(const SE3& last_pose);
 
     /**
-     * @brief 激光地图匹配
-     * @param pose       预测位姿
-     * @param confidence    得分
+     * @brief 以地图系预测位姿启动局部配准，并检查收敛、数值和分数。
+     * @param pose 输入地图系初值；输出配准后的位姿，返回 false 时也可能被修改。
+     * @param confidence 输出 NDT 分数。
      * @param input 输入点云
      * @param output 输出点云
      * @param use_rough_res 是否使用粗分辨率
-     * @return
+     * @return 局部配准通过基础检查返回 true；Align() 仍须检查里程计增量和可选地图一致性。
+     * @see @ref loc_read_acceptance "局部配准通过后还要验证什么"
      */
     bool Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res = false);
 
@@ -196,8 +197,9 @@ class LidarLoc {
     friend struct LidarLocRegressionAccess;
     // 内部函数  ==========================================================================
     /**
-     * 对点云进行配准
-     * @param input
+     * @brief 按初始化或跟踪状态处理点云，决定是否接受地图位姿或退回 LO 外推。
+     * @param input 已通过 ProcessCloud() 基础检查的定位点云。
+     * @see @ref loc_read_prior "地图匹配初值", @ref loc_read_recovery "拒绝匹配后的状态"
      */
     void Align(const CloudPtr& input);
 
@@ -239,6 +241,9 @@ class LidarLoc {
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
+    /// @brief 细化全局候选并做跨帧确认，通过后提交地图位姿和 GOOD 状态。
+    /// @return 仅最终接受返回 true；无候选、验证失败或仍待确认均返回 false。
+    /// @see @ref loc_read_confirmation "全局候选的连续确认"
     bool TryGlobalRelocalization(const CloudPtr& input);
     struct MapConsistencyResult {
         bool evaluated = false;  ///< 是否执行了地图一致性检查。
@@ -374,7 +379,7 @@ class LidarLoc {
     double map_height_ = 0;  ///< 地图高度约束使用的参考高度（m）。
     int relocalization_debug_index_ = 0;  ///< 重定位调试产物的编号。
 
-    bool has_set_pose_ = false;  ///< 外部set_pose标志位，若存在则本次动态图层不落盘
+    bool has_set_pose_ = false;  ///< 退出保存的抑制标志；当前仅默认初始化，SetInitialPose() 修改的是 initial_pose_set_。
 
     std::ofstream recover_pose_out_;  ///< 记录定位恢复位姿的输出文件流。
 };

@@ -18,6 +18,7 @@ namespace lightning::map_manifest {
 namespace {
 namespace fs = std::filesystem;
 
+// [map-manifest-geometry-scope]
 bool GeometryFile(const fs::path& filename) {
     const std::string name = filename.string();
     if (name == "global.pcd" || name == "index.txt" || name == "map_frame.yaml") return true;
@@ -25,6 +26,7 @@ bool GeometryFile(const fs::path& filename) {
     return filename.extension() == ".pcd" && !stem.empty() &&
            std::all_of(stem.begin(), stem.end(), [](unsigned char c) { return std::isdigit(c); });
 }
+// [map-manifest-geometry-scope]
 
 std::string DefaultMapId(const fs::path& directory) {
     const fs::path path = fs::weakly_canonical(directory);
@@ -75,6 +77,7 @@ SE3 ReadPose(const YAML::Node& node) {
 }
 
 YAML::Node OutputNode(const SE3& transform, bool enabled) {
+    // [map-manifest-effective-output]
     YAML::Node output;
     output["map_frame"] = "map";
     YAML::Node fixed = PoseNode(enabled ? transform : SE3());
@@ -84,6 +87,7 @@ YAML::Node OutputNode(const SE3& transform, bool enabled) {
     fixed["source_frame"] = "localization_map";
     fixed["target_frame"] = "map";
     output["fixed_map_transform"] = fixed;
+    // [map-manifest-effective-output]
     return output;
 }
 
@@ -147,6 +151,7 @@ YAML::Node ReadAndVerify(const fs::path& directory) {
         (root["map_format"].as<std::string>() == "tiled" && !files["index.txt"])) {
         throw std::runtime_error("manifest is missing geometry checksums");
     }
+    // [map-manifest-file-verification]
     for (const auto& item : files) {
         const std::string name = item.first.as<std::string>();
         if (fs::path(name).filename().string() != name || !GeometryFile(name)) {
@@ -163,6 +168,7 @@ YAML::Node ReadAndVerify(const fs::path& directory) {
             throw std::runtime_error("map geometry is absent from manifest: " + entry.path().filename().string());
         }
     }
+    // [map-manifest-file-verification]
     return root;
 }
 }  // namespace
@@ -229,6 +235,7 @@ bool SaveAlignmentManifest(const std::string& directory, const std::string& old_
         alignment["status"] = "aligned";
         alignment["target_map_id"] = old_id;
         alignment["target_global_pcd_sha256"] = FileSha256((fs::path(old_directory) / "global.pcd").string());
+        // This records the caller's completed conversion; it does not rewrite point files.
         alignment["applied_to_map_files"] = already_transformed;
         alignment["needs_transform_to_old"] = !already_transformed;
         alignment["transform"] = pose;
@@ -244,21 +251,25 @@ bool SaveAlignmentManifest(const std::string& directory, const std::string& old_
 
 bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::string& error) {
     try {
+        // [map-manifest-startup-gates]
         const YAML::Node root = ReadAndVerify(directory);
         if (root["map_format"].as<std::string>() != "tiled") throw std::runtime_error("this artifact is a global PCD preview, not a localization map package");
         const auto alignment = root["legacy_alignment"];
         const std::string status = alignment["status"].as<std::string>();
         if (status == "unknown") throw std::runtime_error("map alignment is unknown; align to the old map or explicitly declare not_required before localization");
         if (status != "aligned" && status != "not_required") throw std::runtime_error("invalid map alignment status");
+        // [map-manifest-startup-gates]
         if (alignment["source_map_id"].as<std::string>() != root["map_id"].as<std::string>() ||
             alignment["target_map_id"].as<std::string>().empty() ||
             alignment["convention"].as<std::string>() != "target_from_localization" ||
             alignment["translation_unit"].as<std::string>() != "m") {
             throw std::runtime_error("invalid map alignment identity, direction or units");
         }
+        // [map-manifest-alignment-once]
         const bool applied = alignment["applied_to_map_files"].as<bool>();
         const bool enabled = status == "aligned" && !applied;
         if (alignment["needs_transform_to_old"].as<bool>() != enabled) throw std::runtime_error("map transform requirement contradicts its application state");
+        // [map-manifest-alignment-once]
         const SE3 transform = ReadPose(alignment["transform"]);
         if (status == "not_required" &&
             (applied || transform.translation().norm() > 1e-9 ||
@@ -288,8 +299,10 @@ bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::str
         output["fixed_map_transform"]["provenance"]["map_manifest"] = (fs::path(directory) / kFilename).string();
         output["fixed_map_transform"]["provenance"]["source_map_id"] = root["map_id"].as<std::string>();
         output["fixed_map_transform"]["provenance"]["target_map_id"] = alignment["target_map_id"].as<std::string>();
+        // [map-manifest-startup-result]
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
+    // [map-manifest-startup-result]
 }
 
 }  // namespace lightning::map_manifest

@@ -200,6 +200,8 @@ PointToPlaneRegistration::Linearization PointToPlaneRegistration::Linearize(
             continue;
         }
 
+        // 左乘扰动在目标坐标系中表达，所以旋转块使用变换后的点。
+        // [loc-plane-left-jacobian]
         H6d jacobian;
         jacobian.head<3>() = normal.transpose();
         jacobian.tail<3>() = transformed.cross(normal).transpose();
@@ -213,6 +215,7 @@ PointToPlaneRegistration::Linearization PointToPlaneRegistration::Linearize(
             weight * jacobian.transpose() * jacobian;
         linearization.gradient.noalias() +=
             weight * jacobian.transpose() * residual;
+        // [loc-plane-left-jacobian]
         linearization.squared_error += residual * residual;
         ++linearization.matches;
     }
@@ -289,6 +292,7 @@ bool PointToPlaneRegistration::RunStage(
             return false;
         }
 
+        // [loc-plane-left-update]
         const Eigen::LDLT<Mat6d> solver(linearization.hessian);
         if (solver.info() != Eigen::Success) return false;
         const Vec6d increment = solver.solve(-linearization.gradient);
@@ -297,6 +301,7 @@ bool PointToPlaneRegistration::RunStage(
         }
 
         const SE3 proposed_pose = SE3::exp(increment) * pose;
+        // [loc-plane-left-update]
         ++result.iterations;
         if (proposed_pose.matrix().allFinite()) {
             result.attempted_pose = proposed_pose;

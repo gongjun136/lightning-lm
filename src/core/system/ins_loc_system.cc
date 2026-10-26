@@ -96,6 +96,7 @@ struct InsLocSystem::Impl {
     std::deque<Pending> pending;  ///< 等待导航历史覆盖扫描区间的融合点云队列。
 
     void Reject(const std::string& why) {
+        // 质量中断也切断插值历史，恢复后不能跨越这次失效拼接点云。
         gate->Reject(); poses->Clear();
         if (reason != why) {
             events << std::setprecision(16) << node->now().seconds() << ',' << why << '\n';
@@ -146,12 +147,14 @@ struct InsLocSystem::Impl {
 
     void OnNavigation() {
         if (recording_failed) { Reject("recording_failed"); return; }
+        // [ins-new-navigation-fields]
         const std::string bad = ins::CheckSample(sample,policy,node->now().seconds(),Steady());
         if (!bad.empty()) Reject(bad);
         // Position, attitude and velocity must each advance. Quality messages
         // can be lower rate only within the same explicit skew/age bounds.
         for (std::size_t i=0;i<consumed.size();++i) if (sample.time[i] <= consumed[i]) return;
         for (std::size_t i=0;i<consumed.size();++i) consumed[i] = sample.time[i];
+        // [ins-new-navigation-fields]
         ins::Sample converted = sample;
         converted.altitude += geoid_separation;  // h = H + N; explicit datum only.
         ins::Pose pose;
@@ -167,16 +170,20 @@ struct InsLocSystem::Impl {
         if (pose.map_from_rear.translation().norm() > max_radius) {
             Reject("outside_site_radius"); LogSolution(&pose,false,reason); return;
         }
+        // 恢复中的位姿也入历史，但 global_valid=false 使点云不能用它们跨区间插值。
+        // [ins-navigation-recovery]
         pose.global_valid = gate->Observe(pose.stamp,true);
         if (!poses->Add(pose)) { Reject("nonmonotonic_pose"); LogSolution(&pose,false,reason); return; }
         if (!gate->Good()) { reason="recovering"; LogSolution(&pose,false,reason); return; }
         reason="good";
         LogSolution(&pose,true,reason);
         Publish(pose);
+        // [ins-navigation-recovery]
         DrainClouds();
     }
 
     void Publish(const ins::Pose& p) {
+        // [ins-business-publish]
         if (p.stamp <= latest_published || !gate->Good()) return;
         auto vehicle=sany_output::MakeVehiclePoseMessage(p.map_from_rear,p.SignedSpeed(),p.stamp,frame);
         auto pose=sany_output::MakePoseMessage(vehicle);
@@ -187,6 +194,7 @@ struct InsLocSystem::Impl {
         sany_output::WriteTumPoseLine(tum,pose,latest_published);
         heartbeat->SetState(functional_safety::NodeState::kRunning); heartbeat->RecordWork();
         ever_good=true;
+        // [ins-business-publish]
         if (tf) {
             geometry_msgs::msg::TransformStamped m;
             m.header=pose.header; m.child_frame_id=rear_frame;
@@ -251,6 +259,8 @@ struct InsLocSystem::Impl {
     }
 
     void Health() {
+        // 日志故障在 flush 后检查并锁存；这不是每次 publish 前的写盘事务。
+        // [ins-health-status]
         const auto bad=ins::CheckSample(sample,policy,node->now().seconds(),Steady());
         if (!bad.empty()) Reject(bad);
         raw_log.flush(); solutions.flush(); tum.flush(); events.flush();
@@ -259,6 +269,7 @@ struct InsLocSystem::Impl {
         s.header.stamp=node->now();
         s.status=gate->Good() ? s.STATUS_GOOD : (ever_good ? s.STATUS_FAIL : s.STATUS_INITIALIZING);
         status_pub->publish(s);
+        // [ins-health-status]
         lightning::msg::FaultStatus f;
         f.header=s.header; f.comm_header.source_id=heartbeat->NodeId();
         f.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(fault_seq);
@@ -317,6 +328,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
     try {
         auto& x=*impl_;
         const auto config=YAML::LoadFile(yaml), c=config["ins_only"], geo=c["georeference"];
+        // [ins-fixed-reference]
         if (config["output"] && config["output"]["fixed_map_transform"] &&
             config["output"]["fixed_map_transform"]["enabled"].as<bool>())
             throw std::invalid_argument("ins_only already outputs fixed ENU; disable legacy output.fixed_map_transform");
@@ -327,6 +339,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         const auto origin=geo["origin_llh"].as<std::vector<double>>();
         if (origin.size()!=3) throw std::invalid_argument("origin_llh requires latitude, longitude, ellipsoid height");
         x.reference=std::make_unique<ins::GeoReference>(origin[0],origin[1],origin[2]);
+        // [ins-fixed-reference]
         const auto height=geo["input_height"].as<std::string>();
         if (height=="orthometric") x.geoid_separation=geo["geoid_separation_m"].as<double>();
         else if (height!="ellipsoidal") throw std::invalid_argument("input_height must be verified ellipsoidal or orthometric");

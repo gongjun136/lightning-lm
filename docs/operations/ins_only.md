@@ -4,7 +4,80 @@
 
 `run_loc_online` 启动时读取 `system.localization_mode`：缺省或 `lidar` 沿用现有激光定位；`ins_only` 创建 `InsLocSystem`。切换必须重启。纯组合导航模式直接使用 CGI-430 的导航解，不创建 LIO、地图匹配、重定位或 PGO，不做传感器融合，也不依赖地图启动。
 
-代码：`src/app/run_loc_online.cc`、`src/core/system/ins_loc_system.cc`、`src/core/navigation/ins_navigation.cc`。坐标转换使用 GeographicLib，未引入 IC-GVINS/GLIO 的优化器或复制 GPL 实现；这些框架涉及的原始 GNSS/IMU 融合不属于本模式。
+代码：@ref run_loc_online.cc "在线入口"、@ref ins_loc_system.cc "INS 系统"、@ref ins_navigation.cc "导航质量与插值"。坐标转换使用 GeographicLib，未引入 IC-GVINS/GLIO 的优化器或复制 GPL 实现；这些框架涉及的原始 GNSS/IMU 融合不属于本模式。
+
+下面三个问题把“启动配置正确”“导航字段可用”“已经发布”分开核对。数值例子均为手算，现场参数与验证入口仍见后文。
+
+@anchor ins_input_acceptance_reading
+# 1. 配置已经确认，为什么收到 CAN 消息还没有新解？
+
+@ref lightning::InsLocSystem::Init "Init()" 直接从配置构造固定地理参考；`confirmed=true` 是调用者对配置的声明，代码仍检查基准、参考点与维度：
+
+@snippet{lineno} core/system/ins_loc_system.cc ins-fixed-reference
+
+`origin[0..2]` 来自 `origin_llh`，没有“取第一条导航解作为原点”的分支。已启用的旧地图输出变换会被拒绝，避免固定 ENU 再套一层业务地图变换。构造成功只表示配置可读；每次字段回调还经过下面的质量检查：
+
+@snippet{lineno} core/navigation/ins_navigation.cc ins-receive-time-quality
+
+`FieldCount` 包含纬度、经度、高度、姿态、速度、三类 sigma 和状态共九类。`time[]` 是修正后的 ROS 域接收时间，`arrival[]` 是主机单调接收时间；两条年龄条件以 `||` 连接，任一过期都会拒绝。状态 2/4 之后还有数值范围、差分龄期和 sigma 门限，见后文门限表。
+
+九类字段通过质量检查，也不会把每次回调都算作一条新解：
+
+@snippet{lineno} core/system/ins_loc_system.cc ins-new-navigation-fields
+
+`consumed` 只有五项，按 `Field` 枚举顺序对应纬度、经度、高度、姿态、速度；五者时间必须全部比上次消费值大。质量消息可以复用，但仍须通过九类字段共同的跨度、新鲜度检查。`bad` 非空时会先清空恢复状态，后续坐标转换只用于拒绝日志，不能据此进入业务输出。
+
+<b>手算例子：</b>假设九类字段均有效、质量数值合格，`max_age=0.15 s`、`max_skew=0.02 s`；各 `time` 在 `[10.000,10.010]`，ROS 当前为 10.020，各 `arrival` 在 `[20.000,20.010]`，单调当前为 20.020。最大年龄和跨度均通过。若 `/clock` 停在 10.020 而单调时间走到 20.200，仍因 `steady-arrival>0.15` 拒绝。另设上一解已消费五项时间 10.000，只收到纬度 10.010，其他四项没推进，则直接返回，不增加恢复计数。
+
+<b>边界与停止点：</b>`Update()` 还要求每类输入时间严格递增，重复或倒序字段会拒绝。这里做的是有界接收时间配对，不能证明各 CAN 字段来自同一硬件历元。确认固定原点、九类质量检查和五项推进条件即可停止；完整入口见 @ref lightning::ins::CheckSample "CheckSample()"、@ref lightning::ins::Field "字段枚举" 和 @ref ins_loc_system.cc "Update / OnNavigation 源码"。
+
+@anchor ins_cloud_interpolation_reading
+# 2. 点云为什么要等导航覆盖，补偿后又落在哪个后轴时刻？
+
+@ref lightning::ins::PoseBuffer::At "At()" 只在已有历史中查点或插值，超出首尾即失败；插值需要相邻有效位姿，平移线性插值、旋转用四元数 slerp：
+
+@snippet{lineno} core/navigation/ins_navigation.cc ins-pose-interpolation
+
+精确命中一个样本时会直接返回该样本，不走相邻间隔检查。扫描区间需要更强的条件：两端可查后，`Covers()` 还逐段检查区间内部是否存在过大间隔或无效位姿。
+
+@snippet{lineno} core/navigation/ins_navigation.cc ins-scan-coverage
+
+`Deskew()` 用这个区间检查开始工作，再取扫描结束时刻的后轴位姿作为共同参考：
+
+@snippet{lineno} core/navigation/ins_cloud.cc ins-deskew-reference
+
+逐点只需按右到左的顺序读四项乘法：主雷达点 → 采样时刻后轴 → 固定 ENU → 扫描末后轴。
+
+@snippet{lineno} core/navigation/ins_cloud.cc ins-deskew-point
+
+<b>手算例子：</b>假设扫描为 `[1.00,1.10] s`，两端导航位姿全局有效、旋转都是单位阵，后轴 x 分别为 0、1 m，示例设 `max_gap=0.2 s`。一个点 `time=50 ms`、主雷达 x=2 m，外参 `rear_from_primary` 的 x 平移为 +1 m。中间位姿 x=0.5 m，最终扫描末后轴坐标为 `-1+0.5+1+2=2.5 m`；变到 ENU 后是 3.5 m。若查询 1.11 s，`At()` 不外推；若把最大间隔设为 0.05 s，即使扫描两端恰好命中样本，`Covers()` 仍会拒绝中间的 0.10 s 间隔。
+
+<b>边界与停止点：</b>默认调用要求 `global_valid=true`，恢复计数尚未通过的位姿不能用于这段补偿。无效点时间/坐标会拒绝整帧，末点超出 `end` 超过 `1e-7 s` 也失败。`DrainClouds()` 另外控制完整雷达集合、等待超时和两种点云发布；看到 `Deskew()` 返回 true 只证明本帧几何补偿完成。完整源码见 @ref ins_cloud.cc "Deskew()"、@ref lightning::ins::PoseBuffer::Covers "Covers()" 和 @ref ins_loc_system.cc "DrainClouds()"；能够算出点的采样时刻与扫描末后轴位置后即可停止。
+
+@anchor ins_output_validity_reading
+# 3. 连续三次回调通过，是否已经恢复业务输出？
+
+恢复计数统计的是<b>时间递增的新导航解</b>。下面以 `recovery_samples=3` 举例，实际缺省值是 10；上一节的五项推进条件先决定是否调用它：
+
+@snippet{lineno} core/navigation/ins_navigation.cc ins-recovery-count
+
+无效、非正或不递增的 stamp 会调用 `Reject()`，把计数和 `good_` 清零；`last_stamp_` 不回退。调用者把结果写入位姿，只有达到门槛才继续到 `Publish()`：
+
+@snippet{lineno} core/system/ins_loc_system.cc ins-navigation-recovery
+
+恢复中的位姿也进入缓存，但 `global_valid=false`。因此第三条解变成 GOOD，并不让之前的恢复区间自动变成可用于点云的有效历史。真正的业务发布还有一层时间门槛：
+
+@snippet{lineno} core/system/ins_loc_system.cc ins-business-publish
+
+<b>手算例子：</b>假设之前尚未发布，连续三条合格新解 stamp 为 1.00、1.01、1.02 s，计数依次为 1、2、3，只有第三条到达发布语句。只重复同一条消息三次不能恢复。若之后质量失效，系统 `Reject()` 同时清空计数和位姿历史；再到 1.03 s 的合格新解只能从计数 1 开始，没有 DR 输出替代这段空缺。
+
+周期健康检查决定对外状态，也在 flush 后检测并锁存日志故障：
+
+@snippet{lineno} core/system/ins_loc_system.cc ins-health-status
+
+<b>逐句核对：</b>首次发布前的非 GOOD 是 INITIALIZING，`ever_good` 仅在发布路径置真，此后失效才是 FAIL。`RecordWork()` 也在业务发布之后；独立心跳仍运行不能证明位姿持续更新。`LogSolution(...,true,...)` 位于 `Publish()` 之前，不能把 CSV 标记当作订阅端收到消息的证明。TUM 写入在 publish 调用之后，日志失败由健康检查发现后阻止后续输出，这段不是“先写盘成功才发布”的事务。
+
+<b>停止位置：</b>能够指出计数何时复位、哪个 `return` 阻止发布、何处推进 `ever_good/RecordWork` 即可。完整路径见 @ref lightning::ins::RecoveryGate::Observe "RecoveryGate::Observe()"、@ref ins_loc_system.cc "Reject / Publish / Health"。ROS 调度和订阅端是否收到消息需要运行观测，本页片段不作这个保证。
 
 # 坐标和参考点契约
 
@@ -24,7 +97,7 @@
 
 对应 SDK 缺省 CAN ID（**十进制**）为 814、813、805、810、807、806/811/808、803。设备须启用这些帧并提供与门限相容的频率；缺少任一类就不能进入 GOOD。ID 映射由 SDK 管理，本节点消费解码后的类型消息。
 
-每类字段保存自己的 CAN 接收时间戳；所有字段必须有效、严格递增，且最新值满足配置的时间跨度和新鲜度。位置、姿态、速度五类字段各自推进后才能产生一条新的解。CAN 未提供公共测量历元，本实现是**有界接收时间配对**，不声称硬件同步。`receive_time_offset_sec` 仅用于已经测量确认的时钟偏移；不能用放宽阈值代替 CGI、主机与 LiDAR 时钟标定。诊断记录每个字段的时间戳。
+每类字段保存自己的 CAN 接收时间戳；具体九类质量检查与五类推进条件见 @ref ins_input_acceptance_reading "输入接受导读"。`receive_time_offset_sec` 仅用于已经测量确认的时钟偏移；不能用放宽阈值代替 CGI、主机与 LiDAR 时钟标定。诊断记录每个字段的时间戳。
 
 默认门限如下，均为初始工程值，需要现场验证：
 
@@ -39,7 +112,7 @@
 
 浮点状态 5、固定但未定向状态 8、纯惯导状态 3、卫导模式均不发布业务位姿。任何异常立即复位恢复计数并清空姿态插值历史；没有 DR 降级。业务位姿在回调检查中停止；50 ms 健康定时器检测静默并发布状态。主机单调时钟另外监视断流，因此暂停 `/clock` 也不会永久保持 GOOD。时钟回退后不会倒序发布；应恢复正确时钟或重启本模式。
 
-`/localization/loc_status` 初始化为 INITIALIZING，通过恢复后 GOOD，首次成功后的失效为 FAIL；`fault_status` 不可用时 P0，`fault_type=2`。心跳继续，未发布新位姿时 `work_seq` 不推进。日志写失败也停止业务输出。该节点使用单线程 ROS 回调，点云处理耗时可能增加门控通知延迟；Orin 上需测量实际调度和最大延迟。
+`/localization/loc_status` 初始化为 INITIALIZING，通过恢复后 GOOD，首次发布后的失效为 FAIL；`fault_status` 不可用时 P0，`fault_type=2`。心跳与业务序列、日志故障检测的时机见 @ref ins_output_validity_reading "输出有效性导读"。该节点使用单线程 ROS 回调，点云处理耗时可能增加门控通知延迟；Orin 上需测量实际调度和最大延迟。
 
 # 业务与点云输出
 
@@ -57,7 +130,7 @@
 
 旧 TF/位姿可能仍在接收端缓存，下游必须同时检查状态和时间戳。该模式不生成 LIO/地图匹配统计，详细诊断使用 `ins_diagnostics`。
 
-点云复用现有 SANY Livox PointCloud2 预处理、多雷达外参和帧组装。合并到主雷达坐标后执行自车滤波，以导航位姿进行平移线性插值和四元数 slerp，逐点变换到扫描结束时刻后轴坐标。无外推；缺雷达、不完整位姿覆盖、插值间隔过大或超过等待时间就丢弃该帧。待发布队列上限 8 帧，默认等候 300 ms。当前严格策略在导航失效时**两种点云都停发**，恢复后要重新积累完整扫描区间；不以失效全球位置继续去畸变。
+点云复用现有 SANY Livox PointCloud2 预处理、多雷达外参和帧组装，合并到主雷达坐标后执行自车滤波。逐点插值、扫描末参考系和区间失败条件见 @ref ins_cloud_interpolation_reading "点云时间与坐标导读"。缺雷达、覆盖不完整、插值间隔过大或等待超时的帧会被丢弃；待发布队列上限 8 帧，默认等候 300 ms。导航失效时<b>两种点云都停发</b>，恢复后要重新积累完整扫描区间。
 
 # 构建和启动
 

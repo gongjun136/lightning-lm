@@ -2,6 +2,8 @@
 
 完成算法主线后，按故障所在层查证据。这一章是实践与回归入口，历史现场记录须结合其代码版本和验证范围阅读。
 
+需要从源码确认健康状态时，先核对 @ref dtc_heartbeat_evidence_reading "心跳序列与工作序列"、@ref dtc_failure_recovery_reading "FAIL 保持与 UNKNOWN"、@ref dtc_safety_decision_reading "Safety 优先级和覆盖开关"。这三条路径区分进程仍在运行、诊断证据通过和位姿实际发布。
+
 **按问题阅读**
 
 1. @subpage localization_troubleshooting "定位失效：按流水线排查"：先定位输入、LIO、地图匹配、融合还是最终发布层。

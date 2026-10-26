@@ -14,6 +14,37 @@ PAGE = re.compile(r'^\s*(?:\*\s*)?@page\s+(\w+)[ \t]*(.*)$', re.M)
 TOP_LEVEL_MARKDOWN = {'index.md', 'architecture.md'}
 TOPIC_DIRECTORIES = {'guide', 'getting_started', 'flows', 'modules',
                      'algorithms', 'reference', 'operations', 'maintenance'}
+SNIPPET = re.compile(r'^\s*(?:\*\s*)?@snippet(?:\{[^}]*\})?\s+(\S+)\s+(\S+)', re.M)
+
+
+def check_snippets(root):
+    """Reject missing, ambiguous, empty or unpaired real-source excerpts."""
+    errors = []
+    example_roots = [root / 'scripts', root / 'src']
+    examples = [p for base in example_roots for p in base.rglob('*')
+                if p.suffix in {'.sh', '.cc', '.cpp', '.h', '.hpp'} and p.is_file()]
+    consumers = [p for base in [root / 'docs', root / 'src'] for p in base.rglob('*')
+                 if p.suffix in {'.md', '.dox', '.cc', '.cpp', '.h', '.hpp'} and p.is_file()]
+    for consumer in consumers:
+        text = consumer.read_text(encoding='utf-8')
+        # Documentation examples are not live snippet directives.
+        text = re.sub(r'```.*?```', '', text, flags=re.S)
+        for name, marker in SNIPPET.findall(text):
+            matches = [p for p in examples if any(
+                p.is_relative_to(base) and p.relative_to(base).as_posix() == name
+                for base in example_roots) or ('/' not in name and p.name == name)]
+            label = f'{consumer.relative_to(root)}: snippet {name} [{marker}]'
+            if len(matches) != 1:
+                errors.append(f'{label}: expected one source file, found {len(matches)}')
+                continue
+            source = matches[0].read_text(encoding='utf-8')
+            boundaries = list(re.finditer(
+                r'^\s*(?://|#)\s*\[' + re.escape(marker) + r'\]\s*$', source, re.M))
+            if len(boundaries) != 2:
+                errors.append(f'{label}: expected two marker comments, found {len(boundaries)}')
+            elif not source[boundaries[0].end():boundaries[1].start()].strip():
+                errors.append(f'{label}: empty excerpt')
+    return errors
 
 
 def manual_pages(root):
@@ -59,7 +90,7 @@ def navigation_parents(root):
 
 
 def check_sources(root):
-    errors = []
+    errors = check_snippets(root)
     pages = manual_pages(root)
     ids = []
     titles = []
@@ -229,6 +260,13 @@ def check_navigation(folder, page_ids, parents):
 
 def check_html(folder, page_ids, parents):
     errors, cache = check_navigation(folder, page_ids, parents), {}
+    source_file = folder / 'source_version.json'
+    try:
+        provenance = json.loads(source_file.read_text(encoding='utf-8'))
+        if not provenance.get('generated_at_utc') or 'commit' not in provenance or 'modified' not in provenance:
+            errors.append('incomplete source version metadata; rebuild the docs target')
+    except (OSError, ValueError):
+        errors.append('missing source version metadata; rebuild the docs target')
     version_file = folder / 'navigation_version.txt'
     version = version_file.read_text(encoding='ascii').strip() if version_file.is_file() else ''
     if not re.fullmatch(r'[0-9a-f]{16}', version):
@@ -259,6 +297,8 @@ def check_html(folder, page_ids, parents):
             continue
         if parse(page).navigation_version != version:
             errors.append(f'{page.name}: navigation asset version mismatch')
+        if 'lightning-source-version' not in parse(page).ids:
+            errors.append(f'{page.name}: missing visible source version notice')
         for target in parse(page).targets:
             url = urlsplit(target)
             if url.scheme or url.netloc: continue

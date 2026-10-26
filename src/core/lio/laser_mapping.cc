@@ -833,9 +833,11 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                              std::chrono::milliseconds(500));
     profiling::Stopwatch selection_profile_timer(profiling_enabled);
     if (multi_lidar_config_.enabled) {
+        // [sensor-lio-observation-subset]
         current_lidar_selection_ = adaptive_lidar_load_controller_.Select(
             current_lidar_stats_, last_lidar_latency_sec_.load());
         scan_undistort_ = SelectLidarPoints(scan_undistort_full_, current_lidar_selection_);
+        // [sensor-lio-observation-subset]
         if (!scan_undistort_ || scan_undistort_->empty()) {
             last_tracking_healthy_ = false;
             LOG_EVERY_N(WARNING, 20)
@@ -949,8 +951,10 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         // LOG(INFO) << "Now pts: " << scan_down_lidar_->size() << ", before: " << cur_pts;
         cur_pts = scan_down_lidar_->size();
     }
+    // [sensor-lio-point-cap]
     scan_down_lidar_ = SampleSpatiallyBalanced(scan_down_lidar_, current_lidar_selection_.max_points);
     cur_pts = scan_down_lidar_->size();
+    // [sensor-lio-point-cap]
     downsample_ms = elapsed_ms(downsample_start);
     downsample_timing = downsample_profile_timer.Stop();
 
@@ -1502,11 +1506,15 @@ bool LaserMapping::SyncPackages() {
         lidar_pushed_ = true;
     }
 
+    // [lio-wait-for-imu]
     if (last_timestamp_imu_ < lidar_end_time_) {
         return false;
     }
+    // [lio-wait-for-imu]
 
     /*** push imu_ data, and pop from imu_ buffer ***/
+    // 最新 IMU 覆盖扫描末才到这里；严格大于末时刻的消息留在队列中。
+    // [sensor-sync-consume-imu]
     double imu_time = imu_buffer_.front()->timestamp;
     measures_.imu_.clear();
     while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_)) {
@@ -1520,6 +1528,7 @@ bool LaserMapping::SyncPackages() {
 
         imu_buffer_.pop_front();
     }
+    // [sensor-sync-consume-imu]
 
     current_max_imu_gap_ = 0.0;
     for (std::size_t i = 1; i < measures_.imu_.size(); ++i) {
@@ -1527,11 +1536,13 @@ bool LaserMapping::SyncPackages() {
             std::max(current_max_imu_gap_, measures_.imu_[i]->timestamp - measures_.imu_[i - 1]->timestamp);
     }
 
+    // [sensor-sync-consume-lidar]
     lidar_buffer_.pop_front();
     time_buffer_.pop_front();
     if (!preprocess_time_buffer_ms_.empty()) preprocess_time_buffer_ms_.pop_front();
     if (!lidar_stats_buffer_.empty()) lidar_stats_buffer_.pop_front();
     lidar_pushed_ = false;
+    // [sensor-sync-consume-lidar]
 
     // LOG(INFO) << "sync: " << std::setprecision(14) << measures_.lidar_begin_time_ << ", " <<
     // measures_.lidar_end_time_;
@@ -1747,13 +1758,15 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     corr_lidar_ids_.resize(effect_feat_surf_);
     corr_norm_.resize(effect_feat_surf_);
 
-    // 有效点面约束太少时，观测模型不可用；ESKF::Update()会放弃本次更新并回退。
+    // 点面数量是整个观测的前置门槛；后面的可选点点项不能绕过它。
+    // [lio-plane-count-gate]
     if (effect_feat_surf_ < 20) {
         obs.valid_ = false;
         LOG(WARNING) << "No enough effective surface points: " << effect_feat_surf_ << ", icp: " << effect_feat_icp_
                      << ", required: " << 20;
         return;
     }
+    // [lio-plane-count-gate]
 
     const Mat3f off_R = offset_R_lidar_fixed_.cast<float>();
     const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
@@ -1779,6 +1792,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         Vec6d gradient = Vec6d::Zero();
         const int end = std::min(effect_feat_surf_, (block + 1) * kReductionBlockSize);
         for (int i = block * kReductionBlockSize; i < end; ++i) {
+            // [lio-plane-jacobian]
             Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
             Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
             // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
@@ -1800,6 +1814,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             // corr_pts_[i][3]里保存的是点到平面的有符号距离pd2。
             // 这里取负号，是为了让后续求解的dx沿着减小残差的方向更新。
             float res = -corr_pts_[i][3];
+            // [lio-plane-jacobian]
 
             // double w = huber_weight(res);
             PointType weighted_point;
@@ -1807,11 +1822,13 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
             weighted_point.y = point_this_be.y();
             weighted_point.z = point_this_be.z();
             weighted_point.lidar_id = corr_lidar_ids_[i];
+            // [lio-plane-information]
             double w = PointInformationScale(weighted_point, norm_vec.cast<double>(), s);
 
             hessian.noalias() += ((J.transpose() * J).eval() * w) * options_.plane_icp_weight_;
             gradient.noalias() += (J.transpose() * res * w) * options_.plane_icp_weight_;
             observation_residual_squared_[i] = res * res;
+            // [lio-plane-information]
         }
         observation_hessian_blocks_[block] = hessian;
         observation_gradient_blocks_[block] = gradient;
@@ -1824,7 +1841,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         obs.HTr_ += observation_gradient_blocks_[block];
     }
 
-    // 残差统计用于ESKF迭代过程中的收敛判断和AA回退判断。
+    // 此统计只含点面项；mean_ 沿用旧名称，实际存放平方残差的上中位数。
+    // [lio-plane-residual-statistic]
     auto& res_sq = observation_residual_squared_;
     if (!res_sq.empty()) {
         obs.lidar_residual_max_ = *std::max_element(res_sq.begin(), res_sq.end());
@@ -1834,6 +1852,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         // LOG(INFO) << "residual mean: " << obs.lidar_residual_mean_ << ", max: " << obs.lidar_residual_max_
         //           << ", 85%: " << res_sq[res_sq.size() * 0.85];
     }
+    // [lio-plane-residual-statistic]
 
     /// 点到点ICP部分
 

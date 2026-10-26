@@ -168,13 +168,16 @@ template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
     if (thread_init_) thread_init_();
     while (true) {
+        // [async-message-exit-condition]
         UL lock(mutex_);
         cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
         if (exit_flag_ && msg_buffer_.empty()) break;
+        // [async-message-exit-condition]
 
         // Keep only the message currently executing outside the bounded
         // buffer. Swapping the complete queue into an unbounded in-flight
         // batch defeats max_size_ while a slow callback is running.
+        // [async-message-execute-one]
         T msg = std::move(msg_buffer_.front());
         msg_buffer_.pop_front();
         in_flight_count_ = 1;
@@ -184,13 +187,16 @@ void AsyncMessageProcess<T>::ProcLoop() {
         custom_func_(msg);
         in_flight_count_ = 0;
         ++processed_count_;
+        // [async-message-execute-one]
     }
 }
 
 template <typename T>
 void AsyncMessageProcess<T>::AddMessage(const T& msg) {
+    // [async-message-refuse-after-exit]
     UL lock(mutex_);
     if (exit_flag_) return;
+    // [async-message-refuse-after-exit]
     if (enable_skip_) {
         if (skip_cnt_ != 0) {
             skip_cnt_++;
@@ -202,8 +208,8 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
         skip_cnt_ = skip_cnt_ % skip_num_;
     }
 
-    msg_buffer_.push_back(msg);
     // [async-message-capacity]
+    msg_buffer_.push_back(msg);
     while (msg_buffer_.size() > max_size_) {
         LOG_EVERY_N(INFO, 100) << name_ << " exceeds largest size: " << max_size_;
         msg_buffer_.pop_front();
@@ -217,6 +223,7 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
 
 template <typename T>
 void AsyncMessageProcess<T>::Quit() {
+    // [async-message-quit-join]
     {
         UL lock(mutex_);
         update_flag_ = true;
@@ -227,6 +234,7 @@ void AsyncMessageProcess<T>::Quit() {
     if (proc_.joinable()) {
         proc_.join();
     }
+    // [async-message-quit-join]
 }
 
 }  // namespace lightning::sys

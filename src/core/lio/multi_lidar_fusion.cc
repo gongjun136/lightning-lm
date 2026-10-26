@@ -56,6 +56,7 @@ bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* erro
         SetError(error, e.what());
         return false;
     }
+    // [config-extrinsic-shape]
     if (values.size() != 12 && values.size() != 16) {
         SetError(error, "lidar transform must contain 12 or 16 numbers");
         return false;
@@ -70,6 +71,8 @@ bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* erro
         SetError(error, "lidar transform bottom row must be [0, 0, 0, 1]");
         return false;
     }
+    // [config-extrinsic-shape]
+    // [config-extrinsic-rotation]
     R << values[0], values[1], values[2], values[4], values[5], values[6], values[8], values[9], values[10];
     t << values[3], values[7], values[11];
     const double orthogonality_error = (R.transpose() * R - Mat3d::Identity()).cwiseAbs().maxCoeff();
@@ -77,6 +80,7 @@ bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* erro
         SetError(error, "lidar rotation is not a valid SO(3) matrix");
         return false;
     }
+    // [config-extrinsic-rotation]
     return true;
 }
 
@@ -84,11 +88,13 @@ bool ValidateConfig(const MultiLidarConfig& config, std::string* error) {
     if (!config.enabled) {
         return true;
     }
+    // [config-multi-timing]
     if (config.frame_period <= 0.0 || config.match_tolerance <= 0.0 ||
         config.match_tolerance >= 0.5 * config.frame_period || config.reorder_window < config.frame_period) {
         SetError(error, "invalid multi_lidar timing parameters");
         return false;
     }
+    // [config-multi-timing]
     if (config.online_extrinsic_estimation) {
         SetError(error, "online multi-lidar extrinsic estimation is not supported in the stable V1 frontend");
         return false;
@@ -175,6 +181,7 @@ const MultiLidarSensorConfig* MultiLidarConfig::FindLidar(int id) const {
 }
 
 bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std::string* error) {
+    // [config-multi-enable]
     config = MultiLidarConfig();
     const YAML::Node multi = root["multi_lidar"];
     if (!multi) {
@@ -185,6 +192,7 @@ bool LoadMultiLidarConfig(const YAML::Node& root, MultiLidarConfig& config, std:
         if (!config.enabled) {
             return true;
         }
+        // [config-multi-enable]
         if (multi["primary_lidar_id"]) config.primary_lidar_id = multi["primary_lidar_id"].as<int>();
         if (multi["frame_period"]) config.frame_period = multi["frame_period"].as<double>();
         if (multi["match_tolerance"]) config.match_tolerance = multi["match_tolerance"].as<double>();
@@ -460,8 +468,10 @@ void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_
 AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrameStats& stats,
                                                          double latency_sec) {
     const auto& load = config_.adaptive_load;
+    // [sensor-budget-health]
     const bool budget_mode = load.enabled && !load.lio_point_budgets.empty();
     const bool healthy = localization_good_.load() && tracking_healthy_;
+    // [sensor-budget-health]
     if (load.enabled && load.predictive && healthy &&
         latency_sec + predicted_processing_sec_ >= load.target_latency_sec) {
         degradation_step_ = std::min(MaximumDegradationStep(), degradation_step_ + 1);
@@ -470,6 +480,7 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
     AdaptiveLidarSelection selection;
     selection.point_stride = PointStride();
     selection.degradation_step = degradation_step_;
+    // [sensor-budget-cap]
     if (budget_mode) {
         // Spatial caps replace acquisition-order striding. On degraded quality,
         // restore the full source set and uncapped points on the very next frame.
@@ -479,6 +490,7 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
                 std::min(degradation_step_, static_cast<int>(load.lio_point_budgets.size()) - 1)];
         }
     }
+    // [sensor-budget-cap]
     const auto primary_it = std::find(stats.present_lidar_ids.begin(), stats.present_lidar_ids.end(),
                                       config_.primary_lidar_id);
     const int minimum = localization_good_.load() ? config_.adaptive_load.tracking_min_lidars
@@ -498,12 +510,14 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
         const std::size_t rhs_points = stats.points_by_lidar.count(rhs) ? stats.points_by_lidar.at(rhs) : 0;
         return lhs_points != rhs_points ? lhs_points > rhs_points : lhs < rhs;
     });
+    // [sensor-budget-sources]
     int target_count = TargetLidarCount();
     if (load.enabled && load.tracking_lidar_count > 0 && healthy) {
         target_count = load.tracking_lidar_count;
     }
     if (budget_mode && !healthy) target_count = static_cast<int>(config_.lidars.size());
     const int target = std::min(target_count, static_cast<int>(stats.present_lidar_ids.size()));
+    // [sensor-budget-sources]
     if (load.enabled && load.rotate_secondary_lidars && target > 1 &&
         target < static_cast<int>(stats.present_lidar_ids.size())) {
         auto next = std::upper_bound(secondary.begin(), secondary.end(), last_secondary_id_);
@@ -600,6 +614,7 @@ CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
     }
     CloudPtr selected(new PointCloudType);
     selected->reserve(target - remaining);
+    // [sensor-sampling-real-points]
     for (std::size_t i = 0; i < bins.size(); ++i) {
         const auto bin = bins[i];
         if (bin == kInvalid) continue;
@@ -608,6 +623,7 @@ CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
             selected->push_back(cloud->points[i]);
         }
     }
+    // [sensor-sampling-real-points]
     selected->header = cloud->header;
     selected->sensor_origin_ = cloud->sensor_origin_;
     selected->sensor_orientation_ = cloud->sensor_orientation_;
@@ -635,6 +651,7 @@ void MultiLidarFrameAssembler::Reset(MultiLidarConfig config) {
     insufficient_lidar_drop_count_ = 0;
 }
 
+// [sensor-frame-bin-and-expiry]
 long long MultiLidarFrameAssembler::BucketFor(double timestamp) const {
     return static_cast<long long>(std::llround((timestamp - anchor_time_) / config_.frame_period));
 }
@@ -650,6 +667,7 @@ bool MultiLidarFrameAssembler::IsComplete(const PartialFrame& frame) const {
 bool MultiLidarFrameAssembler::IsExpired(long long bucket) const {
     return max_seen_time_ - BucketTime(bucket) >= config_.reorder_window;
 }
+// [sensor-frame-bin-and-expiry]
 
 bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr cloud) {
     if (!cloud || !std::isfinite(timestamp) || expected_lidar_ids_.count(lidar_id) == 0) {
@@ -670,6 +688,7 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
         ++duplicate_drop_count_;
         return false;
     }
+    // [sensor-frame-tolerance]
     if (!frame.timestamps.empty()) {
         double min_timestamp = timestamp;
         double max_timestamp = timestamp;
@@ -683,6 +702,7 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
             return false;
         }
     }
+    // [sensor-frame-tolerance]
     frame.clouds.emplace(lidar_id, std::move(cloud));
     frame.timestamps.emplace(lidar_id, timestamp);
     max_seen_time_ = std::max(max_seen_time_, timestamp);
@@ -690,6 +710,7 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
     return true;
 }
 
+// [sensor-frame-promote]
 void MultiLidarFrameAssembler::PromoteReady(bool force) {
     while (!frames_.empty()) {
         auto it = frames_.begin();
@@ -709,6 +730,7 @@ void MultiLidarFrameAssembler::PromoteReady(bool force) {
         frames_.erase(it);
     }
 }
+// [sensor-frame-promote]
 
 bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
     if (ready_frames_.empty()) return false;
@@ -748,6 +770,7 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
     for (const auto& [id, cloud] : frame.clouds) {
         if (!cloud) continue;
         const auto* sensor = config_.FindLidar(id);
+        // [sensor-fusion-transform-time]
         const double header_offset_ms = (frame.timestamps.at(id) - stats.begin_time) * 1e3;
         for (const auto& point : cloud->points) {
             PointType transformed = point;
@@ -761,6 +784,7 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
             max_relative_ms = std::max(max_relative_ms, transformed.time);
             fused.cloud->push_back(transformed);
         }
+        // [sensor-fusion-transform-time]
     }
     const profiling::TimingSample transform_timing = transform_timer.Stop();
     profiling::Stopwatch sort_timer(profiling_enabled);

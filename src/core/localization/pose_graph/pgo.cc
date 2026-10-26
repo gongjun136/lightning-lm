@@ -382,12 +382,14 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         return false;
     }
 
+    // [pgo-reset-watermark-gate]
     if (loc_result.timestamp_ <= impl_->relative_pose_reset_watermark_) {
         LOG(WARNING) << "drop queued LidarLoc from the pre-reset epoch: t=" << std::setprecision(18)
                      << loc_result.timestamp_ << ", reset relative-pose watermark="
                      << impl_->relative_pose_reset_watermark_;
         return false;
     }
+    // [pgo-reset-watermark-gate]
 
     // 不允许时间回退
     double lidar_loc_delta_t = loc_result.timestamp_ - last_lidar_loc_input_time_;

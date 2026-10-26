@@ -45,7 +45,7 @@ bash scripts/align_maps_offline.sh \
 
 ## 人工复核材料
 
-无论自动判断成功或失败，输出目录都会保留：
+进入自动门限判断后的正常路径，会尝试在输出目录保存以下复核材料；输入、候选生成等更早阶段抛出异常时，不能保证这些文件齐全，应先看 `fatal_error.txt`：
 
 - `alignment_report.yaml`：变换、静止窗口、完整指标、门限和 PASS/FAIL。
 - `alignment_candidates.csv`：所有收敛候选及其质量，便于检查重复场景歧义。
@@ -53,7 +53,51 @@ bash scripts/align_maps_offline.sh \
 - `alignment_overlay_rgb.pcd`：可在 CloudCompare 或 RViz 中查看的彩色叠加点云。
 - `old_map_review.pcd`、`new_map_aligned_review.pcd`、`static_window_aligned.pcd`：分开的降采样复核点云。
 - `MANUAL_REVIEW.md`：人工复核提示。
-- `localization_config.before.yaml`、`localization_config.after.yaml`：配置修改前后快照；仅成功写入时产生。
+- `localization_config_before.yaml`、`localization_config_after.yaml`：配置更新前后的快照。前快照在替换前写入；失败时可能只有前快照，不能以它存在证明配置已更新。
+
+@anchor alignment_acceptance_reading
+## 最高分候选为什么仍然会被拒绝？
+
+`quality` 用于给已细化候选排序，最高分被选为 `best`；接受条件要另外查看。先读这组独立门限：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-metric-gates
+
+每个 `gate(false, ...)` 都把原因追加到 `failed_gates`。全局重叠、局部分区、静止子图残差及变换离散度分别检查，不会用高总分抵消其中一项失败。候选还要经过歧义检查：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-distinct-ambiguity
+
+按质量降序找到第一个相对最佳解平移超过 1 m 或旋转超过 5° 的不同解，若它的质量距最高分不超过 0.05，就记为歧义。最后再核对支持证据和接受语句：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-support-and-acceptance
+
+描述子支持或更强的几何后备条件只满足其中一个门；它们不能绕过前面已经失败的指标。只有 `failed_gates.empty()` 才通过自动验收。
+
+<b>手算例子：</b>假设其他门限全通过，最佳质量为 0.90，另一个相差 2 m 的解质量为 0.87，则 `0.87 >= 0.90-0.05`，仍因歧义拒绝。另一个独立例子是全局重叠都很高，但 `regional_p10_overlap_10=0.20`，小于 0.25，局部覆盖门仍失败。这些是假设输入的分支推演，不是对某张地图的实测。
+
+<b>边界与停止点：</b>自动 PASS 表示这些代码门限通过，不代表获得了独立测量真值。候选全部细化失败会在进入这里之前抛出异常。读到失败原因集合与 success 赋值即可；变换方向和只应用一次的规则复用 @ref map_alignment_once_reading "地图输出变换导读"。完整入口见 @ref align_maps_offline.cc "align_maps_offline.cc"。
+
+@anchor alignment_persistence_reading
+## 关闭配置更新会写什么？配置与清单能一起回滚吗？
+
+配置更新和地图清单写入分别受相同开关控制，先看配置：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-config-write-gate
+
+再看后续清单。前一步若把 success 改为 false，本步骤就会跳过：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-manifest-write-gate
+
+`update_config=false` 会跳过这两块，`config_updated` 与 `map_manifest_updated` 都保持 false；仍会尝试写复核点云、候选表、报告等到输出目录，因此它不是全程只读。接受门限通过时，两个 updated 都为 false 也可以返回 0。
+
+`PatchConfig()` 自身先备份，再写临时文件、解析 YAML、替换原配置，最后保存后快照：
+
+@snippet{lineno} app/align_maps_offline.cc alignment-config-backup
+
+@snippet{lineno} app/align_maps_offline.cc alignment-config-replace
+
+<b>故障推演：</b>假设全部自动门限通过、开关为 true、PatchConfig 完成，但随后 SaveAlignmentManifest 失败，那么配置已经替换，报告记录 `config_updated=true`、`map_manifest_updated=false`、`success=false`，正常错误路径返回 1。这段没有恢复旧配置的调用。甚至后快照复制失败也发生在 rename 之后，PatchConfig 返回 false 不能一概理解为原配置从未变化。
+
+<b>边界与停止点：</b>临时文件替换只涉及单份 YAML，不是配置、清单和复核产物的整体事务；部分复核 writer/stream 也未检查写入结果，退出 0 不能单独证明全部材料完整。更早或抛出的异常走外层捕获并返回 2。读到两个写入条件、rename 的位置和失败返回即可；在线实际使用哪份变换继续 @ref map_manifest_validation_reading "地图启动校验"。
 
 ## 在线输出范围
 
@@ -61,8 +105,8 @@ bash scripts/align_maps_offline.sh \
 
 2026-10-09 的历史三雷达配置启用了从 `bauma_3lidar_20261009_113953` 到旧资产地图
 `sany_3lidar_baoma_sim_20260901` 的固定变换。2026-10-11 共用配置
-`config/sany/localization.yaml` 保留该数值，按用户要求默认关闭。需要恢复该场地变换时，先在审核后的运行配置中启用，并把
-`SANY_MAP_PATH` 指向新地图包；配置中的变换和地图包必须成对切换。
+`config/sany/localization.yaml` 保留该数值，按用户要求默认关闭。当前若恢复该场地变换，应先为对应新地图包生成并校验审核后的对齐清单，再把
+`SANY_MAP_PATH` 指向该地图包；在线启动从地图清单加载变换，仅启用运行 YAML 的历史矩阵并不足够，见 @ref map_alignment_once_reading "变换的实际来源"。
 旧地图目录继续保留，便于回退。PGM 和三维地图文件仍处于新地图内部坐标系。
 
 变换平移 XYZ 为 `[2.34416675567627, -3.11785960197449, -0.0604841262102127]` m，
@@ -84,9 +128,9 @@ bash scripts/align_maps_offline.sh \
 启用固定变换后，只改变下列对外发布结果：
 
 - `/slamPoseRaw_topic`
-- `/PosRes`
+- `/localization/pose_vel`
 - `/tf`（保持 `map -> base_link`）
 - `/LidarDataInL`
 - `/localization/path`
 
-这些消息的 `frame_id` 保持现有的 `map`。`/LidarDataInv`、定位器内部状态、内部新地图位姿导出以及离线 `run_loc_offline` 均不应用该变换。
+这些地图消息的 `frame_id` 保持现有的 `map`。`/LidarDataInv`、定位器内部状态、内部新地图位姿导出以及离线 `run_loc_offline` 的原生轨迹均不应用该变换。实际 publisher 与参考点转换见 @ref output_pose_reading "业务输出的源码导读"；历史 `/PosRes` 名称不能代替当前创建的 `/localization/pose_vel` publisher。

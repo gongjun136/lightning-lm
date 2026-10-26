@@ -40,9 +40,39 @@ digraph map_products {
 
 # ROS bag、文件与 YAML 适配
 
-@ref lightning::RosbagIO "RosbagIO" 通过 `AddHandle(topic, callback)` 建立 topic 到回调的映射，`Go()` 用 reader 同步遍历消息并在当前调用线程派发。未注册 topic 不进入算法；回调返回值参与读取流程的继续/失败语义。`YAML_IO` 和 `file_io` 提供同步文件操作，不拥有后台线程。
+@ref lightning::RosbagIO "RosbagIO" 通过 `AddHandle(topic, callback)` 建立 topic 到回调的映射，在 `Go()` 或 `GoRealtime()` 的调用线程中同步派发。未注册 topic 不进入回调；两个读取函数都忽略回调的 bool 返回值。`YAML_IO` 和 `file_io` 提供同步文件操作，不拥有后台线程。
 
-**代码依据：** `src/wrapper/bag_io.h/.cc`、`src/io/yaml_io.h/.cc`、`src/io/file_io.h/.cc`
+@anchor support_bag_dispatch_reading
+## 回调返回 false，或者重复注册话题，会怎样？
+
+先看注册使用的是 `emplace`：
+
+@snippet{lineno} wrapper/bag_io.h bag-topic-registration
+
+同一个键已存在时不会覆盖旧回调。再看 `Go()` 的整个循环；`iter->second(msg)` 没有接收返回值，也没有用它控制 break：
+
+@snippet{lineno} wrapper/bag_io.cc bag-dispatch-stop
+
+<b>手工推演：</b>先给 `/imu` 注册 A，再给同一话题注册 B，随后读取 `/imu`、一个未注册话题、`/imu` 三条消息。假设没有异常或退出请求，即使 A 每次返回 false，仍调用 A 两次、B 零次。若 `sleep_usec=1000`，三条消息之后各等待一次，固定等待共 3 ms，此外还有读取和回调耗时；未注册话题也占这一等待。
+
+<b>边界与停止点：</b>循环依靠 bag 结束或 debug 命名空间中的 `flg_exit` 返回；异常向外传播。退出标志在派发与固定等待之后检查，不能抢占正在运行的回调，进入函数前置位也不等同于在读取第一条消息前检查。构造器的 `dataset_type` 当前不改变这套分发。确认注册语句、未使用的返回值和退出检查位置即可；完整 API 见 @ref lightning::RosbagIO::AddHandle "AddHandle()"、@ref lightning::RosbagIO::Go "Go()"，离线算法如何设置停止条件见 @ref offline_slam_drain_reading "离线帧消费与上限"。
+
+@anchor support_bag_clock_reading
+## 两倍速回放改变哪一种时间，回调慢了会怎样？
+
+`GoRealtime()` 先要求倍率有限且严格为正：
+
+@snippet{lineno} wrapper/bag_io.cc bag-realtime-rate
+
+节拍使用 bag 存储时间 `msg->time_stamp`，起点对应 `steady_clock`，不是消息内的 header 时间：
+
+@snippet{lineno} wrapper/bag_io.cc bag-realtime-clock
+
+第一条读出的消息就建立时钟锚点，即使它没有注册回调；每条消息先等目标时刻，再查话题和执行回调。函数本身不重写序列化消息的 header。`Go()` 没有这段存储时间节拍；两种接口不能仅按名称推断出相同的回放时序。
+
+<b>手算：</b>两条消息的 bag 时间为 100.0 s、100.2 s，`playback_rate=2` 时第二条目标为实际播放起点之后 0.1 s。它们原有的 header 即使是 87.0 s、87.2 s，也不会因此变成 100.0 s、100.1 s。若第一条回调已耗时 0.15 s，第二条目标时刻已经过去，`sleep_until` 不会再补等 0.1 s；处理仍是同步串行，不会因设置二倍速而获得额外处理能力。
+
+<b>边界与停止点：</b>这里不保证实时期限，也没有对每条 bag 时间额外做单调性检查；目标落在过去时不会等待。退出标志在等待与派发后才检查，不能中断 `sleep_until`。在线内置回放由 `OnlineBagPlayer::Run()` 调用此接口，直接离线 SLAM/定位/前端入口调用的是 `Go()`。读到目标时间公式与派发顺序即可；完整源码见 @ref lightning::RosbagIO::GoRealtime "GoRealtime()"、@ref online_bag_player.h "OnlineBagPlayer"，在线系统的等待范围见 @ref online_slam_flow "在线建图入口"。
 
 # miao 优化器
 
@@ -56,7 +86,7 @@ digraph map_products {
 |---|---|---|
 | `src/ui` | Pangolin 窗口、车体/点云/轨迹对象 | `Init()` 创建可视资源，`Quit()` 结束；无 UI 模式不得假设窗口存在 |
 | `src/common` | `NavState`、`Keyframe`、参数与点类型 | `Keyframe::Ptr` 跨前后端共享；优化位姿可在后端线程更新 |
-| `src/utils` | timing、profiling、预算、线程辅助 | 多数采集运行统计；启用与否由配置决定，不应改变算法输入语义 |
+| `src/utils` | timing、profiling、诊断与线程辅助 | 部分工具直接参与 Safety 与线程调度，不能一概当作只读统计；按实际调用者核对影响 |
 | `src/io` | YAML/文件序列化 | 同步磁盘副作用；错误需沿返回值或异常边界处理 |
 
 **代码依据：** `src/ui`、`src/common/keyframe.h`、`src/common/nav_state.h`、`src/utils`、`src/io` 的公开头文件及 `src/CMakeLists.txt` 源清单

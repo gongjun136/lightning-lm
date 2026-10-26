@@ -54,13 +54,15 @@ struct LocalizationResult {
 
     bool rel_pose_set_ = false;      ///< 相对定位是否被设置（通常是lidarOdom）
     SE3 rel_pose_;                   ///< 相对定位的位置和姿态
-    Vec3d vel_b_ = Vec3d::Zero();    ///< 相对定位的速度
-    double rear_axle_speed_offset_ = 0.0;  ///< 主雷达到后轴的杆臂引起的纵向速度修正量（m/s）。
+    Vec3d vel_b_ = Vec3d::Zero();    ///< IMU 坐标系表达的速度（m/s），业务输出时再旋转到车体系。
+    double rear_axle_speed_offset_ = 0.0;  ///< 后轴指向 IMU 的杆臂引起的车体纵向速度偏移（m/s），输出后轴速度时减去此值。
     double rear_axle_speed_timestamp_ = -1.0;  ///< 后轴速度修正量对应的传感器时间戳（s）。
+    // [output-speed-offset-validity]
     double RearAxleSpeedOffset() const {
         return !is_parking_ && std::abs(rear_axle_speed_timestamp_ - timestamp_) <= 1e-6
                    ? rear_axle_speed_offset_ : 0.0;
     }
+    // [output-speed-offset-validity]
     double lidar_odom_delta_t_ = 0;  ///< 相对于上一帧lidarOdom消息的时延
     double dr_delta_t_ = 0;          ///< 相对于上一帧DR消息的时延
     double is_parking_ = false;  ///< 当前结果是否处于静止状态。

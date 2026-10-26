@@ -90,8 +90,10 @@ void OpenOutput(std::ofstream& stream, const std::string& path, const char* labe
     if (!stream.is_open()) throw std::runtime_error(std::string("failed to open ") + label + ": " + path);
 }
 
+// [frontend-offline-tum-guard]
 void WriteTumPose(std::ofstream& stream, double timestamp, const lightning::SE3& pose, double& last_timestamp) {
     if (!stream.is_open() || timestamp <= 0.0 || timestamp <= last_timestamp) return;
+    // [frontend-offline-tum-guard]
     const auto q = pose.unit_quaternion();
     stream << std::fixed << std::setprecision(9) << timestamp << " " << std::setprecision(12)
            << pose.translation().x() << " " << pose.translation().y() << " " << pose.translation().z() << " "
@@ -199,11 +201,13 @@ int main(int argc, char** argv) {
         frame_stats_csv << "\n";
     }
 
+    // [frontend-offline-consumption]
     auto drain = [&]() {
         while (!lightning::debug::flg_exit) {
             const auto status = lio.RunDetailed();
             if (status == LaserMapping::RunStatus::kNoData) break;
             ++consumed_frames;
+            // [frontend-offline-consumption]
             if (lio.IsMultiLidarEnabled()) {
                 const auto& stats = lio.GetCurrentFrameStats();
                 if (stats.partial) {
@@ -213,11 +217,13 @@ int main(int argc, char** argv) {
                 }
                 for (const int id : stats.present_lidar_ids) ++frames_by_lidar[id];
                 for (const auto& [id, points] : stats.points_by_lidar) points_by_lidar[id] += points;
+                // [frontend-offline-frame-statistics]
                 if (frame_stats_csv.is_open()) {
                     frame_stats_csv << std::fixed << std::setprecision(9) << stats.begin_time << ',' << stats.end_time
                                     << ',' << (stats.partial ? 1 : 0) << ',' << stats.merged_points << ",\""
                                     << JoinIds(stats.present_lidar_ids) << "\",\"" << JoinIds(stats.missing_lidar_ids)
                                     << '"';
+                    // [frontend-offline-frame-statistics]
                     for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
                         const auto it = stats.points_by_lidar.find(sensor.id);
                         frame_stats_csv << ',' << (it == stats.points_by_lidar.end() ? 0 : it->second);
@@ -225,6 +231,7 @@ int main(int argc, char** argv) {
                     frame_stats_csv << '\n';
                 }
             }
+            // [frontend-offline-trajectories]
             if (status == LaserMapping::RunStatus::kOutput) {
                 ++output_frames;
                 const NavState state = lio.GetState();
@@ -237,6 +244,7 @@ int main(int argc, char** argv) {
             if (FLAGS_max_lidar_frames > 0 && consumed_frames >= FLAGS_max_lidar_frames) {
                 lightning::debug::flg_exit = true;
             }
+            // [frontend-offline-trajectories]
         }
     };
 
@@ -283,6 +291,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // [frontend-offline-final-flush]
     Timer::Evaluate([&]() { rosbag.Go(); }, "Offline Bag Playback");
     Timer::Evaluate(
         [&]() {
@@ -290,7 +299,9 @@ int main(int argc, char** argv) {
             drain();
         },
         "Offline Final Flush");
+    // [frontend-offline-final-flush]
 
+    // [frontend-offline-map-output]
     if (!FLAGS_output_map.empty() && !lio.GetAllKeyframes().empty()) {
         bool map_saved = false;
         Timer::Evaluate(
@@ -305,6 +316,7 @@ int main(int argc, char** argv) {
             return 3;
         }
     }
+    // [frontend-offline-map-output]
     Timer::PrintAll();
 
     if (ui && FLAGS_wait_ui) {
@@ -329,5 +341,7 @@ int main(int argc, char** argv) {
                       << ", input_points=" << points_by_lidar[sensor.id];
         }
     }
+    // [frontend-offline-exit-success]
     return 0;
+    // [frontend-offline-exit-success]
 }
