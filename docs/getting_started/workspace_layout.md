@@ -19,6 +19,8 @@ Livox SN 使用各雷达节点的 `device_info.*` ROS 2 参数按需查询，不
 
 2026-10-27 主从 Orin 已部署统一入口，分别原生构建并通过 8 项功能测试，四台雷达数据、SN 和设备状态复查通过。实测二进制构建版本为 `9a33d6b`，清单后续 `1718003` 仅补充部署文档。Ctrl-C 仍复现既有退出码 -11，运行包已正确捕获；一次 HMS 超时和后续独立复查均保留。定位进程恢复后仍因全局重定位匹配失败无有效位姿，不能宣称整车健康通过。完整证据与回滚备份位置见驱动手册 `docs/operations/run_bundle.md`。
 
+17:00 采集系统重启后，主机新运行包检查通过；从机采集脚本仍直接启动旧 launch，绕过运行包，`latest_lidar_slave` 指向历史包而非当前运行。两机根 `run_lidar.sh` 已部署验证通过，采集器尚未切换。
+
 同一工作区包含 16 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 12 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
 
 2026-10-06 同步公司 `main` 后新增 `diagnostic_runtime_interfaces` 与 `driving_evaluation_interfaces`；`CurrentGear` 迁入 `geosun_msgs`，旧 `domain_vcu_can_bridge` 接口包退出源码。部分现有 CAN 消息新增 `comm_header`，部署时需同步重编发布端和订阅端。旧录包兼容性不由本次编译验证保证。
