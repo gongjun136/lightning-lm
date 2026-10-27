@@ -18,7 +18,7 @@
 1. `Init(yaml)` 读取系统选项，初始化 LIO、所选后端、可选 UI/G2P5，并安装优化回调。
 2. `StartSLAM(map_name)` 切换到建图状态；此前到达的数据不会按正常建图流程落图。
 3. ROS 回调将 IMU/LiDAR 转成内部消息；LIO 输出新关键帧后交给所选后端，同时驱动地图和发布路径。
-4. 当前 SLAM 回调直接驱动 LIO；析构等待新后端 idle 并 `Shutdown()`，最后退出 UI，没有异步前端队列。详见 @ref online_slam_flow "在线建图：ROS 输入到地图服务"。
+4. 当前 SLAM 回调直接驱动 LIO，没有异步前端队列；析构等待新后端 idle 并 `Shutdown()`，或销毁 legacy 回环对象并排空其队列，再退出 UI。回环尾帧仍可调用 G2P5 重绘，因此地图对象保持有效直到回环退出。详见 @ref online_slam_flow "在线建图：ROS 输入到地图服务"。
 
 **代码依据：** `src/core/system/slam.cc`（构造/析构、`Init()`、`StartSLAM()`、`ProcessIMU()`、LiDAR 处理与关键帧派发）
 
@@ -35,7 +35,9 @@
 
 # AsyncMessageProcess 的队列契约
 
-这个模板是在线定位数据面的公共线程原语：`Start()` 创建一个 worker；`AddMessage()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数。超过 `max_size_` 时淘汰最旧待处理消息；`Quit()` 会继续处理到队列为空再 join。队列、运行标志和统计量均封装在对象内部。
+定位、legacy 回环和 G2P5 共用 `core/system/async_message_process.h` 中的 @ref lightning::sys::AsyncMessageProcess "AsyncMessageProcess"，只维护这一份实现。`Start()` 创建一个 worker；`AddMessage()` 入队并通知；worker 在条件变量上等待，逐个调用已注册处理函数。超过 `max_size_` 时淘汰最旧待处理消息；`Quit()` 会继续处理到队列为空再 join。队列、运行标志和统计量均封装在对象内部。
+
+@ref lightning::LoopClosing::Init() "LoopClosing::Init()" 显式设置等待容量为 40，另有最多一帧正在处理；离线模式仍由 `AddKF()` 同步调用处理函数。在线回环析构会等待未被容量淘汰的关键帧处理完毕，可能比旧队列退出耗时更长。所有者须在回调依赖对象销毁前显式调用 `Quit()`；公共队列不在析构中隐式停止线程。
 
 `SetThreadInit()` 在启动前设置 worker 初始化回调，worker 进入消息循环前执行一次。
 在线定位用它设置传感器、地图匹配及输出线程的 CPU 角色；绑定失败不静默继续。

@@ -71,6 +71,7 @@ void LoopClosing::Init(const std::string yaml_path) {
         LOG(INFO) << "loop closing module is running in online mode";
         kf_thread_.SetProcFunc([this](Keyframe::Ptr kf) { HandleKF(kf); });  // 设置关键帧处理回调
         kf_thread_.SetName("handle loop closure");                           // 设置线程名称
+        kf_thread_.SetMaxSize(40);  // 保留回环队列容量，不使用公共队列的默认值 100。
         kf_thread_.Start();                                                  // 启动处理线程
     }
 }
@@ -93,6 +94,7 @@ void LoopClosing::HandleKF(Keyframe::Ptr kf) {
 
     // 记录当前关键帧，并加入历史序列；后续候选搜索和位姿图优化都依赖这个序列。
     cur_kf_ = kf;
+    kf_index_by_id_[kf->GetID()] = all_keyframes_.size();
     all_keyframes_.emplace_back(kf);
 
     // 先按关键帧ID间隔和空间距离，从历史关键帧中筛选可能形成回环的候选。
@@ -218,14 +220,15 @@ void LoopClosing::ComputeLoopCandidates() {
 void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
     // LOG(INFO) << "aligning " << c.idx1_ << " with " << c.idx2_;
     const int submap_idx_range = 40;
-    auto kf1 = all_keyframes_.at(c.idx1_), kf2 = all_keyframes_.at(c.idx2_);
+    const auto kf1_index = kf_index_by_id_.at(c.idx1_);
+    auto kf1 = all_keyframes_.at(kf1_index), kf2 = all_keyframes_.at(kf_index_by_id_.at(c.idx2_));
 
     // 构建给定关键帧附近的稀疏子图；每4帧取一帧以控制NDT目标点云规模。
-    auto build_submap = [this](int given_id, bool build_in_world) -> CloudPtr {
+    auto build_submap = [this](size_t center_index, bool build_in_world) -> CloudPtr {
         CloudPtr submap(new PointCloudType);
         for (int idx = -submap_idx_range; idx < submap_idx_range; idx += 4) {
-            int id = idx + given_id;
-            if (id < 0 || id >= all_keyframes_.size()) {
+            const auto id = static_cast<std::ptrdiff_t>(center_index) + idx;
+            if (id < 0 || static_cast<size_t>(id) >= all_keyframes_.size()) {
                 continue;
             }
 
@@ -242,8 +245,8 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
             SE3 Twl = kf->GetOptPose() * T_imu_lidar_;
 
             if (!build_in_world) {
-                // 需要局部子图时，以given_id关键帧IMU系为参考系重新表达邻近Lidar点云。
-                Twl = all_keyframes_.at(given_id)->GetOptPose().inverse() * Twl;
+                // 需要局部子图时，以中心关键帧IMU系为参考系重新表达邻近Lidar点云。
+                Twl = all_keyframes_.at(center_index)->GetOptPose().inverse() * Twl;
             }
 
             CloudPtr cloud_trans(new PointCloudType);
@@ -254,7 +257,7 @@ void LoopClosing::ComputeForCandidate(lightning::LoopCandidate& c) {
         return submap;
     };
 
-    auto submap_kf1 = build_submap(kf1->GetID(), true);
+    auto submap_kf1 = build_submap(kf1_index, true);
 
     // 当前关键帧点云作为源点云，后续会配准到历史子图所在的世界系。
     CloudPtr submap_kf2 = kf2->GetCloud();
@@ -319,21 +322,18 @@ void LoopClosing::PoseOptimization() {
 
     /// 上一个关键帧的运动约束
     /// TODO 3D激光最好是跟前面多个帧都有关联
-    // 连续运动约束：与前面2个关键帧建立运动约束
-    for (int i = 1; i < 3; i++) {
-        int id = cur_kf_->GetID() - i;
-        if (id >= 0) {
-            auto last_kf = all_keyframes_[id];
-            auto e = std::make_shared<miao::EdgeSE3>();
-            e->SetVertex(0, optimizer_->GetVertex(last_kf->GetID()));
-            e->SetVertex(1, v);
+    // 与前面两个实际处理过的关键帧建立约束；队列淘汰后不能用 ID 作数组下标。
+    for (size_t i = 1; i < 3 && i < all_keyframes_.size(); i++) {
+        auto last_kf = all_keyframes_[all_keyframes_.size() - 1 - i];
+        auto e = std::make_shared<miao::EdgeSE3>();
+        e->SetVertex(0, optimizer_->GetVertex(last_kf->GetID()));
+        e->SetVertex(1, v);
 
-            // 计算两帧之间的相对运动变换
-            SE3 motion = last_kf->GetLIOPose().inverse() * cur_kf_->GetLIOPose();
-            e->SetMeasurement(motion);
-            e->SetInformation(info_motion_);
-            optimizer_->AddEdge(e);
-        }
+        // 计算两帧之间的相对运动变换
+        SE3 motion = last_kf->GetLIOPose().inverse() * cur_kf_->GetLIOPose();
+        e->SetMeasurement(motion);
+        e->SetInformation(info_motion_);
+        optimizer_->AddEdge(e);
     }
 
     // 高度约束：防止Z轴漂移，保持高度稳定
@@ -397,7 +397,7 @@ void LoopClosing::PoseOptimization() {
     /// get results
     for (auto& vert : kf_vert_) {
         SE3 pose = vert->Estimate();
-        all_keyframes_[vert->GetId()]->SetOptPose(pose);
+        all_keyframes_.at(kf_index_by_id_.at(vert->GetId()))->SetOptPose(pose);
     }
 
     if (loop_cb_) {

@@ -39,7 +39,7 @@ digraph online_slam_path { rankdir=LR; node [shape=box]; ros [label="ROS executo
 
 ## 退出
 
-`--save_map` 在 Spin 退出并 join 回放线程后保存，失败返回 4。析构等待后端 idle、Shutdown，最后退出 UI；并不存在“先 join 异步 LIO 队列”这一步。
+`--save_map` 在 Spin 退出并 join 回放线程后保存，失败返回 4。析构等待新后端 idle、Shutdown，或销毁 legacy 回环对象并排空其队列，再退出 UI。回环退出前保持 G2P5 地图对象有效，供尾帧回调重绘；并不存在“先 join 异步 LIO 队列”这一步。队列退出契约见 @ref online_systems "在线系统编排"。
 
 **源码依据：** @ref lightning::SlamSystem "SlamSystem" 的 `Init`、`DrainLio`、`SaveMap`、析构；@ref run_slam_online.cc "run_slam_online.cc"。
 模块与原理：@ref backend_module "后端、回环与优化"、@ref backend_optimization "体素 BA、回环位姿图与分层优化"；地图契约：@ref map_contracts "地图包、坐标归一化与栅格导出"。

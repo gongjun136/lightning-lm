@@ -219,6 +219,8 @@ SlamSystem::~SlamSystem() {
         backend_->WaitUntilIdle(true);
         backend_->Shutdown();
     }
+    // 回环尾帧仍可能触发 G2P5 重绘，须在地图和 UI 对象释放前排空并退出。
+    lc_.reset();
     if (ui_) {
         ui_->Quit();
     }

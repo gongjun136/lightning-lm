@@ -6,7 +6,11 @@
 
 本页验证四个问题：@ref backend_queue_ba_reading "关键帧何时触发局部 BA" → @ref backend_loop_commit_reading "BTC 结果是否真的进入图" → @ref backend_hba_transaction_reading "HBA 为什么会回滚" → @ref backend_map_callback_reading "map→odom 与回调怎样更新"。先对照片段中的条件、容器和锁作用域，目标函数推导放在 @ref backend_optimization "体素 BA、回环位姿图与分层优化"。
 
-<b>模式入口：</b> @ref backend_pipeline.cc "backend_pipeline.cc" 的 `ReadBackendMode()`，以及 @ref slam.cc "slam.cc" 中依据模式构造后端的位置。本页不适用于 legacy 后端。
+<b>模式入口：</b> @ref backend_pipeline.cc "backend_pipeline.cc" 的 `ReadBackendMode()`，以及 @ref slam.cc "slam.cc" 中依据模式构造后端的位置。以下算法主线不适用于 legacy 后端。
+
+legacy 的 @ref lightning::LoopClosing "LoopClosing" 在线使用公共 `sys::AsyncMessageProcess`，等待队列容量固定为 40，超限淘汰最旧待处理关键帧；析构排空保留队列并等待 worker 结束。`SlamSystem` 在释放地图及 UI 前销毁回环对象，以保持尾帧重绘回调有效。离线回环仍同步处理，详见 @ref online_systems "队列契约与退出顺序"。
+
+队列淘汰后，关键帧 ID 不一定连续。`HandleKF()` 保存 ID 到已处理序列下标的映射；`PoseOptimization()` 连接前两个实际处理过的关键帧，候选子图和优化结果通过该映射查找。ID 仍作为图顶点标识，不直接作为数组下标。
 
 # 数据流
 

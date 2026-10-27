@@ -181,6 +181,9 @@ if(BUILD_TESTING)
     add_executable(async_message_process_test test/async_message_process_test.cc)
     target_link_libraries(async_message_process_test ${PROJECT_NAME}.libs ${third_party_libs})
 
+    add_executable(loop_closing_async_test test/loop_closing_async_test.cc)
+    target_link_libraries(loop_closing_async_test ${PROJECT_NAME}.libs ${third_party_libs})
+
     add_executable(map_frame_test test/map_frame_test.cc)
     target_link_libraries(map_frame_test ${PROJECT_NAME}.libs ${third_party_libs})
 
@@ -225,6 +228,8 @@ if(BUILD_TESTING)
     add_test(NAME point_to_plane_registration_test COMMAND $<TARGET_FILE:point_to_plane_registration_test>)
     add_test(NAME kiss_matcher_registration_test COMMAND $<TARGET_FILE:kiss_matcher_registration_test>)
     add_test(NAME async_message_process_test COMMAND $<TARGET_FILE:async_message_process_test>)
+    add_test(NAME loop_closing_async_test COMMAND $<TARGET_FILE:loop_closing_async_test>)
+    set_tests_properties(loop_closing_async_test PROPERTIES TIMEOUT 30)
     add_test(NAME map_frame_test COMMAND $<TARGET_FILE:map_frame_test>)
     add_test(NAME map_manifest_test COMMAND $<TARGET_FILE:map_manifest_test>)
     add_test(NAME navigation_map_export_test COMMAND $<TARGET_FILE:navigation_map_export_test>)

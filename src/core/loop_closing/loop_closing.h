@@ -5,9 +5,12 @@
 #ifndef LIGHTNING_LOOP_CLOSING_H
 #define LIGHTNING_LOOP_CLOSING_H
 
+#include <cstddef>
+#include <unordered_map>
+
 #include "common/keyframe.h"
 #include "common/loop_candidate.h"
-#include "utils/async_message_process.h"
+#include "core/system/async_message_process.h"
 
 #include "core/graph/optimizer.h"
 #include "core/types/edge_se3.h"
@@ -57,7 +60,8 @@ class LoopClosing {
     LoopClosing(Options options = Options()) { options_ = options; }
 
     /**
-     * @brief 析构模块；在线模式下会停止异步关键帧处理线程。
+     * @brief 析构模块；在线模式下排空待处理关键帧并等待工作线程退出。
+     * @note 调用方须先停止输入，并让回环回调依赖的对象保持有效直到析构完成。
      */
     ~LoopClosing();
 
@@ -118,9 +122,10 @@ class LoopClosing {
     Keyframe::Ptr last_loop_kf_ = nullptr;      ///< 上一次成功触发回环检测的关键帧。
     Keyframe::Ptr cur_kf_ = nullptr;            ///< 当前正在处理的关键帧。
     std::vector<Keyframe::Ptr> all_keyframes_;  ///< 所有已处理的关键帧。
+    std::unordered_map<unsigned long, size_t> kf_index_by_id_;  ///< 关键帧 ID 到已处理序列下标的映射；队列淘汰后 ID 可不连续。
     std::vector<LoopCandidate> candidates_;     ///< 当前关键帧的回环候选。
 
-    AsyncMessageProcess<Keyframe::Ptr> kf_thread_;  ///< 在线模式下的异步关键帧处理线程。
+    sys::AsyncMessageProcess<Keyframe::Ptr> kf_thread_;  ///< 在线关键帧队列，最多等待 40 帧，另有一帧可正在处理。
 
     std::shared_ptr<miao::Optimizer> optimizer_ = nullptr;  ///< Miao图优化器实例。
 
