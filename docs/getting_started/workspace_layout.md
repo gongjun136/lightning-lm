@@ -10,10 +10,14 @@ Livox SN 使用各雷达节点的 `device_info.*` ROS 2 参数按需查询，不
 主从 DDS 不互通时分别指定 `--roles front left right` 和 `--roles rear`。
 参数为最近确认身份，不表示设备在线。现场升级仍需驱动重启窗口与实际收数核验。
 
-雷达现场根入口现在可改用 `ros2 run livox_ros_driver2_core run_lidar_bundle.py --role master --output-root "$SANY_WS/runs"`，
-旧主从拓扑在从机使用 `--role slave`。每次启动保存配置、完整日志、短时数据/SN/HMS 检查和节点退出码，
+主、从 Orin 使用同一份已安装 `run_lidar.sh`，调用 `run_lidar_bundle.py --role auto`，
+按 hostname 区分 `ubuntuM`（主）和 `ubuntuS`（从），未知 hostname 拒绝启动。
+两端须分别更新和构建；从机仅需 `colcon build --packages-up-to livox_ros_driver2_core`。
+每次启动保存配置、完整日志、短时数据/SN/HMS 检查和节点退出码，
 通过 `runs/latest_lidar_master` 或 `latest_lidar_slave` 查找最近运行。需按驱动 `docs/operations/run_bundle.md`
 更新根脚本；仅更新依赖并不会替换库外现场入口。主从需分别升级，从机旧版不支持 SN 参数时检查会明确失败。
+
+2026-10-27 主从 Orin 已部署统一入口，分别原生构建并通过 8 项功能测试，四台雷达数据、SN 和设备状态复查通过。实测二进制构建版本为 `9a33d6b`，清单后续 `1718003` 仅补充部署文档。Ctrl-C 仍复现既有退出码 -11，运行包已正确捕获；一次 HMS 超时和后续独立复查均保留。定位进程恢复后仍因全局重定位匹配失败无有效位姿，不能宣称整车健康通过。完整证据与回滚备份位置见驱动手册 `docs/operations/run_bundle.md`。
 
 同一工作区包含 16 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 12 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
 

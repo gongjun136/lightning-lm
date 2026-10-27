@@ -10,7 +10,7 @@ repositories:
   livox_ros_driver2:
     type: git
     url: git@github.com:gongjun136/livox_ros_driver2.git
-    version: 73156bf26c42c50eefa6eea60a179e31bd061e8c
+    version: 1718003576eed30e1801e3e90e2f2a7e16d1ecf7
   Livox-SDK2:
     type: git
     url: git@github.com:gongjun136/Livox-SDK2.git
