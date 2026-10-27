@@ -10,6 +10,11 @@ Livox SN 使用各雷达节点的 `device_info.*` ROS 2 参数按需查询，不
 主从 DDS 不互通时分别指定 `--roles front left right` 和 `--roles rear`。
 参数为最近确认身份，不表示设备在线。现场升级仍需驱动重启窗口与实际收数核验。
 
+雷达现场根入口现在可改用 `ros2 run livox_ros_driver2_core run_lidar_bundle.py --role master --output-root "$SANY_WS/runs"`，
+旧主从拓扑在从机使用 `--role slave`。每次启动保存配置、完整日志、短时数据/SN/HMS 检查和节点退出码，
+通过 `runs/latest_lidar_master` 或 `latest_lidar_slave` 查找最近运行。需按驱动 `docs/operations/run_bundle.md`
+更新根脚本；仅更新依赖并不会替换库外现场入口。主从需分别升级，从机旧版不支持 SN 参数时检查会明确失败。
+
 同一工作区包含 16 个 ROS/CMake 包：定位、CGI-430 驱动、Livox SDK2、Livox 驱动，以及 `common_msgs` 内的 12 个接口包。`cgi430_interfaces` 的消息契约保持不变，已从独立 CGI SDK 仓库迁入 `common_msgs`。
 
 2026-10-06 同步公司 `main` 后新增 `diagnostic_runtime_interfaces` 与 `driving_evaluation_interfaces`；`CurrentGear` 迁入 `geosun_msgs`，旧 `domain_vcu_can_bridge` 接口包退出源码。部分现有 CAN 消息新增 `comm_header`，部署时需同步重编发布端和订阅端。旧录包兼容性不由本次编译验证保证。
