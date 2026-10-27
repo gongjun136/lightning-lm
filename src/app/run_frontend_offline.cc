@@ -112,7 +112,21 @@ std::string JoinIds(const std::vector<int>& ids) {
 
 }  // namespace
 
+/**
+ * @brief 从 bag 离线运行 LIO 前端并导出评估资料。
+ *
+ * @par 主要流程
+ * 1. <b>解析并检查回放参数</b>：要求输入 bag 非空且回放速率非负。
+ * 2. <b>初始化前端及坐标配置</b>：初始化 LIO，读取输入话题、主 IMU、后轴变换及可选界面。
+ * 3. <b>准备输出与统计</b>：打开按 flags 启用的轨迹和统计文件，初始化计数。
+ * 4. <b>定义逐帧消费操作</b>：drain 在回调中反复消费已同步帧，记录同步统计及有效输出位姿。
+ * 5. <b>注册 bag 输入回调</b>：按话题实际类型注册 IMU/点云回调；每条输入后调用 drain。
+ * 6. <b>执行回放并尝试尾帧处理</b>：回放 bag，调用 FlushMultiLidar 后再次 drain。
+ * 7. <b>按需导出点云并汇总</b>：存在关键帧且指定路径时导出点云，打印统计并按需等待界面关闭。
+ * @note drain 受 flg_exit 限制，帧数上限或退出请求后不保证消费全部尾帧；返回 0 未要求存在有效输出帧，不能作为轨迹质量结论。
+ */
 int main(int argc, char** argv) {
+    // 阶段 1：解析并检查回放参数。
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
@@ -126,6 +140,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // 阶段 2：初始化前端及坐标配置。
     using namespace lightning;
     LaserMapping lio;
     bool lio_initialized = false;
@@ -175,6 +190,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 阶段 3：准备输出与统计。
     std::ofstream imu_tum, lidar_tum, rear_tum, frame_stats_csv;
     try {
         OpenOutput(imu_tum, FLAGS_output_tum, "output_tum");
@@ -201,6 +217,7 @@ int main(int argc, char** argv) {
         frame_stats_csv << "\n";
     }
 
+    // 阶段 4：定义逐帧消费操作。
     // [frontend-offline-consumption]
     auto drain = [&]() {
         while (!lightning::debug::flg_exit) {
@@ -248,6 +265,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    // 阶段 5：注册 bag 输入回调。
     InputPacer input_pacer(FLAGS_playback_rate);
     RosbagIO rosbag(FLAGS_input_bag);
     rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
@@ -291,6 +309,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 阶段 6：执行回放并尝试尾帧处理。
     // [frontend-offline-final-flush]
     Timer::Evaluate([&]() { rosbag.Go(); }, "Offline Bag Playback");
     Timer::Evaluate(
@@ -301,6 +320,7 @@ int main(int argc, char** argv) {
         "Offline Final Flush");
     // [frontend-offline-final-flush]
 
+    // 阶段 7：按需导出点云并汇总。
     // [frontend-offline-map-output]
     if (!FLAGS_output_map.empty() && !lio.GetAllKeyframes().empty()) {
         bool map_saved = false;

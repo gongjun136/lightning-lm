@@ -207,6 +207,7 @@ const char* BackendModeName(BackendMode mode) {
 BackendPipeline::~BackendPipeline() { Shutdown(); }
 
 bool BackendPipeline::Init(const std::string& yaml_path, bool online_mode) {
+    // 阶段 1：读取配置与外参。
     if (initialized_) return true;
     try {
         const YAML::Node root = YAML::LoadFile(yaml_path);
@@ -220,11 +221,13 @@ bool BackendPipeline::Init(const std::string& yaml_path, bool online_mode) {
         return false;
     }
 
+    // 阶段 2：创建优化模块。
     local_ba_ = std::make_unique<VoxelBundleAdjuster>(options_.local_ba);
     btc_ = std::make_unique<BtcLoopDetector>(options_.btc);
     hba_ = std::make_unique<HierarchicalBundleAdjuster>(options_.hba);
     worker_stop_ = false;
     hba_stop_ = false;
+    // 阶段 3：按模式启动线程。
     if (options_.online_mode) worker_thread_ = std::thread(&BackendPipeline::WorkerLoop, this);
     if (options_.hba.enabled) hba_thread_ = std::thread(&BackendPipeline::HbaLoop, this);
     initialized_ = true;
@@ -250,6 +253,7 @@ void BackendPipeline::AddKeyframe(const Keyframe::Ptr& keyframe) {
 // [backend-enqueue-mode]
 
 void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
+    // 阶段 1：登记关键帧并选择窗口。
     std::vector<Keyframe::Ptr> local_window;
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
@@ -267,6 +271,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         // [backend-local-window]
     }
 
+    // 阶段 2：按条件执行局部 BA。
     // [backend-local-ba-run]
     if (options_.local_ba.enabled && !local_window.empty()) {
         const auto begin = std::chrono::steady_clock::now();
@@ -282,6 +287,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
     }
     // [backend-local-ba-run]
 
+    // 阶段 3：检测回环并登记约束。
     const auto btc_begin = std::chrono::steady_clock::now();
     const std::optional<BtcLoopResult> detection = btc_->AddKeyframe(keyframe, T_imu_lidar_);
     if (detection) {
@@ -305,6 +311,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
             }
         }
         // [backend-loop-constraint-commit]
+        // 阶段 4：按入图结果触发全局优化。
         // [backend-loop-optimization-trigger]
         if (apply_constraint) {
             {
@@ -322,10 +329,12 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         }
         // [backend-loop-optimization-trigger]
     }
+    // 阶段 5：更新地图到里程计变换。
     UpdateMapToOdomAndNotify();
 }
 
 bool BackendPipeline::OptimizePoseGraph() {
+    // 阶段 1：快照输入并检查规模。
     std::vector<Keyframe::Ptr> keyframes;
     std::vector<LoopConstraint> constraints;
     {
@@ -336,6 +345,7 @@ bool BackendPipeline::OptimizePoseGraph() {
     if (keyframes.size() < 2 || constraints.empty()) return false;
     const auto begin = std::chrono::steady_clock::now();
 
+    // 阶段 2：建立顶点与里程计边。
     miao::OptimizerConfig config(miao::AlgorithmType::LEVENBERG_MARQUARDT,
                                  miao::LinearSolverType::LINEAR_SOLVER_SPARSE_EIGEN, false);
     auto optimizer = miao::SetupOptimizer<6, 3>(config);
@@ -365,6 +375,7 @@ bool BackendPipeline::OptimizePoseGraph() {
         optimizer->AddEdge(edge);
     }
 
+    // 阶段 3：加入回环边并首次优化。
     Mat6d loop_information = Mat6d::Zero();
     loop_information.diagonal().head<3>().setConstant(1.0 / std::pow(options_.loop_translation_noise, 2));
     loop_information.diagonal().tail<3>().setConstant(
@@ -393,6 +404,7 @@ bool BackendPipeline::OptimizePoseGraph() {
     optimizer->Optimize(std::max(1, options_.pose_graph_iterations));
     optimizer->ComputeActiveErrors();
 
+    // 阶段 4：筛选内点并写回位姿。
     // [backend-loop-graph-inliers]
     std::size_t inliers = 0;
     for (std::size_t index = 0; index < loop_edges.size(); ++index) {
@@ -409,12 +421,14 @@ bool BackendPipeline::OptimizePoseGraph() {
     if (inliers > 0 && optimizer->InitializeOptimization(0)) {
         optimizer->Optimize(std::max(1, options_.pose_graph_outlier_iterations));
     }
+    // 零内点也会执行写回；末尾返回 false 不会回退第一次优化的位姿。
     for (const auto& [id, keyframe] : keyframes_by_id) {
         auto vertex = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer->GetVertex(static_cast<int>(id)));
         if (vertex && keyframe) keyframe->SetOptPose(vertex->Estimate());
     }
     // [backend-loop-graph-inliers]
 
+    // 阶段 5：更新统计并返回内点结果。
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         for (std::size_t index = 0; index < constraints.size() && index < loop_constraints_.size(); ++index) {
@@ -455,6 +469,7 @@ void BackendPipeline::RequestHba(bool rerun_pose_graph, const std::string& reaso
 
 void BackendPipeline::WorkerLoop() {
     while (true) {
+        // 阶段 1：等待并取出关键帧。
         Keyframe::Ptr keyframe;
         // [backend-worker-dispatch]
         {
@@ -465,7 +480,9 @@ void BackendPipeline::WorkerLoop() {
             queue_.pop_front();
             worker_processing_ = true;
         }
+        // 阶段 2：释放队列锁后处理。
         HandleKeyframe(keyframe);
+        // 阶段 3：结束本帧并通知空闲。
         // [backend-worker-dispatch]
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -477,6 +494,7 @@ void BackendPipeline::WorkerLoop() {
 
 void BackendPipeline::HbaLoop() {
     while (true) {
+        // 阶段 1：等待并消费优化请求。
         bool rerun_pose_graph = false;
         std::string reason;
         {
@@ -490,6 +508,7 @@ void BackendPipeline::HbaLoop() {
             reason = hba_reason_;
         }
 
+        // 阶段 2：快照关键帧与入图历史。
         // [backend-hba-loop-history]
         std::vector<Keyframe::Ptr> keyframes;
         bool has_applied_loop = false;
@@ -501,6 +520,7 @@ void BackendPipeline::HbaLoop() {
         // [backend-hba-loop-history]
         const auto begin = std::chrono::steady_clock::now();
         HierarchicalBundleAdjustmentSummary summary;
+        // 阶段 3：串行优化并执行提交门控。
         // [backend-hba-transaction]
         {
             std::lock_guard<std::mutex> lock(optimization_mutex_);
@@ -522,6 +542,7 @@ void BackendPipeline::HbaLoop() {
             }
             UpdateMapToOdomAndNotify();
         }
+        // 阶段 4：记录结果并通知空闲。
         // [backend-hba-transaction]
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
@@ -559,12 +580,15 @@ void BackendPipeline::UpdateMapToOdomAndNotify() {
 // [backend-map-callback]
 
 void BackendPipeline::WaitUntilIdle(bool force_global_optimization) {
+    // 阶段 1：等待关键帧处理空闲。
     if (!initialized_) return;
     if (options_.online_mode) {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         queue_idle_cv_.wait(lock, [this]() { return queue_.empty() && !worker_processing_; });
     }
+    // 阶段 2：按需请求最终优化。
     if (force_global_optimization) RequestGlobalOptimization("data_end");
+    // 阶段 3：等待 HBA 请求结束。
     if (options_.hba.enabled) {
         std::unique_lock<std::mutex> lock(hba_mutex_);
         hba_idle_cv_.wait(lock, [this]() { return !hba_requested_ && !hba_running_; });
@@ -572,8 +596,10 @@ void BackendPipeline::WaitUntilIdle(bool force_global_optimization) {
 }
 
 void BackendPipeline::Shutdown() {
+    // 阶段 1：等待现有任务结束。
     if (!initialized_) return;
     WaitUntilIdle(false);
+    // 阶段 2：停止关键帧线程。
     if (worker_thread_.joinable()) {
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -582,6 +608,7 @@ void BackendPipeline::Shutdown() {
         queue_cv_.notify_all();
         worker_thread_.join();
     }
+    // 阶段 3：停止 HBA 线程并清除状态。
     if (hba_thread_.joinable()) {
         {
             std::lock_guard<std::mutex> lock(hba_mutex_);

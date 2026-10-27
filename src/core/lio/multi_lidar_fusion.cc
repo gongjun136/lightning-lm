@@ -423,8 +423,22 @@ int AdaptiveLidarLoadController::TargetLidarCount() const {
     return std::max(minimum, total - lidar_reduction);
 }
 
+/**
+ * @brief 按处理耗时、延迟及前端健康度更新下一帧降载级别。
+ *
+ * @par 主要流程
+ * 1. <b>更新耗时预测及健康状态</b>：降载启用时记录健康度；点数预算模式下不健康立即恢复完整预算。
+ * 2. <b>累计过载并决定降级</b>：延迟或处理耗时越界时累计健康帧，达到连续帧阈值才增加级别。
+ * 3. <b>累计恢复并决定升级</b>：未过载时按恢复或不健康条件逐级减小降载级别。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note processing_sec 与 latency_sec 均为秒；Observe() 更新策略状态，不直接裁剪点云。
+ * 过载分支会直接返回，不继续执行阶段 3；选择下一帧观测来源和点数由 Select() 完成。
+ */
 void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_sec,
                                            bool tracking_healthy) {
+    // 阶段 1：更新耗时预测及健康状态。
     if (!config_.adaptive_load.enabled) return;
     const auto& load = config_.adaptive_load;
     tracking_healthy_ = tracking_healthy;
@@ -436,6 +450,7 @@ void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_
         overload_frames_ = recovery_frames_ = 0;
         return;
     }
+    // 阶段 2：累计过载并决定降级。
     const bool overloaded = latency_sec >= load.target_latency_sec ||
                             processing_sec >= load.target_latency_sec * load.degrade_processing_ratio;
     const bool recovered = latency_sec <= load.target_latency_sec * load.recover_processing_ratio &&
@@ -452,6 +467,7 @@ void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_
         }
         return;
     }
+    // 阶段 3：累计恢复并决定升级。
     overload_frames_ = 0;
     const int required_recovery_frames = tracking_healthy ? load.recover_consecutive_frames
                                                           : load.degrade_consecutive_frames;
@@ -465,8 +481,23 @@ void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_
     }
 }
 
+/**
+ * @brief 根据帧可用雷达和当前健康度选择 LIO 观测预算。
+ *
+ * @par 主要流程
+ * 1. <b>判断健康度并预测降载</b>：联合地图定位和前端跟踪状态，在预测超时条件下推进降载级别。
+ * 2. <b>生成点数或步长预算</b>：预算模式使用空间点数上限；质量下降时恢复不封顶点数。
+ * 3. <b>检查必需来源并排序候选雷达</b>：主雷达缺失或数量不足时返回空来源，否则先选主雷达。
+ * 4. <b>确定雷达数量并选择辅助来源</b>：计算目标数量，按配置轮换辅助雷达并记录选择进度。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note healthy 同时要求 localization_good_ 和 tracking_healthy_；预算模式不健康时恢复全部可用来源。
+ * 返回空 lidar_ids 表示来源门槛未满足；max_points 为 0 表示不限制点数，实际采样由后续点云处理完成。
+ */
 AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrameStats& stats,
                                                          double latency_sec) {
+    // 阶段 1：判断健康度并预测降载。
     const auto& load = config_.adaptive_load;
     // [sensor-budget-health]
     const bool budget_mode = load.enabled && !load.lio_point_budgets.empty();
@@ -477,6 +508,7 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
         degradation_step_ = std::min(MaximumDegradationStep(), degradation_step_ + 1);
         recovery_frames_ = 0;
     }
+    // 阶段 2：生成点数或步长预算。
     AdaptiveLidarSelection selection;
     selection.point_stride = PointStride();
     selection.degradation_step = degradation_step_;
@@ -491,6 +523,7 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
         }
     }
     // [sensor-budget-cap]
+    // 阶段 3：检查必需来源并排序候选雷达。
     const auto primary_it = std::find(stats.present_lidar_ids.begin(), stats.present_lidar_ids.end(),
                                       config_.primary_lidar_id);
     const int minimum = localization_good_.load() ? config_.adaptive_load.tracking_min_lidars
@@ -510,6 +543,7 @@ AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrame
         const std::size_t rhs_points = stats.points_by_lidar.count(rhs) ? stats.points_by_lidar.at(rhs) : 0;
         return lhs_points != rhs_points ? lhs_points > rhs_points : lhs < rhs;
     });
+    // 阶段 4：确定雷达数量并选择辅助来源。
     // [sensor-budget-sources]
     int target_count = TargetLidarCount();
     if (load.enabled && load.tracking_lidar_count > 0 && healthy) {
@@ -669,7 +703,23 @@ bool MultiLidarFrameAssembler::IsExpired(long long bucket) const {
 }
 // [sensor-frame-bin-and-expiry]
 
+/**
+ * @brief 将单雷达输入归入时间桶并尝试推进待输出帧。
+ *
+ * @par 主要流程
+ * 1. <b>验证输入并确定时间桶</b>：检查雷达 ID、点云及时间戳，首条有效输入建立分桶时间原点。
+ * 2. <b>拒绝晚到重复及超容差输入</b>：拒绝已排出桶、同源重复和桶内时间跨度过大的消息。
+ * 3. <b>缓存输入并尝试排出就绪帧</b>：写入点云和时间，更新最新已见时刻后调用 PromoteReady。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note timestamp 单位为秒；匹配容差检查同桶最晚与最早输入的时间差，不是到桶中心的距离。
+ * 返回 true 只表示输入被接纳，可能仍在等待其他雷达；是否形成输出需调用 PopReady()。
+ *
+ * @return 合格输入已缓存时返回 true，否则计入对应丢弃统计并返回 false。
+ */
 bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr cloud) {
+    // 阶段 1：验证输入并确定时间桶。
     if (!cloud || !std::isfinite(timestamp) || expected_lidar_ids_.count(lidar_id) == 0) {
         ++invalid_drop_count_;
         return false;
@@ -679,6 +729,7 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
         anchor_initialized_ = true;
     }
     const long long bucket = BucketFor(timestamp);
+    // 阶段 2：拒绝晚到重复及超容差输入。
     if (bucket <= last_emitted_bucket_) {
         ++late_drop_count_;
         return false;
@@ -703,6 +754,7 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
         }
     }
     // [sensor-frame-tolerance]
+    // 阶段 3：缓存输入并尝试排出就绪帧。
     frame.clouds.emplace(lidar_id, std::move(cloud));
     frame.timestamps.emplace(lidar_id, timestamp);
     max_seen_time_ = std::max(max_seen_time_, timestamp);
@@ -710,13 +762,31 @@ bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr
     return true;
 }
 
+/**
+ * @brief 按时间顺序将可排出的时间桶转为融合帧或丢弃。
+ *
+ * @par 主要流程
+ * 1. <b>检查最早桶是否可排出</b>：完整、过期或 force 满足其一才继续，否则停止并保留后续桶。
+ * 2. <b>按最低雷达数融合或丢弃</b>：满足当前组帧最低数量才 Assemble 入就绪队列。
+ * 3. <b>标记排出进度并移除时间桶</b>：无论融合还是丢弃都更新最后排出桶，继续检查下一桶。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note 三个阶段对最早待处理桶循环执行；不越过尚未就绪的早桶去排出后面的完整桶。
+ * force 只跳过完整性和过期等待，仍要求最低雷达数；过期依据已接收的最新传感器时间，不是墙上时钟。
+ * 启用自适应负载时组帧门槛使用 tracking_min_lidars；主雷达与定位来源门槛由后续 Select() 再检查。
+ *
+ * @param force true 强制处理现有桶，供 Flush() 在流结束时调用。
+ */
 // [sensor-frame-promote]
 void MultiLidarFrameAssembler::PromoteReady(bool force) {
     while (!frames_.empty()) {
+        // 阶段 1：检查最早桶是否可排出。
         auto it = frames_.begin();
         if (!IsComplete(it->second) && !force && !IsExpired(it->first)) {
             break;
         }
+        // 阶段 2：按最低雷达数融合或丢弃。
         const int assembly_min_lidars = config_.adaptive_load.enabled
                                             ? config_.adaptive_load.tracking_min_lidars
                                             : config_.min_lidars;
@@ -726,6 +796,7 @@ void MultiLidarFrameAssembler::PromoteReady(bool force) {
         } else {
             ++insufficient_lidar_drop_count_;
         }
+        // 阶段 3：标记排出进度并移除时间桶。
         last_emitted_bucket_ = it->first;
         frames_.erase(it);
     }
@@ -741,7 +812,24 @@ bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
 
 void MultiLidarFrameAssembler::Flush() { PromoteReady(true); }
 
+/**
+ * @brief 把一个时间桶的点云合并到主雷达坐标系及统一时间轴。
+ *
+ * @par 主要流程
+ * 1. <b>统计来源并确定公共起点</b>：取最早消息时间，记录存在和缺失雷达及总点数。
+ * 2. <b>变换坐标并统一点内时间</b>：应用各雷达到主雷达的外参，叠加消息起点差并保留来源 ID。
+ * 3. <b>排序并写入输出元数据</b>：按公共相对时间排序，填写点云头、扫描结束时刻及统计。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note 外参只做空间变换，此处不执行 IMU 运动去畸变；完整融合点云随后进入 ImuProcess。
+ * 输入消息时间为秒，点内 time 为毫秒，输出 header.stamp 为纳秒；输出起点使用实际最早输入而非桶中心。
+ *
+ * @param frame 已通过输入及最低雷达数检查的时间桶。
+ * @return 合并点云与来源、缺失雷达及时间范围统计。
+ */
 FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) const {
+    // 阶段 1：统计来源并确定公共起点。
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_timer(profiling_enabled);
     profiling::Stopwatch metadata_timer(profiling_enabled);
@@ -766,6 +854,7 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
     fused.cloud->reserve(total_points);
     const profiling::TimingSample metadata_timing = metadata_timer.Stop();
     profiling::Stopwatch transform_timer(profiling_enabled);
+    // 阶段 2：变换坐标并统一点内时间。
     double max_relative_ms = 0.0;
     for (const auto& [id, cloud] : frame.clouds) {
         if (!cloud) continue;
@@ -786,6 +875,7 @@ FusedLidarFrame MultiLidarFrameAssembler::Assemble(const PartialFrame& frame) co
         }
         // [sensor-fusion-transform-time]
     }
+    // 阶段 3：排序并写入输出元数据。
     const profiling::TimingSample transform_timing = transform_timer.Stop();
     profiling::Stopwatch sort_timer(profiling_enabled);
     std::sort(fused.cloud->points.begin(), fused.cloud->points.end(),

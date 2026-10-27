@@ -24,7 +24,18 @@ DEFINE_double(playback_rate, 1.0, "sensor-time playback rate used with --bag");
 DEFINE_int32(post_wait_seconds, 15, "drain time after embedded bag playback");
 DEFINE_string(save_map, "", "optional map directory saved after online spin exits");
 
+/**
+ * @brief 启动在线建图及可选的进程内回放。
+ *
+ * @par 主要流程
+ * 1. <b>准备进程与 ROS</b>：初始化日志、解析 flags 并初始化 ROS。
+ * 2. <b>创建并启动建图系统</b>：按在线模式初始化 SlamSystem，再启用建图输入。
+ * 3. <b>运行输入与事件循环</b>：按需启动 bag 回放线程，进入 Spin 并在返回后等待回放线程。
+ * 4. <b>按需保存并结束运行</b>：按 flags 保存地图，打印计时并关闭 ROS；保存失败返回 4。
+ * @note 未指定 save_map 时退出不导出地图；固定回放后等待不构成排空保证，保存边界见 SlamSystem::SaveMap。
+ */
 int main(int argc, char** argv) {
+    // 阶段 1：准备进程与 ROS。
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
@@ -35,6 +46,7 @@ int main(int argc, char** argv) {
     /// 需要rclcpp::init
     rclcpp::init(argc, argv);
 
+    // 阶段 2：创建并启动建图系统。
     SlamSystem::Options options;
     options.online_mode_ = true;
 
@@ -46,6 +58,7 @@ int main(int argc, char** argv) {
 
     slam.StartSLAM("new_map");
 
+    // 阶段 3：运行输入与事件循环。
     std::shared_ptr<OnlineBagPlayer> bag_player;
     std::thread bag_thread;
     if (!FLAGS_bag.empty()) {
@@ -63,6 +76,7 @@ int main(int argc, char** argv) {
     slam.Spin();
     if (bag_thread.joinable()) bag_thread.join();
 
+    // 阶段 4：按需保存并结束运行。
     if (!FLAGS_save_map.empty() && !slam.SaveMap(FLAGS_save_map)) {
         LOG(ERROR) << "failed to save map";
         return 4;

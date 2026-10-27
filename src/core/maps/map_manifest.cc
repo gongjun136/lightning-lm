@@ -139,7 +139,17 @@ YAML::Node MakeRoot(const fs::path& directory, const ExportOptions& options) {
     return root;
 }
 
+/**
+ * @brief 读取清单并验证几何文件身份。
+ *
+ * @par 主要流程
+ * 1. <b>读取身份与清单结构</b>：要求清单存在、schema 和 map_id 有效且包含必要的几何校验项。
+ * 2. <b>校验清单中的几何文件</b>：限制文件名与类别，逐项比较文件 SHA-256。
+ * 3. <b>核对磁盘上的几何集合</b>：拒绝清单中没有记录的新增或重命名几何文件，然后返回节点。
+ * @note 校验失败抛出异常；哈希验证的是文件身份，不能替代点云语义或配准质量检查。
+ */
 YAML::Node ReadAndVerify(const fs::path& directory) {
+    // 阶段 1：读取身份与清单结构。
     const fs::path filename = directory / kFilename;
     if (!fs::exists(filename)) throw std::runtime_error("required map_manifest.yaml is missing: " + filename.string());
     YAML::Node root = YAML::LoadFile(filename.string());
@@ -151,6 +161,7 @@ YAML::Node ReadAndVerify(const fs::path& directory) {
         (root["map_format"].as<std::string>() == "tiled" && !files["index.txt"])) {
         throw std::runtime_error("manifest is missing geometry checksums");
     }
+    // 阶段 2：校验清单中的几何文件。
     // [map-manifest-file-verification]
     for (const auto& item : files) {
         const std::string name = item.first.as<std::string>();
@@ -161,6 +172,7 @@ YAML::Node ReadAndVerify(const fs::path& directory) {
             throw std::runtime_error("map geometry checksum mismatch: " + name);
         }
     }
+    // 阶段 3：核对磁盘上的几何集合。
     // A newly added or renamed tile must not silently escape the identity check.
     for (const auto& entry : fs::directory_iterator(directory)) {
         if (entry.is_regular_file() && GeometryFile(entry.path().filename()) &&
@@ -224,11 +236,13 @@ bool SaveAlignmentManifest(const std::string& directory, const std::string& old_
                            const SE3& T_old_new, const std::string& report, double quality,
                            bool already_transformed, std::string& error) {
     try {
+        // 阶段 1：取得源图和参考图身份。
         YAML::Node root = fs::exists(fs::path(directory) / kFilename)
                               ? ReadAndVerify(directory) : MakeRoot(directory, ExportOptions{});
         const std::string old_id = fs::exists(fs::path(old_directory) / kFilename)
                                       ? ReadAndVerify(old_directory)["map_id"].as<std::string>()
                                       : DefaultMapId(old_directory);
+        // 阶段 2：记录对齐变换及溯源。
         const auto pose = PoseNode(T_old_new);
         ReadPose(pose);
         YAML::Node alignment = root["legacy_alignment"];
@@ -242,6 +256,7 @@ bool SaveAlignmentManifest(const std::string& directory, const std::string& old_
         alignment["provenance"]["generated_by"] = "align_maps_offline";
         alignment["provenance"]["report"] = report;
         alignment["provenance"]["quality"] = quality;
+        // 阶段 3：写入输出策略与清单。
         root["coordinate_frame_id"] = already_transformed ? old_id : root["map_id"].as<std::string>();
         root["output"] = OutputNode(T_old_new, !already_transformed);
         Write(directory, root);
@@ -251,6 +266,7 @@ bool SaveAlignmentManifest(const std::string& directory, const std::string& old_
 
 bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::string& error) {
     try {
+        // 阶段 1：验证地图身份与可用状态。
         // [map-manifest-startup-gates]
         const YAML::Node root = ReadAndVerify(directory);
         if (root["map_format"].as<std::string>() != "tiled") throw std::runtime_error("this artifact is a global PCD preview, not a localization map package");
@@ -259,6 +275,7 @@ bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::str
         if (status == "unknown") throw std::runtime_error("map alignment is unknown; align to the old map or explicitly declare not_required before localization");
         if (status != "aligned" && status != "not_required") throw std::runtime_error("invalid map alignment status");
         // [map-manifest-startup-gates]
+        // 阶段 2：检查变换方向和应用状态。
         if (alignment["source_map_id"].as<std::string>() != root["map_id"].as<std::string>() ||
             alignment["target_map_id"].as<std::string>().empty() ||
             alignment["convention"].as<std::string>() != "target_from_localization" ||
@@ -280,6 +297,7 @@ bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::str
         const std::string expected_frame = applied ? alignment["target_map_id"].as<std::string>() : root["map_id"].as<std::string>();
         if (root["coordinate_frame_id"].as<std::string>() != expected_frame) throw std::runtime_error("map coordinate frame contradicts its transform state");
         if (status == "aligned" && alignment["target_global_pcd_sha256"].as<std::string>().size() != 64) throw std::runtime_error("aligned map is missing its reference-map SHA-256");
+        // 阶段 3：交叉核对输出声明。
         const YAML::Node declared = root["output"];
         const YAML::Node fixed = declared["fixed_map_transform"];
         if (declared["map_frame"].as<std::string>() != "map" || fixed["enabled"].as<bool>() != enabled ||
@@ -295,6 +313,7 @@ bool LoadOutputConfig(const std::string& directory, YAML::Node& output, std::str
             effective.unit_quaternion().angularDistance(expected.unit_quaternion()) > 1e-9) {
             throw std::runtime_error("manifest output pose contradicts its alignment");
         }
+        // 阶段 4：返回权威输出配置。
         output = OutputNode(transform, enabled);
         output["fixed_map_transform"]["provenance"]["map_manifest"] = (fs::path(directory) / kFilename).string();
         output["fixed_map_transform"]["provenance"]["source_map_id"] = root["map_id"].as<std::string>();

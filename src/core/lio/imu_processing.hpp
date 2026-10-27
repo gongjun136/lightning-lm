@@ -201,17 +201,25 @@ inline void ImuProcess::SetGyrBiasCov(const Vec3d &b_g) { cov_bias_gyr_ = b_g; }
 inline void ImuProcess::SetAccBiasCov(const Vec3d &b_a) { cov_bias_acc_ = b_a; }
 
 /**
- * @brief 使用静止阶段IMU量测初始化ESKF状态和IMU噪声统计。
+ * @brief 由保留窗口内的 IMU 统计写入候选初始状态。
  *
- * @param meas 当前Lidar帧对应的IMU量测集合。
- * @param kf_state 待初始化的ESKF状态，函数会写入重力方向、陀螺零偏和初始协方差。
- * @param N 当前初始化保留窗口中的IMU样本数，函数重新统计后写回。
+ * @par 主要流程
+ * 1. <b>维护初始化样本窗口</b>：首批复位，将本帧样本加入窗口并淘汰过旧样本。
+ * 2. <b>重算静止统计和样本数</b>：计算加速度、角速度均值及样本方差，更新 N。
+ * 3. <b>写入姿态重力和零偏</b>：对齐重力方向及配置航向，将候选状态时间设置为本批最后一条 IMU。
+ * 4. <b>设置初始协方差和跨帧端点</b>：写入设定的较小初始协方差，并保存末条 IMU。
  *
- * @details 初始化阶段假设载体基本静止：加速度均值主要反映重力方向，
- *          角速度均值作为初始陀螺零偏。函数在有限保留窗口内重新计算
- *          均值和样本方差；窗口外旧样本被淘汰，不保存全部历史IMU样本。
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 候选状态会在静止门槛确认前写入；是否真正完成初始化由调用者 Process() 中的 InitializationReady() 决定。
+ * 角速度均值作为初始陀螺零偏，加速度计零偏置零；预测噪声在初始化通过后改用配置尺度。
+ *
+ * @param meas 当前帧的 IMU 集合；Process() 已检查其非空。
+ * @param kf_state 接收候选状态与协方差的 ESKF。
+ * @param N 当前保留窗口的样本数，重算后写回。
  */
 inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N) {
+    // 阶段 1：维护初始化样本窗口。
     if (b_first_frame_) {
         Reset();
         b_first_frame_ = false;
@@ -222,6 +230,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     const double oldest_allowed = init_samples_.back()->timestamp - retention_duration;
     while (init_samples_.size() > 1 && init_samples_[1]->timestamp <= oldest_allowed) init_samples_.pop_front();
 
+    // 阶段 2：重算静止统计和样本数。
     mean_acc_.setZero();
     mean_gyr_.setZero();
     for (const auto &imu : init_samples_) {
@@ -243,6 +252,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     cov_gyr_ /= denominator;
     N = static_cast<int>(init_samples_.size());
 
+    // 阶段 3：写入姿态重力和零偏。
     // 将静止统计结果写入ESKF：用加速度均值对齐初始姿态，重力固定在世界系-z，角速度均值为陀螺零偏。
     auto init_state = kf_state.GetX();
     init_state.timestamp_ = meas.imu_.back()->timestamp;
@@ -268,6 +278,7 @@ inline void ImuProcess::IMUInit(const MeasureGroup &meas, ESKF &kf_state, int &N
     // 计算并缓存IMU缩放因子
     // meas_acc_scale_ = G_m_s2 / mean_acc_.norm();  // TODO，解决冲突
 
+    // 阶段 4：设置初始协方差和跨帧端点。
     // Keep the initial covariance tight; the full ESKF lets lidar pose residuals update
     // velocity/bias/gravity through cross-covariance, so a unit prior can inject huge velocity.
     auto init_P = kf_state.GetP();
@@ -301,18 +312,26 @@ inline bool ImuProcess::InitializationReady() const {
 // [imu-init-ready]
 
 /**
- * @brief 使用IMU前向积分对当前Lidar点云做运动畸变补偿。
+ * @brief 先积分 IMU，再将满足时间条件的点补偿到扫描结束时刻。
  *
- * 本函数做两件事：
- * 1. 用IMU量测把ESKF状态从上一帧末尾积分到当前Lidar扫描结束时刻；
- * 2. 根据积分过程中保存的IMU位姿，将进入逐点循环且时间有效的点补偿到扫描结束时刻。
+ * @par 主要流程
+ * 1. <b>建立跨帧积分起点</b>：接入上一批末条 IMU，以实际滤波状态时刻保存首个位姿并应用可选滤波。
+ * 2. <b>逐区间预测并保存位姿</b>：使用相邻量测均值，仅积分状态尚未覆盖且不超出扫描末的区间。
+ * 3. <b>补齐扫描末并保存桥接状态</b>：预测剩余正时间间隔，记录扫描末状态及下一帧端点。
+ * 4. <b>排序并反向补偿点坐标</b>：按时间遍历 IMU 位姿和激光点，将合格点变换至扫描末的雷达系。
  *
- * @param meas 当前帧Lidar点云和对应时间段内的IMU量测。
- * @param kf_state ESKF状态，会在函数内预测到当前Lidar扫描结束时刻。
- * @param pcl_out 输出点云；进入补偿分支的点表达在扫描结束时刻的Lidar系。
- * @note 当前逐点循环排除points.begin()，不能据此保证每一个点都执行了补偿。
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 积分起点取 kf_state 的真实时间戳；PredictTo() 不将负间隔改成正向积分。
+ * 点内 time 使用毫秒，位姿 offset_time 使用秒；当前逐点循环排除 points.begin()，时间异常点也跳过补偿。
+ * pcl_out 与 meas.scan_ 共享点云，排序及坐标更新会修改该点云对象。
+ *
+ * @param meas 当前激光帧和同步 IMU，调用者保证 IMU 非空且已经初始化。
+ * @param kf_state 被推进的 ESKF 状态。
+ * @param pcl_out 输出点云；进入补偿分支的点表达在扫描末雷达系。
  */
 inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &pcl_out) {
+    // 阶段 1：建立跨帧积分起点。
     /*** add the imu_ of the last frame-tail to the of current frame-head ***/
     // 这里把上一帧最后一个IMU插到当前帧IMU序列头部，是为了形成跨帧的第一个积分区间。
     // 否则当前帧起点到第一条IMU之间会缺少约束，点云开头附近的运动补偿容易不连续。
@@ -349,6 +368,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
         }
     }
 
+    // 阶段 2：逐区间预测并保存位姿。
     for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++) {
         // 每次取相邻两条IMU量测，构成一个积分区间 [head, tail]。
         // 后面用两端量测的平均值作为这个区间内的近似输入。
@@ -389,8 +409,8 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             debug_event::EmitThrottled("long_imu_propagation_interval", message.str(),
                                        std::chrono::seconds(1));
         }
-        // Q_是ESKF预测用的过程噪声。这里把初始化阶段估计出的陀螺仪、加速度计和零偏噪声写进去。
-        // TODO.在IMU初始化完成后，其实这个方差就不会变
+        // Q_ 使用初始化通过后选定的预测噪声尺度，以及配置的零偏过程噪声。
+        // cov_gyr_ / cov_acc_ 此时已由 Process() 从静止统计切换为配置值。
         Q_.block<3, 3>(0, 0).diagonal() = cov_gyr_;
         Q_.block<3, 3>(3, 3).diagonal() = cov_acc_;
         Q_.block<3, 3>(6, 6).diagonal() = cov_bias_gyr_;
@@ -423,6 +443,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             Pose6D(offs_t, acc_s_last_, angvel_last_, imu_state.vel_, imu_state.pos_, imu_state.rot_.matrix()));
     }
 
+    // 阶段 3：补齐扫描末并保存桥接状态。
     /*** 计算帧结束时刻的位姿预测，确保IMU积分覆盖整个点云扫描周期 ***/
     // Integrate only the remaining positive interval; never turn a negative
     // difference into a forward prediction beyond the scan end.
@@ -436,6 +457,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
     last_imu_ = meas.imu_.back();
     last_lidar_end_time_ = pcl_end_time;
 
+    // 阶段 4：排序并反向补偿点坐标。
     /*** 按时间戳对点云进行排序，便于后续按时间区间进行运动补偿 ***/
     pcl_out = meas.scan_;
     std::sort(pcl_out->points.begin(), pcl_out->points.end(),
@@ -510,24 +532,30 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 }
 
 /**
- * @brief ImuProcess对外的主入口。
+ * @brief 根据初始化状态分派 IMU 统计或正常去畸变。
  *
- * 处理流程分两阶段：
- * 1. IMU初始化阶段：累积若干帧静止IMU，估计重力方向、陀螺零偏和噪声参数；
- * 2. 正常运行阶段：调用UndistortPcl()，用IMU预测ESKF并对当前点云去畸变。
+ * @par 主要流程
+ * 1. <b>检查IMU输入</b>：没有同步 IMU 时直接返回。
+ * 2. <b>推进初始化并结束本次调用</b>：重算候选状态，检查静止门槛，通过后设置预测噪声和加速度单位尺度。
+ * 3. <b>执行已初始化帧的去畸变</b>：仅在进入本次调用前已完成初始化时，预测 ESKF 并写入点云。
  *
- * 初始化阶段不会输出去畸变点云，因为此时重力、零偏和噪声统计还不稳定。
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
  *
- * @param meas 当前Lidar帧和该帧时间范围内的IMU量测。
- * @param kf_state ESKF状态，初始化和正常预测都会修改该状态。
- * @param scan 输出点云，只有初始化完成后才会由UndistortPcl()写入。
+ * @note 阶段 2 和阶段 3 是互斥路径：即使本次刚通过初始化，仍从初始化分支返回，下一次调用才去畸变。
+ * 初始化分支不写入 scan，不能把“初始化完成”理解为本帧已有去畸变输出。
+ *
+ * @param meas 当前激光帧及同步 IMU。
+ * @param kf_state 初始化和正常预测均可能修改的滤波器。
+ * @param scan 正常去畸变路径写入的点云。
  */
 inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudPtr &scan) {
+    // 阶段 1：检查IMU输入。
     if (meas.imu_.empty()) {
         // 没有IMU时无法初始化或去畸变，直接跳过当前帧。
         return;
     }
 
+    // 阶段 2：推进初始化并结束本次调用。
     // [imu-init-ready-transition]
     if (imu_need_init_) {
         // 初始化阶段每来一帧Lidar，就把该帧对应的IMU继续累积到均值/方差估计里。
@@ -586,6 +614,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
         return;
     }
 
+    // 阶段 3：执行已初始化帧的去畸变。
     // 正常运行阶段：用当前帧IMU推进ESKF，并把点云补偿到扫描结束时刻。
     Timer::Evaluate([&, this]() { UndistortPcl(meas, kf_state, scan); }, "Undistort Pcl");
     // [imu-init-return-before-deskew]

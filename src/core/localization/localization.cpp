@@ -27,6 +27,7 @@ Localization::Localization(Options options) { options_ = options; }
 
 // ！初始化函数
 bool Localization::Init(const std::string& yaml_path, const std::string& global_map_path) {
+    // 阶段 1：结束旧队列并重置门控。
     std::unique_lock<std::shared_mutex> lock(lifecycle_mutex_);
     if (lidar_loc_ != nullptr) {
         // 若已经启动，则变为初始化
@@ -39,6 +40,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     live_output_timestamp_gate_.Reset();
     last_imu_time_ = 0.0;
 
+    // 阶段 2：装配 LIO 与地图定位。
     YAML_IO yaml(yaml_path);
     options_.with_ui_ = yaml.GetValue<bool>("system", "with_ui");
 
@@ -79,6 +81,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         return false;
     }
 
+    // 阶段 3：配置 PGO。
     /// pose graph
     pgo_ = std::make_shared<PGO>();
     pgo_->SetDebug(false);
@@ -99,7 +102,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     }
     pgo_->SetCovarianceProcessNoise(covariance_position_noise, covariance_angle_noise * M_PI / 180.0);
 
-    ///  各模块的异步调用
+    // 阶段 4：配置并启动输入队列。
     const YAML::Node system = YAML::LoadFile(yaml_path)["system"];
     options_.enable_lidar_loc_skip_ =
         system && system["enable_lidar_loc_skip"] ? system["enable_lidar_loc_skip"].as<bool>() : false;
@@ -210,7 +213,8 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         lidar_loc_proc_cloud_.Start();
     }
 
-    /// TODO: 发布
+    // 阶段 5：连接全局与实时输出。
+    // 下面先定义回调；回调被调用时才持锁执行时间门控、更新状态与向上交付。
     auto publish_localization_result = [this](const LocalizationResult& res) {
         std::lock_guard<std::mutex> dispatch_lock(live_output_dispatch_mutex_);
         const auto timestamp_decision = live_output_timestamp_gate_.Observe(res.timestamp_);
@@ -262,6 +266,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         });
     if (options_.online_mode_) high_frequency_output_proc_.Start();
 
+    // 阶段 6：完成点云预处理配置。
     /// 预处理器
     preprocess_.reset(new PointCloudPreprocess());
     preprocess_->Blind() = yaml.GetValue<double>("fasterlio", "blind");
@@ -302,6 +307,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 }
 
 void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr cloud, int lidar_id) {
+    // 阶段 1：检查模块并串行进入输入处理。
     const auto received_at = std::chrono::steady_clock::now();
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
@@ -316,6 +322,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
         return;
     }
 
+    // 阶段 2：预处理并保留帧时间。
     RememberPrimaryArrival(lidar_id, static_cast<std::uint64_t>(cloud->header.stamp.sec) * 1000000000ULL +
                                cloud->header.stamp.nanosec, received_at);
     // 串行模式
@@ -325,6 +332,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
     const profiling::TimingSample preprocess_timing = preprocess_profile_timer.Stop();
     laser_cloud->header.stamp = cloud->header.stamp.sec * 1e9 + cloud->header.stamp.nanosec;
 
+    // 阶段 3：应用里程计跳帧策略。
     bool process_lidar_odom = true;
     if (options_.enable_lidar_odom_skip_) {
         const int skip_num = options_.lidar_odom_skip_num_ > 0 ? options_.lidar_odom_skip_num_ : 1;
@@ -332,6 +340,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
         lidar_odom_skip_cnt_ = (lidar_odom_skip_cnt_ + 1) % skip_num;
     }
     if (!process_lidar_odom) return;
+    // 阶段 4：分派点云并记录耗时。
     profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     // [localization-lidar-enqueue]
     if (options_.online_mode_) {
@@ -364,6 +373,7 @@ void Localization::ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPt
 }
 
 void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+    // 阶段 1：检查模块并串行进入输入处理。
     const auto received_at = std::chrono::steady_clock::now();
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
@@ -378,6 +388,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
         return;
     }
 
+    // 阶段 2：预处理并确定雷达身份。
     // 串行模式
     CloudPtr laser_cloud(new PointCloudType);
     profiling::Stopwatch preprocess_profile_timer(profiling_enabled);
@@ -387,6 +398,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
 
     const int lidar_id = lio_->IsMultiLidarEnabled() ? lio_->GetMultiLidarConfig().primary_lidar_id : 0;
     RememberPrimaryArrival(lidar_id, laser_cloud->header.stamp, received_at);
+    // 阶段 3：应用里程计跳帧策略。
     bool process_lidar_odom = true;
     if (options_.enable_lidar_odom_skip_) {
         const int skip_num = options_.lidar_odom_skip_num_ > 0 ? options_.lidar_odom_skip_num_ : 1;
@@ -394,6 +406,7 @@ void Localization::ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg:
         lidar_odom_skip_cnt_ = (lidar_odom_skip_cnt_ + 1) % skip_num;
     }
     if (!process_lidar_odom) return;
+    // 阶段 4：分派点云并记录耗时。
     profiling::Stopwatch dispatch_profile_timer(profiling_enabled);
     if (options_.online_mode_) {
         ObserveSensorEnqueued(static_cast<double>(laser_cloud->header.stamp) * 1e-9);
@@ -435,6 +448,7 @@ void Localization::RememberPrimaryArrival(int lidar_id, std::uint64_t stamp,
 }
 
 void Localization::ProcessSensorInput(const SensorInput& input) {
+    // 阶段 1：记录队列等待。
     const bool trace = profiling::CausalTraceEnabled();
     profiling::Stopwatch trace_timer(trace);
     const double trace_queue_ms = trace && input.enqueued_at != std::chrono::steady_clock::time_point{}
@@ -459,6 +473,7 @@ void Localization::ProcessSensorInput(const SensorInput& input) {
                       << " queue_wait_max_ms=" << wall.max;
         }
     }
+    // 阶段 2：分派 IMU 或点云。
     const double timestamp = input.is_imu && input.imu
                                  ? input.imu->timestamp
                                  : (input.cloud ? static_cast<double>(input.cloud->header.stamp) * 1e-9 : 0.0);
@@ -469,6 +484,7 @@ void Localization::ProcessSensorInput(const SensorInput& input) {
         LidarOdomProcCloud(input.cloud, input.lidar_id);
     }
     // [localization-sensor-dispatch]
+    // 阶段 3：推进完成进度。
     // This frontier means callback completion, not merely dequeue/start.
     ObserveSensorProcessed(timestamp);
     if (trace) {
@@ -517,12 +533,14 @@ void Localization::LidarOdomProcCloud(CloudPtr cloud, int lidar_id) {
 }
 
 void Localization::DrainLioOutputs() {
+    // 阶段 1：取出可用 LIO 输出。
     // [localization-drain-status]
     while (true) {
         const auto status = lio_->RunDetailed();
         if (status == LaserMapping::RunStatus::kNoData) break;
         if (status != LaserMapping::RunStatus::kOutput) continue;
 
+        // 阶段 2：更新里程计状态。
         auto lo_state = lio_->GetState();
         ObserveLioForStaticDetector(lo_state);
 
@@ -533,7 +551,7 @@ void Localization::DrainLioOutputs() {
         // LOG(INFO) << "LO pose: " << std::setprecision(12) << lo_state.timestamp_ << " "
         //           << lo_state.GetPose().translation().transpose();
 
-        /// 获得lio的关键帧
+        // 阶段 3：整理同帧数据与统计。
         auto scan = lio_->GetProjCloud();
         LidarLocInput lidar_loc_input;
         lidar_loc_input.localization_cloud = scan;
@@ -579,6 +597,7 @@ void Localization::DrainLioOutputs() {
             runtime_stats_.wheel_speed_dr_stats = wheel_stats;
         }
 
+        // 阶段 4：选择并提交地图匹配帧。
         // [localization-keyframe-selection]
         if (options_.loc_on_kf_) {
             auto kf = lio_->GetKeyframe();
@@ -1007,6 +1026,7 @@ void Localization::ProcessWheelSpeed(double timestamp, double longitudinal_speed
 }
 
 void Localization::LidarLocProcCloud(const LidarLocInput& input) {
+    // 阶段 1：检查模块并执行地图匹配。
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     const double queue_wait_ms = profiling_enabled &&
                                         input.enqueued_at != std::chrono::steady_clock::time_point{}
@@ -1022,6 +1042,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     lidar_loc_->ProcessCloud(scan_undist);
     const profiling::TimingSample process_cloud_timing = process_cloud_profile_timer.Stop();
 
+    // 阶段 2：读取结果并检查恢复状态。
     profiling::Stopwatch result_profile_timer(profiling_enabled);
     auto res = lidar_loc_->GetLocalizationResult();
     const auto match_stats = lidar_loc_->GetLastMatchStats();
@@ -1056,12 +1077,15 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     // LidarLoc owns lidar_loc_valid_; valid_ belongs to fused/DR outputs.
     lio_->SetLocalizationGood(res.lidar_loc_valid_ && res.status_ == LocalizationStatus::GOOD);
     const profiling::TimingSample result_timing = result_profile_timer.Stop();
+    // 阶段 3：交付点云与当前缓存结果。
+    // ProcessCloud() 因点云过少早退时不更新结果缓存；此处仍交付本帧点云和读取到的结果。
     profiling::Stopwatch cloud_callback_profile_timer(profiling_enabled);
     if (processed_cloud_callback_) {
         processed_cloud_callback_(input.publication_cloud, res, input.frame_stats,
                                   input.publication_eligible);
     }
     const profiling::TimingSample cloud_callback_timing = cloud_callback_profile_timer.Stop();
+    // 阶段 4：更新 PGO 或请求恢复。
     profiling::Stopwatch pgo_profile_timer(profiling_enabled);
     // [localization-pgo-map-result]
     if (stationary_map_conflict) {
@@ -1074,6 +1098,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     // [localization-pgo-map-result]
     const profiling::TimingSample pgo_timing = pgo_profile_timer.Stop();
 
+    // 阶段 5：记录时延并通知状态。
     double primary_to_pgo_ms = -1.0;
     if (input.primary_received_at != std::chrono::steady_clock::time_point{}) {
         const auto completed_at = std::chrono::steady_clock::now();
@@ -1163,6 +1188,7 @@ void Localization::ProcessIMUMsg(IMUPtr imu) {
 }
 
 void Localization::ProcessIMUData(IMUPtr imu) {
+    // 阶段 1：串行检查 IMU 输入。
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     const auto wait_started = profiling::CausalTraceEnabled() ? std::chrono::steady_clock::now()
@@ -1194,6 +1220,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     if (this_imu_time == last_imu_time_) return;
     last_imu_time_ = this_imu_time;
 
+    // 阶段 2：更新预测并排出 LIO 帧。
     /// 里程计处理IMU
     double latest_input_stamp = 0.0;
     {
@@ -1214,6 +1241,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     // [localization-imu-drain]
     const profiling::TimingSample drain_lio_timing = drain_lio_profile_timer.Stop();
 
+    // 阶段 3：检查预测位姿并更新静止状态。
     /// 这里需要 IMU predict，否则没法process DR了
     profiling::Stopwatch state_profile_timer(profiling_enabled);
     auto dr_state = lio_->GetIMUState();
@@ -1269,6 +1297,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     //           << dr_state.GetPose().translation().transpose()
     //           << ", q=" << dr_state.GetPose().unit_quaternion().coeffs().transpose();
 
+    // 阶段 4：分别交付地图定位与 PGO。
     // Lidar localization must continue matching while parked so freshness and
     // relocalization are based on real scans, not on a synthetic parking flag.
     auto lidar_loc_dr_state = dr_state;

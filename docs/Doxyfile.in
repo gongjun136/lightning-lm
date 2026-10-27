@@ -20,6 +20,8 @@ LAYOUT_FILE            = "@LIGHTNING_SOURCE_DIR@/docs/DoxygenLayout.xml"
 EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = YES
 EXTRACT_STATIC         = YES
+# Include implementation-only helpers referenced by the source-reading flow.
+EXTRACT_ANON_NSPACES    = YES
 LOOKUP_CACHE_SIZE      = 2
 HIDE_UNDOC_MEMBERS     = NO
 HIDE_UNDOC_CLASSES     = NO

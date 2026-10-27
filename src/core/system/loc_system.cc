@@ -79,6 +79,7 @@ LocSystem::~LocSystem() {
 }
 
 bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_override) {
+    // 阶段 1：重置状态并创建算法对象。
     finished_ = false;
     lidar_input_timestamp_gate_.Reset();
     pose_timestamp_gate_.Reset();
@@ -97,6 +98,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     loc_ = std::make_shared<loc::Localization>(opt);
     // [loc-system-init-online-object]
 
+    // 阶段 2：加载地图与输出配置。
     YAML_IO yaml(yaml_path);
 
     const YAML::Node root = YAML::LoadFile(yaml_path);
@@ -114,6 +116,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     }
     std::string fixed_transform_error;
     YAML::Node map_output;
+    // 输出坐标与固定变换以地图包清单为依据，避免与当前地图使用不同的坐标约定。
     if (!map_manifest::LoadOutputConfig(map_path, map_output, fixed_transform_error)) {
         LOG(ERROR) << "map output configuration rejected: " << fixed_transform_error;
         return false;
@@ -141,6 +144,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
         primary_lidar_position_in_body_ = Vec3d(values[0], values[1], values[2]);
     }
+    // 分别设置结果发布门控与输入时间戳门控，两者约束的对象不同。
     const int lost_frame_threshold =
         root["relocalization"] && root["relocalization"]["lost_frame_threshold"]
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
@@ -170,6 +174,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     }
     lidar_input_timestamp_gate_.SetMaximumLag(
         online_lidar_input_max_timestamp_lag_sec_);
+    // 先确定轮速开关、话题和换算参数；实际订阅在阶段 5 注册。
     wheel_speed_observation_enabled_ =
         root["system"] && root["system"]["enable_wheel_speed_observation"]
             ? root["system"]["enable_wheel_speed_observation"].as<bool>()
@@ -205,6 +210,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     telemetry_ = std::make_unique<sany_output::LocalizationTelemetryState>(
         static_cast<std::size_t>(lost_frame_threshold));
 
+    // 阶段 3：创建节点并初始化算法。
+    // 心跳与算法后台线程在此启动；ROS 订阅和定时器回调由后续 Spin() 调度。
     LOG(INFO) << "online mode, creating ros2 node ... ";
     node_ = std::make_shared<rclcpp::Node>("lightning_slam");
     try {
@@ -222,6 +229,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         return false;
     }
 
+    // 阶段 4：建立诊断与 Safety 通道。
     const YAML::Node dtc = root["diagnostics"];
     loc::dtc::Config dtc_config;
     auto value = [&dtc](const char* key, double fallback) {
@@ -297,6 +305,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << " major_sigma_limit_m=" << dtc_config.major_sigma_m
               << " lateral_sigma_limit_m=" << dtc_config.lateral_sigma_m
               << " yaw_sigma_limit_deg=" << dtc_config.yaw_sigma_rad * 180.0 / M_PI;
+    // 诊断配置就绪后连接 Safety 输出、必需雷达的状态输入及周期评估定时器。
     const auto dtc_qos = rclcpp::QoS(10).reliable().durability_volatile();
     const auto topic = [&dtc](const char* key, const std::string& fallback) {
         return dtc && dtc[key] ? dtc[key].as<std::string>() : fallback;
@@ -326,7 +335,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         if (changed) UpdateDtcHeartbeat();
     });
 
-    // 配置并注册 IMU / LiDAR 输入订阅。
+    // 阶段 5：注册传感器与轮速输入。
     imu_topic_ = yaml.GetValue<std::string>("common", "imu_topic");
     cloud_topic_ = yaml.GetValue<std::string>("common", "lidar_topic");
     livox_topic_ = yaml.GetValue<std::string>("common", "livox_lidar_topic");
@@ -375,6 +384,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         });
     };
 
+    // 多雷达模式只订阅主雷达 IMU，并为各点云回调保留对应雷达 ID。
     if (loc_->IsMultiLidarEnabled()) {
         const auto* primary = loc_->GetMultiLidarConfig().PrimaryLidar();
         if (!primary) {
@@ -445,6 +455,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         LOG(WARNING) << "wheel-speed observation disabled; using lidar/IMU-only fallback";
     }
 
+    // 阶段 6：建立业务输出并注册算法回调。
     const auto pose_qos =
         rclcpp::QoS(rclcpp::KeepLast(1000)).best_effort().durability_volatile();
     const auto cloud_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
@@ -483,6 +494,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                                              [this]() { PublishHealthStatus(); });
     path_timer_ = node_->create_wall_timer(std::chrono::seconds(2), [this]() { PublishPath(); });
 
+    // 下列回调在此注册；坐标转换、发布和轨迹记录在回调被触发时执行。
     if (options_.pub_tf_) {
         auto tf_qos = tf2_ros::DynamicBroadcasterQoS();
         tf_qos.best_effort();
@@ -507,6 +519,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             PublishProcessedCloud(cloud, result, stats, eligible);
     });
 
+    // 阶段 7：完成初始化并报告 Idle。
+    // 初始化成功不代表定位有效；定位输入的处理开关由 SetInitPose() 打开。
     heartbeat_->SetState(functional_safety::NodeState::kIdle);
     LOG(INFO) << "online loc node has been created.";
     debug_event::Emit("Online localization node is ready");
@@ -700,6 +714,7 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 }
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
+    // 阶段 1：校验结果与发布条件。
     // [output-result-publication-gates]
     // 结果有效、时间递增、地图匹配可用是三个独立条件；依次通过后才构造业务消息。
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
@@ -724,6 +739,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         return;
     }
     // [output-result-publication-gates]
+    // 阶段 2：缓存状态并转换后轴位姿。
     const NavState state = result.ToNavState();
     {
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -756,6 +772,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     // Publish the high-frequency signed body-forward estimator velocity. CAN
     // wheel speed remains an internal filter observation, but must not replace
     // the estimator state at the downstream output boundary.
+    // 阶段 3：构造业务消息。
     profiling::Stopwatch message_build_timer(profiling_enabled);
     // PGO retains IMU-frame velocity internally; rotate only at the output boundary.
     // [output-rear-speed-message]
@@ -772,6 +789,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
     const auto message_build_timing = message_build_timer.Stop();
 
+    // 阶段 4：发布位姿并更新工作状态。
     profiling::Stopwatch ros_publish_timer(profiling_enabled);
     bool position_published = false;
     if (pose_pub_) {
@@ -793,6 +811,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     const auto ros_publish_timing = ros_publish_timer.Stop();
 
+    // 阶段 5：记录审计与耗时。
     profiling::Stopwatch diagnostic_io_timer(profiling_enabled);
     if (position_published && !profiling::ReduceNonessentialOverhead()) {
         if (speed_smoothing_shadow_enabled_) {
@@ -851,6 +870,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
 
 void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::LocalizationResult& result,
                                       const MultiLidarFrameStats& stats, bool eligible) {
+    // 阶段 1：更新匹配门控。
     {
         // Serialize invalidation with the complete group of business pose publishes.
         std::lock_guard<std::mutex> lock(pose_publish_mutex_);
@@ -875,6 +895,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
             "Localization recovered from dead reckoning",
             std::chrono::milliseconds(300));
     }
+    // 阶段 2：检查点云发布条件。
     debug_event::ReportState(
         "fused_cloud_suppressed", !eligible,
         "Fused cloud publication suppressed because too few lidars are available",
@@ -896,6 +917,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     profiling::Stopwatch outer_timer(profiling_enabled);
     const SO3 initial_lidar_rotation = loc_->GetInitialLidarRotation();
 
+    // 阶段 3：发布后轴点云。
     profiling::Stopwatch inv_message_timer(profiling_enabled);
     const auto inv_cloud_message = sany_output::MakeCloudMessage(
         cloud, begin_time, end_time,
@@ -906,6 +928,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     inv_cloud_pub_->publish(inv_cloud_message);
     const auto inv_publish_timing = inv_publish_timer.Stop();
 
+    // 阶段 4：按条件发布地图点云并记录耗时。
     const bool publish_map_frame = map_cloud_decimator_.Tick();
     bool map_frame_published = false;
     profiling::TimingSample map_message_timing;
@@ -940,6 +963,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 }
 
 void LocSystem::PublishHealthStatus() {
+    // 阶段 1：采集输入统计。
     if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
     std::lock_guard<std::mutex> publish_lock(pose_publish_mutex_);
     const builtin_interfaces::msg::Time stamp = node_->now();
@@ -991,6 +1015,7 @@ void LocSystem::PublishHealthStatus() {
                 kMaxWheelSpeedTimestampDeltaSec;
         }
     }
+    // 阶段 2：发布健康状态并更新工作状态。
     const bool lidar_match_stale = publication_gate_.LidarMatchStale(latest_input_sensor_stamp);
     telemetry_->ObserveLocalizationStale(lidar_match_stale);
     auto fault_status = telemetry_->MakeFaultStatus(stamp);
@@ -1010,6 +1035,7 @@ void LocSystem::PublishHealthStatus() {
         heartbeat_->SetState(functional_safety::NodeState::kRunning);
     }
     // [dtc-heartbeat-state-from-work]
+    // 阶段 3：汇总队列和定位状态。
     const auto runtime = loc_->GetRuntimeStats();
     diagnostics.sensor_queue_pending = runtime.sensor_queue_pending;
     diagnostics.sensor_queue_dropped = runtime.sensor_queue_dropped;
@@ -1039,6 +1065,7 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.last_relocalization_search_time_ms = runtime.last_relocalization_search_time_ms;
     diagnostics.last_relocalization_reason = runtime.last_relocalization_reason;
     diagnostics.consecutive_lost_frames = publication_gate_.ConsecutiveLostFrames();
+    // 阶段 4：报告地图输出门控变化。
     const bool map_outputs_enabled =
         publication_gate_.MapOutputsEnabled(latest_input_sensor_stamp);
     const bool localization_lost =
@@ -1092,6 +1119,7 @@ void LocSystem::PublishHealthStatus() {
                         << " last_valid_match=" << std::setprecision(16)
                         << diagnostics.last_valid_lidar_match_stamp
                         << " last_published_pose=" << diagnostics.last_posres_stamp;
+    // 阶段 5：补充降级与轮速诊断并发布。
     diagnostics.posres_non_monotonic_drop_count =
         pose_timestamp_gate_.RejectedCount();
     diagnostics.worst_posres_timestamp_rollback_sec =
@@ -1248,6 +1276,7 @@ void LocSystem::UpdateDtcHeartbeat() {
         << " localization_lost=" << snapshot.localization_lost;
 }
 void LocSystem::PublishSafety() {
+    // 阶段 1：评估定位与雷达状态。
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
     const auto localization = dtc_monitor_->Evaluate(DtcLocalizationLost());
     const auto radar = radar_dtc_state_->Evaluate();
@@ -1256,6 +1285,7 @@ void LocSystem::PublishSafety() {
     const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
     const int bounded = loc::dtc::SafetyValue(localization, radar.all_failed,
         radar.bounded_fault, radar.bounded_all_pass);
+    // 阶段 2：按配置发布 Safety。
     // [dtc-safety-output-switches]
     msg.runstate = safety_fault_reporting_enabled_
                        ? loc::dtc::SafetyValue(localization, radar.all_failed,
@@ -1265,6 +1295,7 @@ void LocSystem::PublishSafety() {
                        : 0;
     safety_pub_->publish(msg);
     // [dtc-safety-output-switches]
+    // 阶段 3：记录影子评估。
     if (radar_time_sync_shadow_enabled_ || radar_fault_mask_enabled_) {
         const int shadow = loc::dtc::SafetyValue(localization, radar.all_failed,
             radar.fault_without_time_sync, radar.all_pass_without_time_sync);

@@ -105,6 +105,7 @@ LidarLoc::~LidarLoc() {
 }
 
 bool LidarLoc::Init(const std::string& config_path) {
+    // 阶段 1：读取预算并检查地图元数据。
     YAML_IO yaml(config_path);
     const YAML::Node root = YAML::LoadFile(config_path);
     compute::ComputeBudget compute_budget;
@@ -133,6 +134,7 @@ bool LidarLoc::Init(const std::string& config_path) {
             return false;
         }
     }
+    // 阶段 2：读取跟踪与重定位门控。
     options_.map_option_.enable_dynamic_polygon_ = yaml.GetValue<bool>("maps", "with_dyn_area");
     options_.map_option_.max_pts_in_dyn_chunk_ = yaml.GetValue<int>("maps", "max_pts_dyn_chunk");
     options_.map_option_.load_map_size_ = yaml.GetValue<int>("maps", "load_map_size");
@@ -247,6 +249,7 @@ bool LidarLoc::Init(const std::string& config_path) {
                    << options_.relocalization_refinement_backend_;
         return false;
     }
+    // 阶段 3：读取候选细化参数。
     const YAML::Node plane_icp =
         relocalization ? relocalization["plane_icp"] : YAML::Node();
     auto& plane_options = options_.relocalization_plane_icp_options_;
@@ -344,6 +347,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         plane_options.max_translation_correction =
             backend_plane_icp["max_translation_correction"].as<double>();
     }
+    // 阶段 4：校验参数并补齐定位选项。
     std::string plane_options_error;
     if (!PointToPlaneRegistration::ValidateOptions(
             plane_options, &plane_options_error)) {
@@ -394,6 +398,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     LOG(INFO) << "min init confidence: " << options_.min_init_confidence_
               << ", min tracking confidence: " << options_.min_tracking_confidence_;
 
+    // 阶段 5：加载地图并准备匹配目标。
     std::string map_policy = yaml.GetValue<std::string>("maps", "dyn_cloud_policy");
     if (map_policy == "short") {
         options_.map_option_.policy_ = TiledMap::DynamicCloudPolicy::SHORT;
@@ -421,6 +426,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         UpdateGlobalMap();
     }
 
+    // 阶段 6：初始化全局重定位后端。
     if (relocalization_backend_name_ == "btc") {
         global_relocalizer_ = std::make_unique<BtcRelocalizer>();
     } else if (relocalization_backend_name_ == "solid") {
@@ -443,6 +449,7 @@ bool LidarLoc::Init(const std::string& config_path) {
                      << " relocalization is unavailable; NDT localization remains enabled";
     }
 
+    // 阶段 7：加入恢复位姿并启动地图线程。
     /// load recover pose if exist
     if (PathExists(options_.recover_pose_path_)) {
         std::ifstream fin(options_.recover_pose_path_);
@@ -464,6 +471,7 @@ bool LidarLoc::Init(const std::string& config_path) {
 }
 
 bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
+    // 阶段 1：检查定位点云。
     assert(cloud_input != nullptr);
 
     if (cloud_input->empty() || cloud_input->size() < 50) {
@@ -479,12 +487,14 @@ bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
     // voxel.setInputCloud(cloud_input);
     // voxel.filter(*cloud);
 
+    // 阶段 2：准备帧统计并运行匹配。
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     const bool was_initialized = loc_inited_;
     frame_profiling_ = FrameProfiling{};
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     current_scan_ = cloud_input;
     Align(cloud_input);
+    // 阶段 3：记录耗时并结束处理。
     if (profiling_enabled) {
         const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
         const MatchStats match_stats = GetLastMatchStats();
@@ -755,6 +765,7 @@ bool LidarLoc::BuildRelocalizationMapCache() {
 }
 
 bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
+    // 阶段 1：取得待确认或新检索候选。
     if (!global_relocalizer_ || !global_relocalizer_->IsReady() ||
         !current_lo_pose_set_) return false;
 
@@ -791,6 +802,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     }
     if (!result) return false;
 
+    // 阶段 2：检查检索结果并建立统计。
     if (!relocalization_event_active_) {
         relocalization_event_active_ = true;
         debug_event::Emit("Global relocalization started");
@@ -822,6 +834,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         return false;
     }
 
+    // 阶段 3：预检地图并限制细化数量。
     std::vector<MapConsistencyResult> prechecks(result->candidates.size());
     if (!options_.enable_relocalization_map_consistency_) {
         for (auto& precheck : prechecks) precheck.passed = true;
@@ -894,6 +907,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         }
     }
 
+    // 阶段 4：逐个细化并验证地图。
     for (const std::size_t index : refinement_indices) {
         const auto& candidate = result->candidates[index];
         map_->LoadOnPose(candidate.T_world_imu);
@@ -986,6 +1000,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             continue;
         }
 
+        // 阶段 5：累计跨帧一致确认。
         const MatchStats candidate_stats = last_match_stats_;
         summary.confidence = candidate_stats.confidence;
         summary.iterations = candidate_stats.iterations;
@@ -1053,6 +1068,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             return false;
         }
 
+        // 阶段 6：提交接受的地图位姿。
         loc_inited_ = true;
         current_abs_pose_ = refined_pose;
         last_abs_pose_ = refined_pose;
@@ -1109,6 +1125,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         return true;
     }
 
+    // 阶段 7：记录候选全部失败。
     summary.relocalization_reason = "all_candidates_rejected";
     last_match_stats_ = summary;
     if (reuse_pending) pending_relocalization_ = PendingRelocalization{};
@@ -1487,6 +1504,7 @@ void LidarLoc::RequestGlobalRelocalization() {
 }
 
 void LidarLoc::Align(const CloudPtr& input) {
+    // 阶段 1：对齐帧时间与里程计。
     // 输入必须非空
     assert(input != nullptr);
 
@@ -1520,7 +1538,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                              std::chrono::milliseconds(500));
     frame_profiling_.assign_pose = assign_pose_profile_timer.Stop();
 
-    /// 1. 车辆静止处理
+    // 阶段 2：处理静止保持。
     if (parking_ && loc_inited_) {
         if (!profiling::ReduceNonessentialOverhead()) {
             LOG(INFO) << "车辆静止，不做匹配";
@@ -1544,7 +1562,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         return;
     }
 
-    /// 2. 初始化处理
+    // 阶段 3：执行首次定位或重定位。
     if (!loc_inited_) {
         UL lock_init(initial_pose_mutex_);
         if (!profiling::ReduceNonessentialOverhead()) LOG(INFO) << "initing lidarloc";
@@ -1626,7 +1644,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         return;
     }
 
-    /// 4. 设置当前帧对应的 pose guess
+    // 阶段 4：构造跟踪初值。
     /// NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
 
     // [loc-lo-prior]
@@ -1686,7 +1704,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     }
     // }
 
-    /// 5. 由 LO 增量生成地图系初值，加载附近地图并匹配。
+    // 阶段 5：配准并限制单帧修正。
     // [loc-map-match-dispatch]
     CloudPtr output_cloud(new PointCloudType);
     double fitness_score = 0;
@@ -1764,6 +1782,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     LOG(INFO) << "adjust current pose to : " << current_pose_esti.translation().transpose();
     // }
 
+    // 阶段 6：验证匹配并决定恢复。
     current_score_ = fitness_score;
     double delta_rel_abs_pose = 0;
     bool lidar_loc_odom_valid = true;
@@ -1826,6 +1845,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         // [loc-rejected-match-fallback]
     }
 
+    // 阶段 7：更新位姿与定位状态。
     current_abs_pose_ = current_pose_esti;
     // Keep the pose and odometry epochs paired, including DR fallback frames.
     last_abs_pose_ = current_pose_esti;
@@ -1850,7 +1870,6 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     ui_->UpdatePredictPose(guess_from_lo);
     // }
 
-    /// 7. 输出结果
     {
         UL lock(result_mutex_);
         localization_result_.timestamp_ = current_timestamp_;
@@ -1893,8 +1912,8 @@ void LidarLoc::Align(const CloudPtr& input) {
     UpdateState(input);
     frame_profiling_.state_update = state_update_profile_timer.Stop();
 
-    /// 8. 更新动态图层
-    /// 条件：1. 定位成功 2. 与上次更新间隔一定距离 3. RTK与激光定位横纵向误差都小于0.3，或者匹配分值大于1.0
+    // 阶段 8：更新动态图层与恢复记录。
+    // 当前条件是定位成功、距离或时间间隔达标、分数达标；此处没有启用 RTK 比较。
     bool score_cond = current_score_ > options_.update_lidar_loc_score_;
 
     profiling::Stopwatch dynamic_map_profile_timer(profiling::ComputeProfilingEnabled());
@@ -1942,7 +1961,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         ave_scores_.pop_front();
     }
 
-    /// 9. save for recover pose
+    // 保存本帧恢复位姿；文件无法打开时跳过写入。
     profiling::Stopwatch recover_pose_profile_timer(profiling::ComputeProfilingEnabled());
     recover_pose_out_.open(options_.recover_pose_path_);
     if (recover_pose_out_) {
@@ -1980,6 +1999,7 @@ bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_p
 }
 
 bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res) {
+    // 阶段 1：准备目标与初值。
     const bool budget_allowed = loc_inited_ && last_match_stats_.success && !use_rough_res;
     Eigen::Matrix4f trans;
     bool loc_success = false;
@@ -1996,6 +2016,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         return false;
     }
 
+    // 阶段 2：执行 NDT 并检查基础结果。
     UL lock(match_mutex_);
     NDTType::Ptr ndt = nullptr;
 
@@ -2024,6 +2045,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
                   confidence >= confidence_threshold;
     // [loc-ndt-acceptance]
 
+    // 阶段 3：执行可选 ICP 微调。
     if (options_.enable_icp_adjust_ && loc_inited_ && loc_success) {
         profiling::Stopwatch icp_adjust_profile_timer(
             profiling::ComputeProfilingEnabled());
@@ -2058,6 +2080,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
                          icp_adjust_profile_timer.Stop());
     }
 
+    // 阶段 4：写回候选位姿与统计。
     Vec3d t_3d = pose.translation();
     if (trans.allFinite()) {
         Eigen::Matrix3d rot = trans.block<3, 3>(0, 0).cast<double>();

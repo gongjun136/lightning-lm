@@ -154,18 +154,39 @@ class TiledMap {
     /**
      * @brief 从单个完整PCD地图转换为分块地图。
      * @param map 输入的完整点云地图。
-     * @param start_pose 地图起点位姿，用作分块地图原点参考。
+     * @param start_pose 地图起点位姿，作为 start 功能点记录；分块原点仍为零。
      * @param map_path 分块地图保存目录。
-     * @return 转换成功返回true，否则返回false。
+     * @return 完成分块与保存调用后返回 true；底层写入结果未完整检查。
+     *
+     * @par 主要流程
+     * 1. <b>设置分块原点与起点</b>：断言输入非空，将分块原点设为零，记录输出目录和 start 功能点。
+     * 2. <b>按二维网格归入静态块</b>：遍历点云，复用已有块或创建新块及 ID 反查关系。
+     * 3. <b>调用静态地图保存</b>：将静态块和索引交给 SaveToBin(false)，随后返回 true。
+     * @note 本函数不清空已有块；通常在新建 TiledMap 上调用。true 不能证明全部磁盘写入成功。
      */
     bool ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std::string& map_path = "./data/maps/");
 
-    /// 载入地图索引文件。
+    /**
+     * 载入地图索引文件。
+     *
+     * @par 主要流程
+     * 1. <b>打开索引并准备容器</b>：索引打开失败返回 false，随后清理地图并持有静态和动态图层锁。
+     * 2. <b>解析索引并预载点云</b>：恢复原点、功能点和块索引；立即加载静态 PCD，按持久策略处理动态 PCD。
+     * 3. <b>按需读取动态多边形</b>：禁用或缺少多边形文件时也可返回 true；读取时将顶点减去地图原点。
+     * @note 静态点云在索引读取阶段已经加载；true 不代表每行解析和每个 PCD 都已校验成功。
+     */
     bool LoadMapIndex();
 
     /**
-     * @brief 按当前位姿载入附近chunk，并卸载远处chunk。
+     * @brief 按当前位姿更新活动 chunk，并按策略处理远处动态图层。
      * @param pose 当前车辆或传感器位姿。
+     *
+     * @par 主要流程
+     * 1. <b>检查是否跨越网格</b>：当前网格与上次一致时清除静态更新标记并直接返回。
+     * 2. <b>选择附近地图块</b>：按二维曼哈顿距离激活静态块，并创建或载入相应动态块。
+     * 3. <b>移除远处活动块</b>：超出卸载阈值时移除活动索引，按动态策略选择释放、保存或卸载点云。
+     * 4. <b>记录本次网格</b>：保存网格位置，供下一次调用做跨网格判断。
+     * @note 移除远处静态块仅移除活动选择，静态 cloud 缓存仍保留；动态块的存盘和释放由策略及开关决定。
      */
     void LoadOnPose(const SE3& pose);
 
@@ -240,7 +261,12 @@ class TiledMap {
 
     /**
      * @brief 将地图chunk存储到二进制PCD文件。
-     * @param only_dynamic true时只保存动态图层，false时保存静态地图和动态图层。
+     * @param only_dynamic true 时只保存动态图层；false 时只保存静态块、索引和功能点。
+     *
+     * @par 主要流程
+     * 1. <b>静态保存分支</b>：only_dynamic 为 false 时写原点、非空静态块和功能点索引，然后返回。
+     * 2. <b>动态保存分支</b>：only_dynamic 为 true 时只遍历非空动态块，写入 *_dyn.pcd。
+     * @note 两个阶段是互斥分支；当前实现未检查索引流和 PCD 写入结果，也不向调用方返回保存状态。
      */
     void SaveToBin(bool only_dynamic = false);
 

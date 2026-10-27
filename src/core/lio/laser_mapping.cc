@@ -28,15 +28,35 @@
 
 namespace lightning {
 
+/**
+ * @brief 配置 LIO 前端并绑定观测与预测回调。
+ *
+ * @par 主要流程
+ * 1. <b>读取并验证运行配置</b>：加载预处理、IMU、地图和滤波选项，失败即返回。
+ * 2. <b>创建局部地图</b>：按已读取的体素选项构造 IVox。
+ * 3. <b>配置滤波器及激光观测</b>：设置迭代与状态更新策略，绑定 ObsModel 后初始化 ESKF 选项。
+ * 4. <b>绑定预测后轮速更新</b>：设置高频状态开关并注册 IMU 预测后的软观测回调。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 本函数只完成配置和回调绑定；IMU 静止初始化及首帧地图在后续数据处理中完成。
+ * 回调在这里注册，在 ImuProcess 后续预测时才执行。
+ *
+ * @param config_yaml LIO 配置文件路径。
+ * @return 配置成功返回 true；参数加载失败返回 false。
+ */
 bool LaserMapping::Init(const std::string &config_yaml) {
+    // 阶段 1：读取并验证运行配置。
     LOG(INFO) << "init laser mapping from " << config_yaml;
     if (!LoadParamsFromYAML(config_yaml)) {
         return false;
     }
 
+    // 阶段 2：创建局部地图。
     // localmap init (after LoadParams)
     ivox_ = std::make_shared<IVoxType>(ivox_options_);
 
+    // 阶段 3：配置滤波器及激光观测。
     // esekf init
     ESKF::Options eskf_options;
     eskf_options.max_iterations_ = fasterlio::NUM_MAX_ITERATIONS;
@@ -52,6 +72,7 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     eskf_options.max_update_gravity_step_ = max_update_gravity_step_;
     eskf_options.use_aa_ = use_aa_;
     kf_.Init(eskf_options);
+    // 阶段 4：绑定预测后轮速更新。
     high_frequency_static_hold_ = false;
     velocity_propagation_active_ = propagate_velocity_;
     p_imu_->SetPostPredictCallback([this](ESKF& filter, double timestamp) {
@@ -565,7 +586,24 @@ void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
     last_imu_filter_wheel_timestamp_ = timestamp;
 }
 
+/**
+ * @brief 接收单条 IMU，同时维护实时预测和后续激光处理的输入。
+ *
+ * @par 主要流程
+ * 1. <b>检查输入及时间顺序</b>：拒绝无效量测、重复时间戳和时间倒退。
+ * 2. <b>执行入口陀螺预滤波</b>：按配置复制并平滑角速度，保留调用者的原始量测。
+ * 3. <b>推进已初始化的高频状态</b>：从 kf_imu_ 当前时刻预测，并在成功推进后应用轮速与静止约束。
+ * 4. <b>记录样本并入队</b>：保存连续积分端点，将同一预处理样本交给后续同步。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 高频预测只在 IMU 初始化后执行；初始化前的合格样本仍然入队。
+ * PredictTo() 只积分滤波状态尚未覆盖的正时间间隔，输入检查后持有的缓存锁覆盖后续处理。
+ *
+ * @param raw_imu 原始 IMU 样本，时间戳单位为秒。
+ */
 void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
+    // 阶段 1：检查输入及时间顺序。
     auto imu = raw_imu;
     if (!imu || !std::isfinite(imu->timestamp) || imu->timestamp <= 0.0 ||
         !imu->angular_velocity.allFinite() || !imu->linear_acceleration.allFinite()) return;
@@ -579,6 +617,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
         return;
     }
 
+    // 阶段 2：执行入口陀螺预滤波。
     // Causal ingress filter shared by LIO, live prediction and replay. Do not
     // mutate the caller's raw sample or filter an overlapping scan twice.
     // Three samples at 200 Hz add about 5 ms signal delay; default is bypass.
@@ -592,6 +631,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
         imu->angular_velocity /= static_cast<double>(raw_gyro_window_.size());
     }
 
+    // 阶段 3：推进已初始化的高频状态。
     if (p_imu_->IsIMUInited()) {
         /// 更新最新imu状态
         Vec3d raw_acc = imu->linear_acceleration;
@@ -622,6 +662,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
         }
     }
 
+    // 阶段 4：记录样本并入队。
     last_timestamp_imu_ = timestamp;
     high_frequency_previous_imu_ = imu;
 
@@ -629,20 +670,33 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
 }
 
 /**
- * @brief 处理一帧已经缓存并完成时间同步的Lidar数据。
- *
- * Run()是LIO前端的主循环单步：
- * 1. 从缓存中同步出一帧Lidar和覆盖扫描周期的IMU；
- * 2. 用IMU预测ESKF并对点云去畸变；
- * 3. 首帧直接建初始局部地图，后续帧进入降采样和地图匹配；
- * 4. 通过Lidar观测更新ESKF；
- * 5. 根据运动幅度创建关键帧、维护局部地图和高频IMU显示状态。
- *
- * @return true表示本帧完成了有效前端处理，false表示同步失败、初始化等待、跳帧或点数不足。
+ * @brief RunDetailed() 的布尔接口；仅将 kOutput 映射为 true。
+ * @note true 不代表激光观测一定被接受；首帧建图也返回 kOutput。
  */
 bool LaserMapping::Run() { return RunDetailed() == RunStatus::kOutput; }
 
+/**
+ * @brief 执行一帧 LIO，并区分未同步、已消费和有输出。
+ *
+ * @par 主要流程
+ * 1. <b>同步输入并检查连续性</b>：取得一帧数据，处理缺失 IMU、长时间断流并准备帧内统计。
+ * 2. <b>完成IMU处理并筛选可用点云</b>：推进初始化或去畸变，再执行自车过滤、过期检查和多雷达观测选择。
+ * 3. <b>处理首帧建图与固定跳帧</b>：首帧直接建立地图；配置跳过的后续帧在匹配前返回。
+ * 4. <b>降采样并准备匹配缓存</b>：按点数保护和预算生成观测点集，并分配最近邻、平面及残差缓存。
+ * 5. <b>执行激光更新并评估跟踪状态</b>：迭代调用 ObsModel，记录更新结果并按配置调整速度传播策略。
+ * 6. <b>按关键帧条件维护地图与负载策略</b>：创建必要的关键帧，再用本帧耗时、延迟和健康度更新降载状态。
+ * 7. <b>重建高频状态并返回帧输出</b>：从激光更新后的状态重放缓存 IMU，完成显示和统计。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 7”对应，可按阶段定位源码。
+ *
+ * @note 各阶段中的早退分支不会继续执行后续阶段；首帧建图也会直接返回 kOutput。
+ * kOutput 表示本帧有前端输出，不等同于 LastUpdateAccepted()、跟踪健康或外部定位有效。
+ * 地图增量更新由 MakeKF() 触发，普通帧不会无条件写入地图。
+ *
+ * @return kNoData：未同步；kConsumed：已消费但无帧输出；kOutput：产生前端帧输出。
+ */
 LaserMapping::RunStatus LaserMapping::RunDetailed() {
+    // 阶段 1：同步输入并检查连续性。
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     profiling::Stopwatch sync_profile_timer(profiling_enabled);
@@ -767,6 +821,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         last_frame_processing_ms_ = current_preprocess_ms_ + core_update_ms;
     };
 
+    // 阶段 2：完成IMU处理并筛选可用点云。
     // IMU处理包含两种情况：
     // - 初始化未完成：继续累计IMU均值/方差，并直接返回空点云；
     // - 初始化完成：预测kf_到当前扫描结束时刻，并把点云补偿到扫描结束时刻。
@@ -865,6 +920,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     }
     selection_timing = selection_profile_timer.Stop();
 
+    // 阶段 3：处理首帧建图与固定跳帧。
     // 第一帧没有可匹配的局部地图，因此不做ESKF观测更新，直接把去畸变点云转到世界系作为初始地图。
     if (flg_first_scan_) {
         profiling::Stopwatch initial_map_profile_timer(profiling_enabled);
@@ -915,7 +971,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                   << measures_.lidar_begin_time_ << ", end: " << measures_.lidar_end_time_;
     }
 
-    // 初始若干秒内地图还很稀疏，ObsModel和MapIncremental会根据这个标志放宽部分逻辑。
+    // 阶段 4：降采样并准备匹配缓存。
+    // 首帧后的时间阈值只控制 MapIncremental 的邻域筛选分支，并非 IMU 初始化完成标志。
     flg_EKF_inited_ = (measures_.lidar_begin_time_ - first_lidar_time_) >= fasterlio::INIT_TIME;
 
     // 对当前去畸变点云降采样，后续匹配和建图都使用scan_down_lidar_，避免逐点处理原始大点云。
@@ -985,6 +1042,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // pred_state.pos_ = state_point_.pos_;  // 假定位置不动行不行,防止速度漂移
     // kf_.ChangeX(pred_state);
 
+    // 阶段 5：执行激光更新并评估跟踪状态。
     // Lidar观测更新：ESKF内部会多次调用ObsModel()，构造点面/点点残差的HTH和HTr。
     profiling::Stopwatch scan_match_profile_timer(profiling_enabled);
     const auto scan_match_start = BenchClock::now();
@@ -1087,6 +1145,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     //     LOG(ERROR) << "please check";
     // }
 
+    // 阶段 6：按关键帧条件维护地图与负载策略。
     /// keyframes - 智能关键帧创建决策
     // 只有创建关键帧时才会调用MakeKF()，而MakeKF()内部会把当前帧点云增量加入IVox地图。
     // 因此关键帧阈值也间接控制了局部地图更新频率。
@@ -1134,7 +1193,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     }
     adaptive_timing = adaptive_profile_timer.Stop();
 
-    // 维护一份“最新IMU时刻”的ESKF状态给UI显示。
+    // 阶段 7：重建高频状态并返回帧输出。
+    // 重建后续高频输出使用的 ESKF 状态；UI 也可读取这份状态。
     // kf_只到当前Lidar结束时刻；imu_buffer_中可能还有更晚的IMU，所以从kf_继续预测到最新IMU。
     profiling::Stopwatch post_imu_profile_timer(profiling_enabled);
     RebuildHighFrequencyState();
@@ -1182,7 +1242,21 @@ void LaserMapping::SetIMUStaticHold(bool active) {
     }
 }
 
+/**
+ * @brief 以当前激光状态为起点重建高频 IMU 预测。
+ *
+ * @par 主要流程
+ * 1. <b>复制校正状态及轮速进度</b>：复制 kf_，先施加静止保持，再同步轮速已融合时间戳。
+ * 2. <b>重放尚未覆盖的IMU区间</b>：利用跨帧端点组成输入，仅推进高频状态之后的区间。
+ * 3. <b>保存积分桥接并记录结果</b>：保留下一条实时 IMU 所需端点，按配置记录重建事件。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note kf_ 保持激光帧状态，重放只修改 kf_imu_；PredictTo() 防止帧尾区间重复积分。
+ * 静止保持在重放前和每次成功预测后执行，避免已复制的速度先进入位置积分。
+ */
 void LaserMapping::RebuildHighFrequencyState() {
+    // 阶段 1：复制校正状态及轮速进度。
     const bool trace = profiling::CausalTraceEnabled();
     const auto previous = trace ? kf_imu_.GetX() : NavState{};
     kf_imu_ = kf_;
@@ -1193,6 +1267,7 @@ void LaserMapping::RebuildHighFrequencyState() {
         std::lock_guard<std::mutex> lock(wheel_speed_mutex_);
         last_imu_filter_wheel_timestamp_ = last_lidar_filter_wheel_timestamp_;
     }
+    // 阶段 2：重放尚未覆盖的IMU区间。
     auto previous_imu = last_synchronized_imu_;
     for (const auto &imu : imu_buffer_) {
         if (previous_imu && imu->timestamp <= previous_imu->timestamp) continue;
@@ -1218,6 +1293,7 @@ void LaserMapping::RebuildHighFrequencyState() {
         }
         previous_imu = imu;
     }
+    // 阶段 3：保存积分桥接并记录结果。
     high_frequency_previous_imu_ = previous_imu;
     if (trace) {
         const auto current = kf_imu_.GetX();
@@ -1465,11 +1541,29 @@ void LaserMapping::FlushMultiLidar() {
     DrainAssembledFrames();
 }
 
+/**
+ * @brief 从缓存组装一帧激光及其可消费的 IMU 样本。
+ *
+ * @par 主要流程
+ * 1. <b>检查输入缓存</b>：任一输入队列为空时保留当前进度并返回。
+ * 2. <b>确定当前激光时间窗口</b>：首次取队首点云并估计扫描结束时刻，等待期间复用该窗口。
+ * 3. <b>等待覆盖并消费IMU</b>：最新 IMU 到达扫描末后，按循环边界取出样本并维护跨帧端点。
+ * 4. <b>记录间隔并移出激光帧</b>：计算批内最大 IMU 间隔，同步弹出激光及其元数据缓存。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 返回 true 只表示该激光帧已消费，不保证 measures_.imu_ 非空；RunDetailed() 还会检查。
+ * 等待覆盖时 lidar_pushed_ 保留当前时间窗口；点内 time 由毫秒转换为秒。
+ *
+ * @return true 表示组装并消费了当前激光帧，false 表示继续等待。
+ */
 bool LaserMapping::SyncPackages() {
+    // 阶段 1：检查输入缓存。
     if (lidar_buffer_.empty() || imu_buffer_.empty()) {
         return false;
     }
 
+    // 阶段 2：确定当前激光时间窗口。
     /*** push a lidar scan ***/
     if (!lidar_pushed_) {
         measures_.scan_ = lidar_buffer_.front();
@@ -1506,6 +1600,7 @@ bool LaserMapping::SyncPackages() {
         lidar_pushed_ = true;
     }
 
+    // 阶段 3：等待覆盖并消费IMU。
     // [lio-wait-for-imu]
     if (last_timestamp_imu_ < lidar_end_time_) {
         return false;
@@ -1514,6 +1609,7 @@ bool LaserMapping::SyncPackages() {
 
     /*** push imu_ data, and pop from imu_ buffer ***/
     // 最新 IMU 覆盖扫描末才到这里；严格大于末时刻的消息留在队列中。
+    // 若初始队首恰等于扫描末，外层 < 条件不会进入；不能将 true 理解为必有 IMU。
     // [sensor-sync-consume-imu]
     double imu_time = imu_buffer_.front()->timestamp;
     measures_.imu_.clear();
@@ -1530,6 +1626,7 @@ bool LaserMapping::SyncPackages() {
     }
     // [sensor-sync-consume-imu]
 
+    // 阶段 4：记录间隔并移出激光帧。
     current_max_imu_gap_ = 0.0;
     for (std::size_t i = 1; i < measures_.imu_.size(); ++i) {
         current_max_imu_gap_ =
@@ -1551,18 +1648,20 @@ bool LaserMapping::SyncPackages() {
 }
 
 /**
- * @brief 增量式地图构建：将当前帧点云添加到全局地图中
+ * @brief 筛选关键帧点云并增量写入 IVox 局部地图。
  *
- * 功能说明：
- * 1. 将当前帧点云从机体坐标系转换到世界坐标系
- * 2. 根据距离和邻近点信息决定哪些点需要添加到地图
- * 3. 实现自适应下采样，避免地图密度过大
- * 4. 更新IVox体素索引结构
+ * @par 主要流程
+ * 1. <b>准备两类待插入点集</b>：为需筛选和直接插入的点预留容量。
+ * 2. <b>变换并按邻域筛选地图点</b>：转到世界系，结合初始化标志和体素中心距离选择待插入点。
+ * 3. <b>写入局部体素地图</b>：将两类结果分别交给 IVox 更新。
  *
- * @note 该函数在每次激光雷达更新后调用，实现地图的实时增量构建
- * @note 使用体素栅格进行空间下采样，提高地图构建效率
+ * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
+ *
+ * @note 由 MakeKF() 在创建关键帧时调用；首帧建图由 RunDetailed() 独立完成。
+ * 本函数使用匹配阶段缓存的 nearest_points_；无邻居或初始时间段内直接保留当前点。
  */
 void LaserMapping::MapIncremental() {
+    // 阶段 1：准备两类待插入点集。
     PointVector points_to_add;             // 需要添加到地图的点（经过智能下采样筛选）
     PointVector point_no_need_downsample;  // 无需下采样的点（稀疏区域的点，直接添加）
 
@@ -1575,6 +1674,7 @@ void LaserMapping::MapIncremental() {
         index[i] = i;
     }
 
+    // 阶段 2：变换并按邻域筛选地图点。
     // TODO. 这里的逻辑不太对，导致体素边缘的点可能较为密集
     std::for_each(index.begin(), index.end(), [&](const size_t &i) {
         /* transform to world frame */
@@ -1615,7 +1715,7 @@ void LaserMapping::MapIncremental() {
 
             // 只有需要时才添加到地图（实现自适应下采样）
             if (need_add) {
-                points_to_add.emplace_back(point_world);  // 这并发可能有点问题
+                points_to_add.emplace_back(point_world);  // 当前 for_each 不使用并行执行策略。
             }
         } else {
             // 初始化阶段或无邻近点时直接添加所有点
@@ -1623,6 +1723,7 @@ void LaserMapping::MapIncremental() {
         }
     });
 
+    // 阶段 3：写入局部体素地图。
     Timer::Evaluate(
         [&, this]() {
             ivox_->AddPoints(points_to_add);
@@ -1631,20 +1732,7 @@ void LaserMapping::MapIncremental() {
         "    IVox Add Points");
 }
 
-/**
- * @brief 激光雷达点云配准观测模型，用于传入ESKF内
- * @details 计算当前激光雷达点云与IVox局部地图之间的残差，并累加成ESKF需要的信息矩阵形式。
- *
- * 算法流程：
- * 1. 使用当前迭代状态s，将scan_down_lidar_从Lidar系变换到世界系；
- * 2. 在IVox地图中为每个点搜索最近邻，并尝试拟合局部平面；
- * 3. 用点到平面的距离构造点面残差和位姿雅可比；
- * 4. 可选地加入点到点ICP残差；
- * 5. 将所有残差累加为 H^T H 和 H^T r，交给ESKF::Update()求解位姿增量。
- *
- * @param s[in] 当前ESKF状态，包含位姿、速度、零偏等
- * @param obs[out] 观测模型结构体，填充valid_、HTH_、HTr_和残差统计信息
- */
+/// 按量程与入射角计算点面观测信息缩放；关闭噪声模型时返回 1。
 double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
                                            const NavState &state) const {
     if (!point_noise_enabled_) return 1.0;
@@ -1666,7 +1754,27 @@ double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &
                       max_information_scale_);
 }
 
+/**
+ * @brief 用当前迭代位姿构造激光观测的信息矩阵与残差统计。
+ *
+ * @par 主要流程
+ * 1. <b>更新地图对应关系</b>：变换观测点并搜索最近邻，拟合平面后按距离条件筛选。
+ * 2. <b>压缩有效点并检查面约束数量</b>：整理对应点、平面和来源；不足 20 个点面约束则拒绝本轮观测。
+ * 3. <b>累加点面观测信息</b>：构造六维位姿雅可比，按噪声缩放与权重累加 HTH 和 HTr。
+ * 4. <b>记录点面残差统计</b>：保存平方残差最大值及上中位数，供迭代与诊断使用。
+ * 5. <b>按配置叠加点点观测</b>：剔除大于 0.5 m 的点点残差，将其信息累加到同一位姿观测。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 5”对应，可按阶段定位源码。
+ *
+ * @note 每次调用都重新搜索最近邻；ESKF 迭代期间会重复调用本函数。
+ * 可选点点项不能绕过阶段 2 的点面数量门槛；各并行分块按固定顺序归并。
+ * lidar_residual_mean_ 沿用历史名称，实际为点面平方残差的上中位数，不包含点点项。
+ *
+ * @param s 当前迭代状态；固定外参将主雷达系连接到 IMU 系。
+ * @param obs 填充 valid_、HTH_、HTr_ 和残差统计，求解由 ESKF::Update() 完成。
+ */
 void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
+    // 阶段 1：更新地图对应关系。
     ++observation_evaluations_;
     int cnt_pts = scan_down_lidar_->size();
 
@@ -1731,6 +1839,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         },
         "    ObsModel (Lidar Match)");
 
+    // 阶段 2：压缩有效点并检查面约束数量。
     effect_feat_surf_ = 0;
     effect_feat_icp_ = 0;
 
@@ -1768,6 +1877,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     }
     // [lio-plane-count-gate]
 
+    // 阶段 3：累加点面观测信息。
     const Mat3f off_R = offset_R_lidar_fixed_.cast<float>();
     const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
     const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
@@ -1841,6 +1951,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         obs.HTr_ += observation_gradient_blocks_[block];
     }
 
+    // 阶段 4：记录点面残差统计。
     // 此统计只含点面项；mean_ 沿用旧名称，实际存放平方残差的上中位数。
     // [lio-plane-residual-statistic]
     auto& res_sq = observation_residual_squared_;
@@ -1854,6 +1965,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     }
     // [lio-plane-residual-statistic]
 
+    // 阶段 5：按配置叠加点点观测。
     /// 点到点ICP部分
 
     if (options_.enable_icp_part_) {

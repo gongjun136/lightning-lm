@@ -30,6 +30,7 @@ void PGO::SetHighFrequencyGlobalOutputHandleFunction(PGO::GlobalOutputHandleFunc
 }
 
 void PGO::PubResult() {
+    // 阶段 1：检查输出条件与匹配状态。
     if (is_parking_) return;  // held pose is published only on the live DR clock
     // 在有需要时，高频外推然后向外发送数据
     if (high_freq_output_func_ && impl_->result_.valid_) {
@@ -53,6 +54,7 @@ void PGO::PubResult() {
             localization_unusual_tag_ = false;
         }
 
+        // 阶段 2：外推候选并记录对照。
         auto result = impl_->result_;
         const double base_timestamp = result.timestamp_;
         const SE3 base_pose = result.pose_;
@@ -83,7 +85,7 @@ void PGO::PubResult() {
 
         bool extrap_success = true;
 
-        /// 利用激光定位的外推结果校验DR外推
+        // 计算激光定位外推作为对照；下面的差异拒绝条件被注释，当前不会据此拒绝 DR。
         if (impl_->lidar_loc_pose_queue_.size() > 5 && impl_->result_.lidar_loc_smooth_flag_ &&
             (result.timestamp_ - impl_->lidar_loc_pose_queue_.back().timestamp_) < 0.3) {
             SE3 recent_lidar_loc_pose = impl_->lidar_loc_pose_queue_.back().pose_;
@@ -127,6 +129,7 @@ void PGO::PubResult() {
             }
         }
 
+        // 阶段 3：平滑位姿并传播协方差。
         if (dr_smoothing_enabled_ && !impl_->dr_pose_queue_.empty()) {
             const auto& latest_dr = impl_->dr_pose_queue_.back();
             smoother_->PushDRPose(latest_dr.GetPose(), latest_dr.timestamp_,
@@ -162,6 +165,7 @@ void PGO::PubResult() {
         // RPYXYZ.z = 0;
         // result.pose_ = common::math::XYZRPYToSE3(RPYXYZ);
 
+        // 阶段 4：调用输出回调并维护历史。
         high_freq_output_func_(result);
 
         impl_->output_pose_queue_.emplace_back(result.timestamp_, result.pose_);
@@ -187,6 +191,7 @@ void PGO::PubResult() {
 }
 
 bool PGO::ProcessDR(const NavState& dr_result) {
+    // 阶段 1：接收有序 DR 并维护队列。
     UL lock(impl_->data_mutex_);
     /// 假定DR定位是按时间顺序到达的
     double delta_timestamp = 0;
@@ -217,6 +222,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
         impl_->dr_pose_queue_.pop_front();
     }
 
+    // 阶段 2：更新静止保持切换。
     const bool was_parking = is_parking_;
     dr_is_parking_ = dr_result.is_parking_;
     // A stationary request can arrive before the first fused map pose. Do not
@@ -252,6 +258,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
             std::max(static_hold_release_watermark_, dr_result.timestamp_);
         parking_result_ = LocalizationResult{};
     }
+    // 阶段 3：按运动状态交付高频结果。
     if (!impl_->dr_pose_queue_.empty() && !is_parking_) {
         PubResult();
     } else if (is_parking_ && high_freq_output_func_) {
@@ -270,6 +277,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
 }
 
 bool PGO::ProcessLidarOdom(const NavState& lio_result) {
+    // 阶段 1：接收有序 LO 并维护队列。
     UL lock(impl_->data_mutex_);
     /// 假定LidarOdom定位是按时间顺序到达的
     if (!impl_->lidar_odom_pose_queue_.empty()) {
@@ -298,6 +306,7 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
         impl_->lidar_odom_pose_queue_.pop_front();
     }
 
+    // 阶段 2：更新 LO 与 DR 冲突状态。
     if (!lio_result.lidar_odom_reliable_) {
         impl_->lidar_odom_conflict_with_dr_ = true;
         impl_->lidar_odom_conflict_with_dr_cnt_ = 200;
@@ -309,7 +318,8 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
         }
     }
 
-    /// 如果LO的时间比DR更新，则发布LO的递推结果
+    // 阶段 3：按时间关系尝试输出。
+    // LO 时间到达或超过最新 DR 时尝试输出；PubResult() 仍按其有效性和外推开关处理。
     if (!impl_->dr_pose_queue_.empty() && lio_result.timestamp_ >= impl_->dr_pose_queue_.back().timestamp_ &&
         !is_parking_) {
         PubResult();
@@ -340,6 +350,7 @@ bool PGO::CheckStationaryMapConsistency(const LocalizationResult& loc_result) {
 }
 
 bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
+    // 阶段 1：检查输入来源与时间水位。
     UL lock(impl_->data_mutex_);
     lidar_loc_is_parking_ = loc_result.is_parking_;
     is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
@@ -409,6 +420,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         last_lidar_loc_input_time_ = loc_result.timestamp_;
     }
 
+    // 阶段 2：构造地图匹配帧。
     // 增加一个PGO Frame并触发一次PGO
     auto new_frame = std::make_shared<PGOFrame>();
     new_frame->timestamp_ = loc_result.timestamp_;
@@ -428,6 +440,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         new_frame->lidar_loc_normalized_weight_ = clap_weight * Vec6d::Ones();
     }
 
+    // 阶段 3：更新里程计可信度并优化。
     impl_->result_.lidar_loc_odom_error_normal_ = loc_result.lidar_loc_odom_error_normal_;
     impl_->result_.lidar_loc_smooth_flag_ = loc_result.lidar_loc_smooth_flag_;
 
@@ -454,7 +467,9 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
 }
 
 bool PGO::ProcessPGOFrame(std::shared_ptr<PGOFrame> frame) {
+    // 阶段 1：执行优化并检查成功。
     if (!impl_->AddPGOFrame(frame)) return false;
+    // 阶段 2：更新静止保持协方差。
     if (is_parking_ && parking_result_.valid_) {
         const auto& fused = impl_->result_;
         parking_result_.pose_covariance_ = fused.pose_covariance_;
@@ -479,6 +494,7 @@ bool PGO::ProcessPGOFrame(std::shared_ptr<PGOFrame> frame) {
         parking_result_.unsmoothed_pose_valid_ = true;
     }
 
+    // 阶段 3：维护匹配历史并尝试输出。
     impl_->lidar_loc_pose_queue_.emplace_back(impl_->result_.timestamp_, impl_->result_.pose_);
     while (impl_->lidar_loc_pose_queue_.size() > 50) {
         impl_->lidar_loc_pose_queue_.pop_front();
@@ -544,6 +560,7 @@ void PGO::LogWindowState() {
 }
 
 bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
+    // 阶段 1：检查结果并确定最新时刻。
     if (!output_result.valid_) {
         return false;
     }
@@ -553,7 +570,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     SE3 interp_pose;
     NavState best_match;
 
-    /// 确定外推的最远时间，由DR，GPS，LO中取最大者（因为这几个都可能断流）
+    // 当前从融合结果、DR 和 LO 取最新时刻；GPS 分支未启用。
     double latest_time = impl_->result_.timestamp_;
     if (!dr_pose_queue.empty() && dr_pose_queue.back().timestamp_ > latest_time) {
         latest_time = dr_pose_queue.back().timestamp_;
@@ -567,6 +584,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     //     latest_time = impl_->gps_queue_.back().timestamp_;
     // }
 
+    // 阶段 2：报告 DR 断流状态。
     // 其他数据源时间检测imu时间
     if (!dr_pose_queue.empty() && latest_time - dr_pose_queue.back().timestamp_ > imu_interruption_time_thd_) {
         imu_interruption_tag_ = true;
@@ -615,7 +633,8 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     //     }
     // }
 
-    // 其次用DR做外推
+    // 阶段 3：应用 DR 相对增量。
+    // 当前启用的相对运动外推来源是 DR。
 
     if (!dr_pose_queue.empty() && dr_pose_queue.back().timestamp_ > output_result.timestamp_) {
         double dr_extrap_time = dr_pose_queue.back().timestamp_ - output_result.timestamp_;  // DR 递推的时间
@@ -653,6 +672,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
         }
     }
 
+    // 阶段 4：使用地图历史补偿剩余延迟。
     if (output_result.timestamp_ < (latest_time - 0.05)) {
         /// 如果中间失效导致最新定位无法更新，那么用激光定位将其外推至最新位置
         SE3 interp_pose_final;

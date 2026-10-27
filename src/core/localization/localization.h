@@ -106,10 +106,13 @@ class Localization {
      * @details 系统层在接收传感器数据前调用；再次初始化时先结束已启动的队列。
      * 初始位姿由后续 SetExternalPose() 设置。
      * @par 主要流程
-     * 1. <b>装配算法</b>：初始化 LaserMapping、LidarLoc 和 PGO，并按配置创建 UI。
-     * 2. <b>连接输入处理</b>：设置队列容量、跳帧与过载策略，绑定处理函数，在线模式启动线程。
-     * 3. <b>连接结果输出</b>：区分全局校正与高频结果，设置输出队列和时间戳门控。
-     * 4. <b>完成预处理配置</b>：设置雷达类型、点过滤与高度 ROI，供后续点云输入使用。
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>结束旧队列并重置门控</b>：持有生命周期锁准备模块；已有模块时先释放锁再等待旧队列结束。
+     * 2. <b>装配 LIO 与地图定位</b>：读取配置，初始化 LIO、地图定位及可选 UI。
+     * 3. <b>配置 PGO</b>：创建 PGO，设置 DR 平滑、外推与协方差过程噪声。
+     * 4. <b>配置并启动输入队列</b>：设置跳帧、静止检测和有界队列，绑定处理函数；在线模式启动输入及匹配线程。
+     * 5. <b>连接全局与实时输出</b>：定义带时间戳门控的实时回调，分开全局结果；在线高频输出走容量一队列。
+     * 6. <b>完成点云预处理配置</b>：设置雷达类型、过滤参数和高度 ROI；在线模式下输入队列此时已经启动。
      * @htmlonly[block]
      * <details><summary>关键代码：输入与地图匹配的处理入口</summary>
      * @endhtmlonly
@@ -132,7 +135,13 @@ class Localization {
     void ProcessLidarMsg(const sensor_msgs::msg::PointCloud2::SharedPtr laser_msg);
     /**
      * @brief 预处理指定雷达的标准点云，并送入 LIO 数据处理链。
-     * @details 先更新过载监测并按策略跳帧，再做点过滤；在线模式进入传感器队列，离线模式直接处理。
+     * @details 先更新过载监测并做点过滤，再应用里程计跳帧策略；在线模式入队，离线模式直接处理。
+     * @par 主要流程
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>检查模块并串行进入输入处理</b>：记录到达时间和过载状态，锁定共享预处理器并检查模块是否就绪。
+     * 2. <b>预处理并保留帧时间</b>：登记主雷达到达时间，转换标准点云并保留消息时间戳。
+     * 3. <b>应用里程计跳帧策略</b>：在预处理之后推进跳帧计数；被跳过的帧不再入队。
+     * 4. <b>分派点云并记录耗时</b>：在线加入统一传感器队列，离线释放输入锁后直接处理，再汇总本次耗时。
      * @param laser_msg 非空点云消息，保留传感器时间戳用于后续同步。
      * @param lidar_id 与多雷达配置对应的传感器 ID。
      * @see ProcessSensorInput(), LidarOdomProcCloud()
@@ -141,6 +150,12 @@ class Localization {
     /**
      * @brief 将 Livox 自定义消息预处理为算法点云，并送入同一条 LIO 处理链。
      * @details 在线模式入队，离线模式直接调用 LidarOdomProcCloud()。
+     * @par 主要流程
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>检查模块并串行进入输入处理</b>：记录到达时间和过载状态，检查模块并锁定共享预处理器。
+     * 2. <b>预处理并确定雷达身份</b>：转换 Livox 点云，保留帧时间，并选择主雷达或单雷达 ID。
+     * 3. <b>应用里程计跳帧策略</b>：按计数决定是否将已预处理的帧继续送入 LIO。
+     * 4. <b>分派点云并记录耗时</b>：在线入传感器队列，离线直接处理，并记录预处理和分派耗时。
      * @see ProcessLidarMsg(), LidarOdomProcCloud()
      */
     void ProcessLivoxLidarMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr laser_msg);
@@ -187,9 +202,11 @@ class Localization {
     /**
      * @brief 消费 LIO 已完成的帧，将里程计、点云及同帧状态连接到定位与 PGO。
      * @par 主要流程
-     * 1. <b>取前端输出</b>：循环调用 LaserMapping::RunDetailed()，直到无可处理数据。
-     * 2. <b>更新运动状态</b>：向地图匹配与 PGO 提交 LIO 里程计，并更新运行统计。
-     * 3. <b>提交匹配帧</b>：按关键帧策略选择点云；在线模式入匹配队列，离线模式直接处理。
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>取出可用 LIO 输出</b>：循环运行前端；无数据时结束，无输出的处理状态继续下一轮。
+     * 2. <b>更新里程计状态</b>：将同帧 LO 交给静止检测、地图定位与 PGO。
+     * 3. <b>整理同帧数据与统计</b>：关联定位点云、发布点云、雷达完整性与主雷达到达时间。
+     * 4. <b>选择并提交地图匹配帧</b>：按关键帧策略筛选；在线入匹配队列，离线直接匹配，随后继续循环。
      * @see LidarOdomProcCloud(), ProcessIMUData(), LidarLocProcCloud()
      */
     void DrainLioOutputs();
@@ -206,9 +223,13 @@ class Localization {
      * @brief 执行一帧地图匹配，将匹配结果连接到点云发布和 PGO 融合。
      * @details 在线模式由独立匹配队列调用，离线模式由 DrainLioOutputs() 直接调用。
      * @par 主要流程
-     * 1. <b>匹配地图</b>：调用 LidarLoc::ProcessCloud()，读取结果并更新重定位统计。
-     * 2. <b>处理恢复状态</b>：重定位接受后重置 PGO；静止地图冲突时标记无效并请求恢复。
-     * 3. <b>交付结果</b>：调用点云回调，正常结果送入 PGO，并更新 UI、状态回调与耗时记录。
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>检查模块并执行地图匹配</b>：记录队列等待，在生命周期保护下调用 LidarLoc::ProcessCloud()。
+     * 2. <b>读取结果并检查恢复状态</b>：记录重定位统计，接受重定位时重置 PGO，静止地图冲突时将结果置为无效。
+     * 3. <b>交付点云与当前缓存结果</b>：把点云、结果及发布资格交给回调；冲突状态也在这里通知上层。
+     * 4. <b>更新 PGO 或请求恢复</b>：冲突时重置 PGO 并请求全局重定位，否则向 PGO 提交地图匹配结果。
+     * 5. <b>记录时延并通知状态</b>：更新端到端统计、UI 和状态回调，释放生命周期锁后记录计算耗时。
+     * @note 此处未检查 ProcessCloud() 的返回值；点云过少而早退时，缓存结果可能仍来自上一帧，不能保证与本帧点云对应。
      * @see DrainLioOutputs(), SetProcessedCloudCallback(), SetLocalizationResultCallback()
      */
     void LidarLocProcCloud(const LidarLocInput& input);
@@ -227,7 +248,7 @@ class Localization {
     void SetLocalizationResultCallback(LocalizationResultCallback&& callback);
     /// @brief 注册 PGO 全局校正回调，用于评估与轨迹记录，与实时发布路径分开。
     void SetGlobalLocalizationResultCallback(LocalizationResultCallback&& callback);
-    /// @brief 注册同帧点云与匹配结果回调；在线模式在地图匹配线程中执行。
+    /// @brief 注册发布点云与当前匹配结果回调；在线模式在地图匹配线程中执行，结果时效边界见 LidarLocProcCloud()。
     void SetProcessedCloudCallback(ProcessedCloudCallback&& callback);
     /// @brief 注册每帧地图匹配后的定位状态回调。
     void SetLocStateCallback(LocStateCallback&& callback);
@@ -294,6 +315,11 @@ class Localization {
     /**
      * @brief 从传感器队列取一条输入，分派到 IMU 或 LIO 点云处理，并更新完成进度。
      * @note queue_wait 记录入队到进入处理回调的耗时，不等同于操作系统调度等待时间。
+     * @par 主要流程
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>记录队列等待</b>：使用单调时钟统计入队到进入处理回调的等待。
+     * 2. <b>分派 IMU 或点云</b>：按载荷类型调用 IMU 或 LIO 点云处理函数。
+     * 3. <b>推进完成进度</b>：被调处理函数返回后更新进度，并按需记录因果追踪。
      * @see ProcessIMUData(), LidarOdomProcCloud(),
      *      @ref resource_diagnostics "资源与调度诊断"
      */
@@ -301,9 +327,11 @@ class Localization {
     /**
      * @brief 校验 IMU、更新前端预测，并将可用航迹推算状态送入定位与 PGO。
      * @par 主要流程
-     * 1. <b>检查输入</b>：过滤无效数据、重复或回退时间戳，串行进入算法处理。
-     * 2. <b>更新前端</b>：提交 IMU，并先处理由该 IMU 补齐同步条件的 LIO 帧。
-     * 3. <b>更新航迹推算</b>：位姿可用时处理静止状态，再向 LidarLoc 和 PGO 提交 DR 状态。
+     * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
+     * 1. <b>串行检查 IMU 输入</b>：保护模块与有序算法状态，拒绝无效数值、重复时间和回退时间。
+     * 2. <b>更新预测并排出 LIO 帧</b>：提交 IMU 后先排出已满足同步条件的 LIO 帧，保持 PGO 的传感器时间顺序。
+     * 3. <b>检查预测位姿并更新静止状态</b>：取得 IMU 预测；位姿不可用时结束本次处理，否则应用保守静止检测。
+     * 4. <b>分别交付地图定位与 PGO</b>：地图定位收到的 DR 清除停车标记以继续真实匹配，PGO 保留静止状态，再记录耗时。
      * @see ProcessIMUMsg(), DrainLioOutputs(), ProcessWheelSpeed()
      */
     void ProcessIMUData(IMUPtr imu);

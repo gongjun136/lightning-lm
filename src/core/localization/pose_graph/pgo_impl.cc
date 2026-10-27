@@ -120,6 +120,7 @@ bool PGOImpl::Reset() {
 }
 
 bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
+    // 阶段 1：检查帧时间。
     assert(pgo_frame != nullptr);
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
@@ -138,6 +139,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
         LOG(INFO) << "inserting pgo frame, it's timestamp is " << std::setprecision(18) << pgo_frame->timestamp_;
     }
 
+    // 阶段 2：补齐并验证观测。
     // 这里尝试设置相对位姿观测，如果上游（通常是激光定位）给了就跳过；
     // 如果 LidarOdom 和 DR 都设置失败，结束本函数。
     profiling::Stopwatch assign_profile_timer(profiling_enabled);
@@ -163,6 +165,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     }
     // [pgo-frame-observation-check]
 
+    // 阶段 3：插入窗口并执行优化。
     pgo_frame->frame_id_ = accumulated_frame_id_++;
     current_frame_ = pgo_frame;
 
@@ -204,6 +207,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     // // 根据优化更新一些状态量
     // UpdatePoseGraphState();
 
+    // 阶段 4：汇总融合结果并调用全局回调。
     // 输出结果信息
     profiling::Stopwatch collect_profile_timer(profiling_enabled);
     CollectOptimizationStatistics();
@@ -212,6 +216,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     // 清空
     // CleanProblem();
 
+    // 阶段 5：滑动窗口并记录耗时。
     /// 需要时，删除一部分
     profiling::Stopwatch slide_profile_timer(profiling_enabled);
     SlideWindowAdaptively();
@@ -334,6 +339,7 @@ void PGOImpl::UpdateLidarOdomStatusInFrame(NavState& lio_result, std::shared_ptr
 }
 
 bool PGOImpl::RunOptimization() {
+    // 阶段 1：构建约束图。
     // if (frames_.size() < kMinNumRequiredForOptimization) {
     //     LOG(INFO) << "Skip optimization because frame size is " << frames_.size();
     //     return;
@@ -343,9 +349,10 @@ bool PGOImpl::RunOptimization() {
         LOG(INFO) << "Run pose graph optimization: ";
     }
 
-    // build g2o problem
+    // 构建当前优化器使用的位姿图。
     BuildProblem();
 
+    // 阶段 2：初始化并执行求解。
     // solve problems
     if (!optimizer_->InitializeOptimization()) {
         return false;
@@ -363,6 +370,7 @@ bool PGOImpl::RunOptimization() {
     // optimizer_->InitializeOptimization();
     // optimizer_->Optimize(5);
 
+    // 阶段 3：验证全部顶点结果。
     // Validate every estimate before committing any optimized pose to a frame.
     for (const auto& frame : frames_) {
         auto v = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer_->GetVertex(frame->frame_id_));
@@ -371,6 +379,7 @@ bool PGOImpl::RunOptimization() {
         }
     }
 
+    // 阶段 4：写回位姿并计算后验协方差。
     // get results
     for (const auto& frame : frames_) {
         auto v = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer_->GetVertex(frame->frame_id_));

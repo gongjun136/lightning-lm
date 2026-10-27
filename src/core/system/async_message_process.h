@@ -21,7 +21,7 @@ using UL = std::unique_lock<std::mutex>;
 /**
  * @brief 使用有界队列和一个工作线程串行处理消息。
  * @details 定位系统用它分别组织传感器、地图匹配和高频输出；同一实例的回调串行执行。
- * @par 主要流程
+ * @par 调用关系
  * 1. <b>接收消息</b>：AddMessage() 根据跳帧策略入队，超出容量时淘汰最旧的待处理消息。
  * 2. <b>执行回调</b>：ProcLoop() 每次取一条消息，释放队列锁后执行处理函数。
  * 3. <b>结束处理</b>：Quit() 停止接收新消息，处理完已接收队列并等待线程退出。
@@ -58,6 +58,11 @@ class AsyncMessageProcess {
     /**
      * @brief 按跳帧策略接收消息，必要时淘汰旧数据，并唤醒消费线程。
      * @details 入队不会等待回调完成；开始退出后不再接收新消息。
+     * @par 主要流程
+     * 1. <b>检查退出与跳帧条件</b>：在队列锁下拒收退出后的输入，按计数决定是否跳过。
+     * 2. <b>入队并限制等待容量</b>：加入新消息，超限时淘汰队头的旧消息。
+     * 3. <b>唤醒消费线程</b>：设置更新标志并通知 worker，处理函数由 ProcLoop() 执行。
+     * @note 阶段名称对应函数体；容量不包含已出队、正在执行的消息。
      * @htmlonly[block]
      * <details><summary>关键代码：队列超出容量时保留较新的输入</summary>
      * @endhtmlonly
@@ -109,6 +114,12 @@ class AsyncMessageProcess {
     /**
      * @brief 等待消息，逐条执行回调，直到退出请求已提出且队列为空。
      * @details 回调执行期间不持有队列锁；容量限制仅作用于等待中的消息。
+     * @par 主要流程
+     * 1. <b>初始化工作线程</b>：执行可选的线程初始化回调。
+     * 2. <b>等待消息或退出</b>：等待更新/退出信号，仅在已请求退出且队列为空时结束。
+     * 3. <b>取出一条消息并解锁</b>：从队头取消息，更新在途计数后释放队列锁。
+     * 4. <b>执行回调并更新统计</b>：同步执行处理函数，完成后清除在途计数并累计完成数。
+     * @note 阶段名称对应函数体；阶段 2–4 在循环中重复，退出请求不会取消正在执行的回调。
      * @see AddMessage(), Quit(), ProcessedCount()
      */
     void ProcLoop();
@@ -166,14 +177,17 @@ void AsyncMessageProcess<T>::Start() {
 
 template <typename T>
 void AsyncMessageProcess<T>::ProcLoop() {
+    // 阶段 1：初始化工作线程。
     if (thread_init_) thread_init_();
     while (true) {
+        // 阶段 2：等待消息或退出。
         // [async-message-exit-condition]
         UL lock(mutex_);
         cv_msg_.wait(lock, [this]() { return update_flag_ || exit_flag_; });
         if (exit_flag_ && msg_buffer_.empty()) break;
         // [async-message-exit-condition]
 
+        // 阶段 3：取出一条消息并解锁。
         // Keep only the message currently executing outside the bounded
         // buffer. Swapping the complete queue into an unbounded in-flight
         // batch defeats max_size_ while a slow callback is running.
@@ -184,6 +198,7 @@ void AsyncMessageProcess<T>::ProcLoop() {
         update_flag_ = !msg_buffer_.empty();
         lock.unlock();
 
+        // 阶段 4：执行回调并更新统计。
         custom_func_(msg);
         in_flight_count_ = 0;
         ++processed_count_;
@@ -193,6 +208,7 @@ void AsyncMessageProcess<T>::ProcLoop() {
 
 template <typename T>
 void AsyncMessageProcess<T>::AddMessage(const T& msg) {
+    // 阶段 1：检查退出与跳帧条件。
     // [async-message-refuse-after-exit]
     UL lock(mutex_);
     if (exit_flag_) return;
@@ -208,6 +224,7 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
         skip_cnt_ = skip_cnt_ % skip_num_;
     }
 
+    // 阶段 2：入队并限制等待容量。
     // [async-message-capacity]
     msg_buffer_.push_back(msg);
     while (msg_buffer_.size() > max_size_) {
@@ -217,6 +234,7 @@ void AsyncMessageProcess<T>::AddMessage(const T& msg) {
     }
     // [async-message-capacity]
 
+    // 阶段 3：唤醒消费线程。
     update_flag_ = true;
     cv_msg_.notify_one();
 }

@@ -7,11 +7,9 @@
  * @brief 在线定位程序入口，选择定位模式并管理系统的启动、运行与退出。
  * @details 由运行脚本启动；LiDAR 模式使用 lightning::LocSystem，纯组合导航模式使用
  * lightning::InsLocSystem。传感器处理和业务发布由相应系统对象完成。
- * @par 主要流程
- * 1. <b>选择模式</b>：解析 flags、初始化 ROS，并读取 YAML 中的定位模式。
- * 2. <b>准备系统</b>：初始化相应系统；LiDAR 分支还设置初始位姿与可选轨迹记录。
- * 3. <b>处理输入</b>：进入 ROS 事件循环；LiDAR 分支可启动进程内 bag 回放。
- * 4. <b>结束运行</b>：LiDAR 分支等待回放线程，停止算法并按需导出轨迹，最后关闭 ROS。
+ * @par 阅读入口
+ * 先查看本文件 main 的主要流程和同名阶段注释；ins_only 在模式分支内运行并返回，
+ * 后续阶段属于 LiDAR 分支。算法细节沿下列系统函数继续阅读。
  * @see lightning::LocSystem::Init(), lightning::LocSystem::SetInitPose(),
  *      lightning::LocSystem::Spin(), lightning::LocSystem::Finish(),
  *      @ref online_localization_flow "在线定位数据流"
@@ -92,8 +90,18 @@ bool ReadInitialPose(const std::string& config_path, lightning::SE3& pose) {
  * 执行；退出时调用 LocSystem::Finish() 并按 flags 保存轨迹。
  * @return 正常结束返回 0；模式、初始化、回放或输出设置失败返回非零值。
  * @see lightning::LocSystem, lightning::InsLocSystem
+ *
+ * @par 主要流程
+ * 1. <b>准备进程与 ROS</b>：初始化日志、解析 flags、应用线程调度策略并启动 ROS。
+ * 2. <b>选择定位模式</b>：ins_only 分支独立初始化、运行和退出；LiDAR 模式进入后续阶段。
+ * 3. <b>初始化 LiDAR 系统</b>：创建 LocSystem，并按需开启实际发布轨迹记录。
+ * 4. <b>提供初始位姿</b>：读取配置中的初始位姿，缺省使用单位位姿，再开启定位输入。
+ * 5. <b>启动回放与事件循环</b>：按需启动进程内 bag 回放线程，随后进入 LocSystem::Spin。
+ * 6. <b>等待线程并结束运行</b>：Spin 返回后等待回放线程、Finish 算法、按需导出轨迹并关闭 ROS。
+ * @note bag 回放后的 post_wait_seconds 是固定等待时间，不能证明全部队列已排空；结尾轨迹导出的返回值未检查，返回 0 不能证明这些文件保存成功。
  */
 int main(int argc, char** argv) {
+    // 阶段 1：准备进程与 ROS。
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
@@ -113,6 +121,7 @@ int main(int argc, char** argv) {
     (void)profiling::CausalTraceEnabled();
     rclcpp::init(argc, argv);
 
+    // 阶段 2：选择定位模式。
     try {
         const auto config = YAML::LoadFile(FLAGS_config);
         const std::string mode = config["system"] && config["system"]["localization_mode"]
@@ -135,6 +144,7 @@ int main(int argc, char** argv) {
         LOG(ERROR) << error.what(); rclcpp::shutdown(); return 2;
     }
 
+    // 阶段 3：初始化 LiDAR 系统。
     // [online-loc-create-system]
     LocSystem::Options opt;
     LocSystem loc(opt);
@@ -150,6 +160,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    // 阶段 4：提供初始位姿。
     // [online-loc-initial-pose]
     /// 先提供初始位姿并打开输入处理，再进入 ROS 事件循环。
     SE3 initial_pose;
@@ -166,6 +177,7 @@ int main(int argc, char** argv) {
     loc.SetInitPose(initial_pose);
     // [online-loc-initial-pose]
 
+    // 阶段 5：启动回放与事件循环。
     std::shared_ptr<OnlineBagPlayer> bag_player;
     std::thread bag_thread;
     if (!FLAGS_bag.empty()) {
@@ -182,9 +194,11 @@ int main(int argc, char** argv) {
     }
     // [online-loc-spin-finish]
     loc.Spin();
+    // 阶段 6：等待线程并结束运行。
     if (bag_thread.joinable()) bag_thread.join();
     loc.Finish();
     // [online-loc-spin-finish]
+    // 这里未检查轨迹导出的返回值，正常退出不能作为轨迹保存成功的判据。
     if (!FLAGS_output_tum.empty()) loc.SaveTrajectoryTum(FLAGS_output_tum);
     if (!FLAGS_output_high_frequency_tum.empty()) {
         loc.SaveHighFrequencyTrajectoryTum(FLAGS_output_high_frequency_tum);

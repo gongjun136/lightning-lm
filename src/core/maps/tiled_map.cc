@@ -12,14 +12,8 @@
 
 namespace lightning {
 
-/**
- * @brief 将完整PCD点云切分为静态chunk地图并保存到磁盘。
- * @param map 输入的完整点云地图。
- * @param start_pose 地图起点位姿，会作为功能点写入地图索引。
- * @param map_path 分块地图保存目录。
- * @return 转换和保存成功返回true。
- */
 bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std::string& map_path) {
+    // 阶段 1：设置分块原点与起点。
     /// 离线转换时以世界坐标原点作为分块地图原点。
     origin_.setZero();
     assert(map != nullptr && !map->empty());
@@ -30,6 +24,7 @@ bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std
 
     chunk_id_ = 0;
 
+    // 阶段 2：按二维网格归入静态块。
     for (const auto& pt : map->points) {
         /// 根据点的二维平面坐标找到所属chunk网格。
         Vec2i grid = Pos2Grid(math::ToEigen<float, 2, PointType>(pt));
@@ -47,7 +42,8 @@ bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std
         }
     }
 
-    /// 将切分后的静态chunk和索引文件写入目标目录。
+    // 阶段 3：调用静态地图保存。
+    // SaveToBin 不返回写入状态，因此后面的 true 只表示执行到了这里。
     SaveToBin(false);
     return true;
 }
@@ -55,6 +51,7 @@ bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std
 void TiledMap::SaveToBin(bool only_dynamic) {
     LOG(INFO) << "map is saved to " << options_.map_path_ << ", sz: " << static_chunks_.size();
 
+    // 阶段 1：静态保存分支。
     if (!only_dynamic) {
         /// 原点+索引
         std::ofstream fout(options_.map_path_ + "/index.txt");
@@ -83,6 +80,7 @@ void TiledMap::SaveToBin(bool only_dynamic) {
         return;
     }
 
+    // 阶段 2：动态保存分支。
     for (auto& cp : dynamic_chunks_) {
         /// 只存储动态图层
         /// 如果同一栅格还存在动态图层，应该把动态图层也存下来
@@ -96,6 +94,7 @@ void TiledMap::SaveToBin(bool only_dynamic) {
 }
 
 bool TiledMap::LoadMapIndex() {
+    // 阶段 1：打开索引并准备容器。
     std::ifstream fin(options_.map_path_ + "/index.txt");
     if (!fin) {
         LOG(ERROR) << "cannot load map index from: " << options_.map_path_;
@@ -111,6 +110,7 @@ bool TiledMap::LoadMapIndex() {
     UL lock(static_data_mutex_);
     UL lock2(dynamic_data_mutex_);
 
+    // 阶段 2：解析索引并预载点云。
     while (!fin.eof()) {
         std::string line;
         std::getline(fin, line);
@@ -189,6 +189,7 @@ bool TiledMap::LoadMapIndex() {
 
     fin.close();
 
+    // 阶段 3：按需读取动态多边形。
     // 尝试载入动态区域文件
     if (!options_.enable_dynamic_polygon_) {
         return true;
@@ -292,6 +293,7 @@ void TiledMap::AddDynamicCloud(CloudPtr cloud) {
 }
 
 void TiledMap::LoadOnPose(const SE3& pose) {
+    // 阶段 1：检查是否跨越网格。
     // [map-tile-same-grid]
     Vec2d p = pose.translation().head<2>();
     auto this_grid = Pos2Grid(p);
@@ -301,6 +303,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
     }
     // [map-tile-same-grid]
 
+    // 阶段 2：选择附近地图块。
     // 加载近邻范围内的地图
     UL lock(static_data_mutex_);
     UL lock2(dynamic_data_mutex_);
@@ -340,6 +343,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
     // LOG(INFO) << "static_grids_ size is: " << static_grids_.size()
     //           << ", dynamic_grids_ size is: " << dynamic_grids_.size();
 
+    // 阶段 3：移除远处活动块。
     // 卸载过远的点云
     for (auto iter = loaded_chunks_.begin(); iter != loaded_chunks_.end();) {
         // [map-tile-active-removal]
@@ -383,6 +387,7 @@ void TiledMap::LoadOnPose(const SE3& pose) {
         }
     }
 
+    // 阶段 4：记录本次网格。
     last_load_grid_ = this_grid;
     last_load_grid_set_ = true;
 }

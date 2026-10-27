@@ -145,7 +145,17 @@ struct InsLocSystem::Impl {
         solutions << ',' << published << ',' << why << '\n';
     }
 
+    /**
+     * @brief 在字段更新后评估导航解，驱动恢复门控与业务输出。
+     * @par 主要流程
+     * 1. <b>检查质量与字段推进</b>：拒绝审计故障，检查质量；主导航字段未全部更新时返回。
+     * 2. <b>转换坐标并记录拒绝结果</b>：修正高度后转换到地图坐标，拒绝质量失效或超出场地范围的解。
+     * 3. <b>推进恢复门控与位姿历史</b>：保存带有效标志的位姿，恢复样本不足时停止本次发布。
+     * 4. <b>发布导航并处理待用点云</b>：记录通过结果，调用 Publish()，再尝试消耗点云队列。
+     * @note 阶段名称对应函数体；质量失效解可进入审计转换，但不会作为有效位姿发布。
+     */
     void OnNavigation() {
+        // 阶段 1：检查质量与字段推进。
         if (recording_failed) { Reject("recording_failed"); return; }
         // [ins-new-navigation-fields]
         const std::string bad = ins::CheckSample(sample,policy,node->now().seconds(),Steady());
@@ -155,6 +165,7 @@ struct InsLocSystem::Impl {
         for (std::size_t i=0;i<consumed.size();++i) if (sample.time[i] <= consumed[i]) return;
         for (std::size_t i=0;i<consumed.size();++i) consumed[i] = sample.time[i];
         // [ins-new-navigation-fields]
+        // 阶段 2：转换坐标并记录拒绝结果。
         ins::Sample converted = sample;
         converted.altitude += geoid_separation;  // h = H + N; explicit datum only.
         ins::Pose pose;
@@ -170,11 +181,13 @@ struct InsLocSystem::Impl {
         if (pose.map_from_rear.translation().norm() > max_radius) {
             Reject("outside_site_radius"); LogSolution(&pose,false,reason); return;
         }
+        // 阶段 3：推进恢复门控与位姿历史。
         // 恢复中的位姿也入历史，但 global_valid=false 使点云不能用它们跨区间插值。
         // [ins-navigation-recovery]
         pose.global_valid = gate->Observe(pose.stamp,true);
         if (!poses->Add(pose)) { Reject("nonmonotonic_pose"); LogSolution(&pose,false,reason); return; }
         if (!gate->Good()) { reason="recovering"; LogSolution(&pose,false,reason); return; }
+        // 阶段 4：发布导航并处理待用点云。
         reason="good";
         LogSolution(&pose,true,reason);
         Publish(pose);
@@ -182,7 +195,16 @@ struct InsLocSystem::Impl {
         DrainClouds();
     }
 
+    /**
+     * @brief 将通过门控的后轴导航解发布为业务位姿和速度。
+     * @par 主要流程
+     * 1. <b>检查门控并构造消息</b>：拒绝时间不递增或恢复门控未通过的位姿，填充消息与通信头。
+     * 2. <b>发布并更新工作状态</b>：发送业务消息、尝试写 TUM，并推进心跳状态和工作计数。
+     * 3. <b>更新 TF 与轨迹</b>：按开关发送 TF，按时间间隔更新有界可视化路径。
+     * @note 阶段名称对应函数体；日志写入故障由 Health() 周期检查，不是发布前的落盘事务。
+     */
     void Publish(const ins::Pose& p) {
+        // 阶段 1：检查门控并构造消息。
         // [ins-business-publish]
         if (p.stamp <= latest_published || !gate->Good()) return;
         auto vehicle=sany_output::MakeVehiclePoseMessage(p.map_from_rear,p.SignedSpeed(),p.stamp,frame);
@@ -190,11 +212,13 @@ struct InsLocSystem::Impl {
         vehicle.comm_header.source_id=heartbeat->NodeId();
         vehicle.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(pose_seq);
         vehicle.comm_header.stamp_us=functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
+        // 阶段 2：发布并更新工作状态。
         pose_pub->publish(pose); vehicle_pub->publish(vehicle);
         sany_output::WriteTumPoseLine(tum,pose,latest_published);
         heartbeat->SetState(functional_safety::NodeState::kRunning); heartbeat->RecordWork();
         ever_good=true;
         // [ins-business-publish]
+        // 阶段 3：更新 TF 与轨迹。
         if (tf) {
             geometry_msgs::msg::TransformStamped m;
             m.header=pose.header; m.child_frame_id=rear_frame;
@@ -208,7 +232,16 @@ struct InsLocSystem::Impl {
         }
     }
 
+    /**
+     * @brief 校验并预处理单雷达点云，组帧后等待导航位姿覆盖扫描区间。
+     * @par 主要流程
+     * 1. <b>校验点布局</b>：检查紧密单行、本机字节序及 Livox 字段类型和边界。
+     * 2. <b>预处理并检查点值</b>：转换点云，拒绝空云、非有限坐标或无效点时间。
+     * 3. <b>组帧入队并尝试发布</b>：添加雷达帧，对融合帧做自反射过滤，限制等待队列后调用 DrainClouds()。
+     * @note 阶段名称对应函数体；入队不代表导航覆盖充分，实际发布还需通过去畸变检查。
+     */
     void Cloud(int id, const sensor_msgs::msg::PointCloud2::SharedPtr& msg) {
+        // 阶段 1：校验点布局。
         // The reused Livox iterator expects one packed, native-endian scan.
         if (msg->height!=1 || !msg->point_step || msg->is_bigendian ||
             static_cast<std::uint64_t>(msg->width)*msg->point_step!=msg->row_step ||
@@ -220,12 +253,14 @@ struct InsLocSystem::Impl {
             if (it==msg->fields.end() || it->datatype!=field.second || it->count!=1 ||
                 static_cast<std::uint64_t>(it->offset)+size>msg->point_step) { ++cloud_drops; return; }
         }
+        // 阶段 2：预处理并检查点值。
         CloudPtr cloud(new PointCloudType);
         try { preprocessors.at(id)->Process(msg,cloud); }
         catch (const std::exception& e) { ++cloud_drops; LOG(WARNING) << "INS cloud input: " << e.what(); return; }
         if (cloud->empty() || std::any_of(cloud->begin(),cloud->end(),[](const auto& p){
             return !p.getVector3fMap().allFinite() || !std::isfinite(p.time) || p.time<0;
         })) { ++cloud_drops; return; }
+        // 阶段 3：组帧入队并尝试发布。
         // Individual secondary clouds have not yet been rotated into primary axes.
         if (!assembler.AddCloud(id,ToSec(msg->header.stamp),cloud)) { ++cloud_drops; return; }
         FusedLidarFrame ready;
@@ -237,20 +272,33 @@ struct InsLocSystem::Impl {
         DrainClouds();
     }
 
+    /**
+     * @brief 按队首顺序等待导航覆盖，丢弃不可用帧并发布可去畸变的点云。
+     * @par 主要流程
+     * 1. <b>复核导航质量</b>：质量中断时重置恢复门控和插值历史。
+     * 2. <b>检查队首可处理性</b>：丢弃等待超时帧；门控或扫描末端覆盖不足时保留队列并退出循环。
+     * 3. <b>去畸变与降采样</b>：拒绝缺雷达或无法插值的帧，成功后按配置降采样。
+     * 4. <b>发布并移出队首</b>：发布后轴点云，按帧间隔发布地图点云，再移除本帧。
+     * @note 阶段名称对应函数体；阶段 2–4 循环执行，此函数不会阻塞等待导航数据到达。
+     */
     void DrainClouds() {
+        // 阶段 1：复核导航质量。
         const auto bad=ins::CheckSample(sample,policy,node->now().seconds(),Steady());
         if (!bad.empty()) Reject(bad);
         while (!pending.empty()) {
+            // 阶段 2：检查队首可处理性。
             auto& p=pending.front();
             const auto& stats=p.frame.stats;
             if (Steady()-p.arrival>cloud_wait) { ++cloud_drops; pending.pop_front(); continue; }
             if (!gate->Good() || poses->Latest()<stats.end_time) break;
+            // 阶段 3：去畸变与降采样。
             CloudPtr deskewed; SE3 map_from_rear;
             if (stats.partial || !ins::Deskew(p.frame.cloud,stats.begin_time,stats.end_time,
                                             rear_from_primary,*poses,deskewed,map_from_rear)) {
                 ++cloud_drops; pending.pop_front(); continue;
             }
             if (cloud_leaf>0) deskewed=DownsamplePreservingSource(deskewed,cloud_leaf);
+            // 阶段 4：发布并移出队首。
             inv_pub->publish(sany_output::MakeCloudMessage(deskewed,stats.begin_time,stats.end_time,SE3(),rear_frame));
             if (cloud_count++ % map_every==0)
                 map_pub->publish(sany_output::MakeCloudMessage(deskewed,stats.begin_time,stats.end_time,map_from_rear,frame));
@@ -258,7 +306,16 @@ struct InsLocSystem::Impl {
         }
     }
 
+    /**
+     * @brief 周期检查导航与审计状态，发布健康信息并推进等待中的点云。
+     * @par 主要流程
+     * 1. <b>检查有效性并发布定位状态</b>：复核导航时效，刷新审计流并锁存写入故障。
+     * 2. <b>发布故障与诊断快照</b>：根据恢复门控和等待队列统计构造故障及诊断消息。
+     * 3. <b>发布轨迹并推进点云</b>：门控通过且路径非空时发布路径，再尝试处理点云队列。
+     * @note 阶段名称对应函数体；检查发现故障时会切断插值历史。
+     */
     void Health() {
+        // 阶段 1：检查有效性并发布定位状态。
         // 日志故障在 flush 后检查并锁存；这不是每次 publish 前的写盘事务。
         // [ins-health-status]
         const auto bad=ins::CheckSample(sample,policy,node->now().seconds(),Steady());
@@ -270,6 +327,7 @@ struct InsLocSystem::Impl {
         s.status=gate->Good() ? s.STATUS_GOOD : (ever_good ? s.STATUS_FAIL : s.STATUS_INITIALIZING);
         status_pub->publish(s);
         // [ins-health-status]
+        // 阶段 2：发布故障与诊断快照。
         lightning::msg::FaultStatus f;
         f.header=s.header; f.comm_header.source_id=heartbeat->NodeId();
         f.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(fault_seq);
@@ -282,11 +340,21 @@ struct InsLocSystem::Impl {
                         " incomplete_scan_drops="+std::to_string(assembler.InsufficientLidarDropCount())+
                         " pending_clouds="+std::to_string(pending.size());
         diagnostic_pub->publish(diagnostic);
+        // 阶段 3：发布轨迹并推进点云。
         if (gate->Good() && !path.poses.empty()) path_pub->publish(path);
         DrainClouds();
     }
 
+    /**
+     * @brief 按开关配置纯 INS 模式的雷达组帧与投影输入。
+     * @par 主要流程
+     * 1. <b>检查开关与投影参数</b>：未启用时返回，否则验证已确认的外参和发布策略。
+     * 2. <b>载入雷达配置并初始化组帧</b>：保存配置快照，检查多雷达、自反射及 Livox 预处理参数。
+     * 3. <b>创建预处理器与点云订阅</b>：为每台雷达配置独立预处理器，注册带雷达 ID 的回调。
+     * @note 阶段名称对应函数体；配置异常交由外层 Init() 捕获。
+     */
     void InitClouds(const YAML::Node& config,const std::string& yaml) {
+        // 阶段 1：检查开关与投影参数。
         const auto cloud=config["cloud"];
         clouds_enabled=cloud && cloud["enabled"].as<bool>();
         if (!clouds_enabled) return;
@@ -295,6 +363,7 @@ struct InsLocSystem::Impl {
         map_every=cloud["map_publish_every"] ? cloud["map_publish_every"].as<int>() : 1;
         cloud_leaf=cloud["voxel_leaf_m"] ? cloud["voxel_leaf_m"].as<double>() : 0;
         if (map_every<1 || !std::isfinite(cloud_leaf) || cloud_leaf<0) throw std::invalid_argument("invalid cloud output options");
+        // 阶段 2：载入雷达配置并初始化组帧。
         const YAML::Node base=cloud["lidar_config"] ? YAML::LoadFile(RelativeTo(yaml,cloud["lidar_config"].as<std::string>()).string()) : config;
         std::ofstream snapshot(audit_directory/"lidar_config.yaml");
         snapshot << base;
@@ -309,6 +378,7 @@ struct InsLocSystem::Impl {
             !std::isfinite(c["blind"].as<double>()) || c["blind"].as<double>()<0)
             throw std::invalid_argument("ins_only cloud input requires valid Livox PointCloud2 settings");
         const double point_time_scale=Positive(c,"livox_point_time_scale",1);
+        // 阶段 3：创建预处理器与点云订阅。
         for (const auto& lidar:lidar_config.lidars) {
             auto pre=std::make_shared<PointCloudPreprocess>();
             pre->Set(static_cast<LidarType>(c["lidar_type"].as<int>()),c["blind"].as<double>(),c["point_filter_num"].as<int>());
@@ -326,6 +396,7 @@ InsLocSystem::InsLocSystem() : impl_(std::make_unique<Impl>()) {}
 InsLocSystem::~InsLocSystem() = default;
 bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tum) {
     try {
+        // 阶段 1：校验坐标参考。
         auto& x=*impl_;
         const auto config=YAML::LoadFile(yaml), c=config["ins_only"], geo=c["georeference"];
         // [ins-fixed-reference]
@@ -344,6 +415,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         if (height=="orthometric") x.geoid_separation=geo["geoid_separation_m"].as<double>();
         else if (height!="ellipsoidal") throw std::invalid_argument("input_height must be verified ellipsoidal or orthometric");
         if (!std::isfinite(x.geoid_separation)) throw std::invalid_argument("invalid geoid separation");
+        // 阶段 2：配置质量门控。
         x.max_radius=Positive(geo,"max_radius_m",20000);
         x.offset=c["receive_time_offset_sec"] ? c["receive_time_offset_sec"].as<double>() : 0;
         if (!std::isfinite(x.offset)) throw std::invalid_argument("invalid time offset");
@@ -360,6 +432,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         if (x.policy.recovery_samples<1 || x.policy.max_skew>x.policy.max_age) throw std::invalid_argument("invalid recovery/skew policy");
         x.gate=std::make_unique<ins::RecoveryGate>(x.policy.recovery_samples);
         x.poses=std::make_unique<ins::PoseBuffer>(2,Positive(c,"pose_interpolation_max_gap_sec",0.05));
+        // 阶段 3：创建节点与心跳。
         x.node=std::make_shared<rclcpp::Node>("lightning_slam");
         if (c["use_sim_time"]) x.node->set_parameter(rclcpp::Parameter("use_sim_time",c["use_sim_time"].as<bool>()));
         x.frame=config["output"] && config["output"]["map_frame"] ? config["output"]["map_frame"].as<std::string>() : "map";
@@ -367,6 +440,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         functional_safety::HeartbeatConfig hc;
         hc.node_id=6; hc.topic="/diagnostics/heartbeat/lightning_slam";
         x.heartbeat=std::make_unique<functional_safety::HeartbeatPublisher>(*x.node,hc);
+        // 阶段 4：打开审计文件。
         const std::filesystem::path dir=std::filesystem::path(c["audit_root"] ? c["audit_root"].as<std::string>() : "runs")/
             ("ins_only_"+std::to_string(functional_safety::HeartbeatPublisher::UnixMicrosecondsNow()));
         std::filesystem::create_directories(dir);
@@ -385,6 +459,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
                     "t_lat,t_lon,t_alt,t_att,t_vel,t_pos_sigma,t_att_sigma,t_status,t_vel_sigma,"
                     "x,y,z,qx,qy,qz,qw,vx,vy,vz,signed_speed,published,reason\n";
         x.events << "stamp,reason\n";
+        // 阶段 5：创建输出通道。
         const auto qos=rclcpp::QoS(1000).best_effort();
         x.pose_pub=x.node->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic",qos);
         x.vehicle_pub=x.node->create_publisher<lightning::msg::VehiclePose>("/localization/pose_vel",qos);
@@ -395,6 +470,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         x.inv_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv",rclcpp::QoS(1).best_effort());
         x.map_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL",rclcpp::QoS(1).best_effort());
         if (config["system"]["pub_tf"] && config["system"]["pub_tf"].as<bool>()) x.tf=std::make_unique<tf2_ros::TransformBroadcaster>(x.node);
+        // 阶段 6：注册导航与点云输入。
         const auto ns=c["topic_prefix"] ? c["topic_prefix"].as<std::string>() : "/cgi430";
         if (ns.empty() || ns.front()!='/' || ns.back()=='/') throw std::invalid_argument("invalid CGI topic_prefix");
         namespace ci=cgi430_interfaces::msg;
@@ -408,6 +484,7 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         x.Subscribe<ci::VelocitySigma>(ns+"/velocity/sigma",ins::VelocitySigma,[&x](const auto& m){x.sample.velocity_sigma=Vec3d(m.east_mps,m.north_mps,m.up_mps);});
         x.Subscribe<ci::InsStatus>(ns+"/ins/status",ins::Status,[&x](const auto& m){x.sample.system_state=m.system_state;x.sample.satellite_status=m.satellite_status;x.sample.differential_age=m.differential_age_s;});
         x.InitClouds(config,yaml);
+        // 阶段 7：启动健康检查。
         x.timer=x.node->create_wall_timer(std::chrono::milliseconds(50),[&x]{x.Health();});
         LOG(INFO) << "INS_ONLY initialized, fixed ENU origin=" << origin[0] << ',' << origin[1]
                   << " audit=" << dir << " source=CGI_rear_axle no_LIO_no_map_matching";

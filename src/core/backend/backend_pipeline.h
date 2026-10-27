@@ -58,12 +58,39 @@ class BackendPipeline {
     BackendPipeline() = default;
     ~BackendPipeline();
 
+    /**
+     * @brief 初始化建图后端。
+     *
+     * @par 主要流程
+     * 1. <b>读取配置与外参</b>：已初始化则直接返回，否则读取后端选项和雷达到 IMU 外参。
+     * 2. <b>创建优化模块</b>：创建局部 BA、BTC、HBA 对象并清除停止标志。
+     * 3. <b>按模式启动线程</b>：在线模式启动关键帧线程；启用 HBA 时启动其线程并标记初始化完成。
+     * @note 离线模式也可能启动 HBA 线程；本函数未清空已有关键帧和运行统计，不能据此推断重复初始化会重置后端。
+     */
     bool Init(const std::string& yaml_path, bool online_mode);
     /// @brief 在线入队，离线同步处理；未初始化或空关键帧直接返回。
     /// @see @ref backend_queue_ba_reading
     void AddKeyframe(const Keyframe::Ptr& keyframe);
     void RequestGlobalOptimization(const std::string& reason = "manual");
+    /**
+     * @brief 等待当前后端工作结束，可选触发全局优化。
+     *
+     * @par 主要流程
+     * 1. <b>等待关键帧处理空闲</b>：未初始化则返回；在线模式等待队列为空且无正在处理的帧。
+     * 2. <b>按需请求最终优化</b>：force_global_optimization 为 true 时请求一次全局优化。
+     * 3. <b>等待 HBA 请求结束</b>：启用 HBA 时等待无待处理请求且未运行。
+     * @note 不会禁止新的关键帧或优化请求进入；调用方应先停止输入，才能把返回视为数据结束后的排空。
+     */
     void WaitUntilIdle(bool force_global_optimization);
+    /**
+     * @brief 停止并回收后端工作线程。
+     *
+     * @par 主要流程
+     * 1. <b>等待现有任务结束</b>：未初始化则返回，否则等待空闲且不强制追加全局优化。
+     * 2. <b>停止关键帧线程</b>：设置停止标志、唤醒等待并 join 在线工作线程。
+     * 3. <b>停止 HBA 线程并清除状态</b>：唤醒并 join HBA 线程，最后清除初始化标记。
+     * @note 调用方应先停止生产新任务；本函数不负责关闭上游传感器或阻止并发入队。
+     */
     void Shutdown();
 
     using OptimizedCallback = std::function<void()>;
@@ -89,10 +116,51 @@ class BackendPipeline {
         bool graph_inlier = true;  ///< 该回环约束是否被位姿图判为内点。
     };
 
+    /**
+     * @brief 按局部优化、回环检测和全局优化顺序处理关键帧。
+     *
+     * @par 主要流程
+     * 1. <b>登记关键帧并选择窗口</b>：跳过与末帧相同的指针，按窗口大小和步长选取局部 BA 输入。
+     * 2. <b>按条件执行局部 BA</b>：启用且窗口非空时串行优化，随后记录结果和耗时。
+     * 3. <b>检测回环并登记约束</b>：BTC 给出检测结果后记录统计，仅 accepted 且 optimization_warranted 时写入图约束。
+     * 4. <b>按入图结果触发全局优化</b>：实际写入约束后运行 PGO 并请求 HBA。
+     * 5. <b>更新地图到里程计变换</b>：本帧处理结束时刷新变换并同步通知订阅回调。
+     * @note loops_applied 表示约束曾入图，不等于 PGO 内点数；回调可能在持 optimization_mutex_ 时同步执行。
+     */
     void HandleKeyframe(const Keyframe::Ptr& keyframe);
+    /**
+     * @brief 持续消费在线关键帧队列。
+     *
+     * @par 主要流程
+     * 1. <b>等待并取出关键帧</b>：每轮持队列锁等待，取出一帧并标记处理中；停止且队列为空时退出。
+     * 2. <b>释放队列锁后处理</b>：调用 HandleKeyframe 执行耗时工作。
+     * 3. <b>结束本帧并通知空闲</b>：清除处理中标志，队列为空时唤醒等待者。
+     * @note 停止请求不直接丢弃已入队关键帧；队列锁在算法处理前释放。
+     */
     void WorkerLoop();
+    /**
+     * @brief 消费 HBA 请求并控制优化结果的提交。
+     *
+     * @par 主要流程
+     * 1. <b>等待并消费优化请求</b>：每轮取出合并后的请求和前置 PGO 标志，设置 HBA 运行状态。
+     * 2. <b>快照关键帧与入图历史</b>：读取当前关键帧和是否曾有回环约束入图。
+     * 3. <b>串行优化并执行提交门控</b>：可选 PGO 后保存位姿快照，执行 HBA，按入图历史门控回退 HBA 修改并刷新变换。
+     * 4. <b>记录结果并通知空闲</b>：更新统计和日志，清除运行标志；无后续请求时通知等待者。
+     * @note 提交门控检查累计入图历史，不检查本次 PGO 的内点数；回退快照取自前置 PGO 之后，仅撤销本次 HBA 修改。
+     */
     void HbaLoop();
     void RequestHba(bool rerun_pose_graph, const std::string& reason);
+    /**
+     * @brief 优化回环位姿图并写回关键帧。
+     *
+     * @par 主要流程
+     * 1. <b>快照输入并检查规模</b>：复制关键帧和回环约束；少于两帧或无约束时返回 false。
+     * 2. <b>建立顶点与里程计边</b>：用优化位姿初始化顶点、固定首帧，并以 LIO 相对运动建立相邻边。
+     * 3. <b>加入回环边并首次优化</b>：跳过端点缺失的约束，给回环边加鲁棒核后运行优化。
+     * 4. <b>筛选内点并写回位姿</b>：按卡方阈值筛选回环；存在内点时再次优化，随后写回顶点估计。
+     * 5. <b>更新统计并返回内点结果</b>：回写约束的内点标记，累计耗时，按是否存在内点返回。
+     * @note 零内点时也会写回首次优化的估计；返回 false 不等于关键帧位姿未改变。调用方负责串行化优化。
+     */
     bool OptimizePoseGraph();
     void UpdateMapToOdomAndNotify();
 

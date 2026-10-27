@@ -129,8 +129,9 @@ class LaserMapping {
     /// 从yaml加载参数并初始化预处理器、IMU处理器、IVox局部地图和ESKF观测函数。
     bool Init(const std::string &config_yaml);
 
-    /// 处理缓存中的一帧同步数据，完成去畸变、ESKF更新、关键帧判断和地图维护。
+    /// RunDetailed() 的布尔包装；仅在状态为 kOutput 时返回 true。
     bool Run();
+    /// 分阶段处理一帧 LIO；区分未同步、已消费和有输出，详见实现中的阶段导航。
     RunStatus RunDetailed();
 
     // 三个ProcessPointCloud2函数处理逻辑：
@@ -153,7 +154,7 @@ class LaserMapping {
 
     void FlushMultiLidar();
 
-    /// 处理一条IMU消息：写入IMU缓存，并在IMU初始化后维护一份高频kf_imu_状态供UI显示。
+    /// 校验并缓存一条 IMU；初始化后维护高频 kf_imu_ 状态供预测输出和 UI 使用。
     void ProcessIMU(const lightning::IMUPtr &msg_in);
 
     /// Buffer a signed body-forward speed converted from motor rpm.

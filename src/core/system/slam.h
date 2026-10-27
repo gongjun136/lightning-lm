@@ -84,6 +84,15 @@ class SlamSystem {
      * @brief 初始化SLAM系统及其子模块。
      * @param yaml_path YAML配置文件路径。
      * @return 初始化成功返回true，否则返回false。
+     *
+     * @par 主要流程
+     * 1. <b>初始化 LIO 前端</b>：创建并初始化 LaserMapping，失败时返回。
+     * 2. <b>读取系统和导出配置</b>：解析系统开关、地面坐标与地图身份配置。
+     * 3. <b>选择并初始化后端</b>：按配置启用 BA/BTC/HBA、旧回环后端或关闭回环。
+     * 4. <b>按需创建三维界面</b>：界面失败时关闭可视化并继续初始化。
+     * 5. <b>配置栅格地图及回调</b>：按需创建 G2P5，连接旧回环重绘和二维显示回调。
+     * 6. <b>配置在线 ROS 接口</b>：仅在线模式创建节点、后端通知、传感器订阅和保存/优化服务。
+     * @note 后端初始化可能已经启动线程；此处仅注册传感器回调，ROS 事件循环在 Spin 中执行。旧回环和 G2P5 的 Init 返回值未在此检查。
      */
     bool Init(const std::string& yaml_path);
 
@@ -96,6 +105,15 @@ class SlamSystem {
     /**
      * @brief 保存当前地图。
      * @param path 地图保存路径；为空时默认保存到./data/地图名/目录下。
+     *
+     * @par 主要流程
+     * 1. <b>确定目录并等待关键帧</b>：使用默认或指定目录，等待新后端优化，拒绝无关键帧的导出。
+     * 2. <b>生成地图并校验导出坐标</b>：选择 LIO 或优化位姿生成全局点云，估计地面坐标并变换点云。
+     * 3. <b>替换目录并写入点云</b>：坐标校验后重建目标目录，写分块地图和 global.pcd。
+     * 4. <b>导出后端资料和轨迹</b>：按需保存后端诊断、BTC 库及同一地图坐标下的轨迹。
+     * 5. <b>按配置导出导航栅格</b>：优先使用导航导出器，否则可从 G2P5 写出 PGM/YAML。
+     * 6. <b>写入坐标元数据和清单</b>：完成元数据与地图清单后返回 true。
+     * @note 目录替换和多文件写入不是原子操作，后续失败可能留下部分产物；true 表示通过本函数现有检查，分块写入和旧栅格 imwrite 并未完整检查返回值。
      */
     bool SaveMap(const std::string& path = "");
 
@@ -155,6 +173,16 @@ class SlamSystem {
     void SaveMap(const SaveMapService::Request::SharedPtr request, SaveMapService::Response::SharedPtr response);
     void OptimizeBackend(const std_srvs::srv::Trigger::Request::SharedPtr request,
                          std_srvs::srv::Trigger::Response::SharedPtr response);
+    /**
+     * @brief 排空 LIO 已同步数据并分发新关键帧。
+     *
+     * @par 主要流程
+     * 1. <b>消费已同步帧</b>：每轮调用 RunDetailed；无数据即返回，非输出帧继续下一轮。
+     * 2. <b>记录有效前端状态</b>：仅保存位姿有效且时间戳递增的状态。
+     * 3. <b>筛选新关键帧</b>：跳过与上次相同或为空的关键帧。
+     * 4. <b>分发关键帧</b>：按配置交给新后端或旧回环，并更新栅格地图和界面。
+     * @note 消费过一帧不保证产生有效位姿或新关键帧；本函数中的阶段随每轮循环重复。
+     */
     void DrainLio();
     bool SaveLioTrajectoryTum(
         const std::string& path,

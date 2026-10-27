@@ -28,35 +28,15 @@ SlamSystem::SlamSystem(lightning::SlamSystem::Options options) : options_(option
     signal(SIGINT, lightning::debug::SigHandle);
 }
 
-/**
- * @brief 初始化 SLAM 系统
- * @param yaml_path 配置文件路径
- * @return 初始化是否成功，成功返回 true，失败返回 false
- *
- * 该函数完成 SLAM 系统的完整初始化流程，包括以下主要步骤：
- * 1. **初始化 LIO 前端模块**：创建并初始化激光雷达惯性里程计模块
- * 2. **加载配置参数**：从 YAML 文件读取系统开关选项
- * 3. **初始化回环检测**：根据配置启用回环检测模块
- * 4. **初始化可视化**：根据配置启用 3D 可视化界面
- * 5. **初始化 2D 栅格地图**：根据配置启用 3D 到 2D 地图转换模块
- * 6. **创建 ROS2 节点**：如果是在线模式，创建订阅器和服务器
- *
- * 支持的配置选项包括：
- * - with_loop_closing: 是否启用回环检测
- * - with_ui: 是否启用 3D 可视化
- * - with_2dui: 是否启用 2D 可视化
- * - with_g2p5: 是否启用 3D 到 2D 地图转换
- * - step_on_kf: 是否在关键帧处暂停（调试模式）
- */
 bool SlamSystem::Init(const std::string& yaml_path) {
-    // 初始化 LIO（激光雷达惯性里程计）前端模块
+    // 阶段 1：初始化 LIO 前端。
     lio_ = std::make_shared<LaserMapping>();
     if (!lio_->Init(yaml_path)) {
         LOG(ERROR) << "failed to init lio module";
         return false;
     }
 
-    // 从配置文件加载系统选项
+    // 阶段 2：读取系统和导出配置。
     auto yaml = YAML::LoadFile(yaml_path);
     const auto system = yaml["system"];
     auto read_optional_bool = [&system](const char* key, bool& value) {
@@ -84,7 +64,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         return false;
     }
 
-    // 根据配置初始化回环检测模块
+    // 阶段 3：选择并初始化后端。
     if (options_.with_loop_closing_) {
         const backend::BackendMode mode = backend::ReadBackendMode(yaml_path);
         LOG(INFO) << "slam backend mode: " << backend::BackendModeName(mode);
@@ -101,7 +81,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         }
     }
 
-    // 根据配置初始化 3D 可视化模块
+    // 阶段 4：按需创建三维界面。
     if (options_.with_visualization_) {
         LOG(INFO) << "slam with 3D UI";
         ui_ = std::make_shared<ui::PangolinWindow>();
@@ -115,7 +95,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         }
     }
 
-    // 根据配置初始化 3D 到 2D 栅格地图转换模块
+    // 阶段 5：配置栅格地图及回调。
     if (options_.with_gridmap_) {
         g2p5::G2P5::Options opt;
         opt.online_mode_ = options_.online_mode_;
@@ -145,7 +125,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
         }
     }
 
-    // 如果是在线模式，创建 ROS2 节点和相关订阅器
+    // 阶段 6：配置在线 ROS 接口。
     if (options_.online_mode_) {
         LOG(INFO) << "online mode, creating ros2 node ... ";
 
@@ -263,14 +243,8 @@ void SlamSystem::SaveMap(const SaveMapService::Request::SharedPtr request,
     response->response = SaveMap(save_path) ? 0 : 3;
 }
 
-/**
- * @brief 将当前SLAM地图保存到指定目录。
- * @param path 地图保存目录；为空时使用./data/{map_name_}/作为默认目录。
- *
- * 保存内容包括全局点云global.pcd、分块地图数据，以及可选的ROS导航兼容栅格地图
- * map.pgm和map.yaml。若目标目录已存在，会先清空再重新创建。
- */
 bool SlamSystem::SaveMap(const std::string& path) {
+    // 阶段 1：确定目录并等待关键帧。
     std::string save_path = path;
     if (save_path.empty()) {
         save_path = "./data/" + map_name_ + "/";
@@ -286,6 +260,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
     }
     // [online-slam-save-preconditions]
 
+    // 阶段 2：生成地图并校验导出坐标。
     // auto global_map_no_loop = lio_->GetGlobalMap(true);
     /// 根据回环配置导出优化后的全局点云，关闭回环时直接使用无回环轨迹。
     const bool use_lio_pose = !options_.with_loop_closing_;
@@ -305,7 +280,8 @@ bool SlamSystem::SaveMap(const std::string& path) {
         map_metadata.normalized ? &map_metadata : nullptr;
     // auto global_map_raw = lio_->GetGlobalMap(!options_.with_loop_closing_, false, 0.1);
 
-    /// 地面估计成功后再重建目录，避免失败的导出破坏已有地图。
+    // 阶段 3：替换目录并写入点云。
+    // 地面估计通过后才替换目录；从此处开始的保存失败不会恢复旧目录。
     // [online-slam-replace-and-write]
     if (!std::filesystem::exists(save_path)) {
         std::filesystem::create_directories(save_path);
@@ -331,6 +307,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
         LOG(ERROR) << "failed to save global map";
         return false;
     }
+    // 阶段 4：导出后端资料和轨迹。
     // [online-slam-replace-and-write]
     if (backend_) {
         if (!backend_->SaveDiagnostics(
@@ -352,6 +329,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_no_loop.pcd", *global_map_no_loop);
     // pcl::io::savePCDFileBinaryCompressed(save_path + "/global_raw.pcd", *global_map_raw);
 
+    // 阶段 5：按配置导出导航栅格。
     if (map_export_options_.export_pgm) {
         const SE3 T_imu_primary(
             Quatd(lio_->GetLidarToImuRotation()).normalized(),
@@ -443,6 +421,7 @@ bool SlamSystem::SaveMap(const std::string& path) {
         }
     }
 
+    // 阶段 6：写入坐标元数据和清单。
     if (!map_frame::SaveMetadata(save_path, map_metadata, map_frame_error) ||
         !map_manifest::SaveExportManifest(save_path, map_manifest_options_, map_frame_error)) {
         LOG(ERROR) << "map export aborted: " << map_frame_error;
@@ -561,22 +540,25 @@ void SlamSystem::ProcessLidar(const std::shared_ptr<PointCloudMsgType>& cloud, i
 
 void SlamSystem::DrainLio() {
     while (lio_) {
+        // 阶段 1：消费已同步帧。
         const auto status = lio_->RunDetailed();
         if (status == LaserMapping::RunStatus::kNoData) return;
         if (status != LaserMapping::RunStatus::kOutput) continue;
 
+        // 阶段 2：记录有效前端状态。
         const auto state = lio_->GetState();
         if (state.pose_is_ok_ && (lio_states_.empty() || state.timestamp_ > lio_states_.back().timestamp_)) {
             lio_states_.push_back(state);
         }
 
+        // 阶段 3：筛选新关键帧。
         // 后端只关心新产生的关键帧；没有新关键帧时继续排空其余已同步帧。
         auto kf = lio_->GetKeyframe();
         if (kf == cur_kf_) continue;
         cur_kf_ = kf;
         if (cur_kf_ == nullptr) continue;
 
-        // 新关键帧按配置分发给回环、栅格建图和UI模块。
+        // 阶段 4：分发关键帧。
         if (backend_) {
             backend_->AddKeyframe(cur_kf_);
         } else if (lc_) {

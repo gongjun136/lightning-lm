@@ -406,7 +406,21 @@ void WriteLocalizationCsvHeader(std::ofstream& csv) {
 
 }  // namespace
 
+/**
+ * @brief 从 bag 离线执行地图定位并记录结果。
+ *
+ * @par 主要流程
+ * 1. <b>检查输入和地图路径</b>：解析 flags，要求 bag、地图索引和非负回放速率。
+ * 2. <b>初始化前端与输出环境</b>：按需创建 ROS 上下文和发布器，初始化 LIO，读取话题与车体配置。
+ * 3. <b>初始化地图定位与 PGO</b>：配置 LidarLoc、初始位姿和 PGO 的平滑/外推及结果回调。
+ * 4. <b>准备统计并定义消费操作</b>：打开轨迹和 CSV；drain 依次处理 LIO、地图匹配、重定位重置、PGO 和结果记录。
+ * 5. <b>注册 bag 输入回调</b>：按起始时间和节奏处理 IMU/点云，向定位和 PGO 提供有效 DR，再调用 drain。
+ * 6. <b>回放并结束算法</b>：回放后尝试 Flush/drain，打印耗时并调用 LidarLoc::Finish。
+ * 7. <b>汇总有效帧并退出</b>：按需等待界面，打印统计；有定位帧且有有效定位帧时返回 0，否则返回 4。
+ * @note drain 受退出标志限制；返回 0 只反映存在有效定位帧，不证明整个序列均有效，也不证明定位误差达到精度要求。
+ */
 int main(int argc, char** argv) {
+    // 阶段 1：检查输入和地图路径。
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
@@ -429,6 +443,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // 阶段 2：初始化前端与输出环境。
     using namespace lightning;
 
     std::unique_ptr<RosContextGuard> ros_context;
@@ -487,6 +502,7 @@ int main(int argc, char** argv) {
         imu_topic = primary->imu_topic;
     }
 
+    // 阶段 3：初始化地图定位与 PGO。
     loc::LidarLoc::Options loc_options;
     loc_options.update_dynamic_cloud_ = yaml.GetValue<bool>("lidar_loc", "update_dynamic_cloud");
     loc_options.force_2d_ = yaml.GetValue<bool>("lidar_loc", "force_2d");
@@ -559,6 +575,7 @@ int main(int argc, char** argv) {
     });
     // [offline-loc-capture-pgo]
 
+    // 阶段 4：准备统计并定义消费操作。
     std::ofstream fused_tum, lidar_loc_tum, csv, frame_stats_csv;
     try {
         OpenOutput(fused_tum, FLAGS_output_tum, "output_tum");
@@ -619,6 +636,7 @@ int main(int argc, char** argv) {
             write_frame_stats();
             if (status == LaserMapping::RunStatus::kOutput) {
                 ++output_frames;
+                // LIO 输出分支：先提供有效前端里程计，再执行当前点云的地图匹配。
                 const NavState lo_state = lio.GetState();
                 if (lo_state.pose_is_ok_) {
                     lidar_loc->ProcessLO(lo_state);
@@ -743,6 +761,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    // 阶段 5：注册 bag 输入回调。
     InputPacer input_pacer(FLAGS_playback_rate);
     RosbagIO rosbag(FLAGS_input_bag);
     rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
@@ -808,6 +827,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 阶段 6：回放并结束算法。
     Timer::Evaluate([&]() { rosbag.Go(); }, "Offline Loc Bag Playback");
     Timer::Evaluate(
         [&]() {
@@ -819,6 +839,7 @@ int main(int argc, char** argv) {
     Timer::PrintAll();
     lidar_loc->Finish();
 
+    // 阶段 7：汇总有效帧并退出。
     if (ui && FLAGS_wait_ui) {
         while (!ui->ShouldQuit()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

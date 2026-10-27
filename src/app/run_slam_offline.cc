@@ -223,7 +223,22 @@ bool SaveCorrectedFrameTrajectoryTum(const std::vector<TimedPose>& frames,
 
 }  // namespace
 
+/**
+ * @brief 离线建图、优化并导出地图包。
+ *
+ * @par 主要流程
+ * 1. <b>检查回放和导出参数</b>：要求输入 bag、输出目录和非负回放速率。
+ * 2. <b>初始化前端与后端</b>：读取导出配置和输入话题，按模式创建后端及可选界面。
+ * 3. <b>准备统计并定义消费操作</b>：打开输出文件；drain 缓存有效帧位姿并按游标分发新增关键帧。
+ * 4. <b>注册 bag 输入回调</b>：建立回放节奏和按实际消息类型选择的 IMU/点云回调。
+ * 5. <b>回放并等待最终优化</b>：回放后尝试 Flush/drain，并等待新后端的最终优化。
+ * 6. <b>检查关键帧并导出地图</b>：拒绝空关键帧集；非仅后端评估模式下校验地面坐标后替换目录并导出点云/导航栅格。
+ * 7. <b>导出轨迹和后端资料</b>：重写地图坐标一致的轨迹，按模式保存诊断、BTC 库、坐标元数据及清单。
+ * 8. <b>汇总并退出</b>：打印耗时和帧统计，按需等待界面关闭。
+ * @note drain 在退出标志置位后不再消费尾帧。目录替换后的保存失败可能留下部分产物；backend_evaluation_only 跳过地图包导出，不应将返回 0 等同于得到新地图。
+ */
 int main(int argc, char** argv) {
+    // 阶段 1：检查回放和导出参数。
     google::InitGoogleLogging(argv[0]);
     FLAGS_colorlogtostderr = true;
     FLAGS_stderrthreshold = google::INFO;
@@ -242,6 +257,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // 阶段 2：初始化前端与后端。
     using namespace lightning;
 
     LaserMapping lio;
@@ -305,6 +321,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 阶段 3：准备统计并定义消费操作。
     std::ofstream tum, frame_stats_csv;
     try {
         OpenOutput(tum, FLAGS_output_tum, "output_tum");
@@ -384,6 +401,7 @@ int main(int argc, char** argv) {
         }
     };
 
+    // 阶段 4：注册 bag 输入回调。
     InputPacer input_pacer(FLAGS_playback_rate);
     RosbagIO rosbag(FLAGS_input_bag);
     rosbag.AddImuHandle(imu_topic, [&](IMUPtr imu) {
@@ -427,6 +445,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 阶段 5：回放并等待最终优化。
     // [offline-slam-final-drain]
     Timer::Evaluate([&]() { rosbag.Go(); }, "Offline SLAM Bag Playback");
     Timer::Evaluate(
@@ -441,6 +460,7 @@ int main(int argc, char** argv) {
     }
     // [offline-slam-final-drain]
 
+    // 阶段 6：检查关键帧并导出地图。
     const auto keyframes = lio.GetAllKeyframes();
     if (keyframes.empty()) {
         LOG(ERROR) << "no keyframes were generated; cannot export tiled map";
@@ -536,6 +556,7 @@ int main(int argc, char** argv) {
     const map_frame::Metadata* metadata =
         map_metadata.normalized ? &map_metadata : nullptr;
 
+    // 阶段 7：导出轨迹和后端资料。
     // [offline-slam-rewrite-trajectories]
     if (!FLAGS_output_tum.empty()) {
         if (tum.is_open()) tum.close();
@@ -590,6 +611,7 @@ int main(int argc, char** argv) {
     }
     // [offline-slam-finalize-map]
 
+    // 阶段 8：汇总并退出。
     Timer::PrintAll();
     if (ui && FLAGS_wait_ui) {
         while (!ui->ShouldQuit()) std::this_thread::sleep_for(std::chrono::milliseconds(100));

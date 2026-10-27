@@ -93,7 +93,18 @@ geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::SE3& pose, doub
 
 class FrontendNode : public rclcpp::Node {
    public:
+    /**
+     * @brief 创建在线前端节点及其输入输出通道。
+     *
+     * @par 主要流程
+     * 1. <b>初始化前端与输出坐标</b>：初始化 LIO，读取 frame 名称和主雷达在车体的位置，建立后轴位姿转换。
+     * 2. <b>创建输出发布器</b>：配置位姿、点云及状态话题的发布器。
+     * 3. <b>订阅传感器输入</b>：按单/多雷达模式订阅主 IMU 和点云，回调将数据交给 LIO 后调用 Drain。
+     * 4. <b>启动输出线程</b>：启动快照发布和状态发布线程。
+     * @note 构造函数末尾已启动发布线程；ROS 订阅回调由外层 main 的 spin 驱动，多雷达模式仅订阅主雷达的 IMU。
+     */
     explicit FrontendNode(const std::string& config_path) : Node("multi_lidar_frontend") {
+        // 阶段 1：初始化前端与输出坐标。
         if (!lio_.Init(config_path)) throw std::runtime_error("failed to initialize LaserMapping");
         const YAML::Node root = YAML::LoadFile(config_path);
         map_frame_ = root["output"] && root["output"]["map_frame"]
@@ -111,6 +122,7 @@ class FrontendNode : public rclcpp::Node {
         rear_axle_ = lightning::RearAxlePoseTransformer(lio_.GetLidarToImuRotation(),
                                                         lio_.GetLidarToImuTranslation(), lidar_position);
 
+        // 阶段 2：创建输出发布器。
         const auto output_qos =
             rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
         pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic", output_qos);
@@ -119,6 +131,7 @@ class FrontendNode : public rclcpp::Node {
         state_pub_ = create_publisher<std_msgs::msg::Float64>("/slamState_topic", output_qos);
         system_pub_ = create_publisher<std_msgs::msg::Int32>("/SystemState", output_qos);
 
+        // 阶段 3：订阅传感器输入。
         const auto qos = rclcpp::SensorDataQoS();
         if (lio_.IsMultiLidarEnabled()) {
             const auto* primary = lio_.GetMultiLidarConfig().PrimaryLidar();
@@ -144,6 +157,7 @@ class FrontendNode : public rclcpp::Node {
                     Drain();
                 }));
         }
+        // 阶段 4：启动输出线程。
         publishing_.store(true);
         output_publish_thread_ = std::thread([this]() { OutputPublishLoop(); });
         state_publish_thread_ = std::thread([this]() { StatePublishLoop(); });
@@ -181,13 +195,24 @@ class FrontendNode : public rclcpp::Node {
         Drain();
     }
 
+    /**
+     * @brief 消费前端数据并将输出快照交给发布线程。
+     *
+     * @par 主要流程
+     * 1. <b>消费同步帧并读取状态</b>：每轮运行 LIO；无数据时结束，其他状态继续参与健康判断。
+     * 2. <b>更新跟踪状态</b>：在状态锁下累计连续好/坏帧；连续 5 个好帧置正常，连续 3 个坏帧置异常。
+     * 3. <b>按输出条件缓存快照</b>：只对有效输出且发布未失败的帧入队；队列满 50 项时先丢弃最旧项并置异常。
+     * @note 入队不等于已发布；发布异常会禁止后续入队，状态发布线程还会独立检查输出是否过期。
+     */
     void Drain() {
         while (true) {
+            // 阶段 1：消费同步帧并读取状态。
             const auto status = lio_.RunDetailed();
             if (status == lightning::LaserMapping::RunStatus::kNoData) break;
             const bool output = status == lightning::LaserMapping::RunStatus::kOutput;
             const bool initialized = lio_.IsInitialized();
             const bool healthy = lio_.IsTrackingHealthy();
+            // 阶段 2：更新跟踪状态。
             std::lock_guard<std::mutex> lock(state_mutex_);
             system_initialized_ = system_initialized_ || initialized;
             const bool good = system_initialized_ && output && healthy;
@@ -200,6 +225,7 @@ class FrontendNode : public rclcpp::Node {
                 consecutive_good_ = 0;
                 if (consecutive_bad_ >= 3) tracking_normal_ = false;
             }
+            // 阶段 3：按输出条件缓存快照。
             // [frontend-online-enqueue]
             if (output) {
                 const auto state = lio_.GetState();
@@ -222,9 +248,19 @@ class FrontendNode : public rclcpp::Node {
         }
     }
 
+    /**
+     * @brief 在独立线程发布前端输出快照。
+     *
+     * @par 主要流程
+     * 1. <b>等待并取出输出快照</b>：每轮在状态锁下等待队列；停止时清队列退出，否则移出队首。
+     * 2. <b>释放状态锁后发布</b>：按快照帧末时间发布后轴位姿及去畸变点云。
+     * 3. <b>处理运行中的发布异常</b>：捕获异常后标记发布失败、清空队列并将跟踪状态置异常。
+     * @note 停止分支会丢弃尚未发布的快照；阶段 3 仅在异常分支执行。
+     */
     void OutputPublishLoop() {
         try {
             while (publishing_.load() && rclcpp::ok()) {
+                // 阶段 1：等待并取出输出快照。
                 OutputSnapshot snapshot;
                 {
                     std::unique_lock<std::mutex> lock(state_mutex_);
@@ -239,12 +275,14 @@ class FrontendNode : public rclcpp::Node {
                     snapshot = std::move(output_queue_.front());
                     output_queue_.pop_front();
                 }
+                // 阶段 2：释放状态锁后发布。
                 pose_pub_->publish(MakePoseMessage(snapshot.rear_pose, snapshot.end_time, map_frame_));
                 cloud_pub_->publish(
                     MakeCloudMessage(snapshot.cloud, snapshot.begin_time, snapshot.end_time, lidar_frame_));
                 // [frontend-online-publish]
             }
         } catch (const std::exception& error) {
+            // 阶段 3：处理运行中的发布异常。
             if (publishing_.load() && rclcpp::ok()) {
                 {
                     std::lock_guard<std::mutex> lock(state_mutex_);

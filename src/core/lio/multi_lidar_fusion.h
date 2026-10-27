@@ -182,7 +182,7 @@ class MultiLidarFrameAssembler {
     long long last_emitted_bucket_ = std::numeric_limits<long long>::min();  ///< 最近已排出的时间桶编号，用于拒绝晚到输入。
     std::size_t late_drop_count_ = 0;  ///< 晚于对应时间桶排出后才到达的点云数。
     std::size_t duplicate_drop_count_ = 0;  ///< 同一雷达在同一时间桶重复输入的丢弃数。
-    std::size_t tolerance_drop_count_ = 0;  ///< 时间戳偏离桶时刻超过容差的丢弃数。
+    std::size_t tolerance_drop_count_ = 0;  ///< 同桶输入的最大时间跨度超过匹配容差的丢弃数。
     std::size_t invalid_drop_count_ = 0;  ///< 输入 ID、时间戳或点云无效的丢弃数。
     std::size_t emitted_frame_count_ = 0;  ///< 已经排出的融合点云帧数。
     std::size_t insufficient_lidar_drop_count_ = 0;  ///< 因雷达数量不足而丢弃的时间桶数。

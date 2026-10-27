@@ -31,18 +31,21 @@ std::string StorageIdForBag(const std::string& bag_path) {
 }  // namespace
 
 void RosbagIO::Go(int sleep_usec) {
+    // 阶段 1：打开 bag。
     rosbag2_cpp::Reader reader(std::make_unique<rosbag2_cpp::readers::SequentialReader>());
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
     reader.open({bag_file_, StorageIdForBag(bag_file_)}, cv_options);
 
     // [bag-dispatch-stop]
     while (reader.has_next()) {
+        // 阶段 2：按注册话题派发。
         auto msg = reader.read_next();
         auto iter = process_func_.find(msg->topic_name);
         if (iter != process_func_.end()) {
             iter->second(msg);
         }
 
+        // 阶段 3：等待并检查退出。
         if (sleep_usec > 0) {
             usleep(sleep_usec);
         }
@@ -58,6 +61,7 @@ void RosbagIO::Go(int sleep_usec) {
 }
 
 void RosbagIO::GoRealtime(double playback_rate) {
+    // 阶段 1：校验倍率并打开 bag。
     // [bag-realtime-rate]
     if (!std::isfinite(playback_rate) || playback_rate <= 0.0) {
         throw std::invalid_argument("playback rate must be finite and positive");
@@ -68,9 +72,11 @@ void RosbagIO::GoRealtime(double playback_rate) {
     rosbag2_cpp::ConverterOptions cv_options{"cdr", "cdr"};
     reader.open({bag_file_, StorageIdForBag(bag_file_)}, cv_options);
 
+    // 阶段 2：准备回放时钟。
     std::optional<rcutils_time_point_value_t> first_bag_time;
     std::chrono::steady_clock::time_point first_wall_time;
     while (reader.has_next()) {
+        // 阶段 3：等待消息目标时刻。
         // [bag-realtime-clock]
         auto msg = reader.read_next();
         if (!first_bag_time) {
@@ -80,6 +86,7 @@ void RosbagIO::GoRealtime(double playback_rate) {
         const auto elapsed_ns = static_cast<int64_t>((msg->time_stamp - *first_bag_time) / playback_rate);
         std::this_thread::sleep_until(first_wall_time + std::chrono::nanoseconds(elapsed_ns));
 
+        // 阶段 4：派发消息并检查退出。
         const auto iter = process_func_.find(msg->topic_name);
         if (iter != process_func_.end()) iter->second(msg);
         if (lightning::debug::flg_exit) {

@@ -128,16 +128,8 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
 namespace lightning {
 
 /**
- * @brief IMU预测：用当前IMU输入传播名义状态和误差状态协方差。
- *
- * gyro/acce一般由上层ImuProcess传入，可能是相邻两帧IMU量测的均值。这里虽然可以使用
- * 均值输入 u_avg，但状态导数和误差雅可比仍在当前状态 x_k 处计算，因此整体形式是
- * x_{k+1} = x_k ⊕ f(x_k, u_avg) * dt 的一阶欧拉传播，而不是严格中值积分。
- *
- * @param dt IMU积分时间间隔，单位秒。
- * @param Q 过程噪声协方差，噪声顺序需要和NavState::df_dw()保持一致。
- * @param gyro 当前积分区间使用的角速度输入。
- * @param acce 当前积分区间使用的加速度计输入。
+ * @brief 从状态实际时间戳预测到指定时刻，仅积分未覆盖的正时间间隔。
+ * @return 时间或输入无效、目标时刻已覆盖时返回 false，状态与协方差保持不变。
  */
 bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
     // [eskf-predict-time-gate]
@@ -153,7 +145,24 @@ bool ESKF::PredictTo(double timestamp, const ProcessNoiseType& Q, const Vec3d& g
     return true;
 }
 
+/**
+ * @brief 使用给定 IMU 输入传播名义状态及误差状态协方差。
+ *
+ * @par 主要流程
+ * 1. <b>计算导数并积分名义状态</b>：在当前状态求动力学及雅可比，按速度传播开关更新名义状态。
+ * 2. <b>映射普通向量误差块</b>：将线性状态及噪声雅可比复制到误差状态空间。
+ * 3. <b>映射旋转误差块</b>：构造 SO3 误差传播和雅可比切空间变换。
+ * 4. <b>传播并保护协方差</b>：组合离散转移与过程噪声，再施加配置膨胀和数值保护。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
+ *
+ * @note 即便输入是相邻 IMU 的均值，导数仍在区间起点状态求值，属于欧拉式传播。
+ * 速度传播开关只清零名义状态的速度导数，当前实现仍计算并传播对应的误差雅可比。
+ * 本函数使用 dt 直接积分；对无效或已覆盖时间的保护在 PredictTo()。
+ * 过程噪声 Q 的排列应与 NavState::df_dw() 一致；参数说明统一保留在声明处。
+ */
 void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3d& gyro, const Vec3d& acce) {
+    // 阶段 1：计算导数并积分名义状态。
     // f_是名义状态连续时间导数 f(x,u)，例如位置导数、姿态角速度、速度导数。
     // f_x_是连续动力学对误差状态的雅可比 F_c，后面会通过 I + F_c * dt 做一阶离散化。
     // [eskf-predict-velocity-switch]
@@ -173,6 +182,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     NavState x_before = x_;  // 保存前一时刻状态（用于S2流形计算）
     x_.oplus(f_, dt);        // 名义状态积分: x_{k+1} = x_k ⊕ f(x_k,u)*dt
 
+    // 阶段 2：映射普通向量误差块。
     // F_x1_最终表示离散误差状态转移矩阵 Phi，先放入单位阵，再叠加各状态块的一阶传播项。
     F_x1_ = CovType::Identity();
 
@@ -197,6 +207,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
         }
     }
 
+    // 阶段 3：映射旋转误差块。
     // SO3状态块的误差定义在李代数切空间，不能像普通向量一样直接拷贝。
     // 这里需要显式构造旋转误差自身传播项，以及连续雅可比到切空间的映射。
     Mat3d res_temp_SO3;
@@ -229,6 +240,7 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
         }
     }
 
+    // 阶段 4：传播并保护协方差。
     // 一阶离散化误差传播：
     //   Phi ~= I + F_c * dt
     //   P_{k+1} = Phi P_k Phi^T + (G_c dt) Q (G_c dt)^T
@@ -244,6 +256,23 @@ void ESKF::Predict(const double& dt, const ESKF::ProcessNoiseType& Q, const Vec3
     LogCovarianceStats(P_, "predict");
 }
 
+/**
+ * @brief 以标量纵向速度观测修正速度状态。
+ *
+ * @par 主要流程
+ * 1. <b>验证量测及前向轴</b>：检查有限性、正方差及 IMU 系前向单位向量。
+ * 2. <b>预测纵向速度并检查绝对新息</b>：将前向轴转到世界系，扣除参考点速度差后与量测比较。
+ * 3. <b>计算新息方差并检查归一化新息</b>：用速度观测雅可比形成方差和 NIS 门槛。
+ * 4. <b>限制增益并检查速度步长</b>：清零非速度增益行，拒绝过大的速度修正。
+ * 5. <b>注入速度并更新协方差</b>：通过 boxplus 注入增量，以 Joseph 形式更新 P 并标记接受。
+ *
+ * 以下名称与函数体中的“阶段 1”至“阶段 5”对应，可按阶段定位源码。
+ *
+ * @note 所有拒绝分支都在状态注入前返回；非速度名义状态增量为零，但完整协方差仍按更新公式变化。
+ * 观测速度和偏移单位为 m/s，variance_mps2 的单位为 (m/s)^2；非正门槛值关闭相应门槛。
+ *
+ * @return accepted 表示是否融合，reason 及新息字段解释拒绝或接受结果。
+ */
 ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     double measured_speed_mps,
     double variance_mps2,
@@ -252,6 +281,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
     double max_velocity_step_mps,
     const Vec3d& body_forward_in_imu,
     double reference_point_speed_offset_mps) {
+    // 阶段 1：验证量测及前向轴。
     ForwardSpeedUpdateResult result;
     if (!std::isfinite(measured_speed_mps) || !std::isfinite(variance_mps2) ||
         variance_mps2 <= 0.0 || !std::isfinite(reference_point_speed_offset_mps) ||
@@ -260,6 +290,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         return result;
     }
 
+    // 阶段 2：预测纵向速度并检查绝对新息。
     // Preserve the conditional, velocity-only observation; correct its axis.
     const Vec3d forward_in_world = x_.rot_ * body_forward_in_imu;
     result.predicted_speed_mps = forward_in_world.dot(x_.vel_) - reference_point_speed_offset_mps;
@@ -275,6 +306,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         return result;
     }
 
+    // 阶段 3：计算新息方差并检查归一化新息。
     Eigen::Matrix<double, 1, state_dim_> H =
         Eigen::Matrix<double, 1, state_dim_>::Zero();
     H.template block<1, NavState::kBlockDim>(0, NavState::kVelIdx) =
@@ -294,6 +326,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         return result;
     }
 
+    // 阶段 4：限制增益并检查速度步长。
     StateVecType kalman_gain = P_ * H.transpose() / result.innovation_variance;
     // Motor rpm is not a pose, attitude, bias, or gravity observation. Keeping only the
     // velocity rows prevents uncertain drivetrain behavior from leaking through cross
@@ -309,6 +342,7 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
         return result;
     }
 
+    // 阶段 5：注入速度并更新协方差。
     x_ = x_.boxplus(dx);
     const CovType identity = CovType::Identity();
     const CovType correction = identity - kalman_gain * H;
@@ -322,22 +356,29 @@ ESKF::ForwardSpeedUpdateResult ESKF::UpdateBodyForwardSpeed(
 }
 
 /**
- * @brief 根据指定观测模型迭代修正ESKF状态和协方差。
+ * @brief 重线性化观测并迭代修正 ESKF 状态。
  *
- * Update()使用的是迭代误差状态更新。每轮迭代都会：
- * 1. 在当前名义状态x_处重新计算观测模型；
- * 2. 将观测函数返回的 H^T H 和 H^T r 与预测协方差组合；
- * 3. 求解当前误差增量dx_current，并通过boxplus()更新名义状态；
- * 4. 判断收敛或到达最大迭代次数后，更新协方差P_。
+ * @par 主要流程
+ * 1. <b>保存先验并初始化迭代状态</b>：保存预测状态与协方差，清除本次更新接受标志。
+ * 2. <b>重算观测并检查本轮有效性</b>：按观测类型调用回调，处理无效观测及 AA 残差上升。
+ * 3. <b>将同一先验映射到当前切空间</b>：每轮复用 P_propagated，并转换先验误差和 SO3 协方差。
+ * 4. <b>求解可观方向的信息更新</b>：投影退化方向，检查噪声和矩阵条件，以 LDLT 求解增益项。
+ * 5. <b>约束状态增量并检查步长</b>：按策略保留惯性状态或退回位姿更新，拒绝异常修正。
+ * 6. <b>注入状态并判断收敛</b>：执行普通或 Anderson 加速更新，用逐维阈值检查本轮增量。
+ * 7. <b>结束迭代并更新协方差</b>：满足结束条件时按本轮增量转换协方差并标记接受，退出循环后统一数值保护。
  *
- * 原版的迭代过程中，收敛次数大于1才会结果，所以需要两次收敛。
- * 在未收敛时，实际上不会计算最近邻，也就回避了一次ObsModel的计算。
- * 如果这边对每次迭代都计算最近邻的话，时间明显会变长一些，并不是非常合理。
+ * 以下名称与函数体中的“阶段 1”至“阶段 7”对应，可按阶段定位源码。
  *
- * @param obs 观测类型，包括LIDAR、WHEEL_SPEED、GPS等，决定使用哪种观测模型
- * @param R   观测噪声方差，控制观测对状态估计的权重（越小权重越高，典型值1e-3）
+ * @note 阶段 2 至阶段 6 在循环内重复；索引 i 从 -1 到 maximum_iter_ - 1，最多执行 maximum_iter_ + 1 轮。
+ * 当前 Lidar 回调每轮都重新计算最近邻；阶段 7 的接受路径在首次实际收敛或末轮进入。
+ * 早退与 AA 停止分支有各自的状态/协方差处理，不能将“函数返回”视为更新成功；以 LastUpdateAccepted() 为准。
+ * 启用 AA 时名义状态可能额外外推，协方差切空间映射仍使用本轮直接注入量 dx_current。
+ *
+ * @param obs 选择本轮调用的观测回调。
+ * @param R 观测噪声缩放因子，须为有限正数。
  */
 void ESKF::Update(ESKF::ObsType obs, const double& R) {
+    // 阶段 1：保存先验并初始化迭代状态。
     last_update_accepted_ = false;
     // 每次Update开始前先把观测模型标志恢复为可用状态，具体质量检查交给观测函数设置。
     custom_obs_model_.valid_ = true;
@@ -354,10 +395,10 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
     StateVecType dx_current = StateVecType::Zero();  // 本轮迭代的dx
 
     NavState start_x = x_;  // 迭代的起点
-    NavState last_x = x_;   // last_x 不是上一次迭代的状态，而是AA算法优化后的状态
+    NavState last_x = x_;   // 上一轮已写入的状态；启用 AA 时包含加速结果
     // [eskf-update-save-prior]
 
-    int converged_times = 0;    // 连续收敛次数统计
+    int converged_times = 0;    // 实际通过逐维阈值的收敛次数，首次通过即进入结束路径
     double last_lidar_res = 0;  // 上一轮迭代的激光雷达残差
 
     double init_res = 0.0;           // 初始残差（用于相对收敛判断）
@@ -366,6 +407,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
     update_num += 1;
     // [eskf-update-relinearize]
     for (int i = -1; i < maximum_iter_; i++) {
+        // 阶段 2：重算观测并检查本轮有效性。
         custom_obs_model_.valid_ = true;
 
         /// 计算observation function。这里不是直接返回H和r，而是返回已经累加好的 H^T H 和 H^T r。
@@ -415,6 +457,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         iterations_ = i + 2;                                             // 迭代次数统计，i从-1开始，所以+2
         final_res_ = custom_obs_model_.lidar_residual_mean_ / init_res;  // 相对残差
 
+        // 阶段 3：将同一先验映射到当前切空间。
         // [eskf-update-reuse-prior]
         StateVecType dx = x_.boxminus(start_x);  // 当前x与起点之间的dx
         dx_current = dx;                         //
@@ -449,6 +492,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             }
         }
 
+        // 阶段 4：求解可观方向的信息更新。
         // 观测函数返回的是6维位姿约束的信息形式：
         // HTH = H^T H，HTr = H^T r。先做对称化，避免并行累加或数值误差导致特征分解不稳定。
         Mat6d HTH = custom_obs_model_.HTH_;
@@ -572,6 +616,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         //           << ", prior: " << ((K_H - Eigen::Matrix<double, state_dim_, state_dim_>::Identity()) *
         //           dx_current).transpose();
 
+        // 阶段 5：约束状态增量并检查步长。
         // 迭代误差状态更新公式。
         // K_r来自当前观测残差，(K_H-I)dx_current用于把先验误差项带入当前线性化点。
         const bool lidar_update_pose_only = options_.lidar_update_pose_only_ && obs == ObsType::LIDAR;
@@ -690,6 +735,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             return;
         }
 
+        // 阶段 6：注入状态并判断收敛。
         // [eskf-update-plain-injection]
         if (!use_aa_) {
             // 普通迭代：直接把误差状态增量施加到当前名义状态。
@@ -726,16 +772,17 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             converged_times++;
         }
 
-        // 兜底机制：如果从未收敛且到达倒数第二次迭代，强制标记为收敛
-        // 防止优化无法结束，确保系统稳定性
+        // 倒数第二轮尚未实际收敛时，仅设置供下一轮观测读取的 converge_；
+        // 这里不增加 converged_times，最终退出仍依赖真实收敛计数或末轮条件。
         if (!converged_times && i == maximum_iter_ - 2) {
             custom_obs_model_.converge_ = true;
         }
 
+        // 阶段 7：结束迭代并更新协方差。
         if (converged_times > 0 || i == maximum_iter_ - 1) {
             /// 结束条件：已经至少收敛过一次，或者已经到达最大迭代次数（兜底退出）
-            /// 此时 P_、K_H 仍然是在“起始线性化点 start_x”的切空间下表达，
-            /// 下面要把协方差 / 信息矩阵通过 dx_current 映射到最终状态 x_ 所在的流形切空间，再做最终的P更新（式(45)）
+            /// 此时 P_、K_H 对应本轮直接注入前的线性化切空间。
+            /// 下面以 dx_current 构造重置映射；开启 AA 时，此处不重新计算额外外推的增量。
 
             L_ = P_;  ///< 临时拷贝一份当前协方差，用于做流形上的相似变换
             Mat3d res_temp_SO3;
@@ -749,7 +796,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                     seg_SO3(j) = dx_current(j + idx);
                 }
 
-                // 这里应使用从start_x切空间到当前x_切空间的右雅可比J_r(δθ)。
+                // 这里使用本轮直接注入量 δθ 构造右雅可比 J_r(δθ)。
                 // math::A_matrix(δθ)=J_l(δθ)，由 docs/algorithms/geometry.md 中J_l(φ)^T=J_l(-φ)=J_r(φ)，所以转置后正好是J_r(δθ)。
                 // I - 0.5*[δθ]x只是J_r(δθ)的小角度一阶近似；这里保留完整右雅可比，避免较大迭代步下误差变大。
                 res_temp_SO3 = math::A_matrix(seg_SO3).transpose();
