@@ -39,6 +39,8 @@ add_definitions(-DROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/") # 设置项目根目�
 install(DIRECTORY config
         DESTINATION lib/${PROJECT_NAME}/
 )
+install(PROGRAMS scripts/diagnose_localization.sh scripts/diagnose_localization.py
+        DESTINATION lib/${PROJECT_NAME})
 
 # Apply architecture-specific options only to Lightning sources.
 if (LIGHTNING_CPU_COMPILE_OPTIONS)

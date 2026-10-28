@@ -36,7 +36,7 @@ std::int64_t Wall() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
-double Age(std::int64_t now, std::int64_t then) { return then > 0 ? (now - then) * 1e-9 : -1; }
+double Age(std::int64_t now, std::int64_t then) { return detail::IncidentAgeSeconds(now, then); }
 std::string Json(const std::string& input) {
     std::ostringstream out;
     out << '"';
@@ -449,7 +449,7 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
         try {
             Prepare(*event);
             csv.open(event->path / "timeline.csv");
-            csv << "relative_sec,wall_ns,raw,selected,published,strict,imu_callback_age,lidar_callback_age,stamp_advance_age,prepared_age,publish_begin_age,publish_end_age,publishing,pipeline_age,sensor_pending,localization_pending,high_frequency_pending,sensor_dropped,localization_dropped,sensor_lag,match_age,match_stale,output_gate,missing_lidars,lio_ms,major_sigma,lateral_sigma,yaw_sigma,covariance_valid,unobservable,collector_dropped,observed_stage\n";
+            csv << "relative_sec,wall_ns,raw,selected,published,strict,imu_callback_age,lidar_callback_age,stamp_advance_age,prepared_age,publish_begin_age,publish_end_age,publishing,pipeline_age,sensor_pending,localization_pending,high_frequency_pending,sensor_dropped,localization_dropped,sensor_lag,match_age,match_stale,output_gate,missing_lidars,lio_ms,major_sigma,lateral_sigma,yaw_sigma,covariance_valid,unobservable,collector_dropped,observed_stage,consistency,uncertainty,translation_condition,yaw_condition,confirmed_failure,unknown_tolerated,optional_can_unavailable,output_stale,localization_lost,radar_all_failed,non_sync_fault,non_sync_all_pass,bounded_policy_enabled,time_sync_fault_mask,bounded_sync_warning_mask,error_x,error_y,error_yaw_rad,output_age_sec,imu_arrival_age_sec,imu_stamp_lag_sec,can_arrival_age_sec,can_stamp_lag_sec,yaw_pass_age_sec\n";
             for (;;) {
                 Row row; bool done;
                 {
@@ -473,7 +473,16 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
                         << ',' << s.pipeline.match_age << ',' << s.pipeline.match_stale << ',' << s.pipeline.output_gate << ',' << s.pipeline.missing_lidars
                         << ',' << s.pipeline.lio_ms
                         << ',' << s.safety.major_sigma << ',' << s.safety.lateral_sigma << ',' << s.safety.yaw_sigma
-                        << ',' << s.safety.covariance_valid << ',' << s.safety.unobservable << ',' << s.dropped << ',' << Stage(s) << '\n';
+                        << ',' << s.safety.covariance_valid << ',' << s.safety.unobservable << ',' << s.dropped << ',' << Stage(s)
+                        << ',' << s.safety.consistency << ',' << s.safety.uncertainty
+                        << ',' << s.safety.translation_condition << ',' << s.safety.yaw_condition
+                        << ',' << s.safety.confirmed_failure << ',' << s.safety.unknown_tolerated << ',' << s.safety.optional_can_unavailable
+                        << ',' << s.safety.output_stale << ',' << s.safety.localization_lost << ',' << s.safety.radar_all_failed
+                        << ',' << s.safety.non_sync_fault << ',' << s.safety.non_sync_all_pass << ',' << s.safety.bounded_policy_enabled
+                        << ',' << s.safety.time_sync_fault_mask << ',' << s.safety.bounded_sync_warning_mask
+                        << ',' << s.safety.error_x << ',' << s.safety.error_y << ',' << s.safety.error_yaw_rad
+                        << ',' << s.safety.output_age_sec << ',' << s.safety.imu_arrival_age_sec << ',' << s.safety.imu_stamp_lag_sec
+                        << ',' << s.safety.can_arrival_age_sec << ',' << s.safety.can_stamp_lag_sec << ',' << s.safety.yaw_pass_age_sec << '\n';
                     continue;
                 }
                 if (event->bytes >= options.event_mb * MiB || event->closed_disk_bytes >= options.event_mb * MiB) {

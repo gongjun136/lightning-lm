@@ -131,6 +131,7 @@ run_frontend_offline.sh 输出文件说明：
 
 | 脚本 | 用途 |
 |---|---|
+| `diagnose_localization.sh` / `diagnose_localization.py` | 只读分析当前定位实例、事件或 rosbag 中的 Safety 证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
 | `inspect_rosbag2_sqlite.py` | 读取 SQLite3 ROS2 bag 和 YAML，核对 Topic 合同、主 LiDAR 末帧、数据时长及输入哈希。由离线前端入口调用。 |
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
 | `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |

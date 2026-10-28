@@ -1385,6 +1385,19 @@ void LocSystem::PublishSafety() {
         s.consistency = localization.observations[0].condition; s.uncertainty = localization.observations[1].condition;
         s.covariance_valid = localization.covariance_valid; s.unobservable = localization.pose_unobservable;
         s.major_sigma = localization.major_sigma_m; s.lateral_sigma = localization.lateral_sigma_m; s.yaw_sigma = localization.yaw_sigma_rad;
+        s.translation_condition = localization.translation_condition; s.yaw_condition = localization.yaw_condition;
+        s.confirmed_failure = localization.confirmed_failure;
+        s.unknown_tolerated = localization.consistency_unknown_tolerated;
+        s.optional_can_unavailable = localization.optional_can_unavailable;
+        s.output_stale = localization.output_stale; s.localization_lost = localization.localization_lost;
+        s.radar_all_failed = radar.all_failed; s.non_sync_fault = radar.fault_without_time_sync;
+        s.non_sync_all_pass = radar.all_pass_without_time_sync; s.bounded_policy_enabled = radar_bounded_sync_warning_enabled_;
+        s.time_sync_fault_mask = radar.time_sync_fault_mask; s.bounded_sync_warning_mask = radar.bounded_sync_warning_mask;
+        s.error_x = localization.error_longitudinal_m; s.error_y = localization.error_lateral_m;
+        s.error_yaw_rad = localization.error_yaw_rad; s.output_age_sec = localization.output_age_sec;
+        s.imu_arrival_age_sec = localization.gyro_arrival_age_sec; s.imu_stamp_lag_sec = localization.gyro_stamp_lag_sec;
+        s.can_arrival_age_sec = localization.speed_arrival_age_sec; s.can_stamp_lag_sec = localization.speed_stamp_lag_sec;
+        s.yaw_pass_age_sec = localization.yaw_pass_age_sec;
         incident_recorder_->ObserveSafety(s);
         incident_recorder_->Capture(incident_safety_, std::make_shared<geosun_msgs::msg::Safety>(msg), sizeof(msg) + 256);
     }

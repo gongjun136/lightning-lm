@@ -1,9 +1,11 @@
 #include "utils/incident_recorder.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -65,6 +67,7 @@ void MaskedFaultAndReadback() {
         r.Capture(stream, msg, sizeof(*msg) + msg->data.capacity()); Sleep(.025);
     }
     Recorder::Safety fault; fault.raw = fault.selected = 4; fault.published = 0; fault.uncertainty = 2;
+    fault.yaw_condition = 2; fault.confirmed_failure = true; fault.error_yaw_rad = .0428282;
     r.ObserveSafety(fault); Sleep(.01); r.ObserveSafety({});  // shorter than a monitor period
     for (int i = 0; i < 6; ++i) {
         auto msg = std::make_shared<std_msgs::msg::String>(); msg->data = "after-" + std::to_string(i);
@@ -78,6 +81,29 @@ void MaskedFaultAndReadback() {
     Check(summary["streams"][0]["first_relative_sec"].as<double>() < 0 &&
           summary["streams"][0]["last_relative_sec"].as<double>() > 0, "per-topic capture coverage missing");
     Check(Read(path / "timeline.csv").find(",4,4,0,") != std::string::npos, "masked transition missing in timeline");
+    const auto timeline = Read(path / "timeline.csv");
+    Check(timeline.find("consistency,uncertainty,translation_condition,yaw_condition,confirmed_failure") != std::string::npos &&
+          timeline.find("0.0428282") != std::string::npos, "standalone event lost detailed Safety evidence");
+    auto columns = [](const std::string& line) {
+        std::vector<std::string> values; std::istringstream input(line); std::string value;
+        while (std::getline(input, value, ',')) values.push_back(value);
+        return values;
+    };
+    std::istringstream csv(timeline); std::string line; std::getline(csv, line);
+    const auto header = columns(line);
+    const auto yaw_column = std::find(header.begin(), header.end(), "yaw_condition") - header.begin();
+    const auto error_column = std::find(header.begin(), header.end(), "error_yaw_rad") - header.begin();
+    bool detailed_fault_seen = false;
+    while (std::getline(csv, line)) {
+        const auto values = columns(line);
+        Check(values.size() == header.size(), "timeline header/row column mismatch");
+        if (values[2] == "4") {
+            Check(values[yaw_column] == "2" && std::abs(std::stod(values[error_column]) - .0428282) < 1e-9,
+                  "fault details assigned to wrong CSV columns");
+            detailed_fault_seen = true;
+        }
+    }
+    Check(detailed_fault_seen, "standalone event omitted masked fault details");
     Check(fs::file_size(path / "summary.html") > 1000, "HTML report missing");
     unsigned before = 0, after = 0;
     for (auto segment : summary["closed_segments"]) {
@@ -223,6 +249,10 @@ void CrashFixture(const fs::path& path) {
 }  // namespace
 int main(int argc, char** argv) {
     try {
+        using lightning::diagnostics::detail::IncidentAgeSeconds;
+        Check(IncidentAgeSeconds(1000000000, 1000020000) == 0.0, "concurrent publication was mistaken for never published");
+        Check(IncidentAgeSeconds(1000000000, 0) == -1.0, "missing publication sentinel changed");
+        Check(std::abs(IncidentAgeSeconds(1000000000, 800000000) - .2) < 1e-9, "stale observation age changed");
         if (argc == 3 && std::string(argv[1]) == "--crash-fixture") { CrashFixture(argv[2]); return 1; }
         MaskedFaultAndReadback(); BoundedAdmissionAndSlowWriter(); IndependentTimeouts();
         ExportBudgetAndMergedFaults(); RetentionAndFailureIsolation();

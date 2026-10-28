@@ -1,4 +1,9 @@
 /**
+ * @example{lineno} diagnose_localization.sh
+ * 只读分析定位实例、事件或 rosbag 的 Safety 证据，不启动定位或订阅 DDS。
+ * 用法与限制见 @ref incident_capture_guide "进程内故障采集与快速排查"。
+ */
+/**
  * @example{lineno} accuracy_capture.sh
  * 本机旁路录制或隔离域输入白名单回放；保留完整采集区间与参考审计，不改变 CAN/业务节点。
  * 参数、输出和验证见 @ref lidar_ins_accuracy "建图与定位精度评估"。

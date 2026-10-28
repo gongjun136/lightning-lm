@@ -11,6 +11,14 @@
 
 namespace lightning::diagnostics {
 
+namespace detail {
+// A callback can advance its timestamp after the monitor reads its own clock.
+// Reserve -1 for "never observed"; a concurrent newer observation is fresh.
+inline double IncidentAgeSeconds(std::int64_t now, std::int64_t observed) {
+    return observed > 0 ? (now > observed ? (now - observed) * 1e-9 : 0.0) : -1.0;
+}
+}
+
 // No subscriptions or processes: retain existing immutable callback messages.
 // Serialization, filesystem access, retention and message destruction run off
 // the algorithm thread. Admission uses try_lock and reports every dropped item.
@@ -34,6 +42,14 @@ class IncidentRecorder {
         int consistency = 0, uncertainty = 0;
         bool covariance_valid = false, unobservable = false;
         double major_sigma = -1, lateral_sigma = -1, yaw_sigma = -1;
+        int translation_condition = 0, yaw_condition = 0;
+        bool confirmed_failure = false, unknown_tolerated = false, optional_can_unavailable = false;
+        bool output_stale = false, localization_lost = false, radar_all_failed = false;
+        bool non_sync_fault = false, non_sync_all_pass = false, bounded_policy_enabled = false;
+        unsigned time_sync_fault_mask = 0, bounded_sync_warning_mask = 0;
+        double error_x = 0, error_y = 0, error_yaw_rad = 0;
+        double output_age_sec = -1, imu_arrival_age_sec = -1, imu_stamp_lag_sec = -1;
+        double can_arrival_age_sec = -1, can_stamp_lag_sec = -1, yaw_pass_age_sec = -1;
     };
     struct Pipeline {
         std::uint64_t sensor_pending = 0, localization_pending = 0, high_frequency_pending = 0;
