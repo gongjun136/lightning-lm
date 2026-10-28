@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <cmath>
+#include <yaml-cpp/yaml.h>
 
 using namespace lightning;
 using namespace lightning::loc::dtc;
@@ -26,8 +27,72 @@ void FeedWithoutCan(Monitor& monitor, int ms, const SE3& pose, double gyro = 0,
     monitor.ObserveGyro(stamp, gyro, At(ms));
     monitor.ObservePose(stamp, pose, raw ? *raw : pose, SmallCov(), true, false, 1, At(ms));
 }
+void CheckSanyUncertaintyConfig(const char* path) {
+    const auto diagnostics = YAML::LoadFile(path)["diagnostics"];
+    Config cfg;
+    cfg.major_sigma_m = diagnostics["major_sigma_limit_m"].as<double>();
+    cfg.lateral_sigma_m = diagnostics["lateral_sigma_limit_m"].as<double>();
+    cfg.yaw_sigma_rad = diagnostics["yaw_sigma_limit_deg"].as<double>() * M_PI / 180.0;
+    cfg.covariance_scale = diagnostics["covariance_variance_scale"].as<double>();
+    cfg.position_sigma_floor_m = diagnostics["position_sigma_floor_m"].as<double>();
+    cfg.angle_sigma_floor_rad = diagnostics["angle_sigma_floor_deg"].as<double>() * M_PI / 180.0;
+    cfg.output_timeout_sec = diagnostics["output_timeout_sec"].as<double>();
+    cfg.evaluation_timeout_sec = diagnostics["evaluation_timeout_sec"].as<double>();
+    cfg.longitudinal_m = diagnostics["longitudinal_tolerance_m"].as<double>();
+    cfg.lateral_m = diagnostics["lateral_tolerance_m"].as<double>();
+    cfg.yaw_rad = diagnostics["yaw_tolerance_deg"].as<double>() * M_PI / 180.0;
+    // Logged sigma already includes the configured additive variance floors.
+    // Construct input covariance for the desired final sigma at identity pose.
+    const auto covariance_for = [&](double x_m, double y_m, double yaw_deg) {
+        Mat6d covariance = SmallCov();
+        const double floor_position = std::pow(cfg.position_sigma_floor_m, 2);
+        covariance(0, 0) = (x_m * x_m - floor_position) / cfg.covariance_scale;
+        covariance(1, 1) = (y_m * y_m - floor_position) / cfg.covariance_scale;
+        covariance(5, 5) = (std::pow(yaw_deg * M_PI / 180.0, 2) -
+                            std::pow(cfg.angle_sigma_floor_rad, 2)) / cfg.covariance_scale;
+        return covariance;
+    };
+    // Conservative envelope of the logged Oct 26-27 finite sigma peaks.
+    // This rechecks the configured monitor; it is not a raw sensor replay.
+    const Mat6d recorded = covariance_for(0.369499, 0.343525, 4.324468);
+    Monitor monitor(cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20)
+        Feed(monitor, ms, Pose(0), 0, 0, 1, nullptr, &recorded);
+    Require(SafetyValue(monitor.Evaluate(false, At(1000)), false, false, true) == 0,
+            "SANY relaxed uncertainty limits accept the logged peak envelope");
+    const auto below = covariance_for(0.369499, 0.49, 4.99);
+    Feed(monitor, 1020, Pose(0), 0, 0, 1, nullptr, &below);
+    Require(SafetyValue(monitor.Evaluate(false, At(1020)), false, false, true) == 0,
+            "SANY 49 cm lateral and 4.99 degree yaw uncertainty pass");
+    auto above = covariance_for(0.369499, 0.343525, 5.01);
+    Feed(monitor, 1040, Pose(0), 0, 0, 1, nullptr, &above);
+    Require(SafetyValue(monitor.Evaluate(false, At(1040)), false, false, true) == 4,
+            "SANY 5.01 degree yaw uncertainty still stops");
+    above = covariance_for(0.369499, 0.51, 4.324468);
+    Feed(monitor, 1060, Pose(0), 0, 0, 1, nullptr, &above);
+    Require(SafetyValue(monitor.Evaluate(false, At(1060)), false, false, true) == 4,
+            "SANY 51 cm lateral uncertainty still stops");
+    above = covariance_for(0.51, 0.343525, 4.324468);
+    Feed(monitor, 1080, Pose(0), 0, 0, 1, nullptr, &above);
+    Require(SafetyValue(monitor.Evaluate(false, At(1080)), false, false, true) == 4,
+            "SANY major-axis uncertainty limit remains 50 cm");
+    Feed(monitor, 1100, Pose(0), 0, 0, 1, nullptr, &recorded);
+    Require(SafetyValue(monitor.Evaluate(false, At(1100)), false, false, true) == 0,
+            "passing uncertainty clears its own confirmed failure");
+    Require(SafetyValue(monitor.Evaluate(false, At(1401)), false, false, true) == -9,
+            "SANY relaxed uncertainty does not mask the 300 ms output timeout");
+    Require(SafetyValue(monitor.Evaluate(true, At(1100)), false, false, true) == -9,
+            "SANY relaxed uncertainty does not mask the localization output gate");
+    Feed(monitor, 1120, Pose(2), 0, 0, 1, nullptr, &recorded);
+    Require(SafetyValue(monitor.Evaluate(false, At(1120)), false, false, true) == 4,
+            "SANY relaxed uncertainty does not mask a confirmed position jump");
 }
-int main() {
+}
+int main(int argc, char** argv) {
+    if (argc == 2) {
+        CheckSanyUncertaintyConfig(argv[1]);
+        return 0;
+    }
     Config cfg;
     Monitor normal(cfg, At(0));
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");
@@ -48,6 +113,24 @@ int main() {
     const auto healthy_loc = snapshot;
     Require(snapshot.observations[0].condition == kPass && snapshot.observations[1].condition == kPass, "straight motion and valid covariance pass");
     Require(SafetyValue(snapshot, false, false, true) == 0, "all confirmed healthy gives zero");
+    for (int expected : {0, 2, 4, -9}) {
+        auto input = healthy_loc;
+        const bool radar_fault = expected == 2;
+        if (expected == 4) input.observations[1].condition = kFail;
+        if (expected == -9) input.severe = true;
+        const auto disabled = EvaluateSafetyDecision(input, false, radar_fault, !radar_fault, false, false);
+        Require(disabled.raw == expected && disabled.selected == expected && disabled.published == 0,
+                "disabled reporting preserves each original 2/4/-9 diagnosis for the log");
+        const auto enabled = EvaluateSafetyDecision(input, false, radar_fault, !radar_fault, true, false);
+        Require(enabled.raw == expected && enabled.published == expected,
+                "reenabled reporting publishes the unchanged diagnosis");
+    }
+    const auto masked_radar = EvaluateSafetyDecision(healthy_loc, false, true, false, true, true);
+    Require(masked_radar.raw == 2 && masked_radar.selected == 0 && masked_radar.published == 0,
+            "radar-only masking preserves the original radar fault for the log");
+    const auto disabled_severe = EvaluateSafetyDecision(healthy_loc, true, true, false, false, true);
+    Require(disabled_severe.raw == -9 && disabled_severe.selected == -9 && disabled_severe.published == 0,
+            "all-radar failure survives radar masking and remains auditable with global reporting off");
     Require(SafetyValue(snapshot, false, true, true) == 2 && SafetyValue(snapshot, false, false, false) == 2, "fault or stale radar gives two");
     snapshot.observations[0].condition = kFail;
     Require(SafetyValue(snapshot, false, true, false) == 4, "localization wins over radar");
@@ -97,8 +180,14 @@ int main() {
     large(0, 0) = -1;
     Feed(reverse, 1040, Pose(-1.04), -1, 0, 1, nullptr, &large);
     Require(reverse.Evaluate(false, At(1040)).observations[1].condition == kUnknown, "negative covariance cannot pass");
+    Require(!reverse.Evaluate(false, At(1040)).covariance_valid &&
+            std::isnan(reverse.Evaluate(false, At(1040)).major_sigma_m),
+            "invalid covariance must not log sigma from the previous failing pose");
     reverse.ObservePose(101.06, Pose(-1.06), Pose(-1.06), SmallCov(), false, true, 1, At(1060));
     Require(reverse.Evaluate(false, At(1060)).observations[1].condition == kFail, "unobservable graph is an uncertainty fault");
+    Require(reverse.Evaluate(false, At(1060)).pose_unobservable &&
+            std::isnan(reverse.Evaluate(false, At(1060)).yaw_sigma_rad),
+            "unobservable graph logs its explicit cause rather than stale sigma");
     reverse.ObservePose(101.08, Pose(-1.08), Pose(-1.08), SmallCov(), false, false, 1, At(1080));
     Require(reverse.Evaluate(false, At(1080)).observations[1].condition == kUnknown, "missing covariance cannot pass");
     Require(SafetyValue(reverse.Evaluate(false, At(1080)), false, false, true) == 4,

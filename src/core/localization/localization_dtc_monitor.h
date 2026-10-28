@@ -41,7 +41,10 @@ struct Snapshot {
     double yaw_pass_age_sec = 0.0;  ///< Age of required IMU/pose evidence, independent of optional CAN.
     bool output_stale = false, localization_lost = false;  ///< Independent severe causes, not relaxed by grace.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
-    double major_sigma_m = 0, lateral_sigma_m = 0, yaw_sigma_rad = 0;
+    bool covariance_valid = false, pose_unobservable = false;
+    double major_sigma_m = std::numeric_limits<double>::quiet_NaN();
+    double lateral_sigma_m = std::numeric_limits<double>::quiet_NaN();
+    double yaw_sigma_rad = std::numeric_limits<double>::quiet_NaN();
     double speed_stamp_lag_sec = std::numeric_limits<double>::quiet_NaN();  ///< Latest pose minus latest CAN stamp; NaN if absent.
     double gyro_stamp_lag_sec = std::numeric_limits<double>::quiet_NaN();  ///< Latest pose minus latest IMU stamp; NaN if absent.
 };
@@ -81,4 +84,11 @@ class Monitor {
 // suppresses the lidar branch (including UNKNOWN), never the first two branches.
 int8_t SafetyValue(const Snapshot& localization, bool all_lidar_failed,
                    bool radar_fault, bool radar_all_pass, bool mask_radar_fault = false);
+struct SafetyDecision {
+    int8_t raw = 0, selected = 0, published = 0;
+};
+// Preserve the diagnosis before either commissioning override is applied.
+SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_lidar_failed,
+                                     bool radar_fault, bool radar_all_pass,
+                                     bool reporting_enabled, bool mask_radar_fault);
 }

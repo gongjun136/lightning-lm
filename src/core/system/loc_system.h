@@ -39,6 +39,7 @@
 #include "utils/radar_dtc_state.h"
 #include "core/localization/localization_dtc_monitor.h"
 #include "utils/compute_profiling.h"
+#include "utils/incident_recorder.h"
 
 namespace lightning {
 
@@ -57,6 +58,7 @@ class LocSystem {
    public:
     struct Options {
         bool pub_tf_ = false;  ///< 是否发布 TF，可由 YAML 的 system.pub_tf 显式启用。
+        std::string incident_directory;  ///< Absolute archive root; no new ROS subscriptions.
     };
 
     explicit LocSystem(Options options);
@@ -326,6 +328,10 @@ class LocSystem {
     rclcpp::GenericSubscription::SharedPtr wheel_speed_sub_ = nullptr;  ///< 接收 CAN 转速与扭矩的通用 ROS 订阅器。
 
     std::unique_ptr<functional_safety::HeartbeatPublisher> heartbeat_;  ///< 独立发布功能安全心跳并记录有效工作进度。
+    std::unique_ptr<diagnostics::IncidentRecorder> incident_recorder_;
+    int incident_pose_ = -1, incident_safety_ = -1, incident_pipeline_ = -1;
+    int incident_fault_ = -1, incident_status_ = -1;
+    int incident_heartbeat_ = -1;
     std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
     std::string dtc_config_version_ = "localization-dtc-v3-optional-can";
@@ -338,6 +344,9 @@ class LocSystem {
     int last_safety_strict_ = -128, last_safety_shadow_ = -128;
     uint8_t last_safety_sync_mask_ = 0;
     uint64_t safety_shadow_ticks_ = 0;
+    std::array<int, 18> last_safety_diagnostic_state_{};
+    bool safety_diagnostic_seen_ = false;
+    uint64_t safety_diagnostic_ticks_ = 0, safety_diagnostic_sequence_ = 0;
     std::mutex dtc_publish_mutex_;
     std::array<uint8_t, 2> last_dtc_conditions_{{0, 0}};
     rclcpp::Publisher<geosun_msgs::msg::Safety>::SharedPtr safety_pub_;

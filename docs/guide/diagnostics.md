@@ -19,7 +19,14 @@
 11. @subpage incident_20261020_bounded_sync_policy "有界同步告警与雷达停车开关"：核对有界放行条件、独立屏蔽开关和现场验证边界。
 12. @subpage lidar_ins_accuracy "建图与纯雷达定位精度评估"：旁路录制 CGI 参考，以独立数据冻结地图配准，比较完整三维位姿和采样覆盖。
 13. @subpage lio_scheduling_20261021 "动态联调的 LIO 调度方案与复测"：区分计算耗时与调度等待，核对单线程候选的适用条件及现场验证边界。
+14. @subpage incident_capture_guide "进程内故障采集与快速排查"：了解触发、资源边界和事件包使用。
 
 先记录配置、提交、地图版本、输入时间和实际发布结果，再用 @ref online_localization_flow "在线定位流程" 定位边界。公式对应模块仍从 @ref guide_lio "LIO" 和 @ref guide_localization "地图定位" 回查，故障专题保存运行证据与方法。
+
+**Safety 上报与排查留痕**：`diagnostics.safety_fault_reporting_enabled: false` 将 Safety.runstate 的所有非零故障上报置为 0（当前为 2、4、-9）；`heartbeat.active_fault` 独立保留，其他消费者行为需分别验证。默认 reporting 为 true。开关仅在 LocSystem 初始化时读取，修改后须重启定位进程；实际生效配置保存在本次 `run/config.yaml`。
+
+`SAFETY_DIAGNOSTIC` 独立于上报开关及 `radar_time_sync_shadow_enabled`，可对照 `raw_runstate`、`selected_runstate`、`published_runstate` 和 `suppressed`。协方差无效或位姿不可观测时 sigma 记为 NaN，并提供有效性标志；旧 `SAFETY_TIME_SYNC_SHADOW` 保留兼容。新日志需要相应版本，尚未部署到 Orin。
+
+SANY 不确定度调试门限将横向 sigma 从 0.3 放宽至 0.5 m、yaw sigma 从 2° 放宽至 5°，主轴 sigma 保持 0.5 m。运动一致性、不可观测/未知及输出超时保护保留；门限调整不证明旧告警误报或真实定位精度达标。
 
 下一章：@ref guide_maintenance "文档维护"。

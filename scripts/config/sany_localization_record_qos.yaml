@@ -87,3 +87,39 @@
   depth: 100
   reliability: best_effort
   durability: volatile
+
+/safety/throstle:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+
+/diagnostics/heartbeat/lightning_slam:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+
+/sensors/livox/front/diagnostic_state:
+  history: keep_last
+  depth: 20
+  reliability: best_effort
+  durability: volatile
+
+/sensors/livox/rear/diagnostic_state:
+  history: keep_last
+  depth: 20
+  reliability: best_effort
+  durability: volatile
+
+/sensors/livox/left/diagnostic_state:
+  history: keep_last
+  depth: 20
+  reliability: best_effort
+  durability: volatile
+
+/sensors/livox/right/diagnostic_state:
+  history: keep_last
+  depth: 20
+  reliability: best_effort
+  durability: volatile

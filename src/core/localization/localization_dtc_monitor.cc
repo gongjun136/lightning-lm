@@ -105,6 +105,11 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
 void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unobservable) {
     auto& condition = snapshot_.observations[1].condition;
     condition = kUnknown;
+    snapshot_.covariance_valid = false;
+    snapshot_.pose_unobservable = unobservable;
+    // An unavailable covariance must not display sigma values from an older pose.
+    snapshot_.major_sigma_m = snapshot_.lateral_sigma_m = snapshot_.yaw_sigma_rad =
+        std::numeric_limits<double>::quiet_NaN();
     if (unobservable) { condition = kFail; return; }
     if (!valid || !p.allFinite() || (p - p.transpose()).norm() > 1e-6 * std::max(1.0, p.norm())) return;
     Eigen::SelfAdjointEigenSolver<Mat6d> check(p);
@@ -128,6 +133,7 @@ void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unob
     snapshot_.major_sigma_m = std::sqrt(std::max(0.0, ellipse.eigenvalues().maxCoeff()));
     snapshot_.lateral_sigma_m = std::sqrt(std::max(0.0, lateral.dot(covariance.topLeftCorner<2, 2>() * lateral)));
     snapshot_.yaw_sigma_rad = std::sqrt(std::max(0.0, yaw_j.dot(covariance.bottomRightCorner<3, 3>() * yaw_j)));
+    snapshot_.covariance_valid = true;
     condition = snapshot_.major_sigma_m > config_.major_sigma_m || snapshot_.lateral_sigma_m > config_.lateral_sigma_m ||
                 snapshot_.yaw_sigma_rad > config_.yaw_sigma_rad ? kFail : kPass;
 }
@@ -265,4 +271,13 @@ int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool 
     return 0;
 }
 // [dtc-safety-priority]
+SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_failed,
+                                     bool radar_fault, bool radar_all_pass,
+                                     bool reporting_enabled, bool mask_radar_fault) {
+    SafetyDecision decision;
+    decision.raw = SafetyValue(localization, all_failed, radar_fault, radar_all_pass);
+    decision.selected = SafetyValue(localization, all_failed, radar_fault, radar_all_pass, mask_radar_fault);
+    decision.published = reporting_enabled ? decision.selected : 0;
+    return decision;
+}
 }

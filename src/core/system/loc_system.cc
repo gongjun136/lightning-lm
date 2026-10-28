@@ -38,6 +38,16 @@ double CloudStampSec(const CloudPtr& cloud) {
     return static_cast<double>(cloud->header.stamp) * 1e-9;
 }
 
+std::int64_t CaptureStamp(const builtin_interfaces::msg::Time& stamp) {
+    return std::int64_t(stamp.sec) * 1000000000LL + stamp.nanosec;
+}
+std::uint64_t CloudCaptureBytes(const sensor_msgs::msg::PointCloud2& cloud) {
+    std::uint64_t bytes = sizeof(cloud) + cloud.data.capacity() + cloud.header.frame_id.capacity()
+        + cloud.fields.capacity() * sizeof(sensor_msgs::msg::PointField);
+    for (const auto& field : cloud.fields) bytes += field.name.capacity();
+    return bytes;
+}
+
 functional_safety::HeartbeatConfig LoadHeartbeatConfig(rclcpp::Node& node) {
     const auto node_id = node.declare_parameter<std::int64_t>("functional_safety.node_id", 6);
     const auto topic = node.declare_parameter<std::string>(
@@ -231,6 +241,22 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
 
     // 阶段 4：建立诊断与 Safety 通道。
     const YAML::Node dtc = root["diagnostics"];
+    try {
+        const auto capture = diagnostics::IncidentRecorder::Options::FromYaml(dtc ? dtc["incident_capture"] : YAML::Node());
+        if (capture.enabled) {
+            incident_recorder_ = std::make_unique<diagnostics::IncidentRecorder>(capture, options_.incident_directory, yaml_path);
+            using Kind = diagnostics::IncidentRecorder::Kind;
+            incident_pose_ = incident_recorder_->Register<lightning::msg::VehiclePose>("/localization/pose_vel", Kind::kOutput);
+            incident_pipeline_ = incident_recorder_->Register<lightning::msg::PipelineDiagnostics>("/localization/pipeline_diagnostics", Kind::kDiagnostic);
+            incident_fault_ = incident_recorder_->Register<lightning::msg::FaultStatus>("/localization/fault_status", Kind::kDiagnostic);
+            incident_status_ = incident_recorder_->Register<lightning::msg::LocalizationStatus>("/localization/loc_status", Kind::kDiagnostic);
+            incident_heartbeat_ = incident_recorder_->Register<diagnostic_monitor_interfaces::msg::NodeHeartbeat>(
+                node_->get_parameter("functional_safety.heartbeat_topic").as_string(), Kind::kDiagnostic);
+        }
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "INCIDENT_CAPTURE disabled: " << e.what();
+        incident_recorder_.reset();
+    }
     loc::dtc::Config dtc_config;
     auto value = [&dtc](const char* key, double fallback) {
         return dtc && dtc[key] ? dtc[key].as<double>() : fallback;
@@ -312,14 +338,20 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     };
     safety_pub_ = node_->create_publisher<geosun_msgs::msg::Safety>(
         topic("safety_topic", "/safety/throstle"), dtc_qos);
+    if (incident_recorder_) incident_safety_ = incident_recorder_->Register<geosun_msgs::msg::Safety>(
+        topic("safety_topic", "/safety/throstle"), diagnostics::IncidentRecorder::Kind::kDiagnostic);
     const std::array<std::string, 4> radar_roles{{"front", "rear", "left", "right"}};
     for (size_t i = 0; i < 4; ++i) {
         LOG(INFO) << "LOCALIZATION_RADAR_REQUIRED role=" << radar_roles[i]
                   << " required=" << required_radar_roles[i];
         if (!required_radar_roles[i]) continue;
+        const auto radar_topic = "/sensors/livox/" + radar_roles[i] + "/diagnostic_state";
+        const int capture_id = incident_recorder_ ? incident_recorder_->Register<livox_ros_driver2::msg::LidarDiagnosticState>(
+            radar_topic, diagnostics::IncidentRecorder::Kind::kDiagnostic) : -1;
         radar_availability_subs_[i] = node_->create_subscription<livox_ros_driver2::msg::LidarDiagnosticState>(
             "/sensors/livox/" + radar_roles[i] + "/diagnostic_state", dtc_qos,
-            [this, i](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
+            [this, i, capture_id](const livox_ros_driver2::msg::LidarDiagnosticState::SharedPtr msg) {
+                if (incident_recorder_) incident_recorder_->Capture(capture_id, msg, sizeof(*msg) + 4096);
                 if (msg->role == i) radar_dtc_state_->Observe(*msg);
             });
     }
@@ -368,12 +400,16 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << ", depth=" << lidar_qos_depth;
 
     auto subscribe_imu = [this, &imu_qos](const std::string& topic) {
+        const int capture_id = incident_recorder_ ? incident_recorder_->Register<sensor_msgs::msg::Imu>(
+            topic, diagnostics::IncidentRecorder::Kind::kImu) : -1;
         {
             std::lock_guard<std::mutex> lock(input_stats_mutex_);
             imu_input_stats_.topic = topic;
         }
         imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
-            topic, imu_qos, [this](sensor_msgs::msg::Imu::SharedPtr msg) {
+            topic, imu_qos, [this, capture_id](sensor_msgs::msg::Imu::SharedPtr msg) {
+            if (incident_recorder_) incident_recorder_->Capture(capture_id, msg,
+                sizeof(*msg) + msg->header.frame_id.capacity(), CaptureStamp(msg->header.stamp));
             IMUPtr imu = std::make_shared<IMU>();
             imu->timestamp = ToSec(msg->header.stamp);
             imu->linear_acceleration =
@@ -394,9 +430,13 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         subscribe_imu(primary->imu_topic);
         for (const auto& sensor : loc_->GetMultiLidarConfig().lidars) {
             RegisterLidarInput(sensor.id, sensor.lidar_topic);
+            const int capture_id = incident_recorder_ ? incident_recorder_->Register<sensor_msgs::msg::PointCloud2>(
+                sensor.lidar_topic, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 sensor.lidar_topic, lidar_qos,
-                [this, id = sensor.id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                [this, id = sensor.id, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
+                        CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 }));
@@ -411,16 +451,24 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         subscribe_imu(imu_topic_);
         if (!cloud_topic_.empty()) {
             RegisterLidarInput(0, cloud_topic_);
+            const int capture_id = incident_recorder_ ? incident_recorder_->Register<sensor_msgs::msg::PointCloud2>(
+                cloud_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-                cloud_topic_, lidar_qos, [this](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                cloud_topic_, lidar_qos, [this, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
+                        CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 }));
         }
         if (!livox_topic_.empty()) {
             RegisterLidarInput(0, livox_topic_);
+            const int capture_id = incident_recorder_ ? incident_recorder_->Register<livox_ros_driver2::msg::CustomMsg>(
+                livox_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-                livox_topic_, lidar_qos, [this](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                livox_topic_, lidar_qos, [this, capture_id](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                    if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
+                        sizeof(*cloud) + cloud->points.capacity() * sizeof(livox_ros_driver2::msg::CustomPoint), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 });
@@ -432,11 +480,17 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         wheel_speed_input_stats_.topic = wheel_speed_topic_;
     }
     if (wheel_speed_observation_enabled_) {
+        const int capture_id = incident_recorder_ ? incident_recorder_->Register(wheel_speed_topic_,
+            "geosun_msgs/msg/SpeThrCAN4", diagnostics::IncidentRecorder::Kind::kWheelSpeed,
+            [](const void* value) { return std::make_shared<rclcpp::SerializedMessage>(
+                *static_cast<const rclcpp::SerializedMessage*>(value)); }) : -1;
         wheel_speed_sub_ = node_->create_generic_subscription(
             wheel_speed_topic_, "geosun_msgs/msg/SpeThrCAN4",
             rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile(),
-            [this](std::shared_ptr<rclcpp::SerializedMessage> message) {
+            [this, capture_id](std::shared_ptr<rclcpp::SerializedMessage> message) {
                 const auto& bytes = message->get_rcl_serialized_message();
+                if (incident_recorder_) incident_recorder_->Capture(capture_id, message,
+                    sizeof(*message) + bytes.buffer_capacity);
                 SanyWheelSpeedWire sample;
                 if (!DecodeSanyWheelSpeed(bytes.buffer, bytes.buffer_length, sample)) {
                     LOG_EVERY_N(ERROR, 200) << "Rejected malformed/unsupported SpeThrCAN4 wire layout; bytes="
@@ -522,6 +576,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     // 阶段 7：完成初始化并报告 Idle。
     // 初始化成功不代表定位有效；定位输入的处理开关由 SetInitPose() 打开。
     heartbeat_->SetState(functional_safety::NodeState::kIdle);
+    if (incident_recorder_ && !incident_recorder_->Start()) incident_recorder_.reset();
+    if (incident_recorder_) heartbeat_->SetObserver([this](const diagnostic_monitor_interfaces::msg::NodeHeartbeat& msg) {
+        incident_recorder_->Capture(incident_heartbeat_,
+            std::make_shared<diagnostic_monitor_interfaces::msg::NodeHeartbeat>(msg),
+            sizeof(msg) + msg.active_fault.capacity() * sizeof(std::uint32_t));
+    });
     LOG(INFO) << "online loc node has been created.";
     debug_event::Emit("Online localization node is ready");
     return true;
@@ -583,12 +643,14 @@ void LocSystem::Spin() {
 void LocSystem::Finish() {
     // [loc-system-finish-resources]
     if (finished_) return;
+    if (incident_recorder_) incident_recorder_->BeginShutdown();
     if (dtc_timer_) dtc_timer_->cancel();
     if (safety_timer_) safety_timer_->cancel();
     debug_event::ClearSink();
     if (loc_) loc_->Finish();
     if (heartbeat_) heartbeat_->Stop();
     ClosePublishedTrajectoryTum();
+    if (incident_recorder_) incident_recorder_->Stop();
     finished_ = true;
     // [loc-system-finish-resources]
 }
@@ -714,6 +776,7 @@ void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& r
 }
 
 void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result) {
+    if (incident_recorder_) incident_recorder_->PosePrepared();
     // 阶段 1：校验结果与发布条件。
     // [output-result-publication-gates]
     // 结果有效、时间递增、地图匹配可用是三个独立条件；依次通过后才构造业务消息。
@@ -798,7 +861,12 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     }
     if (vehicle_pose_pub_) {
         // [dtc-business-work-progress]
+        if (incident_recorder_) incident_recorder_->PublishBegin();
         vehicle_pose_pub_->publish(vehicle_pose);
+        if (incident_recorder_) {
+            incident_recorder_->PublishEnd();
+            incident_recorder_->Capture(incident_pose_, std::make_shared<lightning::msg::VehiclePose>(vehicle_pose), sizeof(vehicle_pose) + 256);
+        }
         position_published = true;
         last_published_pose_stamp_ = result.timestamp_;
         heartbeat_->RecordWork();
@@ -1027,6 +1095,10 @@ void LocSystem::PublishHealthStatus() {
     const auto localization_status = telemetry_->MakeLocalizationStatus(stamp);
     fault_status_pub_->publish(fault_status);
     loc_status_pub_->publish(localization_status);
+    if (incident_recorder_) {
+        incident_recorder_->Capture(incident_fault_, std::make_shared<lightning::msg::FaultStatus>(fault_status), sizeof(fault_status) + 4096);
+        incident_recorder_->Capture(incident_status_, std::make_shared<lightning::msg::LocalizationStatus>(localization_status), sizeof(localization_status) + 4096);
+    }
     // Running here reflects nonzero completed work, not a fresh DTC PASS.
     // [dtc-heartbeat-state-from-work]
     if (heartbeat_->WorkSequence() == 0) {
@@ -1169,6 +1241,19 @@ void LocSystem::PublishHealthStatus() {
     diagnostics.wheel_speed_dr_last_nis =
         runtime.wheel_speed_dr_stats.last_normalized_innovation_squared;
     pipeline_diagnostics_pub_->publish(diagnostics);
+    if (incident_recorder_) {
+        lightning::diagnostics::IncidentRecorder::Pipeline p;
+        p.sensor_pending = diagnostics.sensor_queue_pending;
+        p.localization_pending = diagnostics.localization_queue_pending;
+        p.high_frequency_pending = diagnostics.high_frequency_queue_pending;
+        p.sensor_dropped = diagnostics.sensor_queue_dropped;
+        p.localization_dropped = diagnostics.localization_queue_dropped;
+        p.sensor_lag = diagnostics.current_sensor_lag_sec; p.match_age = diagnostics.lidar_match_age_sec;
+        p.match_stale = diagnostics.lidar_match_stale; p.output_gate = diagnostics.map_outputs_enabled;
+        p.lio_ms = diagnostics.last_lio_processing_ms; p.missing_lidars = diagnostics.current_frame_missing_lidar_ids.size();
+        incident_recorder_->ObservePipeline(p);
+        incident_recorder_->Capture(incident_pipeline_, std::make_shared<lightning::msg::PipelineDiagnostics>(diagnostics), sizeof(diagnostics) + 16384);
+    }
 }
 
 void LocSystem::RegisterLidarInput(int lidar_id, const std::string& topic) {
@@ -1260,6 +1345,8 @@ void LocSystem::UpdateDtcHeartbeat() {
         << " error_x=" << snapshot.error_longitudinal_m << " error_y=" << snapshot.error_lateral_m
         << " error_yaw_rad=" << snapshot.error_yaw_rad << " major_sigma=" << snapshot.major_sigma_m
         << " lateral_sigma=" << snapshot.lateral_sigma_m << " yaw_sigma_rad=" << snapshot.yaw_sigma_rad
+        << " covariance_valid=" << snapshot.covariance_valid
+        << " pose_unobservable=" << snapshot.pose_unobservable
         << " can_stamp_lag_sec=" << snapshot.speed_stamp_lag_sec
         << " imu_stamp_lag_sec=" << snapshot.gyro_stamp_lag_sec
         << " confirmed_failure=" << snapshot.confirmed_failure
@@ -1287,14 +1374,88 @@ void LocSystem::PublishSafety() {
         radar.bounded_fault, radar.bounded_all_pass);
     // 阶段 2：按配置发布 Safety。
     // [dtc-safety-output-switches]
-    msg.runstate = safety_fault_reporting_enabled_
-                       ? loc::dtc::SafetyValue(localization, radar.all_failed,
-                             radar_bounded_sync_warning_enabled_ ? radar.bounded_fault : radar.fault,
-                             radar_bounded_sync_warning_enabled_ ? radar.bounded_all_pass : radar.all_pass,
-                             radar_fault_mask_enabled_)
-                       : 0;
+    const auto decision = loc::dtc::EvaluateSafetyDecision(localization, radar.all_failed,
+        radar_bounded_sync_warning_enabled_ ? radar.bounded_fault : radar.fault,
+        radar_bounded_sync_warning_enabled_ ? radar.bounded_all_pass : radar.all_pass,
+        safety_fault_reporting_enabled_, radar_fault_mask_enabled_);
+    msg.runstate = decision.published;
+    if (incident_recorder_) {
+        diagnostics::IncidentRecorder::Safety s;
+        s.raw = decision.raw; s.selected = decision.selected; s.published = decision.published; s.strict = strict;
+        s.consistency = localization.observations[0].condition; s.uncertainty = localization.observations[1].condition;
+        s.covariance_valid = localization.covariance_valid; s.unobservable = localization.pose_unobservable;
+        s.major_sigma = localization.major_sigma_m; s.lateral_sigma = localization.lateral_sigma_m; s.yaw_sigma = localization.yaw_sigma_rad;
+        incident_recorder_->ObserveSafety(s);
+        incident_recorder_->Capture(incident_safety_, std::make_shared<geosun_msgs::msg::Safety>(msg), sizeof(msg) + 256);
+    }
     safety_pub_->publish(msg);
     // [dtc-safety-output-switches]
+    // Always retain the pre-override decision, even with both reporting and
+    // optional time-sync shadow logging disabled. Log every observed cause
+    // transition and a one-second summary without high-rate file I/O.
+    const std::array<int, 18> diagnostic_state{{
+        decision.raw, decision.selected, decision.published, strict,
+        localization.observations[0].condition, localization.observations[1].condition,
+        localization.confirmed_failure, localization.output_stale, localization.localization_lost,
+        localization.translation_condition, localization.yaw_condition,
+        radar.all_failed, radar.fault_without_time_sync, radar.all_pass_without_time_sync,
+        radar.time_sync_fault_mask, radar.bounded_sync_warning_mask,
+        localization.covariance_valid, localization.pose_unobservable}};
+    const bool diagnostic_changed = !safety_diagnostic_seen_ || diagnostic_state != last_safety_diagnostic_state_;
+    const bool diagnostic_periodic = ++safety_diagnostic_ticks_ % 50 == 0;
+    if (diagnostic_changed || diagnostic_periodic) {
+        const double sensor_stamp = last_localization_stamp_.load();
+        LOG(INFO) << "SAFETY_DIAGNOSTIC sequence=" << ++safety_diagnostic_sequence_
+                  << " event=" << (diagnostic_changed ? "transition" : "periodic")
+                  << " reporting_enabled=" << safety_fault_reporting_enabled_
+                  << " raw_runstate=" << int(decision.raw)
+                  << " selected_runstate=" << int(decision.selected)
+                  << " published_runstate=" << int(decision.published)
+                  << " suppressed=" << (decision.raw != decision.published)
+                  << " strict_runstate=" << strict << " bounded_runstate=" << bounded
+                  << " bounded_policy_enabled=" << radar_bounded_sync_warning_enabled_
+                  << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_
+                  << " radar_all_failed=" << radar.all_failed
+                  << " time_sync_fault_mask=" << int(radar.time_sync_fault_mask)
+                  << " bounded_sync_warning_mask=" << int(radar.bounded_sync_warning_mask)
+                  << " non_sync_fault=" << radar.fault_without_time_sync
+                  << " non_sync_all_pass=" << radar.all_pass_without_time_sync
+                  << " localization_consistency=" << int(localization.observations[0].condition)
+                  << " localization_uncertainty=" << int(localization.observations[1].condition)
+                  << " translation_condition=" << int(localization.translation_condition)
+                  << " yaw_condition=" << int(localization.yaw_condition)
+                  << " severe=" << localization.severe
+                  << " confirmed_failure=" << localization.confirmed_failure
+                  << " unknown_tolerated=" << localization.consistency_unknown_tolerated
+                  << " optional_can_unavailable=" << localization.optional_can_unavailable
+                  << " error_x=" << localization.error_longitudinal_m
+                  << " error_y=" << localization.error_lateral_m
+                  << " error_yaw_rad=" << localization.error_yaw_rad
+                  << " major_sigma=" << localization.major_sigma_m
+                  << " lateral_sigma=" << localization.lateral_sigma_m
+                  << " yaw_sigma_rad=" << localization.yaw_sigma_rad
+                  << " covariance_valid=" << localization.covariance_valid
+                  << " pose_unobservable=" << localization.pose_unobservable
+                  << " output_stale=" << localization.output_stale
+                  << " localization_lost=" << localization.localization_lost
+                  << " output_age_sec=" << localization.output_age_sec
+                  << " can_arrival_age_sec=" << localization.speed_arrival_age_sec
+                  << " imu_arrival_age_sec=" << localization.gyro_arrival_age_sec
+                  << " can_stamp_lag_sec=" << localization.speed_stamp_lag_sec
+                  << " imu_stamp_lag_sec=" << localization.gyro_stamp_lag_sec
+                  << " yaw_pass_age_sec=" << localization.yaw_pass_age_sec
+                  << " consistency_pass_age_sec=" << localization.consistency_pass_age_sec
+                  << " match_stale=" << publication_gate_.LidarMatchStale(sensor_stamp)
+                  << " lost_frames=" << publication_gate_.ConsecutiveLostFrames()
+                  << " match_age_sec=" << publication_gate_.LidarMatchAgeSec(sensor_stamp)
+                  << std::setprecision(16)
+                  << " last_valid_match=" << publication_gate_.LastValidLidarMatchStamp()
+                  << " last_published_pose=" << last_published_pose_stamp_.load()
+                  << " steady_sec=" << std::chrono::duration<double>(
+                         loc::dtc::Clock::now().time_since_epoch()).count();
+    }
+    last_safety_diagnostic_state_ = diagnostic_state;
+    safety_diagnostic_seen_ = true;
     // 阶段 3：记录影子评估。
     if (radar_time_sync_shadow_enabled_ || radar_fault_mask_enabled_) {
         const int shadow = loc::dtc::SafetyValue(localization, radar.all_failed,

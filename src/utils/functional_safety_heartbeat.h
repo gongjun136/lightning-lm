@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -47,6 +48,8 @@ class HeartbeatPublisher {
                       const std::vector<std::uint32_t>& passed);
     void RecordWork();
     void PublishNow();
+    // Optional local observation; never creates another DDS subscription.
+    void SetObserver(std::function<void(const diagnostic_monitor_interfaces::msg::NodeHeartbeat&)> observer);
     void Stop();
 
     std::uint16_t NodeId() const { return config_.node_id; }
@@ -73,6 +76,7 @@ class HeartbeatPublisher {
     std::mutex fault_mutex_;
     std::set<std::uint32_t> active_faults_;
     std::mutex publish_mutex_;
+    std::function<void(const diagnostic_monitor_interfaces::msg::NodeHeartbeat&)> observer_;
     std::mutex wait_mutex_;  ///< 配合条件变量等待发布周期或停止请求。
     std::condition_variable wait_condition_;  ///< 心跳周期等待及停止时唤醒使用的条件变量。
     std::thread worker_;  ///< 独立于算法处理线程的心跳发布线程。

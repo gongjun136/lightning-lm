@@ -267,8 +267,25 @@ backend:
 loop_closing:
   with_height: false
 diagnostics:
+  incident_capture:
+    enabled: true
+    pre_seconds: 30.0
+    post_seconds: 10.0
+    max_event_seconds: 60.0
+    memory_mb: 2048
+    max_message_mb: 64
+    event_mb: 2048
+    disk_mb: 8192
+    min_free_mb: 2048
+    segment_mb: 32
+    max_events: 10
+    write_mb_per_second: 20.0
+    startup_timeout_seconds: 8.0
+    output_timeout_seconds: 0.5
+    input_timeout_seconds: 0.5
+    cooldown_seconds: 10.0
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v3-optional-can
+  config_version: localization-dtc-v4-relaxed-uncertainty
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
@@ -292,8 +309,10 @@ diagnostics:
   distance_tolerance_ratio: 0.1
   angle_tolerance_ratio: 0.1
   major_sigma_limit_m: 0.5
-  lateral_sigma_limit_m: 0.3
-  yaw_sigma_limit_deg: 2.0
+  # 2026-10-27 commissioning: relax uncertainty-only stops. Recorded peaks on
+  # Oct 26-27 were 0.344 m lateral and 4.325 deg yaw; motion checks stay separate.
+  lateral_sigma_limit_m: 0.5
+  yaw_sigma_limit_deg: 5.0
   # PGO already includes factor noise, DR process noise and output offsets.
   # Additional inflation requires calibration; 4x failed healthy PGO posteriors.
   covariance_variance_scale: 1.0

@@ -51,6 +51,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/compute_profiling.cc
         utils/online_logging.cc
         utils/causal_trace.cc
+        utils/incident_recorder.cc
         utils/functional_safety_heartbeat.cc
         utils/pointcloud_utils.cc
         utils/thread_scheduling.cc
@@ -107,6 +108,10 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(incident_recorder_test test/incident_recorder_test.cc utils/incident_recorder.cc)
+    ament_target_dependencies(incident_recorder_test rclcpp rosbag2_cpp sensor_msgs std_msgs)
+    target_link_libraries(incident_recorder_test yaml-cpp glog)
+    add_test(NAME incident_recorder_test COMMAND $<TARGET_FILE:incident_recorder_test>)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME online_logging_slow_sink_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_online_logging.py)
@@ -119,6 +124,8 @@ if(BUILD_TESTING)
     add_executable(localization_dtc_test test/localization_dtc_test.cc)
     target_link_libraries(localization_dtc_test ${PROJECT_NAME}.libs ${third_party_libs})
     add_test(NAME localization_dtc_test COMMAND $<TARGET_FILE:localization_dtc_test>)
+    add_test(NAME localization_dtc_sany_config_test COMMAND $<TARGET_FILE:localization_dtc_test>
+        ${PROJECT_SOURCE_DIR}/config/sany/localization.yaml)
     add_executable(radar_dtc_state_test test/radar_dtc_state_test.cc)
     ament_target_dependencies(radar_dtc_state_test livox_ros_driver2)
     target_link_libraries(radar_dtc_state_test yaml-cpp)

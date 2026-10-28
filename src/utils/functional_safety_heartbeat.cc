@@ -65,8 +65,17 @@ void HeartbeatPublisher::PublishNow() {
       message.active_fault.assign(active_faults_.begin(), active_faults_.end());
     }
     publisher_->publish(message);
+    if (observer_) {
+        try { observer_(message); }
+        catch (...) { RCLCPP_ERROR(rclcpp::get_logger("heartbeat"), "local heartbeat observer failed"); }
+    }
 }
 // [dtc-heartbeat-publish]
+
+void HeartbeatPublisher::SetObserver(std::function<void(const diagnostic_monitor_interfaces::msg::NodeHeartbeat&)> observer) {
+    std::lock_guard<std::mutex> lock(publish_mutex_);
+    observer_ = std::move(observer);
+}
 
 void HeartbeatPublisher::Stop() {
     const bool already_stopped = stop_requested_.exchange(true);

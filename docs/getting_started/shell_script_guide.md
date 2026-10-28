@@ -98,7 +98,7 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-finish-run
 
-收到 `Ctrl-C` 或 TERM 时走预先注册的 `trap`，调用同一收尾函数 `stop_children` 并返回 130。`stop_children` 向定位/录包进程组发送 INT，让轨迹和 MCAP 完成写入，并停止 watchdog、资源采样等辅助进程。
+收到停止信号时由脚本现有 trap 清理子进程；强制终止可能使尚未写完的数据丢失。
 
 ## 再按执行顺序理解准备工作
 
@@ -148,7 +148,7 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 @anchor sany_lidar_inputs
 ### 3. 从配置确定必须等待的输入
 
-脚本中的 Python 段解析 YAML，得到 `lidar_topics` 和 IMU 清单。关闭录包时需要主 IMU，开启录包时需要全部配置 IMU。最终拼成启动前的输入清单：
+脚本中的 Python 段解析 YAML，得到 `lidar_topics` 和 IMU 清单。启动和录包均以主 IMU 为必需输入。最终拼成启动前的输入清单：
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-required-inputs
 
@@ -248,9 +248,9 @@ CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针�
 | `LIGHTNING_LM_CONFIG` | `$REPO/config/sany/localization.yaml` | 共用参数模板；启动时生成带 VIN、标定及来源哈希的运行配置 |
 | `SANY_MAP_PATH` | `$LIGHTNING_LM_WS/maps/sany_4lidar_20260811_a4defa3_solid` | 保留旧入口的历史 fallback；现场根入口必须固定实际发布地图 |
 | `SANY_ENABLE_CAN_OBSERVATION` / `SANY_WHEEL_SPEED_TOPIC` | `1` / `/SpeThrCAN4_topic` | CAN 轮速观测及输入话题；启用时预检该输入 |
-| `SANY_RECORD_BAG` | `0` | 可选后台 MCAP；启用后采集全部配置雷达/IMU和 CAN 等话题 |
+| `SANY_RECORD_BAG` | `0` | 可选后台 MCAP；采集启用雷达点云、主 IMU、定位输出和状态等；CAN 仅融合开启时录制 |
 | `SANY_TOPIC_WAIT_SECONDS` | `60` | 等待必需传感器话题出现的时间 |
-| `SANY_IMU_TOPIC` | 配置中的主 IMU | 可覆盖主 IMU 输入；录包时还检查全部配置 IMU |
+| `SANY_IMU_TOPIC` | 配置中的主 IMU | 须与最终 YAML 主 IMU 一致，否则拒绝启动；算法仅从 YAML 读取订阅，修改话题须改 YAML |
 | `SANY_RECORD_QOS_FILE` | `scripts/config/sany_localization_record_qos.yaml` | 录包 QoS 覆盖 |
 | `SANY_MIN_FREE_GB` | `20` | 仅在录包时要求输出目录所在磁盘保有此空间 |
 | `SANY_ENABLE_POSE_VEL_WATCHDOG` / `SANY_POSE_VEL_TIMEOUT_SECONDS` | `0` / `5` | 可选定位输出静默检测和现场快照；不自动重启 |
@@ -294,7 +294,7 @@ CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针�
 <summary>录包、watchdog 与资源监测：需要诊断现场时展开</summary>
 @endhtmlonly
 
-**后台 MCAP：** 在定位启动前录制原始输入和指定输出，先等待一秒并确认录包进程仍在运行，失败时结束启动。
+**后台 MCAP：** 定位启动前录制启用雷达点云、主 IMU、`pose_vel`、定位 fault/status/pipeline、Safety、定位 heartbeat 和参与雷达的 diagnostic_state；CAN 仅融合开启时录制，TF 仅 `system.pub_tf` 为 true 时录制。不录非主 IMU、`slamPoseRaw` 和 `rosout`，定位 stdout/stderr 仍保存。录包启动后先确认进程仍在运行，失败时结束启动。现有点云 QoS 与 1 GiB 缓存不代表无 DDS 或资源开销。
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-start-recording
 

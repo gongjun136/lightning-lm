@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <filesystem>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -48,6 +49,7 @@ DEFINE_int32(post_wait_seconds, 15, "drain time after embedded bag playback");
 DEFINE_string(output_tum, "", "optional PGO global-correction TUM trajectory");
 DEFINE_string(output_high_frequency_tum, "", "optional live high-frequency TUM trajectory");
 DEFINE_string(output_published_tum, "", "optional live published rear-axle TUM trajectory");
+DEFINE_string(incident_dir, "", "bounded incident archive; defaults beside output_tum when enabled in YAML");
 
 namespace {
 
@@ -147,6 +149,9 @@ int main(int argc, char** argv) {
     // 阶段 3：初始化 LiDAR 系统。
     // [online-loc-create-system]
     LocSystem::Options opt;
+    if (!FLAGS_incident_dir.empty()) opt.incident_directory = std::filesystem::absolute(FLAGS_incident_dir).string();
+    else if (!FLAGS_output_tum.empty()) opt.incident_directory =
+        (std::filesystem::absolute(FLAGS_output_tum).parent_path() / "incidents").string();
     LocSystem loc(opt);
 
     if (!loc.Init(FLAGS_config, FLAGS_map)) {

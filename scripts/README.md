@@ -219,6 +219,8 @@ export SANY_VEHICLE_CONFIG=/opt/conf/vehicle_config.yaml
 bash lightning-lm/scripts/run_sany_lidar_loc.sh
 ```
 
+SANY 可选 MCAP 录制启用的雷达点云、主 IMU、`pose_vel`、定位 fault/status/pipeline、Safety、定位 heartbeat 和参与雷达的 diagnostic_state；CAN 仅融合开启时录制，TF 仅 `system.pub_tf` 为 true 时录制。不录非主 IMU、`slamPoseRaw`、`rosout`，定位 stdout/stderr 仍保存。原始点云 QoS 和 1 GiB 缓存仍有 DDS 与资源成本。
+
 仓库入口默认关闭 bag，缺省运行设置为 `diagnostic`，对应
 `LIGHTNING_LM_COMPUTE_PROFILE=1`、`LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD=0`。
 项目根入口可固定 `production`，对应默认关闭计时、开启非必要开销裁剪；实际设置以发布入口和

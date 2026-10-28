@@ -15,10 +15,14 @@ LAUNCH_TIMEOUT = float(os.environ.get("LIGHTNING_TEST_LAUNCH_TIMEOUT_SEC", "30")
 
 
 class LauncherFailureTest(unittest.TestCase):
-    def run_launcher(self, probe_exit, algorithm_exit, fixed_map_transform=None, missing_manifest=False, aligned_map=False):
+    def run_launcher(self, probe_exit, algorithm_exit, fixed_map_transform=None, missing_manifest=False,
+                     aligned_map=False, record_bag=False, can=True, tf=False, imu_override=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "setup.bash").write_text(":\n")
+            config = yaml.safe_load((REPO / 'config/sany/localization.yaml').read_text())
+            config['system']['pub_tf'] = tf
+            (root / 'base.yaml').write_text(yaml.safe_dump(config))
             (root / "vehicle.yaml").write_text('VIN: "SANLV77EXSH000858"\nLIDAR: "MASTER AND SLAVE"\n')
             (root / "map").mkdir()
             (root / "map/index.txt").write_text("test index\n")
@@ -49,8 +53,16 @@ elif [[ "$1 $2 $3" == 'run lightning_lm check_localization_inputs' ]]; then
   echo "probe arguments: ${*:4}"
   exit "${PROBE_EXIT}"
 elif [[ "$1 $2 $3" == 'run lightning_lm run_loc_online' ]]; then
+  echo "algorithm arguments: ${*:4}"
   echo 'mock algorithm failure' >&2
   exit "${ALGORITHM_EXIT}"
+elif [[ "$1 $2 $3" == 'bag list storage' ]]; then
+  echo mcap
+  exit 0
+elif [[ "$1 $2" == 'bag record' ]]; then
+  echo "record arguments: ${*:3}"
+  sleep 3
+  exit 0
 elif [[ "$1 $2" == 'topic list' ]]; then
   exit 0
 fi
@@ -68,6 +80,7 @@ exit 91
             env.update({
                 "PATH": str(root) + os.pathsep + env["PATH"],
                 "LIGHTNING_LM_REPO_DIR": str(REPO),
+                "LIGHTNING_LM_CONFIG": str(root / "base.yaml"),
                 "LIGHTNING_LM_ROS_SETUP": str(root / "setup.bash"),
                 "LIGHTNING_LM_INSTALL_SETUP": str(root / "setup.bash"),
                 "LIGHTNING_LM_OUT_ROOT": str(root / "runs"),
@@ -77,7 +90,11 @@ exit 91
                 "PROBE_EXIT": str(probe_exit),
                 "ALGORITHM_EXIT": str(algorithm_exit),
                 "MAP_MANIFEST_TOOL": str(MANIFEST_TOOL),
+                "SANY_RECORD_BAG": '1' if record_bag else '0',
+                "SANY_ENABLE_CAN_OBSERVATION": '1' if can else '0',
             })
+            if imu_override is not None:
+                env['SANY_IMU_TOPIC'] = imu_override
             if fixed_map_transform is not None:
                 env["SANY_ENABLE_FIXED_MAP_TRANSFORM"] = fixed_map_transform
             # Allow cold Python/NumPy imports and metadata I/O on mounted workspaces.
@@ -102,6 +119,34 @@ exit 91
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertIn("algorithm_exit_code=23", files["run_metadata.txt"])
         self.assertIn("mock algorithm failure", files["logs/run_loc_online.stderr.log"])
+        self.assertRegex(files["logs/run_loc_online.stdout.log"], r'--incident_dir=\S+/runs/incidents')
+
+    def test_recording_keeps_only_used_inputs_and_one_pose(self):
+        result, files = self.run_launcher(0, 0, record_bag=True, can=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        topics = files['logs/rosbag.stdout.log'].split()
+        config = yaml.safe_load(files['config.yaml'])
+        inputs = config['multi_lidar']['topics']
+        primary = config['multi_lidar']['primary_lidar_id']
+        for key, topic in inputs.items():
+            self.assertEqual(topic in topics, key.startswith('lidar_') or key == f'imu_{primary}')
+        for topic in ('/localization/pose_vel', '/safety/throstle', '/diagnostics/heartbeat/lightning_slam'):
+            self.assertIn(topic, topics)
+        for topic in ('/SpeThrCAN4_topic', '/slamPoseRaw_topic', '/tf', '/tf_static', '/rosout'):
+            self.assertNotIn(topic, topics)
+
+    def test_enabled_can_and_tf_are_recorded(self):
+        result, files = self.run_launcher(0, 0, record_bag=True, can=True, tf=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        topics = files['logs/rosbag.stdout.log'].split()
+        for topic in ('/SpeThrCAN4_topic', '/tf', '/tf_static'):
+            self.assertIn(topic, topics)
+
+    def test_imu_override_cannot_record_a_different_sensor(self):
+        result, files = self.run_launcher(0, 0, imu_override='/wrong/imu')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not change the algorithm subscription', result.stderr)
+        self.assertNotIn('logs/run_loc_online.stdout.log', files)
 
     def test_can_is_optional_in_startup_probe(self):
         result, files = self.run_launcher(0, 0)
