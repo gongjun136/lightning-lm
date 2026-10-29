@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only field diagnosis; no ROS node, playback, or changes to localization."""
 import argparse
-from collections import Counter
+from collections import Counter, deque
 import csv
 import datetime as dt
 import json
@@ -288,6 +288,8 @@ def log_rows(path, budget, warnings, reference=None, context=None):
     result, config = [], {}
     if not path or not Path(path).is_file():
         return result, config
+    recent_context = deque(context, maxlen=1000) if context is not None else None
+    context_truncated = False
     path = Path(path)
     try:
         with path.open('rb') as f:
@@ -310,6 +312,8 @@ def log_rows(path, budget, warnings, reference=None, context=None):
                 modern = 'SAFETY_DIAGNOSTIC' in line
                 contextual = context is not None and any(marker in line for marker in (
                     'initial pose is not configured', 'GLOBAL_RELOCALIZATION[',
+                    'SOLID_KISS_REJECT', 'failed to load SOLiD ICP cloud',
+                    'failed to build SOLiD+KISS target', 'failed to prepare SOLiD+KISS query',
                     'ignore CAN wheel speed:', 'propagate over long imu interval:',
                     'localization pose and map outputs stopped',
                     'localization pose and map outputs recovered'))
@@ -331,11 +335,12 @@ def log_rows(path, budget, warnings, reference=None, context=None):
                 row['_source'] = f'{path}:byte={offset}'
                 row['_scope'] = '运行日志（有界尾部）' if modern else '旧日志上报码（原始码未知）'
                 if contextual and not modern:
-                    # Retain a bounded number of actual log clues, never infer a
+                    # Retain the latest bounded set of actual log clues, never infer a
                     # hardware cause solely from a matching keyword.
-                    if len(context) < 1000:
-                        context.append(dict(time=row['_time'], wall_ns=row.get('_wall_ns'),
-                                            source=row['_source'], text=line.strip()[:1200]))
+                    if len(recent_context) == recent_context.maxlen:
+                        context_truncated = True
+                    recent_context.append(dict(time=row['_time'], wall_ns=row.get('_wall_ns'),
+                                               source=row['_source'], text=line.strip()[:1200]))
                     continue
                 if number(row.get('raw_runstate')) is None:
                     warning = '忽略缺少有效故障码的日志记录；可能存在格式变化或未写完的行。'
@@ -345,6 +350,10 @@ def log_rows(path, budget, warnings, reference=None, context=None):
                 result.append(row)
     except OSError as exc:
         warnings.append('日志读取失败: ' + str(exc))
+    if context is not None:
+        context[:] = recent_context
+    if context_truncated:
+        warnings.append('关联日志超过 1000 条，仅保留已检查日志范围内最新 1000 条；较早关联线索未覆盖。')
     # Avoid double-counting shadow and unconditional diagnostics from the same run.
     if any(r['_scope'] == '运行日志（有界尾部）' for r in result):
         result = [r for r in result if r['_scope'] == '运行日志（有界尾部）']
@@ -385,6 +394,14 @@ def wall_time(ns):
         return dt.datetime.fromtimestamp(int(ns) / 1e9).astimezone().isoformat(timespec='milliseconds')
     except (ValueError, TypeError, OSError, OverflowError):
         return '时间未知'
+
+
+def recent_context_clues(clues, limit):
+    selected = clues[-limit:]
+    rejection = next((c for c in reversed(clues) if 'SOLID_KISS_REJECT' in c['text']), None)
+    if rejection is not None and rejection not in selected:
+        selected = [rejection] + selected[1:]
+    return selected
 
 
 def classify(row, limits):
@@ -436,6 +453,13 @@ def classify(row, limits):
             gap, imu_age = number(limits.get('max_input_gap_sec')), number(row.get('imu_arrival_age_sec'))
             if gap is not None and imu_age is not None and imu_age > gap:
                 causes[-1]['title'] += f'；主 IMU 有效证据年龄 {imu_age:.6g}s > {gap:g}s'
+        if str(row.get('output_age_sec')) == 'inf':
+            for cause in causes:
+                if cause['key'] in ('uncertainty_unknown', 'consistency_unknown'):
+                    cause['phase'] = 'startup'
+                    cause['title'] = '启动后尚无有效定位输出；' + cause['title']
+                    cause['evidence']['output_age_sec'] = row['output_age_sec']
+                    cause['advice'] = '先核对初始位姿、全局重定位候选拒绝原因及接受时间，再核对首个有效定位输出。'
     elif code == -9:
         for key, title in [('output_stale', '定位输出超时'), ('localization_lost', '定位输出门控关闭/定位丢失'), ('radar_all_failed', '所有必需雷达均不可用')]:
             if row.get(key) == 1:
@@ -685,16 +709,38 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
             if start is not None and w['start_ns'] <= start <= w['end_ns']))
         finding['capture_coverage'] = ('range_overlap' if finding['event_paths'] else
                                      'no_retained_overlap' if start is not None else 'unknown_time')
+        finding['capture_coverage_basis'] = 'episode_start'
         # Nearby facts are corroboration, not a claim about the physical root cause.
         end = finding.get('end_ns') or finding.get('last_ns') or start
-        finding['context'] = [c for c in context if start is not None and c['wall_ns'] is not None
-                              and start - 2e9 <= c['wall_ns'] <= end + 2e9][-6:]
+        nearby_context = [c for c in context if start is not None and c['wall_ns'] is not None
+                          and start - 2e9 <= c['wall_ns'] <= end + 2e9]
+        finding['context'] = recent_context_clues(nearby_context, 6)
     absent = sum(f['capture_coverage'] == 'no_retained_overlap' for f in findings if f['scope'] == '运行日志（有界尾部）')
     if absent:
         warnings.append(f'{absent} 个日志判据段的起始时刻未找到保留事件范围覆盖；可能尚在写入、触发被抑制或已轮转，不代表从未采集。')
     if not rows and not logdata:
         warnings.append('没有可解析的 Safety 判据记录；此次不能给出故障原因。')
     all_rows = rows + logdata
+    coexisting_radar = {}
+    for row in all_rows:
+        if number(row.get('raw_runstate')) != -9:
+            continue
+        mask = int(number(row.get('time_sync_fault_mask')) or 0)
+        if row.get('bounded_policy_enabled') == 1:
+            mask &= ~int(number(row.get('bounded_sync_warning_mask')) or 0)
+        conditions = [('radar_time_sync', role) for bit, role in enumerate(('front', 'rear', 'left', 'right'))
+                      if mask & (1 << bit)]
+        if row.get('non_sync_fault') == 1:
+            conditions.append(('radar_other', None))
+        for key, device in conditions:
+            previous = coexisting_radar.get((key, device))
+            if previous and (previous['last_ns'] or 0) > (row_ns(row) or 0):
+                continue
+            coexisting_radar[key, device] = dict(
+                key=key, device=device, raw_runstate=-9, last_ns=row_ns(row),
+                last_time=row.get('_time'), source=row.get('_source'), scope=row.get('_scope'),
+                evidence={k: row[k] for k in ('time_sync_fault_mask', 'bounded_policy_enabled',
+                          'bounded_sync_warning_mask', 'non_sync_fault') if k in row})
     latest = max(enumerate(all_rows), key=lambda pair: (row_ns(pair[1]) or 0, pair[0]))[1] if all_rows else {}
     age = max(0, (time.time_ns() - row_ns(latest)) / 1e9) if process and row_ns(latest) else None
     if age is not None and age > 5:
@@ -710,6 +756,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
                 log_samples=len(logdata), findings=findings, warnings=warnings,
+                coexisting_radar_conditions=list(coexisting_radar.values()),
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
 
@@ -742,6 +789,13 @@ def render(report, color=False, all_events=False):
     for finding in report.get('current_findings', []):
         lines.append(paint(f'最近记录判据 [{finding["code"]}] {finding["title"]}', '1;31' if fresh else '33'))
         lines.append('  定位方向: ' + finding['advice'])
+    if report.get('coexisting_radar_conditions'):
+        lines.append(paint('检查范围内曾与 -9 并存的较低优先级雷达诊断条件（对应记录原始码为 -9；不代表当前仍异常，不计入故障段，不能据此认定启动失败原因）', '33'))
+        for clue in report['coexisting_radar_conditions']:
+            title = '时间同步诊断未通过: ' + clue['device'] if clue['key'] == 'radar_time_sync' else '非时间同步诊断失败'
+            lines += [f'  {title}；最近并存观测: {clue["last_time"]}；来源: {clue["scope"]}',
+                      '  数值: ' + json.dumps(clue['evidence'], ensure_ascii=False),
+                      '  证据: ' + str(clue['source'])]
     lines.append('生效阈值: ' + json.dumps(report['thresholds'], ensure_ascii=False))
     findings = sorted(report['findings'], key=lambda f: f.get('start_ns') or 0, reverse=True)
     lines.append(paint(f'故障判据段: 共 {len(findings)} 段（不同证据来源分别统计，不等于物理故障次数）', '1;36'))
@@ -753,19 +807,29 @@ def render(report, color=False, all_events=False):
     if len(shown) < len(findings):
         lines.append(paint(f'以下显示最近 {len(shown)} 段；--all 显示全部，--json 始终包含全部已分析判据段。', '33'))
     for f in shown:
-        ended = f.get('end_time') or '检查范围结束时未见后续状态'
+        ended = f.get('end_time') or f.get('last_time') or '时间未知'
+        state = '检查范围结束，未见后续状态（不等于已恢复）'
+        if f.get('state') == 'observation_gap':
+            state = '后续存在观测缺口，结束或恢复时刻未知'
+        elif f.get('state') == 'recovered':
+            state = '已观测到原始码恢复为 0'
+        elif f.get('state') == 'predicate_changed':
+            next_code = number(f.get('next_raw'))
+            next_label = f'{next_code:g}' if next_code is not None else '未知'
+            state = ('判据已变化，原始码仍为 ' if next_code == f['code'] else '原始码切换为 ') + next_label + '（未恢复为 0）'
         lines += [paint(f'历史记录 [{f["code"]}] {f["title"]}（{f["confidence"]}；{f["scope"]}）', '33'),
                   f'  时间段: {f["first_time"]} → {ended}；判据样本={f["samples"]}；样例上报码={f["published"]}',
+                  '  时段状态: ' + state,
                   f'  样例时间: {f["time"]}；数值: ' + json.dumps(f['evidence'], ensure_ascii=False),
                   f'  证据: {f["source"]}']
         if f['onset_evidence'] != f['evidence']:
             lines.append('  首次异常数值: ' + json.dumps(f['onset_evidence'], ensure_ascii=False))
         if f['onset_advice'] != f['advice']:
             lines.append('  首次异常定位方向: ' + f['onset_advice'])
-        coverage = ('有保留事件范围重叠（不保证中间完整）' if f['event_paths'] else
-                    '未找到保留事件范围覆盖，需核对写入/抑制/轮转' if f['capture_coverage'] == 'no_retained_overlap' else '时间证据不足')
-        lines.append(paint('  数据覆盖: ' + coverage, '36' if f['event_paths'] else '33'))
-        for clue in f['context'][-2:]:
+        coverage = ('起始时刻落在保留事件范围内（不保证整段覆盖或中间完整）' if f['event_paths'] else
+                    '起始时刻未找到保留事件范围覆盖（不代表整段未采集），需核对写入/抑制/轮转' if f['capture_coverage'] == 'no_retained_overlap' else '起始时间证据不足')
+        lines.append(paint('  故障起点数据覆盖: ' + coverage, '36' if f['event_paths'] else '33'))
+        for clue in recent_context_clues(f['context'], 2):
             lines.append(f'  关联日志: {clue["text"]}\n    位置: {clue["source"]}')
         lines.append('  定位方向: ' + f['advice'])
     if report.get('collector_totals'):

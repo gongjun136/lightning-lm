@@ -139,6 +139,21 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(out[0]['key'], 'consistency_unknown')
         self.assertIn('0.156812s > 0.15s', out[0]['title'])
 
+    def test_unknown_without_any_output_is_explained_as_startup(self):
+        fields = dict(covariance_valid=0, localization_uncertainty=0,
+                      localization_consistency=0, yaw_condition=0, translation_condition=0,
+                      unknown_tolerated=0, optional_can_unavailable=0)
+        startup = self.causes(**fields, output_age_sec='inf')
+        self.assertEqual([f['key'] for f in startup], ['uncertainty_unknown', 'consistency_unknown'])
+        for finding in startup:
+            self.assertEqual(finding['phase'], 'startup')
+            self.assertIn('启动后尚无有效定位输出', finding['title'])
+            self.assertEqual(finding['evidence']['output_age_sec'], 'inf')
+            self.assertIn('初始位姿、全局重定位候选拒绝原因及接受时间', finding['advice'])
+            self.assertNotIn('IMU 时间', finding['advice'])
+        runtime = self.causes(**fields, output_age_sec=.1)
+        self.assertTrue(all('phase' not in f for f in runtime))
+
     def test_sigma_converts_degrees(self):
         out = self.causes(localization_uncertainty=2, yaw_sigma_rad=.10)
         self.assertEqual(out[0]['key'], 'yaw_sigma_rad')
@@ -168,6 +183,45 @@ class DiagnosisTest(unittest.TestCase):
                                bounded_policy_enabled=1, bounded_sync_warning_mask=4,
                                non_sync_fault=1, non_sync_all_pass=0), {})
         self.assertEqual([f['key'] for f in found], ['radar_other'])
+
+    def test_severe_radar_conditions_are_side_evidence_with_latest_source(self):
+        event = self.event(3 * 10**9)
+        (event / 'timeline.csv').write_text(
+            'wall_ns,raw,published,output_stale,output_age_sec,time_sync_fault_mask,bounded_sync_warning_mask\n'
+            '3000000000,-9,-9,1,inf,4,0\n')
+        rows = [self.log_row(1, -9, output_stale=1, output_age_sec='inf', time_sync_fault_mask=4),
+                self.log_row(2, -9, output_stale=1, output_age_sec='inf',
+                             time_sync_fault_mask=4, non_sync_fault=1)]
+        with patch.object(d, 'log_rows', return_value=(rows, {})):
+            report = d.analyze(event, self.p, '运行中的定位实例', [])
+        self.assertEqual(len(report['findings']), 2)  # One output-stale interval per source.
+        self.assertTrue(all(f['code'] == -9 for f in report['findings'] + report['current_findings']))
+        clues = {c['key']: c for c in report['coexisting_radar_conditions']}
+        self.assertEqual(clues['radar_time_sync']['device'], 'left')
+        self.assertEqual(clues['radar_time_sync']['raw_runstate'], -9)
+        self.assertEqual(clues['radar_time_sync']['last_ns'], 3 * 10**9)
+        self.assertEqual(clues['radar_time_sync']['source'], f'{event / "timeline.csv"}:2')
+        self.assertEqual(clues['radar_other']['source'], 'log:2')
+        rendered = d.render(report)
+        self.assertIn('并存的较低优先级雷达诊断条件', rendered)
+        self.assertIn('对应记录原始码为 -9', rendered)
+        self.assertIn('不代表当前仍异常', rendered)
+        self.assertIn('不能据此认定启动失败原因', rendered)
+        self.assertIn('时间同步诊断未通过: left', rendered)
+        self.assertNotIn('历史记录 [2]', rendered)
+
+    def test_severe_radar_side_evidence_excludes_enabled_bounded_warnings(self):
+        for policy, mask, expected in [(1, 4, []), (1, 12, ['right']), (0, 4, ['left'])]:
+            with self.subTest(policy=policy, mask=mask):
+                row = self.log_row(1, -9, output_stale=1, output_age_sec='inf',
+                                   time_sync_fault_mask=mask, bounded_policy_enabled=policy,
+                                   bounded_sync_warning_mask=4, non_sync_fault=0)
+                with patch.object(d, 'log_rows', return_value=([row], {})):
+                    report = d.analyze(self.run, None, '指定路径', [])
+                self.assertEqual([c['device'] for c in report['coexisting_radar_conditions']], expected)
+                self.assertEqual([f['code'] for f in report['findings']], [-9])
+                if not expected:
+                    self.assertNotIn('并存的较低优先级雷达诊断条件', d.render(report))
 
     def test_confirmed_failure_latch_precedes_unknown_explanation(self):
         found = self.causes(localization_consistency=0, yaw_condition=0, translation_condition=0,
@@ -251,6 +305,18 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(found[1]['state'], 'predicate_changed')
         self.assertEqual(found[1]['next_raw'], 4)
 
+    def test_render_distinguishes_predicate_change_from_recovery(self):
+        rows = [self.log_row(1, 4, localization_uncertainty=0),
+                self.log_row(2, -9, output_stale=1, output_age_sec='inf'),
+                self.log_row(3, -9, output_stale=1, output_age_sec=.8),
+                self.log_row(4, 0)]
+        with patch.object(d, 'log_rows', return_value=(rows, {})):
+            report = d.analyze(self.run, None, '指定路径', [])
+        rendered = d.render(report)
+        self.assertIn('时段状态: 原始码切换为 -9（未恢复为 0）', rendered)
+        self.assertIn('时段状态: 判据已变化，原始码仍为 -9（未恢复为 0）', rendered)
+        self.assertIn('时段状态: 已观测到原始码恢复为 0', rendered)
+
     def test_peak_sample_keeps_first_joint_input_stall(self):
         rows = [self.log_row(1, -9, output_stale=1, output_age_sec=.524,
                              imu_arrival_age_sec=.44, can_arrival_age_sec=.443),
@@ -289,7 +355,26 @@ class DiagnosisTest(unittest.TestCase):
             report = d.analyze(event, self.p, '运行中的定位实例', [])
         self.assertEqual(report['findings'][0]['capture_coverage'], 'range_overlap')
         self.assertEqual(report['findings'][1]['capture_coverage'], 'no_retained_overlap')
+        self.assertTrue(all(f['capture_coverage_basis'] == 'episode_start' for f in report['findings']))
         self.assertTrue(any('不代表从未采集' in w for w in report['warnings']))
+        self.assertIn('不保证整段覆盖或中间完整', d.render(report))
+
+    def test_capture_coverage_text_only_describes_episode_start(self):
+        event = self.event(100 * 10**9)
+        s = d.summary_at(event)
+        s['streams'] = [dict(type='geosun_msgs/msg/Safety', written=20,
+                             first_relative_sec=0, last_relative_sec=10)]
+        (event / 'summary.json').write_text(json.dumps(s))
+        with patch.object(d, 'log_rows', return_value=([
+                self.log_row(90, -9, output_stale=1, output_age_sec='inf'),
+                self.log_row(120, -9, output_stale=1, output_age_sec='inf')], {})):
+            report = d.analyze(event, self.p, '运行中的定位实例', [])
+        finding = report['findings'][0]
+        # The event overlaps the middle of this episode, but not its onset.
+        self.assertEqual(finding['capture_coverage'], 'no_retained_overlap')
+        self.assertEqual(finding['capture_coverage_basis'], 'episode_start')
+        self.assertIn('故障起点数据覆盖: 起始时刻未找到保留事件范围覆盖（不代表整段未采集）',
+                      d.render(report))
 
     def test_scope_intervals_do_not_double_count_samples(self):
         a = self.log_row(1, 4, yaw_condition=2, error_yaw_rad=.04)
@@ -318,6 +403,73 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(context), 1)
         self.assertIn('accepted', context[0]['text'])
+
+    def test_log_context_limit_preserves_latest_relocalization_evidence(self):
+        start = dt.datetime(2026, 10, 28, 12, tzinfo=dt.timezone.utc)
+        lines = ['I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf']
+        for i in range(1001):
+            stamp = (start + dt.timedelta(milliseconds=100 * (i + 1))).strftime('%m%d %H:%M:%S.%f')
+            lines.append(f'I{stamp} 42] GLOBAL_RELOCALIZATION[solid_kiss] rejected: candidate={i}')
+        lines += ['I1028 12:01:41.000000 42] GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=221',
+                  'I1028 12:01:42.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf']
+        self.log.write_text('\n'.join(lines) + '\n')
+        context, warnings = [], []
+        rows, _ = d.log_rows(self.log, d.MIB, warnings, start, context)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(context), 1000)
+        self.assertTrue(context[0]['text'].endswith('candidate=2'))
+        self.assertIn('accepted: candidate=221', context[-1]['text'])
+        self.assertEqual(sum('最新 1000 条' in w for w in warnings), 1)
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertIn('accepted: candidate=221', report['findings'][0]['context'][-1]['text'])
+        self.assertIn('accepted: candidate=221', d.render(report))
+
+    def test_solid_kiss_failure_clues_keep_details_and_evidence_offsets(self):
+        clues = [
+            'failed to load SOLiD ICP cloud: /map/candidate_221.pcd',
+            'failed to build SOLiD+KISS target: candidate=221, error=empty target',
+            'failed to prepare SOLiD+KISS query: query_frames=3, error=too few points',
+            'SOLID_KISS_REJECT candidate=221, query_frames=3, rough_matches=44, core_matches=3, inliers=0, reason=insufficient inliers',
+            'GLOBAL_RELOCALIZATION[solid_kiss] rejected: candidate=221',
+        ]
+        lines = ['I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf']
+        lines += [f'I1028 12:00:00.{i + 1}00000 42] {clue}' for i, clue in enumerate(clues)]
+        lines.append('I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf')
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['log_samples'], 2)
+        self.assertEqual([f['key'] for f in report['findings']], ['output_stale'])
+        context = report['findings'][0]['context']
+        self.assertEqual(len(context), len(clues))
+        log_bytes = self.log.read_bytes()
+        for clue, entry in zip(clues, context):
+            self.assertIn(clue, entry['text'])
+            self.assertIsNotNone(entry['wall_ns'])
+            offset = int(entry['source'].rsplit('=', 1)[1])
+            self.assertTrue(log_bytes[offset:].startswith(entry['text'].encode()))
+        rendered = d.render(report)
+        self.assertIn('rough_matches=44, core_matches=3, inliers=0', rendered)
+        self.assertIn('不是已证明的物理根因', rendered)
+
+    def test_latest_solid_rejection_survives_later_global_summaries(self):
+        lines = [
+            'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf',
+            'I1028 12:00:00.100000 42] SOLID_KISS_REJECT candidate=221, inliers=3, reason=too_few_robust_inliers',
+            'I1028 12:00:00.200000 42] SOLID_KISS_REJECT candidate=222, inliers=5, reason=too_few_robust_inliers',
+        ]
+        lines += [f'I1028 12:00:0{i}.000000 42] GLOBAL_RELOCALIZATION[solid_kiss] rejected: attempt={i}'
+                  for i in range(1, 9)]
+        lines.append('I1028 12:00:09.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf')
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        context = report['findings'][0]['context']
+        self.assertEqual(len(context), 6)
+        self.assertIn('SOLID_KISS_REJECT candidate=222', context[0]['text'])
+        self.assertIn('attempt=8', context[-1]['text'])
+        rendered = d.render(report)
+        self.assertIn('candidate=222, inliers=5, reason=too_few_robust_inliers', rendered)
+        self.assertIn('attempt=8', rendered)
+        self.assertNotIn('candidate=221', rendered)
 
     def test_color_defaults_respect_terminal_and_environment(self):
         terminal = io.StringIO()
@@ -367,6 +519,11 @@ class DiagnosisTest(unittest.TestCase):
         found = d.fault_episodes([a, b], {})
         self.assertEqual(found[0]['state'], 'observation_gap')
         self.assertIsNone(found[0]['end_time'])
+        with patch.object(d, 'log_rows', return_value=([a, b], {})):
+            report = d.analyze(self.run, None, '指定路径', [])
+        rendered = d.render(report)
+        self.assertIn('时段状态: 后续存在观测缺口，结束或恢复时刻未知', rendered)
+        self.assertNotIn('时段状态: 已观测到原始码恢复为 0', rendered)
         self.log.write_text('I1028 21:10:58.002000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=2\n'
                             'I1028 21:10:59.002000 42] SAFETY_DIAGNOSTIC sequence=5 raw_runstate=0\n')
         warnings = []
