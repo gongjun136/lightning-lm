@@ -283,6 +283,35 @@ def thresholds(config):
     return result
 
 
+def matching_thresholds(config):
+    """Read explicit scalar paths only; do not invent missing YAML defaults."""
+    scalars, parents = {}, []
+    try:
+        for line in read_text(config).splitlines():
+            match = re.match(r'^( *)(\w+):\s*([^#]*)', line)
+            if not match:
+                continue
+            indent, key, value = len(match[1]), match[2], match[3].strip().strip('"\'')
+            while parents and parents[-1][0] >= indent:
+                parents.pop()
+            path = tuple(p[1] for p in parents) + (key,)
+            if not value:
+                parents.append((indent, key))
+            else:
+                scalars[path] = value
+    except OSError:
+        return {}
+    backend = scalars.get(('relocalization', 'backend'))
+    overlap_path = ('relocalization', backend, 'map_min_overlap_ratio')
+    if overlap_path not in scalars:
+        overlap_path = ('relocalization', 'map_min_overlap_ratio')
+    return dict(source=str(config), backend=backend,
+                map_min_overlap_ratio=number(scalars.get(overlap_path)) if backend else None,
+                overlap_key='.'.join(overlap_path),
+                min_tracking_confidence=number(scalars.get(('lidar_loc', 'min_tracking_confidence'),
+                                                           scalars.get(('lidar_loc', 'min_init_confidence')))))
+
+
 def record_runtime_protection(protections, key, line, row):
     """Aggregate two protection markers without retaining an unbounded row list."""
     if key == 'stale_lidar_correction':
@@ -662,6 +691,101 @@ def fault_episodes(rows, limits):
     return episodes
 
 
+def context_bounds(finding, rows):
+    start = finding['start_ns']
+    if start is None:
+        return None, None
+    end = finding.get('end_ns') or finding.get('last_ns') or start
+    lower, upper = start - 2e9, end + 2e9
+    previous = None
+    for row in rows:
+        stamp = row_ns(row)
+        if stamp is None:
+            continue
+        gap = (previous is not None and number(previous.get('sequence')) is not None and
+               number(row.get('sequence')) is not None and row['sequence'] != previous['sequence'] + 1)
+        if number(row.get('raw_runstate')) == 0 or gap:
+            if stamp < start or (gap and stamp == start):
+                lower = max(lower, stamp)
+            elif stamp >= start:
+                upper = min(upper, (row_ns(previous) or start) if gap else stamp)
+        previous = row
+    return lower, upper
+
+
+def matching_summary(clue, matching):
+    values = fields(clue['text'])
+    text = f'首次失锁前匹配记录: {clue["time"]}，map_checked={values.get("map_checked", "未知")}，map_overlap={values.get("map_overlap", "未知")}，raw_odom_valid={values.get("raw_odom_valid", "未知")}。'
+    points, overlap = number(values.get('map_points')), number(values.get('map_overlap'))
+    if values.get('map_checked') != 1:
+        return text + ' 地图一致性未确认执行，不判断其失败项。', False
+    if points == 0:
+        return text + ' 地图一致性有效评估点数为 0，未获得可用比例证据。', False
+    if not (points is not None and points > 0) and not ('map_points' not in values and overlap is not None and overlap > 0):
+        return text + ' 缺少有效评估点证据，不从默认比例归因。', False
+    comparisons, failed, config_used = [], [], False
+    for metric, limit in (('map_inside_xy', 'map_min_inside_xy'),
+                          ('map_overlap', 'map_min_overlap'),
+                          ('map_gravity_cos', 'map_min_gravity_cos')):
+        value, threshold = number(values.get(metric)), number(values.get(limit))
+        basis = '运行日志判据'
+        if threshold is None and metric == 'map_overlap' and limit not in values:
+            threshold = matching.get('map_min_overlap_ratio')
+            limit = matching.get('overlap_key', limit)
+            basis = '运行配置判据'
+        minimum = -1 if metric == 'map_gravity_cos' else 0
+        if value is None or threshold is None or not minimum <= threshold <= 1:
+            continue
+        config_used |= basis == '运行配置判据'
+        relation = '<' if value < threshold else '>='
+        comparisons.append(f'{basis}: {metric}={value:g} {relation} {limit}={threshold:g}')
+        if value < threshold:
+            failed.append(metric)
+    if comparisons:
+        text += ' ' + '；'.join(comparisons) + '。'
+        text += ' 已证实未满足项: ' + '、'.join(failed) + '。' if failed else ' 已记录的这些判据未见超限；其他未记录条件不作判断。'
+    text += ' 不据此推断车辆出图或其他物理原因。'
+    return text, config_used
+
+
+def priority_summary(findings, matching):
+    """A short evidence chain; proximity never establishes a physical cause."""
+    findings = [f for f in findings if f['scope'] == '运行日志（有界尾部）'] or findings
+    summary = []
+    def add(text, source):
+        summary.append(dict(text=text, source=source))
+    startup = next((f for f in findings if f.get('phase') == 'startup'), None)
+    losses = [f for f in findings if f['key'] == 'localization_lost' and f['start_ns'] is not None]
+    if losses:
+        first = min(losses, key=lambda f: f['start_ns'])
+        add(f'首次已观测失锁: {first["first_time"]}，原始 -9，定位输出门控关闭；'
+            f'output_age_sec={first["onset_evidence"].get("output_age_sec", "未知")}。', first['onset_source'])
+        clue = next((c for c in first.get('onset_context', []) if 'localization failed!' in c['text']), None)
+        if clue:
+            text, config_used = matching_summary(clue, matching)
+            add(text, clue['source'] + ('；配置: ' + matching['source'] if config_used else ''))
+        longest = max(losses, key=lambda f: (f.get('end_ns') or f.get('last_ns') or f['start_ns']) - f['start_ns'])
+        if longest is not first:
+            state = '已观测到原始码 0' if longest.get('state') == 'recovered' else '未在本段结束时确认恢复为 0'
+            add(f'最长已观测门控关闭段: {longest["first_time"]} → {longest.get("end_time") or longest.get("last_time")}；{state}。', longest['onset_source'])
+        for marker, title in (('SOLID_KISS_REJECT', '该段最近保留的重定位拒绝'), ('] accepted', '该段重定位接受')):
+            clue = next((c for c in reversed(longest.get('context', [])) if marker in c['text']), None)
+            if clue:
+                values = fields(clue['text'])
+                detail = ', '.join(f'{k}={values[k]}' for k in ('candidate', 'inliers', 'reason', 'overlap') if k in values)
+                add(f'{title}: {clue["time"]}，{detail}。', clue['source'])
+    if startup:
+        add(f'启动无有效定位输出: {startup["first_time"]} → {startup.get("end_time") or "尚未见结束"}。', startup['onset_source'])
+    motion = [f for f in findings if f['key'] == 'consistency_unknown' and
+              number(f['onset_evidence'].get('output_age_sec')) is not None and
+              str(f['onset_evidence'].get('yaw_pass_age_sec')) == 'inf']
+    if motion:
+        last = max(motion, key=lambda f: f['start_ns'] or 0)
+        ending = (' → ' + last['end_time'] + ' 已观测到原始码 0') if last.get('state') == 'recovered' else '；未据此确认恢复'
+        add(f'有定位输出后的运动证据 UNKNOWN: {last["first_time"]}{ending}；尚无可用航向 PASS，窗口建立/重建与历史 IMU 覆盖仍需区分。', last['onset_source'])
+    return summary
+
+
 def capture_windows(path, run, process, summary, rows, warnings):
     """Summary envelopes show possible coverage, never message completeness."""
     candidates = [path] if summary else []
@@ -730,6 +854,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         run = relocated if (relocated / 'logs/run_loc_online.stderr.log').is_file() else original
     config = path / 'config.yaml' if path.is_dir() else path.parent / 'config.yaml'
     limits = thresholds(config)
+    matching = matching_thresholds(config)
     log = process.get('log') if process else str(run / 'logs/run_loc_online.stderr.log')
     try:
         reference = dt.datetime.fromisoformat(meta['started_at'])
@@ -777,6 +902,9 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         if process:
             warnings.append('同时显示本事件和当前运行日志尾部的故障；日志中的较早故障不一定属于此事件，见每项时间与来源。')
     findings = fault_episodes(rows + logdata, limits)
+    scope_rows = {}
+    for row in rows + logdata:
+        scope_rows.setdefault(row.get('_scope'), []).append(row)
     windows = capture_windows(path, run, process, summary, rows, warnings)
     for finding in findings:
         start = finding['start_ns']
@@ -786,12 +914,15 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                                      'no_retained_overlap' if start is not None else 'unknown_time')
         finding['capture_coverage_basis'] = 'episode_start'
         # Nearby facts are corroboration, not a claim about the physical root cause.
-        end = finding.get('end_ns') or finding.get('last_ns') or start
+        lower, upper = context_bounds(finding, scope_rows.get(finding['scope'], []))
         nearby_context = [c for c in context if start is not None and c['wall_ns'] is not None
-                          and start - 2e9 <= c['wall_ns'] <= end + 2e9]
+                          and lower <= c['wall_ns'] <= upper]
         onset_context = []
         for marker in ('localization failed!', 'localization pose and map outputs disabled'):
-            clue = next((c for c in nearby_context if c['wall_ns'] <= start + 2e9 and marker in c['text']), None)
+            candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and marker in c['text']]
+            before = [c for c in candidates if c['wall_ns'] <= start]
+            after = [c for c in candidates if c['wall_ns'] > start]
+            clue = (before[-1] if before else None) if marker == 'localization failed!' else (after[0] if after else before[-1] if before else None)
             if clue is not None:
                 onset_context.append(clue)
         finding['onset_context'] = [c for c in nearby_context if c in onset_context]
@@ -837,6 +968,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
                 log_samples=len(logdata), findings=findings, warnings=warnings,
+                priority_summary=priority_summary(findings, matching), matching_thresholds=matching,
                 runtime_protections=list(protections.values()), runtime_protection_scope=protection_scope,
                 coexisting_radar_conditions=list(coexisting_radar.values()),
                 has_safety_evidence=bool(rows or logdata),
@@ -861,6 +993,11 @@ def render(report, color=False, all_events=False):
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
     if raw == 0:
         lines.append('最新记录为 0，不代表整个运行无故障；下方保留历史证据。')
+    if report.get('priority_summary'):
+        lines.append(paint('优先结论 / 问题链（已读取证据，不是物理根因）', '1;36'))
+        for item in report['priority_summary']:
+            lines.append('  ' + item['text'])
+            lines.append('    证据: ' + item['source'])
     build = report.get('runtime_build', {})
     compiled = build.get('compiled', {})
     status = {'matched': '诊断合同匹配', 'unverified': '缺少编译标记，尚未核实',

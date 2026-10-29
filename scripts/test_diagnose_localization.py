@@ -641,6 +641,130 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual([c['text'] for c in context], [lines[1], lines[0], lines[2]])
         self.assertEqual(len({c['source'] for c in context}), 3)
 
+    def test_context_does_not_cross_observed_normal_between_short_losses(self):
+        lines = [
+            'I1028 12:00:00.100000 42] localization failed! map_checked=1 map_overlap=0.71',
+            'I1028 12:00:00.200000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=-9 localization_lost=1',
+            'I1028 12:00:00.250000 42] localization pose and map outputs disabled first',
+            'I1028 12:00:00.300000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0',
+            'I1028 12:00:00.400000 42] localization failed! map_checked=1 map_overlap=0.72',
+            'I1028 12:00:00.500000 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=-9 localization_lost=1',
+            'I1028 12:00:00.550000 42] localization pose and map outputs disabled second',
+            'I1028 12:00:00.600000 42] SAFETY_DIAGNOSTIC sequence=4 raw_runstate=0',
+            'I1028 12:00:00.700000 42] localization failed! map_checked=1 map_overlap=0.73',
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        first, second = report['findings']
+        self.assertIn('map_overlap=0.71', first['onset_context'][0]['text'])
+        self.assertIn('map_overlap=0.72', second['onset_context'][0]['text'])
+        self.assertTrue(first['onset_context'][1]['text'].endswith('first'))
+        self.assertTrue(second['onset_context'][1]['text'].endswith('second'))
+        self.assertEqual(first['context'], [])
+        self.assertEqual(second['context'], [])
+
+    def test_context_does_not_bridge_a_safety_sequence_gap(self):
+        lines = [
+            'I1028 12:00:00.100000 42] localization failed! map_checked=1 map_overlap=0.71',
+            'I1028 12:00:00.200000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=-9 localization_lost=1',
+            'I1028 12:00:00.250000 42] localization failed! map_checked=1 map_overlap=0.72',
+            'I1028 12:00:00.300000 42] SAFETY_DIAGNOSTIC sequence=4 raw_runstate=-9 localization_lost=1',
+            'I1028 12:00:00.400000 42] SAFETY_DIAGNOSTIC sequence=5 raw_runstate=0',
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        first, second = d.analyze(self.run, None, '指定路径', [])['findings']
+        self.assertEqual(first['state'], 'observation_gap')
+        self.assertIn('map_overlap=0.71', first['onset_context'][0]['text'])
+        self.assertEqual(first['context'], [])
+        self.assertEqual(second['onset_context'], [])
+        self.assertEqual(second['context'], [])
+
+    def test_priority_summary_precedes_protections_and_distinguishes_output_phases(self):
+        with (self.run / 'config.yaml').open('a') as config:
+            config.write('relocalization:\n  backend: solid_kiss\n  map_min_overlap_ratio: 0.92\n'
+                         '  kiss_matcher:\n    map_min_overlap_ratio: 0.99\n'
+                         '  solid_kiss:\n    map_min_overlap_ratio: 0.75\n')
+        lines = [
+            'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=4 localization_uncertainty=0 output_age_sec=inf',
+            'I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0',
+            'I1028 12:00:02.000000 42] localization failed! score: 2.28838, map_checked=1 map_overlap=0.728835 raw_odom_valid=1',
+            'I1028 12:00:02.010000 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=-9 localization_lost=1 output_age_sec=0.005',
+            'I1028 12:00:02.020000 42] localization pose and map outputs disabled',
+            'I1028 12:00:02.300000 42] SOLID_KISS_REJECT candidate=91 inliers=9 reason=too_few_robust_inliers',
+            'I1028 12:00:02.400000 42] GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=14 overlap=0.98',
+            'I1028 12:00:02.500000 42] SAFETY_DIAGNOSTIC sequence=4 raw_runstate=4 localization_consistency=0 localization_uncertainty=1 covariance_valid=1 unknown_tolerated=0 optional_can_unavailable=0 yaw_pass_age_sec=inf output_age_sec=0.008',
+            'I1028 12:00:03.000000 42] SAFETY_DIAGNOSTIC sequence=5 raw_runstate=0',
+            'I1028 12:00:03.100000 42] drop stale lidar correction before matching: age=0.31 hard_deadline=0.3',
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        summary = '\n'.join(item['text'] for item in report['priority_summary'])
+        self.assertIn('启动无有效定位输出', summary)
+        self.assertIn('首次已观测失锁: 10-28 12:00:02.010000', summary)
+        self.assertIn('map_overlap=0.728835 < relocalization.solid_kiss.map_min_overlap_ratio=0.75', summary)
+        self.assertIn('运行配置判据', summary)
+        self.assertIn('已证实未满足项: map_overlap', summary)
+        self.assertNotIn('0.92', summary)
+        self.assertNotIn('0.99', summary)
+        self.assertIn('reason=too_few_robust_inliers', summary)
+        self.assertIn('重定位接受', summary)
+        self.assertIn('有定位输出后的运动证据 UNKNOWN', summary)
+        self.assertIn('12:00:03.000000 已观测到原始码 0', summary)
+        rendered = d.render(report)
+        self.assertLess(rendered.index('优先结论 / 问题链'), rendered.index('运行保护线索'))
+
+    def test_matching_summary_prefers_logged_thresholds_and_lists_all_failures(self):
+        clue = dict(time='t=1', text='localization failed! map_checked=1 raw_odom_valid=1 map_points=100 '
+                    'map_inside_xy=0.8 map_overlap=0.7 map_gravity_cos=0.9 '
+                    'map_min_inside_xy=0.9 map_min_overlap=0.8 map_min_gravity_cos=0.95')
+        text, config_used = d.matching_summary(clue, {'map_min_overlap_ratio': .65, 'overlap_key': 'config.overlap'})
+        self.assertFalse(config_used)
+        self.assertIn('运行日志判据: map_overlap=0.7 < map_min_overlap=0.8', text)
+        self.assertIn('已证实未满足项: map_inside_xy、map_overlap、map_gravity_cos', text)
+        self.assertNotIn('运行配置判据', text)
+
+    def test_matching_summary_does_not_attribute_zero_points_or_unchecked_defaults(self):
+        for extra, expected in [('map_checked=0 map_points=0', '未确认执行'),
+                                ('map_checked=1 map_points=0', '有效评估点数为 0'),
+                                ('map_checked=1', '缺少有效评估点证据')]:
+            with self.subTest(extra=extra):
+                clue = dict(time='t=1', text='localization failed! map_overlap=0 map_min_overlap=0.75 ' + extra)
+                text, config_used = d.matching_summary(clue, {'map_min_overlap_ratio': .9})
+                self.assertIn(expected, text)
+                self.assertNotIn('已证实未满足项', text)
+                self.assertFalse(config_used)
+
+    def test_missing_matching_configuration_does_not_invent_overlap_threshold(self):
+        config = d.matching_thresholds(self.run / 'config.yaml')
+        clue = dict(time='t=1', text='localization failed! map_checked=1 map_overlap=0.728835')
+        text, used = d.matching_summary(clue, config)
+        self.assertFalse(used)
+        self.assertNotIn('运行配置判据', text)
+        self.assertNotIn('已证实未满足项', text)
+
+    def test_explicit_nonfinite_map_points_cannot_use_legacy_positive_overlap(self):
+        for points in ('nan', 'inf', '-inf'):
+            with self.subTest(points=points):
+                clue = dict(time='t=1', text=f'localization failed! map_checked=1 map_points={points} '
+                            'map_overlap=0.7 map_min_overlap=0.75')
+                text, used = d.matching_summary(clue, {'map_min_overlap_ratio': .9})
+                self.assertIn('缺少有效评估点证据', text)
+                self.assertNotIn('已证实未满足项', text)
+                self.assertFalse(used)
+
+    def test_matching_threshold_domains_distinguish_ratios_from_cosine(self):
+        for metric, limit, valid, invalid in (
+                ('map_inside_xy', 'map_min_inside_xy', (0, 1), (-.1, 1.1)),
+                ('map_overlap', 'map_min_overlap', (0, 1), (-.1, 1.1)),
+                ('map_gravity_cos', 'map_min_gravity_cos', (-1, 1), (-1.1, 1.1))):
+            for threshold in valid + invalid:
+                with self.subTest(metric=metric, threshold=threshold):
+                    clue = dict(time='t=1', text='localization failed! map_checked=1 map_points=100 '
+                                f'{metric}=0 {limit}={threshold}')
+                    text, used = d.matching_summary(clue, {})
+                    self.assertEqual('运行日志判据: ' + metric in text, threshold in valid)
+                    self.assertFalse(used)
+
     def test_solid_kiss_failure_clues_keep_details_and_evidence_offsets(self):
         clues = [
             'failed to load SOLiD ICP cloud: /map/candidate_221.pcd',

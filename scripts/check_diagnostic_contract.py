@@ -9,6 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'scripts/diagnose_contract.json'
 SOURCES = (
+    'src/core/localization/lidar_loc/lidar_loc.cc',
     'src/core/localization/localization_dtc_monitor.cc',
     'src/core/localization/localization_dtc_monitor.h',
     'src/utils/radar_dtc_state.h',

@@ -1,7 +1,8 @@
 {
   "schema": 1,
-  "contract_id": "e6abf86475e2261f2402114af3417cac64ec30d9804a65f5dcaf7cbe52781f14",
+  "contract_id": "6d059204e506645ce56a69c99b5a1530aff1c2232659dbbb374c32e8287a1b9b",
   "reviewed_sources": {
+    "src/core/localization/lidar_loc/lidar_loc.cc": "ebb59562bebe6bcc11ef50596055c741f8b5c943386b8f352c03f147e37800d0",
     "src/core/localization/localization_dtc_monitor.cc": "79ea2b708a797514f32bb1ef3443fa3e657a0c0977abc4d222f05ebd8b2f7cbb",
     "src/core/localization/localization_dtc_monitor.h": "9ee735804cc1a8f85ef01ba9ce551309ed0d0abed888e4466be7aac2dcd74f84",
     "src/utils/radar_dtc_state.h": "a06b054102ab71ac85d5b05a99e2e6e040b007db1231a77375941a4260224ac4",

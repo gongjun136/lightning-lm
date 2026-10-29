@@ -1822,7 +1822,13 @@ void LidarLoc::Align(const CloudPtr& input) {
                      << ", raw_odom_valid=" << lidar_loc_odom_valid
                      << ", raw_odom_delta=" << delta_rel_abs_pose
                      << ", map_checked=" << last_match_stats_.map_consistency_evaluated
-                     << ", map_overlap=" << last_match_stats_.map_overlap_ratio;
+                     << ", map_overlap=" << last_match_stats_.map_overlap_ratio
+                     << ", map_points=" << last_match_stats_.map_consistency_points
+                     << ", map_inside_xy=" << last_match_stats_.map_inside_xy_ratio
+                     << ", map_gravity_cos=" << last_match_stats_.map_gravity_alignment_cos
+                     << ", map_min_inside_xy=" << options_.relocalization_min_inside_xy_ratio_
+                     << ", map_min_overlap=" << options_.relocalization_min_overlap_ratio_
+                     << ", map_min_gravity_cos=" << options_.relocalization_min_gravity_alignment_cos_;
         // [loc-rejected-match-fallback]
         ++match_fail_count_;
         // Do not propagate a rejected NDT transform. Lidar odometry remains
