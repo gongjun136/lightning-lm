@@ -228,9 +228,9 @@ SANY 可选 MCAP 录制启用的雷达点云、主 IMU、`pose_vel`、定位 fau
 `run_metadata.txt` 为准。生产/诊断设置与 `lidar`、`ins_only` 定位模式分别管理。
 
 更新车辆代码时须将根入口的 LiDAR 调用同步改为
-`exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_lidar_loc.sh"`。根入口的文件名继续使用 `run.sh`；纯组合导航调用同步改为
+`exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_lidar_loc.sh" "$@"`，以透传参数；纯组合导航调用同步改为
 `exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_ins_only.sh" "$SITE_CONFIG"`。
-故障分析可用 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`；入口在启动副作用前转交独立的 `diagnose_localization.sh` 和 Python 分析器。详见 [故障采集与排查](../docs/guide/incident_capture.md)。
+现场故障分析优先使用 `bash ~/Sany/run_loc.sh --diagnose [path]`。这是仓库外已有的部署入口，其 `lidar` 分支会原样透传路径及 `--all`、`--color`、`--json` 等选项。开发联调可从仓库根目录直接运行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`；仓库入口在启动副作用前转交独立的 `diagnose_localization.sh` 和 Python 分析器。详见 [故障采集与排查](../docs/guide/incident_capture.md)。
 
 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` 只裁剪诊断输出；用于下次启动恢复的
 `recover_pose` 始终更新，不受该开关影响。

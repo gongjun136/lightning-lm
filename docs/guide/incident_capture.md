@@ -16,21 +16,21 @@ SANY 启动脚本通过 `--incident_dir` 指向 `$out_root/incidents`；检查�
 
 ## 现场单命令分析
 
-从仓库根目录执行：
+现场使用仓库外已有的部署入口 `~/Sany/run_loc.sh`；其 `lidar` 分支将参数原样传给仓库内的 `scripts/run_sany_lidar_loc.sh`。执行：
 
 ```bash
-bash scripts/run_sany_lidar_loc.sh --diagnose
-bash scripts/run_sany_lidar_loc.sh --diagnose /路径/事件目录
-bash scripts/run_sany_lidar_loc.sh --diagnose --all --color always
-bash scripts/run_sany_lidar_loc.sh --diagnose --json > diagnosis.json
+bash ~/Sany/run_loc.sh --diagnose
+bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
+bash ~/Sany/run_loc.sh --diagnose --all --color always
+bash ~/Sany/run_loc.sh --diagnose --json > diagnosis.json
 ```
 
-诊断在任何启动副作用之前转入 `scripts/diagnose_localization.sh`；独立 shell 和 Python 脚本仍可直接使用。支持 `--pid`、`--root`、`--log-mb`、`--bag-mb`、`--all` 和 `--color auto|always|never`。默认文本显示最近 12 段及按来源分类的全部汇总；同一真实故障可能同时出现在日志段和事件时间线段，不能将这些统计相加当作事件数。`--all` 显示全部，JSON 包含全部已分析段，日志读取仍受预算限制。`auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；JSON 始终无 ANSI。红色表示最新记录故障，黄色表示历史或缺失证据，绿色仅表示最新记录为 0，青色为信息。
+开发联调也可从仓库根目录直接执行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`，并附加相同选项。仓库入口在启动定位、录包或创建运行目录之前转入 `scripts/diagnose_localization.sh`；独立 shell 和 Python 脚本仍可直接使用。支持 `--pid`、`--root`、`--log-mb`、`--bag-mb`、`--all` 和 `--color auto|always|never`。默认文本显示最近 12 段及按来源分类的全部汇总；同一真实故障可能同时出现在日志段和事件时间线段，不能将这些统计相加当作事件数。`--all` 显示全部，JSON 包含全部已分析段，日志读取仍受预算限制。`auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；JSON 始终无 ANSI。红色表示最新记录故障，黄色表示历史或缺失证据，绿色仅表示最新记录为 0，青色为信息。
 
 `path` 可以是事件目录、`summary.json`、`timeline.csv`、运行目录、归档根目录、裸 MCAP 或 db3 文件，也可以是 rosbag 目录；不支持压缩归档。显式路径优先，不选择当前进程。例如：
 
 ```bash
-bash scripts/run_sany_lidar_loc.sh --diagnose /路径/事件目录
+bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 ```
 
 不带路径时，脚本通过 `/proc/<pid>/exe` 识别 `run_loc_online`，不依赖可能显示为 `loc_executor` 的线程名。多个实例时选择启动最晚的实例，并提示可用 `--pid` 指定；通过 `run_metadata` 和启动时间关联本次运行，避免 PID 复用或误选其他运行的事件。本次运行尚无事件时分析本次运行日志。无定位进程时，在 `LIGHTNING_LM_OUT_ROOT`、`SANY_WS/runs` 等默认路径寻找最新包；前者可来自环境或 `~/.config/sany/workspace.bash` 中的导出值。`--root` 仅覆盖无进程时的搜索根目录。
