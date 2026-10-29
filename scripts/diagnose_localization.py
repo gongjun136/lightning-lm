@@ -283,12 +283,41 @@ def thresholds(config):
     return result
 
 
-def log_rows(path, budget, warnings, reference=None, context=None):
+def record_runtime_protection(protections, key, line, row):
+    """Aggregate two protection markers without retaining an unbounded row list."""
+    if key == 'stale_lidar_correction':
+        title = '过期 LIO 校正被丢弃'
+        evidence = {k: row[k] for k in ('age', 'hard_deadline') if k in row}
+    else:
+        title = '自适应雷达负载级别变化'
+        evidence = {k: row[k] for k in ('processing_ms', 'latency_ms', 'tracking_healthy') if k in row}
+        transition = re.search(r'adaptive lidar load step (\d+)\s*->\s*(\d+)', line)
+        if transition:
+            evidence.update(from_step=int(transition[1]), to_step=int(transition[2]))
+    entry = protections.setdefault(key, dict(key=key, title=title, count=0,
+        first_time=row['_time'], first_ns=row_ns(row), first_source=row['_source']))
+    entry['count'] += 1
+    entry.update(last_time=row['_time'], last_ns=row_ns(row), evidence=evidence,
+                 text=line.strip(), source=row['_source'])
+
+
+def is_boundary_context(text):
+    return any(marker in text for marker in (
+        'localization failed!', 'localization pose and map outputs disabled',
+        'localization pose and map outputs recovered', 'initial pose is not configured')) or (
+        'GLOBAL_RELOCALIZATION[' in text and '] accepted' in text)
+
+
+def log_rows(path, budget, warnings, reference=None, context=None,
+             protections=None, protection_window=None):
     """Bounded tail, original byte offsets as evidence; does not slurp the log."""
     result, config = [], {}
     if not path or not Path(path).is_file():
         return result, config
     recent_context = deque(context, maxlen=1000) if context is not None else None
+    boundary_context = [c for c in context or [] if is_boundary_context(c['text'])]
+    boundary_truncated = len(boundary_context) > 128
+    boundary_context = boundary_context[:128]
     context_truncated = False
     path = Path(path)
     try:
@@ -310,14 +339,21 @@ def log_rows(path, budget, warnings, reference=None, context=None):
                 offset = f.tell()
                 line = f.readline(min(128 * 1024, size - offset)).decode(errors='replace')
                 modern = 'SAFETY_DIAGNOSTIC' in line
+                protection_key = None
+                if protections is not None:
+                    if 'drop stale lidar correction before matching:' in line:
+                        protection_key = 'stale_lidar_correction'
+                    elif 'adaptive lidar load step ' in line:
+                        protection_key = 'adaptive_lidar_load_step'
                 contextual = context is not None and any(marker in line for marker in (
                     'initial pose is not configured', 'GLOBAL_RELOCALIZATION[',
                     'SOLID_KISS_REJECT', 'failed to load SOLiD ICP cloud',
                     'failed to build SOLiD+KISS target', 'failed to prepare SOLiD+KISS query',
                     'ignore CAN wheel speed:', 'propagate over long imu interval:',
+                    'localization failed!', 'localization pose and map outputs disabled',
                     'localization pose and map outputs stopped',
                     'localization pose and map outputs recovered'))
-                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual:
+                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual and not protection_key:
                     continue
                 row = fields(line)
                 if not modern:
@@ -334,13 +370,31 @@ def log_rows(path, budget, warnings, reference=None, context=None):
                         pass
                 row['_source'] = f'{path}:byte={offset}'
                 row['_scope'] = '运行日志（有界尾部）' if modern else '旧日志上报码（原始码未知）'
+                if protection_key and not modern:
+                    if protection_window is not None:
+                        stamp = row_ns(row)
+                        if stamp is None:
+                            warning = '保护日志缺少可解析时间戳，未计入指定事件窗口。'
+                            if warning not in warnings:
+                                warnings.append(warning)
+                            continue
+                        if not protection_window or not protection_window[0] <= stamp <= protection_window[1]:
+                            continue
+                    record_runtime_protection(protections, protection_key, line, row)
+                    continue
                 if contextual and not modern:
                     # Retain the latest bounded set of actual log clues, never infer a
                     # hardware cause solely from a matching keyword.
                     if len(recent_context) == recent_context.maxlen:
                         context_truncated = True
-                    recent_context.append(dict(time=row['_time'], wall_ns=row.get('_wall_ns'),
-                                               source=row['_source'], text=line.strip()[:1200]))
+                    clue = dict(time=row['_time'], wall_ns=row.get('_wall_ns'),
+                                source=row['_source'], byte_offset=offset, text=line.strip()[:1200])
+                    recent_context.append(clue)
+                    if is_boundary_context(clue['text']):
+                        if len(boundary_context) < 128:
+                            boundary_context.append(clue)
+                        else:
+                            boundary_truncated = True
                     continue
                 if number(row.get('raw_runstate')) is None:
                     warning = '忽略缺少有效故障码的日志记录；可能存在格式变化或未写完的行。'
@@ -351,9 +405,12 @@ def log_rows(path, budget, warnings, reference=None, context=None):
     except OSError as exc:
         warnings.append('日志读取失败: ' + str(exc))
     if context is not None:
-        context[:] = recent_context
+        merged = {c['source']: c for c in boundary_context + list(recent_context)}
+        context[:] = sorted(merged.values(), key=lambda c: (c.get('wall_ns') or 0, c.get('byte_offset', 0)))
     if context_truncated:
-        warnings.append('关联日志超过 1000 条，仅保留已检查日志范围内最新 1000 条；较早关联线索未覆盖。')
+        warnings.append('关联日志超过 1000 条，仅保留已检查日志范围内最新 1000 条，并额外保留最多 128 条最早关键边界线索；其他较早线索可能未覆盖。')
+    if boundary_truncated:
+        warnings.append('关键边界线索超过 128 条，额外缓存仅保留最早 128 条；其余仅在最近 1000 条关联日志内保留，部分故障起点可能未覆盖。')
     # Avoid double-counting shadow and unconditional diagnostics from the same run.
     if any(r['_scope'] == '运行日志（有界尾部）' for r in result):
         result = [r for r in result if r['_scope'] == '运行日志（有界尾部）']
@@ -397,11 +454,14 @@ def wall_time(ns):
 
 
 def recent_context_clues(clues, limit):
-    selected = clues[-limit:]
-    rejection = next((c for c in reversed(clues) if 'SOLID_KISS_REJECT' in c['text']), None)
-    if rejection is not None and rejection not in selected:
-        selected = [rejection] + selected[1:]
-    return selected
+    selected = []
+    for marker in ('SOLID_KISS_REJECT', 'GLOBAL_RELOCALIZATION['):
+        clue = next((c for c in reversed(clues) if marker in c['text']), None)
+        if clue is not None and clue not in selected:
+            selected.append(clue)
+    selected = selected[-limit:]
+    selected += [c for c in reversed(clues) if c not in selected][:max(0, limit - len(selected))]
+    return [c for c in clues if c in selected]
 
 
 def classify(row, limits):
@@ -446,6 +506,12 @@ def classify(row, limits):
                 ['localization_consistency', 'yaw_condition', 'translation_condition', 'yaw_pass_age_sec',
                  'output_age_sec', 'imu_arrival_age_sec', 'imu_stamp_lag_sec', 'unknown_tolerated'],
                 '检查 IMU 时间区间覆盖、时间戳跳变与输出间隔；当前 IMU 到达新鲜也不证明历史积分区间完整。')
+            window = number(limits.get('motion_window_sec'))
+            if window is not None:
+                causes[-1]['evidence']['motion_window_sec'] = window
+            if (str(row.get('yaw_pass_age_sec')) == 'inf' and uncertainty == 1 and
+                    row.get('covariance_valid') == 1 and number(row.get('output_age_sec')) is not None):
+                causes[-1]['advice'] = '尚无可用航向 PASS，核查是否处于运动评估窗口建立/重建阶段；也可能是 IMU 历史区间覆盖不足，不能仅凭当前新鲜判定根因。'
             grace = number(limits.get('consistency_unknown_grace_sec'))
             age = number(row.get('yaw_pass_age_sec'))
             if grace is not None and age is not None and age > grace:
@@ -669,12 +735,21 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         reference = dt.datetime.fromisoformat(meta['started_at'])
     except (KeyError, ValueError):
         reference = dt.datetime.fromtimestamp(int(summary.get('trigger_wall_ns', time.time_ns())) / 1e9).astimezone()
-    context = []
-    logdata, logged_limits = log_rows(log, int(log_mb * MIB), warnings, reference, context)
+    rows = timeline_rows(path / 'timeline.csv', warnings) if path.is_dir() else []
+    protection_window = None
+    protection_scope = '已扫描运行日志（有界尾部，不代表整个运行）'
+    if not process and path.is_dir() and ((path / 'summary.json').is_file() or (path / 'timeline.csv').is_file()):
+        times = [row_ns(r) for r in rows if row_ns(r) is not None]
+        protection_window = (min(times), max(times)) if times else ()
+        protection_scope = '指定事件时间线首末范围内已扫描日志（不扩展窗口）'
+        if not times:
+            warnings.append('缺少指定事件时间线范围，未统计运行保护线索；不使用窗口外日志补充次数。')
+    context, protections = [], {}
+    logdata, logged_limits = log_rows(log, int(log_mb * MIB), warnings, reference, context,
+                                      protections, protection_window)
     if not limits:
         limits = {k: v for k, v in logged_limits.items() if k in LIMITS}
         warnings.append('缺少配置快照，使用能找到的运行配置日志；未知阈值不作超限判断。')
-    rows = timeline_rows(path / 'timeline.csv', warnings) if path.is_dir() else []
     build = runtime_contract(logged_limits, warnings)
     if rows and not all(k in rows[-1] for k in ('translation_condition', 'yaw_condition', 'output_stale', 'time_sync_fault_mask')):
         warnings.append('事件时间线是旧格式或缺少细分字段；需同次运行日志补充，不能仅凭包头源码版本认定已升级。')
@@ -714,7 +789,13 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         end = finding.get('end_ns') or finding.get('last_ns') or start
         nearby_context = [c for c in context if start is not None and c['wall_ns'] is not None
                           and start - 2e9 <= c['wall_ns'] <= end + 2e9]
-        finding['context'] = recent_context_clues(nearby_context, 6)
+        onset_context = []
+        for marker in ('localization failed!', 'localization pose and map outputs disabled'):
+            clue = next((c for c in nearby_context if c['wall_ns'] <= start + 2e9 and marker in c['text']), None)
+            if clue is not None:
+                onset_context.append(clue)
+        finding['onset_context'] = [c for c in nearby_context if c in onset_context]
+        finding['context'] = recent_context_clues([c for c in nearby_context if c not in onset_context], 6)
     absent = sum(f['capture_coverage'] == 'no_retained_overlap' for f in findings if f['scope'] == '运行日志（有界尾部）')
     if absent:
         warnings.append(f'{absent} 个日志判据段的起始时刻未找到保留事件范围覆盖；可能尚在写入、触发被抑制或已轮转，不代表从未采集。')
@@ -756,6 +837,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
                 log_samples=len(logdata), findings=findings, warnings=warnings,
+                runtime_protections=list(protections.values()), runtime_protection_scope=protection_scope,
                 coexisting_radar_conditions=list(coexisting_radar.values()),
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
@@ -789,6 +871,14 @@ def render(report, color=False, all_events=False):
     for finding in report.get('current_findings', []):
         lines.append(paint(f'最近记录判据 [{finding["code"]}] {finding["title"]}', '1;31' if fresh else '33'))
         lines.append('  定位方向: ' + finding['advice'])
+    if report.get('runtime_protections'):
+        lines.append(paint('运行保护线索（独立于 Safety 故障判据，不计入故障段，不等于定位失败）', '33'))
+        lines.append('  统计范围: ' + report['runtime_protection_scope'])
+        for clue in report['runtime_protections']:
+            lines += [f'  {clue["title"]}: {clue["count"]} 条；首末记录: {clue["first_time"]} → {clue["last_time"]}',
+                      '  最近读取数值: ' + json.dumps(clue['evidence'], ensure_ascii=False),
+                      '  首条位置: ' + clue['first_source'],
+                      f'  最近原始日志: {clue["text"]}\n    位置: {clue["source"]}']
     if report.get('coexisting_radar_conditions'):
         lines.append(paint('检查范围内曾与 -9 并存的较低优先级雷达诊断条件（对应记录原始码为 -9；不代表当前仍异常，不计入故障段，不能据此认定启动失败原因）', '33'))
         for clue in report['coexisting_radar_conditions']:
@@ -829,6 +919,8 @@ def render(report, color=False, all_events=False):
         coverage = ('起始时刻落在保留事件范围内（不保证整段覆盖或中间完整）' if f['event_paths'] else
                     '起始时刻未找到保留事件范围覆盖（不代表整段未采集），需核对写入/抑制/轮转' if f['capture_coverage'] == 'no_retained_overlap' else '起始时间证据不足')
         lines.append(paint('  故障起点数据覆盖: ' + coverage, '36' if f['event_paths'] else '33'))
+        for clue in f.get('onset_context', []):
+            lines.append(f'  起点附近日志（相关线索）: {clue["text"]}\n    位置: {clue["source"]}')
         for clue in recent_context_clues(f['context'], 2):
             lines.append(f'  关联日志: {clue["text"]}\n    位置: {clue["source"]}')
         lines.append('  定位方向: ' + f['advice'])

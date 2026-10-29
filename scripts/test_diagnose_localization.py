@@ -154,6 +154,44 @@ class DiagnosisTest(unittest.TestCase):
         runtime = self.causes(**fields, output_age_sec=.1)
         self.assertTrue(all('phase' not in f for f in runtime))
 
+    def test_unknown_without_yaw_pass_explains_window_without_assigning_phase(self):
+        row = dict(raw_runstate=4, covariance_valid=1, localization_uncertainty=1,
+                   localization_consistency=0, yaw_condition=0, translation_condition=0,
+                   unknown_tolerated=0, optional_can_unavailable=0, yaw_pass_age_sec='inf',
+                   imu_arrival_age_sec=.003847, imu_stamp_lag_sec=-.069712)
+        for output_age in (.002572, .25, 2.0):
+            with self.subTest(output_age=output_age):
+                out = d.classify(dict(row, output_age_sec=output_age), {'motion_window_sec': .5})
+                self.assertEqual([f['key'] for f in out], ['consistency_unknown'])
+                self.assertNotIn('phase', out[0])
+                self.assertEqual(out[0]['title'], '运动一致性证据不足，未满足 UNKNOWN 宽容条件')
+                self.assertIn('尚无可用航向 PASS', out[0]['advice'])
+                self.assertIn('核查是否处于运动评估窗口建立/重建阶段', out[0]['advice'])
+                self.assertIn('也可能是 IMU 历史区间覆盖不足', out[0]['advice'])
+                self.assertIn('不能仅凭当前新鲜判定根因', out[0]['advice'])
+                self.assertNotIn('正常预热', out[0]['advice'])
+                self.assertEqual(out[0]['evidence']['motion_window_sec'], .5)
+
+    def test_unknown_with_previous_yaw_pass_keeps_input_advice(self):
+        out = self.causes(localization_consistency=0, yaw_condition=0, translation_condition=0,
+                          unknown_tolerated=0, optional_can_unavailable=0, yaw_pass_age_sec=.156812,
+                          output_age_sec=.002572, imu_arrival_age_sec=.003847)
+        self.assertEqual([f['key'] for f in out], ['consistency_unknown'])
+        self.assertNotIn('phase', out[0])
+        self.assertIn('0.156812s > 0.15s', out[0]['title'])
+        self.assertEqual(out[0]['advice'], '检查 IMU 时间区间覆盖、时间戳跳变与输出间隔；当前 IMU 到达新鲜也不证明历史积分区间完整。')
+
+    def test_startup_without_yaw_pass_keeps_initialization_advice(self):
+        out = self.causes(covariance_valid=0, localization_uncertainty=0,
+                          localization_consistency=0, yaw_condition=0, translation_condition=0,
+                          unknown_tolerated=0, optional_can_unavailable=0,
+                          yaw_pass_age_sec='inf', output_age_sec='inf')
+        self.assertEqual([f['key'] for f in out], ['uncertainty_unknown', 'consistency_unknown'])
+        for finding in out:
+            self.assertEqual(finding['phase'], 'startup')
+            self.assertIn('启动后尚无有效定位输出', finding['title'])
+            self.assertEqual(finding['advice'], '先核对初始位姿、全局重定位候选拒绝原因及接受时间，再核对首个有效定位输出。')
+
     def test_sigma_converts_degrees(self):
         out = self.causes(localization_uncertainty=2, yaw_sigma_rad=.10)
         self.assertEqual(out[0]['key'], 'yaw_sigma_rad')
@@ -404,6 +442,106 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(len(context), 1)
         self.assertIn('accepted', context[0]['text'])
 
+    def test_runtime_protections_are_visible_with_healthy_safety(self):
+        self.log.write_text(
+            'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=0 published_runstate=0\n'
+            'W1028 12:00:01.000000 42] drop stale lidar correction before matching: age=0.309895 sec, hard_deadline=0.3\n'
+            'W1028 12:00:02.000000 42] drop stale lidar correction before matching: age=0.310037 sec, hard_deadline=0.3\n'
+            'W1028 12:00:03.000000 42] adaptive lidar load step 0 -> 1, processing_ms=70, latency_ms=20, tracking_healthy=1\n'
+            'W1028 12:00:04.000000 42] BLOCK_SOLVER_INCREMENTAL_REBUILD solver_pose_count=5 retained_pose_count=0 indexed_pose_count=2\n'
+            'W1028 12:00:05.000000 42] No point, skip this scan!\n'
+            'I1028 12:00:06.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0 published_runstate=0\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['findings'], [])
+        self.assertEqual(report['current_findings'], [])
+        self.assertEqual(report['log_samples'], 2)
+        clues = {c['key']: c for c in report['runtime_protections']}
+        self.assertEqual(set(clues), {'stale_lidar_correction', 'adaptive_lidar_load_step'})
+        stale = clues['stale_lidar_correction']
+        self.assertEqual(stale['count'], 2)
+        self.assertEqual(stale['first_time'], '10-28 12:00:01.000000')
+        self.assertEqual(stale['last_time'], '10-28 12:00:02.000000')
+        self.assertEqual(stale['evidence'], {'age': .310037, 'hard_deadline': .3})
+        self.assertIn('age=0.310037', stale['text'])
+        self.assertIn(str(self.log) + ':byte=', stale['source'])
+        self.assertNotEqual(stale['first_source'], stale['source'])
+        self.assertEqual(clues['adaptive_lidar_load_step']['evidence'],
+                         dict(from_step=0, to_step=1, processing_ms=70, latency_ms=20, tracking_healthy=1))
+        self.assertTrue(all('code' not in clue for clue in clues.values()))
+        rendered = d.render(report)
+        self.assertIn('独立于 Safety 故障判据，不计入故障段，不等于定位失败', rendered)
+        self.assertIn('故障判据段: 共 0 段', rendered)
+        self.assertIn('age=0.310037', rendered)
+        self.assertNotIn('BLOCK_SOLVER_INCREMENTAL_REBUILD', rendered)
+        self.assertNotIn('No point', rendered)
+        json.dumps(report, allow_nan=False)
+
+    def test_protections_do_not_split_or_add_safety_fault_episodes(self):
+        first = 'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=4 published_runstate=4 yaw_condition=2\n'
+        last = 'I1028 12:00:02.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0 published_runstate=0\n'
+        self.log.write_text(first + last)
+        baseline = d.analyze(self.run, None, '指定路径', [])['findings']
+        self.log.write_text(first +
+            'W1028 12:00:01.000000 42] adaptive lidar load step 1 -> 2, processing_ms=80, latency_ms=20, tracking_healthy=1\n' + last)
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['findings'], baseline)
+        self.assertEqual(len(report['runtime_protections']), 1)
+
+    def test_explicit_event_protections_use_exact_timeline_window(self):
+        ns = int(dt.datetime(2026, 10, 28, 12, 0, 1, tzinfo=dt.timezone.utc).timestamp() * 1e9)
+        event = self.event(ns)
+        (event / 'timeline.csv').write_text(
+            f'wall_ns,raw,published\n{ns},0,0\n{ns + 2_000_000_000},0,0\n')
+        self.log.write_text(
+            'W1028 12:00:00.999999 42] drop stale lidar correction before matching: age=0.9 sec, hard_deadline=0.3\n'
+            'W1028 12:00:00.999999 42] adaptive lidar load step 8 -> 9, processing_ms=900\n'
+            'W1028 12:00:01.000000 42] drop stale lidar correction before matching: age=0.31 sec, hard_deadline=0.3\n'
+            'W1028 12:00:02.000000 42] adaptive lidar load step 0 -> 1, processing_ms=70, latency_ms=20, tracking_healthy=1\n'
+            'W1028 12:00:03.000000 42] drop stale lidar correction before matching: age=0.32 sec, hard_deadline=0.3\n'
+            'W1028 12:00:03.000001 42] drop stale lidar correction before matching: age=0.8 sec, hard_deadline=0.3\n'
+            'W1028 12:00:03.000001 42] adaptive lidar load step 9 -> 10, processing_ms=800\n'
+            'drop stale lidar correction before matching: age=0.7 sec, hard_deadline=0.3\n')
+        for with_summary in (True, False):
+            with self.subTest(with_summary=with_summary):
+                if not with_summary:
+                    (event / 'summary.json').unlink()
+                report = d.analyze(event, None, '指定路径', [])
+                clues = {c['key']: c for c in report['runtime_protections']}
+                self.assertEqual(clues['stale_lidar_correction']['count'], 2)
+                self.assertEqual(clues['stale_lidar_correction']['first_ns'], ns)
+                self.assertEqual(clues['stale_lidar_correction']['last_ns'], ns + 2_000_000_000)
+                self.assertEqual(clues['stale_lidar_correction']['evidence']['age'], .32)
+                self.assertEqual(clues['adaptive_lidar_load_step']['count'], 1)
+                self.assertEqual(clues['adaptive_lidar_load_step']['evidence']['to_step'], 1)
+                self.assertEqual(report['findings'], [])
+                self.assertIn('指定事件时间线', report['runtime_protection_scope'])
+                self.assertTrue(any('缺少可解析时间戳' in warning for warning in report['warnings']))
+
+    def test_event_without_timeline_does_not_count_run_protections(self):
+        event = self.event(100)
+        self.log.write_text('W1028 12:00:01.000000 42] drop stale lidar correction before matching: age=0.31 sec, hard_deadline=0.3\n')
+        with patch.object(d, 'bag_rows', return_value=[]):
+            report = d.analyze(event, None, '指定路径', [])
+        self.assertEqual(report['runtime_protections'], [])
+        self.assertTrue(any('缺少指定事件时间线范围' in warning for warning in report['warnings']))
+
+    def test_runtime_protection_counts_respect_scan_budget(self):
+        clue = 'W1028 12:00:01.000000 42] drop stale lidar correction before matching: age=0.31 sec, hard_deadline=0.3\n'
+        tail = clue * 2
+        self.log.write_bytes((clue + 'x' * 200 + '\n' + tail).encode())
+        protections, warnings = {}, []
+        rows, _ = d.log_rows(self.log, len(tail.encode()) + 1, warnings,
+                            protections=protections)
+        self.assertEqual(rows, [])
+        self.assertEqual(protections['stale_lidar_correction']['count'], 2)
+        self.assertIn(f'byte={len(clue.encode()) + 201}', protections['stale_lidar_correction']['first_source'])
+        self.assertTrue(any('日志仅检查末尾' in warning for warning in warnings))
+        # Streaming summaries keep the full scanned count even beyond 1000 occurrences.
+        self.log.write_text(clue * 1002)
+        protections = {}
+        d.log_rows(self.log, d.MIB, [], protections=protections)
+        self.assertEqual(protections['stale_lidar_correction']['count'], 1002)
+
     def test_log_context_limit_preserves_latest_relocalization_evidence(self):
         start = dt.datetime(2026, 10, 28, 12, tzinfo=dt.timezone.utc)
         lines = ['I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC raw_runstate=-9 output_stale=1 output_age_sec=inf']
@@ -423,6 +561,85 @@ class DiagnosisTest(unittest.TestCase):
         report = d.analyze(self.run, None, '指定路径', [])
         self.assertIn('accepted: candidate=221', report['findings'][0]['context'][-1]['text'])
         self.assertIn('accepted: candidate=221', d.render(report))
+
+    def test_tracking_rejection_onset_survives_relocalization_flood_and_recovery(self):
+        start = dt.datetime(2026, 10, 29, 17, 29, 21, tzinfo=dt.timezone.utc)
+        def line(seconds, text):
+            stamp = (start + dt.timedelta(seconds=seconds)).strftime('%m%d %H:%M:%S.%f')
+            return f'I{stamp} 580916 lidar_loc.cc:1820] {text}'
+        lines = [
+            line(.9, 'SAFETY_DIAGNOSTIC sequence=1 raw_runstate=0 published_runstate=0'),
+            line(.993317, 'localization failed! score: 2.28838, iterations=1, raw_odom_valid=1, raw_odom_delta=0.00848839, map_checked=1, map_overlap=0.728835'),
+            line(.998689, 'SAFETY_DIAGNOSTIC sequence=2 raw_runstate=-9 published_runstate=-9 localization_lost=1 output_stale=0 output_age_sec=0.00526'),
+            line(1, 'localization pose and map outputs disabled after rejected localization: consecutive_lost_frames=1'),
+        ]
+        lines += [line(2 + i * .5, f'GLOBAL_RELOCALIZATION[solid_kiss] rejected: attempt={i}')
+                  for i in range(1105)]
+        lines += [
+            line(880, 'SOLID_KISS_REJECT candidate=235, inliers=5, reason=too_few_robust_inliers'),
+            line(882, 'GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=236'),
+            line(882.1, 'localization pose and map outputs recovered after a fresh valid lidar match'),
+            line(882.2, 'SAFETY_DIAGNOSTIC sequence=3 raw_runstate=0 published_runstate=0'),
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['latest']['raw_runstate'], 0)
+        self.assertEqual([f['key'] for f in report['findings']], ['localization_lost'])
+        finding = report['findings'][0]
+        self.assertEqual(finding['state'], 'recovered')
+        self.assertEqual(len(finding['onset_context']), 2)
+        self.assertIn('map_overlap=0.728835', finding['onset_context'][0]['text'])
+        self.assertIn('outputs disabled', finding['onset_context'][1]['text'])
+        self.assertLessEqual(len(finding['context']), 6)
+        rendered = d.render(report)
+        for evidence in ('map_overlap=0.728835', 'outputs disabled',
+                         'candidate=235, inliers=5', 'accepted: candidate=236'):
+            self.assertIn(evidence, rendered)
+        self.assertIn('起点附近日志（相关线索）', rendered)
+        self.assertIn('不是已证明的物理根因', rendered)
+        for clue in finding['onset_context']:
+            self.assertTrue(self.log.read_bytes()[clue['byte_offset']:].startswith(clue['text'].encode()))
+
+    def test_boundary_context_cache_is_bounded_and_warns_when_exhausted(self):
+        start = dt.datetime(2026, 10, 28, 12, tzinfo=dt.timezone.utc)
+        lines = []
+        for i in range(1200):
+            stamp = (start + dt.timedelta(milliseconds=100 * i)).strftime('%m%d %H:%M:%S.%f')
+            lines.append(f'I{stamp} 42] localization failed! map_overlap=0.7 frame={i}')
+        self.log.write_text('\n'.join(lines) + '\n')
+        context, warnings = [], []
+        d.log_rows(self.log, d.MIB, warnings, start, context)
+        self.assertEqual(len(context), 1128)
+        self.assertEqual(len({c['source'] for c in context}), len(context))
+        self.assertTrue(context[0]['text'].endswith('frame=0'))
+        self.assertTrue(context[-1]['text'].endswith('frame=1199'))
+        self.assertEqual(sum('关联日志超过 1000 条' in w for w in warnings), 1)
+        self.assertEqual(sum('关键边界线索超过 128 条' in w for w in warnings), 1)
+
+    def test_boundary_context_does_not_expand_log_scan_budget(self):
+        tail = ('I1028 12:01:00.000000 42] GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=236\n'
+                'I1028 12:01:00.100000 42] SAFETY_DIAGNOSTIC raw_runstate=0\n')
+        self.log.write_bytes(('I1028 12:00:00.000000 42] localization failed! map_overlap=0.728835\n' +
+                              'x' * 200 + '\n' + tail).encode())
+        context, warnings = [], []
+        rows, _ = d.log_rows(self.log, len(tail.encode()) + 1, warnings,
+                             dt.datetime(2026, 10, 28, tzinfo=dt.timezone.utc), context)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(context), 1)
+        self.assertIn('accepted: candidate=236', context[0]['text'])
+        self.assertTrue(any('日志仅检查末尾' in w for w in warnings))
+
+    def test_merged_context_sorts_by_timestamp_then_numeric_offset(self):
+        lines = [
+            'I1028 12:00:02.000000 42] localization pose and map outputs disabled',
+            'I1028 12:00:01.000000 42] localization failed! map_overlap=0.728835',
+            'I1028 12:00:02.000000 42] GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=236',
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        context = []
+        d.log_rows(self.log, d.MIB, [], dt.datetime(2026, 10, 28, tzinfo=dt.timezone.utc), context)
+        self.assertEqual([c['text'] for c in context], [lines[1], lines[0], lines[2]])
+        self.assertEqual(len({c['source'] for c in context}), 3)
 
     def test_solid_kiss_failure_clues_keep_details_and_evidence_offsets(self):
         clues = [
