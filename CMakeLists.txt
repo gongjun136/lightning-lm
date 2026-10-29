@@ -41,6 +41,55 @@ install(DIRECTORY config
 )
 install(PROGRAMS scripts/diagnose_localization.sh scripts/diagnose_localization.py
         DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/diagnose_contract.json DESTINATION lib/${PROJECT_NAME})
+
+# Keep the offline analyzer synchronized with the actual Safety producer. This
+# check also runs in builds with BUILD_TESTING disabled; updating the manifest
+# requires reviewing the parser and regression cases, not just accepting a hash.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(diagnostic_check "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_diagnostic_contract.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${diagnostic_check}" --print-dependencies
+        OUTPUT_VARIABLE diagnostic_sources OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE diagnostic_status)
+if(NOT diagnostic_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read diagnostic contract dependencies")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${diagnostic_sources} "${diagnostic_check}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/diagnose_contract.json")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${diagnostic_check}" --print-id
+        OUTPUT_VARIABLE LIGHTNING_DIAGNOSTIC_CONTRACT OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE diagnostic_status ERROR_VARIABLE diagnostic_error)
+if(NOT diagnostic_status EQUAL 0)
+    message(FATAL_ERROR "${diagnostic_error}")
+endif()
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE LIGHTNING_DIAGNOSTIC_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT LIGHTNING_DIAGNOSTIC_REVISION)
+    set(LIGHTNING_DIAGNOSTIC_REVISION unavailable)
+endif()
+execute_process(COMMAND git status --porcelain --untracked-files=normal WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE diagnostic_dirty RESULT_VARIABLE diagnostic_git_status ERROR_QUIET)
+set(LIGHTNING_DIAGNOSTIC_DIRTY 0)
+if(diagnostic_dirty OR NOT diagnostic_git_status EQUAL 0)
+    set(LIGHTNING_DIAGNOSTIC_DIRTY 1)
+endif()
+execute_process(COMMAND git rev-parse --git-path HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE diagnostic_git_head OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE diagnostic_git_ref OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(diagnostic_git_head)
+    get_filename_component(diagnostic_git_head "${diagnostic_git_head}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${diagnostic_git_head}")
+endif()
+if(diagnostic_git_ref)
+    execute_process(COMMAND git rev-parse --git-path "${diagnostic_git_ref}" WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE diagnostic_ref_path OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    get_filename_component(diagnostic_ref_path "${diagnostic_ref_path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${diagnostic_ref_path}")
+endif()
+string(TIMESTAMP LIGHTNING_DIAGNOSTIC_BUILT_AT "%Y-%m-%dT%H:%M:%SZ" UTC)
+configure_file(cmake/diagnostic_build_info.h.in generated/diagnostic_build_info.h @ONLY)
 
 # Apply architecture-specific options only to Lightning sources.
 if (LIGHTNING_CPU_COMPILE_OPTIONS)

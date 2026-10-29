@@ -91,6 +91,7 @@ ament_target_dependencies(
         "cgi430_interfaces"
 )
 target_include_directories(${PROJECT_NAME}.libs PUBLIC ${GEOGRAPHICLIB_INCLUDE_DIR})
+target_include_directories(${PROJECT_NAME}.libs PRIVATE ${PROJECT_BINARY_DIR}/generated)
 
 include_directories(${PROJECT_SOURCE_DIR}/src/core/miao)
 add_subdirectory(core/miao)
@@ -113,6 +114,10 @@ if(BUILD_TESTING)
     target_link_libraries(incident_recorder_test yaml-cpp glog)
     add_test(NAME incident_recorder_test COMMAND $<TARGET_FILE:incident_recorder_test>)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME diagnose_localization_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_diagnose_localization.py)
+    add_test(NAME diagnostic_contract_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_diagnostic_contract.py)
     add_test(NAME online_logging_slow_sink_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_online_logging.py)
     add_test(NAME causal_trace_order_test

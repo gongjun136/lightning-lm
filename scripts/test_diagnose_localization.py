@@ -4,13 +4,17 @@ import argparse
 import csv
 import datetime as dt
 import json
+import io
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import diagnose_localization as d
+import check_diagnostic_contract as contract
 
 
 class DiagnosisTest(unittest.TestCase):
@@ -157,7 +161,18 @@ class DiagnosisTest(unittest.TestCase):
         severe = d.classify(dict(raw_runstate=-9, output_stale=1, output_age_sec=.4), {})
         self.assertEqual(severe[0]['key'], 'output_stale')
         radar = d.classify(dict(raw_runstate=2, time_sync_fault_mask=12, non_sync_fault=0, non_sync_all_pass=1), {})
-        self.assertIn('left, right', radar[0]['title'])
+        self.assertEqual([f['device'] for f in radar], ['left', 'right'])
+
+    def test_advisory_sync_warning_is_not_blamed_for_other_radar_fault(self):
+        found = d.classify(dict(raw_runstate=2, time_sync_fault_mask=4,
+                               bounded_policy_enabled=1, bounded_sync_warning_mask=4,
+                               non_sync_fault=1, non_sync_all_pass=0), {})
+        self.assertEqual([f['key'] for f in found], ['radar_other'])
+
+    def test_confirmed_failure_latch_precedes_unknown_explanation(self):
+        found = self.causes(localization_consistency=0, yaw_condition=0, translation_condition=0,
+                            confirmed_failure=1, unknown_tolerated=0, optional_can_unavailable=0)
+        self.assertEqual([f['key'] for f in found], ['latched_failure'])
 
     def test_bounded_log_offsets_and_nan_safe(self):
         self.log.write_bytes(('x' * 100 + '\nI1028 21:10:58.502960 42 loc.cc:1] SAFETY_DIAGNOSTIC raw_runstate=4 published_runstate=4 major_sigma=nan\n').encode())
@@ -209,6 +224,187 @@ class DiagnosisTest(unittest.TestCase):
             report = d.analyze(event, None, '指定路径', [])
         self.assertFalse(report['has_safety_evidence'])
         self.assertTrue(any('不能给出故障原因' in w for w in report['warnings']))
+
+    def log_row(self, second, code, **fields):
+        return dict(raw_runstate=code, published_runstate=code, _time=f't={second}',
+                    _wall_ns=second * 10**9, _source=f'log:{second}',
+                    _scope='运行日志（有界尾部）', **fields)
+
+    def test_each_radar_and_recurrence_survive_aggregation(self):
+        rows = [self.log_row(1, 2, time_sync_fault_mask=4), self.log_row(2, 0),
+                self.log_row(3, 2, time_sync_fault_mask=1), self.log_row(4, 0),
+                self.log_row(5, 2, time_sync_fault_mask=8), self.log_row(6, 0),
+                self.log_row(7, 2, time_sync_fault_mask=4)]
+        found = d.fault_episodes(rows, {})
+        self.assertEqual([f['device'] for f in found], ['left', 'front', 'right', 'left'])
+        self.assertEqual(found[0]['state'], 'recovered')
+        self.assertEqual(found[-1]['state'], 'open')
+        self.assertEqual(found[0]['observed_duration_sec'], 1)
+
+    def test_startup_and_runtime_output_loss_remain_distinct(self):
+        rows = [self.log_row(1, -9, output_stale=1, output_age_sec='inf'),
+                self.log_row(2, 0), self.log_row(3, -9, output_stale=1, output_age_sec=.77),
+                self.log_row(4, 4, localization_uncertainty=0)]
+        found = d.fault_episodes(rows, {})
+        self.assertEqual([f.get('phase') for f in found[:2]], ['startup', 'runtime'])
+        self.assertIn('启动', found[0]['title'])
+        self.assertEqual(found[1]['state'], 'predicate_changed')
+        self.assertEqual(found[1]['next_raw'], 4)
+
+    def test_peak_sample_keeps_first_joint_input_stall(self):
+        rows = [self.log_row(1, -9, output_stale=1, output_age_sec=.524,
+                             imu_arrival_age_sec=.44, can_arrival_age_sec=.443),
+                self.log_row(2, -9, output_stale=1, output_age_sec=.77,
+                             imu_arrival_age_sec=.001, can_arrival_age_sec=.01),
+                self.log_row(3, 0)]
+        found = d.fault_episodes(rows, {'max_input_gap_sec': .1})[0]
+        self.assertEqual(found['onset_evidence']['imu_arrival_age_sec'], .44)
+        self.assertEqual(found['evidence']['output_age_sec'], .77)
+        self.assertEqual(found['samples'], 2)
+
+    def test_newer_timeline_wins_over_older_log(self):
+        event = self.event(1793193058502960000)
+        (event / 'timeline.csv').write_text('wall_ns,raw,published\n1793193058502960000,0,0\n')
+        with patch.object(d, 'log_rows', return_value=([self.log_row(1, 4)], {})):
+            report = d.analyze(event, self.p, '运行中的定位实例', [])
+        self.assertEqual(report['latest']['raw_runstate'], 0)
+        self.assertEqual(report['current_findings'], [])
+
+    def test_unknown_timestamps_use_last_record_not_first(self):
+        rows = [dict(raw_runstate=4, published_runstate=4, _time='unknown', _scope='log'),
+                dict(raw_runstate=0, published_runstate=0, _time='unknown', _scope='log')]
+        with patch.object(d, 'log_rows', return_value=(rows, {})):
+            report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['latest']['raw_runstate'], 0)
+
+    def test_missing_capture_is_reported_without_claiming_never_recorded(self):
+        event = self.event(100 * 10**9)
+        s = d.summary_at(event)
+        s['streams'] = [dict(type='geosun_msgs/msg/Safety', written=20,
+                             first_relative_sec=-30, last_relative_sec=10)]
+        (event / 'summary.json').write_text(json.dumps(s))
+        with patch.object(d, 'log_rows', return_value=([
+                self.log_row(90, -9, output_stale=1, output_age_sec=.4), self.log_row(91, 0),
+                self.log_row(120, -9, output_stale=1, output_age_sec=.77)], {})):
+            report = d.analyze(event, self.p, '运行中的定位实例', [])
+        self.assertEqual(report['findings'][0]['capture_coverage'], 'range_overlap')
+        self.assertEqual(report['findings'][1]['capture_coverage'], 'no_retained_overlap')
+        self.assertTrue(any('不代表从未采集' in w for w in report['warnings']))
+
+    def test_scope_intervals_do_not_double_count_samples(self):
+        a = self.log_row(1, 4, yaw_condition=2, error_yaw_rad=.04)
+        b = dict(a, _scope='事件时间线', _source='csv:2')
+        found = d.fault_episodes([b, a], {})
+        self.assertEqual(len(found), 2)
+        self.assertEqual([f['samples'] for f in found], [1, 1])
+
+    def test_compiled_contract_is_not_inferred_from_source_metadata(self):
+        warnings = []
+        unknown = d.runtime_contract({}, warnings)
+        self.assertEqual(unknown['status'], 'unverified')
+        self.assertTrue(any('只代表启动时源码' in w for w in warnings))
+        expected = json.loads(d.CONTRACT_PATH.read_text())['contract_id']
+        self.assertEqual(d.runtime_contract({'_build': {'contract_id': expected, 'schema': 2}}, [])['status'], 'matched')
+        self.assertEqual(d.runtime_contract({'_build': {'contract_id': expected, 'schema': 99}}, [])['status'], 'mismatch')
+        self.assertEqual(d.runtime_contract({'_build': {'contract_id': 'old'}}, [])['status'], 'mismatch')
+
+    def test_log_reads_compiled_version_and_relocalization_clue(self):
+        self.log.write_text('I1028 21:10:58.002000 42] LOCALIZATION_DIAGNOSTIC_BUILD schema=2 contract_id=abc source_revision=123\n'
+                            'I1028 21:10:58.102000 42] GLOBAL_RELOCALIZATION[solid_kiss] accepted: candidate=221\n'
+                            'I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
+        context = []
+        rows, limits = d.log_rows(self.log, d.MIB, [], dt.datetime(2026, 10, 28, tzinfo=dt.timezone.utc), context)
+        self.assertEqual(limits['_build']['contract_id'], 'abc')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(context), 1)
+        self.assertIn('accepted', context[0]['text'])
+
+    def test_color_defaults_respect_terminal_and_environment(self):
+        terminal = io.StringIO()
+        terminal.isatty = lambda: True
+        self.assertTrue(d.color_enabled('auto', terminal, {}))
+        self.assertFalse(d.color_enabled('auto', terminal, {'NO_COLOR': ''}))
+        self.assertFalse(d.color_enabled('auto', terminal, {'TERM': 'dumb'}))
+        self.assertFalse(d.color_enabled('auto', io.StringIO(), {}))
+        self.assertTrue(d.color_enabled('always', io.StringIO(), {'NO_COLOR': '1'}))
+        self.assertFalse(d.color_enabled('never', terminal, {}))
+
+    def test_json_remains_plain_even_with_forced_color(self):
+        self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
+        with patch.object(d, 'low_impact', return_value={}), patch('sys.stdout', new_callable=io.StringIO) as out:
+            status = d.main([str(self.run), '--json', '--color', 'always'])
+            raw = out.getvalue()
+        self.assertEqual(status, 0)
+        self.assertNotIn('\x1b', raw)
+        self.assertEqual(json.loads(raw)['schema'], 2)
+
+    def test_text_color_and_truncation_are_explicit(self):
+        rows = []
+        for i in range(15):
+            rows += [self.log_row(2*i+1, 2, time_sync_fault_mask=1), self.log_row(2*i+2, 0)]
+        with patch.object(d, 'log_rows', return_value=(rows, {})):
+            report = d.analyze(self.run, None, '指定路径', [])
+        plain = d.render(report)
+        colored = d.render(report, color=True)
+        full = d.render(report, all_events=True)
+        self.assertNotIn('\x1b', plain)
+        self.assertIn('\x1b[1;32m', colored)
+        self.assertIn('--all', plain)
+        self.assertEqual(plain.count('历史记录 [2]'), 12)
+        self.assertEqual(full.count('历史记录 [2]'), 15)
+
+    def test_reviewed_source_contract_is_current(self):
+        self.assertEqual(contract.check(), json.loads(d.CONTRACT_PATH.read_text())['contract_id'])
+
+    def test_unknown_future_code_is_not_silently_healthy(self):
+        finding = d.classify(dict(raw_runstate=7, published_runstate=7), {})[0]
+        self.assertEqual(finding['key'], 'unknown_code')
+        self.assertEqual(finding['confidence'], '规则缺失')
+
+    def test_log_gap_does_not_invent_continuous_fault_or_recovery(self):
+        a = self.log_row(1, 2, time_sync_fault_mask=1, sequence=1)
+        b = self.log_row(3, 0, sequence=5)
+        found = d.fault_episodes([a, b], {})
+        self.assertEqual(found[0]['state'], 'observation_gap')
+        self.assertIsNone(found[0]['end_time'])
+        self.log.write_text('I1028 21:10:58.002000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=2\n'
+                            'I1028 21:10:59.002000 42] SAFETY_DIAGNOSTIC sequence=5 raw_runstate=0\n')
+        warnings = []
+        d.log_rows(self.log, d.MIB, warnings)
+        self.assertTrue(any('不连续' in w for w in warnings))
+
+    def test_malformed_code_is_not_usable_safety_evidence(self):
+        self.log.write_text('I1028 21:10:58.002000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=nan\n')
+        with patch.object(d, 'bag_rows', return_value=[]):
+            report = d.analyze(self.run, None, '指定路径', [])
+        self.assertFalse(report['has_safety_evidence'])
+        self.assertTrue(any('格式变化' in w for w in report['warnings']))
+
+    def test_contract_detects_unreviewed_safety_change(self):
+        manifest = self.root / 'contract.json'
+        original = contract.snapshot()
+        manifest.write_text(json.dumps(original))
+        changed = json.loads(json.dumps(original))
+        changed['reviewed_sources'][contract.SOURCES[0]] = 'changed'
+        with patch.object(contract, 'snapshot', return_value=changed):
+            with self.assertRaisesRegex(ValueError, '未同步'):
+                contract.check(manifest=manifest)
+
+    @unittest.skipUnless(os.name == 'posix', 'Bash dispatch fixture')
+    def test_launcher_diagnosis_dispatch_precedes_all_launch_side_effects(self):
+        folder = self.root / 'scripts with spaces'
+        folder.mkdir()
+        launcher = folder / 'run_sany_lidar_loc.sh'
+        shutil.copyfile(Path(d.__file__).with_name(launcher.name), launcher)
+        helper = folder / 'diagnose_localization.sh'
+        helper.write_text('#!/bin/bash\nprintf "argument=<%s>\\n" "$@"\nexit 0\n')
+        result = subprocess.run(['bash', str(launcher), '--diagnose', '/path with spaces/event', '--color', 'never'],
+                                text=True, capture_output=True, timeout=5,
+                                env=dict(os.environ, LIGHTNING_LM_RUN_MODE='invalid',
+                                         LIGHTNING_LM_OUT_ROOT=str(self.root/'must-not-exist')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('argument=</path with spaces/event>', result.stdout)
+        self.assertFalse((self.root/'must-not-exist').exists())
 
 
 if __name__ == '__main__':

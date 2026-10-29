@@ -5,6 +5,7 @@
 #include "core/system/loc_system.h"
 #include "common/imu_body_velocity.h"
 #include "common/sany_wheel_speed_wire.h"
+#include "diagnostic_build_info.h"
 
 #include <algorithm>
 #include <chrono>
@@ -320,6 +321,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     } catch (const std::exception& error) {
         LOG(ERROR) << "invalid DTC configuration: " << error.what(); return false;
     }
+    LOG(INFO) << "LOCALIZATION_DIAGNOSTIC_BUILD schema=2 contract_id=" << diagnostics::kDiagnosticContract
+              << " source_revision=" << diagnostics::kDiagnosticRevision
+              << " source_dirty=" << diagnostics::kDiagnosticDirty
+              << " built_at=" << diagnostics::kDiagnosticBuiltAt;
     LOG(INFO) << "LOCALIZATION_DTC_CONFIG version=" << dtc_config_version_
               << " safety_fault_reporting_enabled=" << safety_fault_reporting_enabled_
               << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_

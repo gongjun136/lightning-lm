@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "contract_id": "e6abf86475e2261f2402114af3417cac64ec30d9804a65f5dcaf7cbe52781f14",
+  "reviewed_sources": {
+    "src/core/localization/localization_dtc_monitor.cc": "79ea2b708a797514f32bb1ef3443fa3e657a0c0977abc4d222f05ebd8b2f7cbb",
+    "src/core/localization/localization_dtc_monitor.h": "9ee735804cc1a8f85ef01ba9ce551309ed0d0abed888e4466be7aac2dcd74f84",
+    "src/utils/radar_dtc_state.h": "a06b054102ab71ac85d5b05a99e2e6e040b007db1231a77375941a4260224ac4",
+    "src/utils/sany_radar_topology.h": "16b9680e3e3afda594c8549d23bf3ba1ff3d3c6024420b4208ecd9185549700a",
+    "src/utils/localization_dtc_reporting.h": "d16ebee17f3f10eae1be210ce2dd37ca394fe39078240423e29ccc1380924a8c",
+    "src/utils/incident_recorder.cc": "8e6fe166f92e5be0e94ac6eb33cfa9b887cbcfa5a65d6b427cc0a265891df0d3",
+    "src/utils/incident_recorder.h": "725f53d993fa6814ac0573d48e7e083cdc0aeaaa6e2ff61c76250c6d9b091216",
+    "src/core/system/loc_system.cc#PublishSafety": "cc8043304a45f7d054d04b17817e46aebf25b152bd6bf09a4408bd580e305050",
+    "src/core/system/loc_system.cc#DtcLocalizationLost": "f8ad8e718acf4042e8428b6309540f7adbc5daea2a1ac18af0fce17a141e35bc",
+    "src/core/system/loc_system.cc#DtcInitialization": "dc8d9fc2db835ffad2bcbe28e4e992d8baf8b794bcd1fe6cb0a9ffbe9c32e93e",
+    "config/sany/localization.yaml#diagnostics": "5589dc9712921ce0c25a380bb61b0260320a3bd91b9a1d7cab060d6868221e7f",
+    "workspace.repos": "28cae768bb4496dbc93c1eaf82728f036d634cdd5cd9dc7310978751e44a656c"
+  }
+}

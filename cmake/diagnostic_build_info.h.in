@@ -1,0 +1,8 @@
+#pragma once
+// Generated at configure time and compiled into the running localization library.
+namespace lightning::diagnostics {
+inline constexpr const char* kDiagnosticContract = "@LIGHTNING_DIAGNOSTIC_CONTRACT@";
+inline constexpr const char* kDiagnosticRevision = "@LIGHTNING_DIAGNOSTIC_REVISION@";
+inline constexpr const char* kDiagnosticDirty = "@LIGHTNING_DIAGNOSTIC_DIRTY@";
+inline constexpr const char* kDiagnosticBuiltAt = "@LIGHTNING_DIAGNOSTIC_BUILT_AT@";
+}

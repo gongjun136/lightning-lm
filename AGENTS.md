@@ -21,3 +21,8 @@
 The 2026-10-20 Orin failure was caused by `common_msgs` remaining pinned to
 `3f918b3` although the consumer needed `NodeHeartbeat.active_fault` from `b7c005f`.
 The local newer dependency hid this mistake. Keep the checks above in future work.
+
+# Diagnostic contract maintenance
+
+- Changes to Safety, lidar diagnostics, incident capture or relevant configuration must update the diagnostic parser and regression cases, then review the contract before running `python3 scripts/check_diagnostic_contract.py --update`. Do not merely refresh hashes. CMake configuration and CTest check the reviewed contract.
+- Keep the incident guide and diagnostic output aligned with actual evidence, build markers and coverage limits; distinguish source checks from validation of the running binary.

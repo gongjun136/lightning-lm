@@ -6,6 +6,11 @@
 # Watchdog silence captures snapshots only; the in-process relocalizer owns recovery.
 # Detailed guide: docs/getting_started/shell_script_guide.md (SANY LiDAR section).
 set -Eeuo pipefail
+# Diagnosis must dispatch before launch defaults, ROS discovery or run creation.
+if [[ "${1:-}" == --diagnose ]]; then
+  shift
+  exec bash "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/diagnose_localization.sh" "$@"
+fi
 trap 'status=$?; printf "ERROR: localization launcher failed (exit=%s, line=%s): %s\nRun directory: %s\n" "$status" "$LINENO" "$BASH_COMMAND" "${run_dir:-<not created>}" >&2' ERR
 
 # [sany-lidar-field-defaults]
@@ -82,6 +87,7 @@ resource_interval_sec="${LIGHTNING_LM_RESOURCE_INTERVAL_SEC:-1}"
 usage() {
   cat <<'EOF'
 Usage:
+  Read-only diagnosis: bash scripts/run_sany_lidar_loc.sh --diagnose [path] [--color auto|always|never] [--json]
   Field operation: bash "${SANY_WS}/run.sh"
   Development:
   LIGHTNING_LM_CONFIG=/absolute/config.yaml \

@@ -45,7 +45,7 @@
  */
 /**
  * @example{lineno} run_sany_lidar_loc.sh
- * SANY LiDAR 定位完整入口：默认参数、输入预检、配置与运行证据、可选诊断/录包、算法进程及退出收尾；production 与 diagnostic 共用此脚本。
+ * SANY LiDAR 定位完整入口；--diagnose 在启动副作用前转入只读故障分析。默认参数、输入预检、配置与运行证据、可选诊断/录包、算法进程及退出收尾；production 与 diagnostic 共用此脚本。
  * 用途与阅读说明见 @ref sany_lidar_launcher_guide "脚本说明"；精确参数和副作用见 @ref script_contracts "脚本契约"。
  */
 /**

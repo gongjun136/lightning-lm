@@ -131,7 +131,7 @@ run_frontend_offline.sh 输出文件说明：
 
 | 脚本 | 用途 |
 |---|---|
-| `diagnose_localization.sh` / `diagnose_localization.py` | 只读分析当前定位实例、事件或 rosbag 中的 Safety 证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
+| `run_sany_lidar_loc.sh --diagnose [path]` | 仓库内只读诊断入口，转交 `diagnose_localization.sh` / `diagnose_localization.py` 分析当前定位实例、事件或 rosbag 中的 Safety 证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
 | `inspect_rosbag2_sqlite.py` | 读取 SQLite3 ROS2 bag 和 YAML，核对 Topic 合同、主 LiDAR 末帧、数据时长及输入哈希。由离线前端入口调用。 |
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
 | `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |
@@ -230,7 +230,7 @@ SANY 可选 MCAP 录制启用的雷达点云、主 IMU、`pose_vel`、定位 fau
 更新车辆代码时须将根入口的 LiDAR 调用同步改为
 `exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_lidar_loc.sh"`。根入口的文件名继续使用 `run.sh`；纯组合导航调用同步改为
 `exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_ins_only.sh" "$SITE_CONFIG"`。
-原 SANY 诊断执行器已合入 LiDAR 入口，不再保留独立脚本。
+故障分析可用 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`；入口在启动副作用前转交独立的 `diagnose_localization.sh` 和 Python 分析器。详见 [故障采集与排查](../docs/guide/incident_capture.md)。
 
 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` 只裁剪诊断输出；用于下次启动恢复的
 `recover_pose` 始终更新，不受该开关影响。

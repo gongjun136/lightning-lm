@@ -21,7 +21,28 @@ ALIASES = dict(raw='raw_runstate', published='published_runstate',
 LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'longitudinal_tolerance_m', 'lateral_tolerance_m', 'yaw_tolerance_deg',
           'distance_tolerance_ratio', 'angle_tolerance_ratio', 'max_input_gap_sec',
-          'consistency_unknown_grace_sec', 'output_timeout_sec', 'config_version')
+          'consistency_unknown_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
+          'motion_window_sec', 'evaluation_timeout_sec', 'config_version')
+FAULT_CODES = (2, 4, -9)
+CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
+
+
+def color_enabled(mode='auto', stream=None, env=None):
+    stream = sys.stdout if stream is None else stream
+    env = os.environ if env is None else env
+    if mode != 'auto':
+        return mode == 'always'
+    return stream.isatty() and 'NO_COLOR' not in env and env.get('TERM') != 'dumb'
+
+
+def row_ns(row):
+    # Keep integer nanoseconds, especially for coverage boundaries.
+    for key in ('_wall_ns', 'wall_ns'):
+        try:
+            return int(row[key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+    return None
 
 
 def read_text(path, limit=MIB):
@@ -262,7 +283,7 @@ def thresholds(config):
     return result
 
 
-def log_rows(path, budget, warnings, reference=None):
+def log_rows(path, budget, warnings, reference=None, context=None):
     """Bounded tail, original byte offsets as evidence; does not slurp the log."""
     result, config = [], {}
     if not path or not Path(path).is_file():
@@ -275,6 +296,8 @@ def log_rows(path, budget, warnings, reference=None):
             for line in head.splitlines():
                 if 'LOCALIZATION_DTC_CONFIG' in line:
                     config.update(fields(line))
+                if 'LOCALIZATION_DIAGNOSTIC_BUILD' in line:
+                    config['_build'] = fields(line)
             size = os.fstat(f.fileno()).st_size
             start = max(0, size - budget)
             f.seek(start)
@@ -285,7 +308,12 @@ def log_rows(path, budget, warnings, reference=None):
                 offset = f.tell()
                 line = f.readline(min(128 * 1024, size - offset)).decode(errors='replace')
                 modern = 'SAFETY_DIAGNOSTIC' in line
-                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line:
+                contextual = context is not None and any(marker in line for marker in (
+                    'initial pose is not configured', 'GLOBAL_RELOCALIZATION[',
+                    'ignore CAN wheel speed:', 'propagate over long imu interval:',
+                    'localization pose and map outputs stopped',
+                    'localization pose and map outputs recovered'))
+                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual:
                     continue
                 row = fields(line)
                 if not modern:
@@ -302,12 +330,29 @@ def log_rows(path, budget, warnings, reference=None):
                         pass
                 row['_source'] = f'{path}:byte={offset}'
                 row['_scope'] = '运行日志（有界尾部）' if modern else '旧日志上报码（原始码未知）'
+                if contextual and not modern:
+                    # Retain a bounded number of actual log clues, never infer a
+                    # hardware cause solely from a matching keyword.
+                    if len(context) < 1000:
+                        context.append(dict(time=row['_time'], wall_ns=row.get('_wall_ns'),
+                                            source=row['_source'], text=line.strip()[:1200]))
+                    continue
+                if number(row.get('raw_runstate')) is None:
+                    warning = '忽略缺少有效故障码的日志记录；可能存在格式变化或未写完的行。'
+                    if warning not in warnings:
+                        warnings.append(warning)
+                    continue
                 result.append(row)
     except OSError as exc:
         warnings.append('日志读取失败: ' + str(exc))
     # Avoid double-counting shadow and unconditional diagnostics from the same run.
     if any(r['_scope'] == '运行日志（有界尾部）' for r in result):
         result = [r for r in result if r['_scope'] == '运行日志（有界尾部）']
+    gaps = sum(1 for a, b in zip(result, result[1:])
+               if number(a.get('sequence')) is not None and number(b.get('sequence')) is not None
+               and b['sequence'] != a['sequence'] + 1)
+    if gaps:
+        warnings.append(f'Safety 日志序号有 {gaps} 处不连续；缺口期间的短暂故障和恢复过程无法保证覆盖。')
     return result, config
 
 
@@ -321,10 +366,11 @@ def timeline_rows(path, warnings):
                 if line > 30000:
                     warnings.append('时间线超过 30000 行，仅检查前 30000 行。')
                     break
-                if not row.get('raw') or not row.get('wall_ns') or None in row or None in row.values():
+                if number(row.get('raw')) is None or not row.get('wall_ns') or None in row or None in row.values():
                     warnings.append('忽略时间线尚未写完/格式损坏的一行。')
                     continue
                 clean = {ALIASES.get(k, k): (number(v) if number(v) is not None else v) for k, v in row.items()}
+                clean['_wall_ns'] = int(row['wall_ns'])
                 clean['_time'] = wall_time(row.get('wall_ns'))
                 clean['_source'] = f'{path}:{line}'
                 clean['_scope'] = '事件时间线'
@@ -375,7 +421,10 @@ def classify(row, limits):
                     causes[-1]['evidence']['error_yaw_deg'] = row['error_yaw_rad'] * 180 / math.pi
         if row.get('localization_consistency') == 2 and row.get('yaw_condition') != 2 and row.get('translation_condition') != 2:
             add('consistency_fail', '运动一致性检查失败，缺少平移/航向细分状态', ['localization_consistency'], '需要同次运行的细分判据或完整事件。')
-        if row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:
+        latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
+        if latched:
+            add('latched_failure', '先前确认的失败尚未重新通过', ['confirmed_failure', 'localization_consistency', 'localization_uncertainty'], '向前检查首次 FAIL；UNKNOWN 不会清除已确认失败。')
+        if not latched and row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:
             add('consistency_unknown', '运动一致性证据不足，未满足 UNKNOWN 宽容条件',
                 ['localization_consistency', 'yaw_condition', 'translation_condition', 'yaw_pass_age_sec',
                  'output_age_sec', 'imu_arrival_age_sec', 'imu_stamp_lag_sec', 'unknown_tolerated'],
@@ -386,28 +435,44 @@ def classify(row, limits):
                 causes[-1]['title'] += f'；最近航向 PASS 已过去 {age:.6g}s > {grace:g}s'
             gap, imu_age = number(limits.get('max_input_gap_sec')), number(row.get('imu_arrival_age_sec'))
             if gap is not None and imu_age is not None and imu_age > gap:
-                causes[-1]['title'] += f'；主 IMU 到达年龄 {imu_age:.6g}s > {gap:g}s'
-        if row.get('confirmed_failure') == 1 and not causes:
-            add('latched_failure', '先前确认的失败尚未重新通过', ['confirmed_failure', 'localization_consistency', 'localization_uncertainty'], '向前检查首次 FAIL；UNKNOWN 不会清除已确认失败。')
+                causes[-1]['title'] += f'；主 IMU 有效证据年龄 {imu_age:.6g}s > {gap:g}s'
     elif code == -9:
         for key, title in [('output_stale', '定位输出超时'), ('localization_lost', '定位输出门控关闭/定位丢失'), ('radar_all_failed', '所有必需雷达均不可用')]:
             if row.get(key) == 1:
-                add(key, title, [key, 'output_age_sec', 'match_stale', 'match_age_sec', 'lost_frames'], '沿输入、处理队列、匹配、发布时间线检查最早异常。')
+                startup = key == 'output_stale' and str(row.get('output_age_sec')) == 'inf'
+                if startup:
+                    title = '启动后尚无有效定位输出，超过启动宽限期'
+                add(key, title, [key, 'output_age_sec', 'imu_arrival_age_sec', 'can_arrival_age_sec',
+                                'imu_stamp_lag_sec', 'can_stamp_lag_sec', 'match_stale', 'match_age_sec', 'lost_frames'],
+                    '检查初始位姿及全局重定位接受时间。' if startup else '沿输入、处理队列、匹配、发布时间线检查最早异常。')
+                causes[-1]['phase'] = 'startup' if startup else 'runtime'
+                ages = [number(row.get(k)) for k in ('imu_arrival_age_sec', 'can_arrival_age_sec')]
+                gap = number(limits.get('max_input_gap_sec'))
+                if not startup and gap is not None and all(a is not None and a > gap for a in ages):
+                    causes[-1]['advice'] = 'IMU 与 CAN 证据同时变旧；优先检查共享回调调度和输入链路，现有证据不能确定 DDS 或硬件根因。'
         if not causes and number(row.get('publish_end_age')) is not None and row['publish_end_age'] > 0.5:
             add('publish_gap', '同时观测到发布完成间隔增大', ['publish_end_age', 'publishing', 'imu_callback_age', 'lidar_callback_age', 'sensor_pending', 'localization_pending'], '需 Safety 详细判据确认 -9 分支；发布返回不等于 DDS 下游收到。', '相关线索')
     elif code == 2:
         mask = number(row.get('time_sync_fault_mask'))
         if mask:
-            roles = [name for bit, name in enumerate(('front', 'rear', 'left', 'right')) if int(mask) & (1 << bit)]
-            add('radar_time_sync', '雷达时间同步诊断未通过: ' + ', '.join(roles),
-                ['time_sync_fault_mask', 'bounded_sync_warning_mask', 'bounded_policy_enabled', 'non_sync_fault', 'non_sync_all_pass'],
-                '查看对应雷达 diagnostic_state 的原生 DTC 和 PTP 证据。')
+            blocking = int(mask)
+            if row.get('bounded_policy_enabled') == 1:
+                blocking &= ~int(number(row.get('bounded_sync_warning_mask')) or 0)
+            roles = [name for bit, name in enumerate(('front', 'rear', 'left', 'right')) if blocking & (1 << bit)]
+            for role in roles:
+                add('radar_time_sync', '雷达时间同步诊断未通过: ' + role,
+                    ['time_sync_fault_mask', 'bounded_sync_warning_mask', 'bounded_policy_enabled', 'non_sync_fault', 'non_sync_all_pass'],
+                    '查看对应雷达 diagnostic_state 的原生 DTC 和 PTP 证据；同步判据失败不等于偏差数值一定超限。')
+                causes[-1]['device'] = role
         if row.get('non_sync_fault') == 1 or row.get('non_sync_all_pass') == 0:
             add('radar_other', '雷达非时间同步诊断失败或证据未齐', ['non_sync_fault', 'non_sync_all_pass'], '检查各必需雷达的状态与 HMS 证据。')
     if code in (2, 4, -9) and not causes:
         add('missing_details', '记录了故障码，但缺少判据字段，无法确定具体触发分支',
             ['raw_runstate', 'published_runstate', 'major_sigma', 'lateral_sigma', 'yaw_sigma_rad', 'covariance_valid'],
             '补充同次运行日志或升级后生成的完整事件；不能直接认定误报。', '证据不足')
+    elif code is not None and code not in (0, 2, 4, -9):
+        add('unknown_code', '发现未支持的 Safety 码，诊断规则需要同步', ['raw_runstate', 'published_runstate'],
+            '检查运行库版本与故障码定义，并更新诊断规则；不能按正常状态处理。', '规则缺失')
     return causes
 
 
@@ -449,11 +514,117 @@ def bag_rows(path, byte_limit, warnings):
             last[topic] = state
             # The bag contains the reported code only; masked raw faults are unknowable.
             result.append(dict(raw_runstate=state, published_runstate=state, _time=wall_time(ns),
-                               _source=f'{path}:{topic}@{ns}', _scope='裸 bag 上报码（原始码未知）'))
+                               _wall_ns=int(ns), _source=f'{path}:{topic}@{ns}', _scope='裸 bag 上报码（原始码未知）'))
         warnings.append('裸 bag 的 Safety 只有上报码，不包含细分判据；关闭上报时不能据此推断原始故障。')
     except Exception as exc:
         warnings.append('rosbag 离线读取失败: ' + str(exc))
     return result
+
+
+def cause_key(finding):
+    return (finding['code'], finding['key'], finding.get('device'), finding.get('phase'))
+
+
+def fault_episodes(rows, limits):
+    """Keep every selected-predicate interval and device, including brief faults."""
+    episodes, scopes = [], {}
+    for row in rows:
+        scopes.setdefault(row.get('_scope'), []).append(row)
+    metrics = ('error_x', 'error_y', 'error_yaw_rad', 'output_age_sec',
+               'imu_arrival_age_sec', 'major_sigma', 'lateral_sigma', 'yaw_sigma_rad')
+    def score(finding):
+        return max((abs(number(finding['evidence'].get(k)) or 0) for k in metrics), default=0)
+    for scope_rows in scopes.values():
+        active = {}
+        previous = None
+        for row in scope_rows:
+            if previous and number(previous.get('sequence')) is not None and number(row.get('sequence')) is not None and row['sequence'] != previous['sequence'] + 1:
+                for episode in active.values():
+                    episode['state'] = 'observation_gap'
+                active = {}
+            previous = row
+            current = {cause_key(f): f for f in classify(row, limits)}
+            for key in list(active):
+                if key not in current:
+                    episode = active.pop(key)
+                    episode['end_time'] = row.get('_time')
+                    episode['end_ns'] = row_ns(row)
+                    episode['next_raw'] = row.get('raw_runstate')
+                    episode['state'] = 'recovered' if row.get('raw_runstate') == 0 else 'predicate_changed'
+                    if episode['start_ns'] is not None and episode['end_ns'] is not None:
+                        episode['observed_duration_sec'] = max(0, (episode['end_ns'] - episode['start_ns']) / 1e9)
+            for key, finding in current.items():
+                if key not in active:
+                    episode = dict(finding, samples=0, first_time=finding['time'],
+                                   start_ns=row_ns(row), last_ns=row_ns(row), end_ns=None,
+                                   end_time=None, state='open', onset_evidence=finding['evidence'],
+                                   onset_source=finding['source'], onset_advice=finding['advice'])
+                    active[key] = episode
+                    episodes.append(episode)
+                episode = active[key]
+                episode['samples'] += 1
+                episode['last_time'] = finding['time']
+                episode['last_ns'] = row_ns(row)
+                # Preserve a representative worst sample, not a healthy-looking
+                # last sample after input recovered but output is still stale.
+                if score(finding) >= score(episode):
+                    episode.update(finding)
+    return episodes
+
+
+def capture_windows(path, run, process, summary, rows, warnings):
+    """Summary envelopes show possible coverage, never message completeness."""
+    candidates = [path] if summary else []
+    if process:
+        root = Path(process['archive']) if process.get('archive') else run / 'results/incidents'
+        candidates += [p for p in events_in(root) if same_run(p, run, process['pid'])]
+    elif not summary and run.is_dir():
+        candidates += [p for root in (run / 'results/incidents', run.parent / 'incidents')
+                       for p in events_in(root) if same_run(p, run)]
+    candidates = list(dict.fromkeys(candidates))
+    if len(candidates) > 256:
+        candidates = sorted(candidates, key=stamp, reverse=True)[:256]
+        warnings.append('保留事件超过 256 个，仅核查最近 256 个摘要的覆盖范围。')
+    windows = []
+    for event in candidates:
+        s = summary if event == path else summary_at(event)
+        trigger = number(s.get('trigger_wall_ns'))
+        if trigger is None:
+            continue
+        # Diagnose the overlap using the recorded Safety stream, not a cloud
+        # stream whose range may be longer while diagnostics were omitted.
+        ranges = [(stream.get('first_relative_sec'), stream.get('last_relative_sec'))
+                  for stream in s.get('streams', [])
+                  if str(stream.get('type', '')).endswith('/Safety') and stream.get('written', 0)]
+        for first, last in ranges:
+            if number(first) is not None and number(last) is not None:
+                windows.append(dict(path=str(event), start_ns=int(trigger + float(first) * 1e9),
+                                    end_ns=int(trigger + float(last) * 1e9), status=s.get('status'),
+                                    evidence='Safety 首末记录范围，中间完整性未验证'))
+        if event == path and rows:
+            times = [row_ns(r) for r in rows if row_ns(r) is not None]
+            if times:
+                windows.append(dict(path=str(event), start_ns=min(times), end_ns=max(times),
+                                    status=s.get('status'), evidence='时间线首末记录范围，中间完整性未验证'))
+    return windows
+
+
+def runtime_contract(logged_limits, warnings):
+    built = logged_limits.get('_build', {})
+    try:
+        expected = json.loads(read_text(CONTRACT_PATH))['contract_id']
+    except (OSError, ValueError, KeyError):
+        expected = None
+        warnings.append('诊断合同文件缺失或无效，无法检查脚本与运行库的兼容性。')
+    if not built:
+        status = 'unverified'
+        warnings.append('运行日志没有编译版本标记，无法确认新采集修复已生效；run_metadata 的 git_commit 只代表启动时源码。')
+    elif expected is None or built.get('contract_id') != expected or number(built.get('schema')) != 2:
+        status = 'mismatch'
+        warnings.append('运行库与脚本的诊断合同不匹配；结果按现有字段解释，不能视为最新版完整验收。')
+    else:
+        status = 'matched'
+    return dict(status=status, expected_contract=expected, compiled=built)
 
 
 def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
@@ -474,11 +645,15 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         reference = dt.datetime.fromisoformat(meta['started_at'])
     except (KeyError, ValueError):
         reference = dt.datetime.fromtimestamp(int(summary.get('trigger_wall_ns', time.time_ns())) / 1e9).astimezone()
-    logdata, logged_limits = log_rows(log, int(log_mb * MIB), warnings, reference)
+    context = []
+    logdata, logged_limits = log_rows(log, int(log_mb * MIB), warnings, reference, context)
     if not limits:
         limits = {k: v for k, v in logged_limits.items() if k in LIMITS}
         warnings.append('缺少配置快照，使用能找到的运行配置日志；未知阈值不作超限判断。')
     rows = timeline_rows(path / 'timeline.csv', warnings) if path.is_dir() else []
+    build = runtime_contract(logged_limits, warnings)
+    if rows and not all(k in rows[-1] for k in ('translation_condition', 'yaw_condition', 'output_stale', 'time_sync_fault_mask')):
+        warnings.append('事件时间线是旧格式或缺少细分字段；需同次运行日志补充，不能仅凭包头源码版本认定已升级。')
     if summary and not process:
         times = [number(r.get('wall_ns')) for r in rows if number(r.get('wall_ns')) is not None]
         if times:
@@ -502,29 +677,47 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 warnings.append('startup_without_output 与窗口内已有发布完成记录并存；旧版并发时间采样可误触发此标签，不能据此认定启动无输出。')
         if process:
             warnings.append('同时显示本事件和当前运行日志尾部的故障；日志中的较早故障不一定属于此事件，见每项时间与来源。')
-    findings = {}
-    for row in rows + logdata:
-        for finding in classify(row, limits):
-            # Keep one latest example per branch and scope, not 50 Hz repeats.
-            key = (finding['code'], finding['key'], finding['scope'])
-            count = findings.get(key, {}).get('samples', 0)
-            finding['samples'] = count + 1
-            findings[key] = finding
+    findings = fault_episodes(rows + logdata, limits)
+    windows = capture_windows(path, run, process, summary, rows, warnings)
+    for finding in findings:
+        start = finding['start_ns']
+        finding['event_paths'] = sorted(set(w['path'] for w in windows
+            if start is not None and w['start_ns'] <= start <= w['end_ns']))
+        finding['capture_coverage'] = ('range_overlap' if finding['event_paths'] else
+                                     'no_retained_overlap' if start is not None else 'unknown_time')
+        # Nearby facts are corroboration, not a claim about the physical root cause.
+        end = finding.get('end_ns') or finding.get('last_ns') or start
+        finding['context'] = [c for c in context if start is not None and c['wall_ns'] is not None
+                              and start - 2e9 <= c['wall_ns'] <= end + 2e9][-6:]
+    absent = sum(f['capture_coverage'] == 'no_retained_overlap' for f in findings if f['scope'] == '运行日志（有界尾部）')
+    if absent:
+        warnings.append(f'{absent} 个日志判据段的起始时刻未找到保留事件范围覆盖；可能尚在写入、触发被抑制或已轮转，不代表从未采集。')
     if not rows and not logdata:
         warnings.append('没有可解析的 Safety 判据记录；此次不能给出故障原因。')
-    latest = logdata[-1] if logdata else (rows[-1] if rows else {})
-    return dict(schema=1, selected=str(path), selection=selection, process=process,
+    all_rows = rows + logdata
+    latest = max(enumerate(all_rows), key=lambda pair: (row_ns(pair[1]) or 0, pair[0]))[1] if all_rows else {}
+    age = max(0, (time.time_ns() - row_ns(latest)) / 1e9) if process and row_ns(latest) else None
+    if age is not None and age > 5:
+        warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
+    dropped = [number(r.get('collector_dropped')) for r in rows]
+    dropped = [v for v in dropped if v is not None]
+    return dict(schema=2, selected=str(path), selection=selection, process=process,
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
                 trigger_reasons=summary.get('reasons', []), thresholds=limits,
-                latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'published_runstate', '_source')},
+                latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'published_runstate', '_source', '_scope')},
+                latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
+                capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
+                window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
-                log_samples=len(logdata), findings=list(findings.values()), warnings=warnings,
+                log_samples=len(logdata), findings=findings, warnings=warnings,
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
 
 
-def render(report):
-    lines = ['定位现场自动诊断', f'选择: {report["selection"]}', f'数据包: {report["selected"]}']
+def render(report, color=False, all_events=False):
+    def paint(text, style):
+        return f'\033[{style}m{text}\033[0m' if color else text
+    lines = [paint('定位现场自动诊断', '1;36'), f'选择: {report["selection"]}', f'数据包: {report["selected"]}']
     if report['process']:
         p = report['process']
         lines.append(f'定位: PID {p["pid"]}, 线程名 {p["comm"]}, exe={p["exe"]}')
@@ -532,18 +725,53 @@ def render(report):
     if report['event_status']:
         lines.append(f'事件: {report["trigger_time"]}, {report["event_status"]}, 触发={report["trigger_reasons"]}')
     latest = report['latest']
-    lines.append(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}')
+    age = report.get('latest_age_sec')
+    fresh = age is None or age <= 5
+    raw = number(latest['raw_runstate'])
+    style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
+    lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
+    if raw == 0:
+        lines.append('最新记录为 0，不代表整个运行无故障；下方保留历史证据。')
+    build = report.get('runtime_build', {})
+    compiled = build.get('compiled', {})
+    status = {'matched': '诊断合同匹配', 'unverified': '缺少编译标记，尚未核实',
+              'mismatch': '诊断合同不匹配'}.get(build.get('status'), '未知')
+    lines.append(paint(f'运行库版本核对: {status}；提交={compiled.get("source_revision", "未知")}；'
+                       f'源码含改动={compiled.get("source_dirty", "未知")}；编译={compiled.get("built_at", "未知")}',
+                       '36' if build.get('status') == 'matched' else '33'))
+    for finding in report.get('current_findings', []):
+        lines.append(paint(f'最近记录判据 [{finding["code"]}] {finding["title"]}', '1;31' if fresh else '33'))
+        lines.append('  定位方向: ' + finding['advice'])
     lines.append('生效阈值: ' + json.dumps(report['thresholds'], ensure_ascii=False))
-    for code in (4, -9, 2):
-        findings = [f for f in report['findings'] if f['code'] == code]
-        if not findings:
-            lines.append(f'故障码 {code}: 本次检查范围没有记录。')
-        for f in findings:
-            lines += [f'[{code}] {f["title"]}（{f["confidence"]}；{f["scope"]}）',
-                      f'  时间: {f["time"]}；上报码={f["published"]}；同类判据样本={f["samples"]}',
-                      '  数值: ' + json.dumps(f['evidence'], ensure_ascii=False),
-                      f'  证据: {f["source"]}', '  排查: ' + f['advice']]
-    lines += ['说明: ' + w for w in report['warnings']]
+    findings = sorted(report['findings'], key=lambda f: f.get('start_ns') or 0, reverse=True)
+    lines.append(paint(f'故障判据段: 共 {len(findings)} 段（不同证据来源分别统计，不等于物理故障次数）', '1;36'))
+    groups = Counter((f['code'], f['key'], f.get('device', ''), f.get('phase', '')) for f in findings)
+    for (code, key, device, phase), count in groups.items():
+        example = next(f for f in findings if (f['code'], f['key'], f.get('device', ''), f.get('phase', '')) == (code, key, device, phase))
+        lines.append(f'  [{code}] {example["title"]}: {count} 段')
+    shown = findings if all_events else findings[:12]
+    if len(shown) < len(findings):
+        lines.append(paint(f'以下显示最近 {len(shown)} 段；--all 显示全部，--json 始终包含全部已分析判据段。', '33'))
+    for f in shown:
+        ended = f.get('end_time') or '检查范围结束时未见后续状态'
+        lines += [paint(f'历史记录 [{f["code"]}] {f["title"]}（{f["confidence"]}；{f["scope"]}）', '33'),
+                  f'  时间段: {f["first_time"]} → {ended}；判据样本={f["samples"]}；样例上报码={f["published"]}',
+                  f'  样例时间: {f["time"]}；数值: ' + json.dumps(f['evidence'], ensure_ascii=False),
+                  f'  证据: {f["source"]}']
+        if f['onset_evidence'] != f['evidence']:
+            lines.append('  首次异常数值: ' + json.dumps(f['onset_evidence'], ensure_ascii=False))
+        if f['onset_advice'] != f['advice']:
+            lines.append('  首次异常定位方向: ' + f['onset_advice'])
+        coverage = ('有保留事件范围重叠（不保证中间完整）' if f['event_paths'] else
+                    '未找到保留事件范围覆盖，需核对写入/抑制/轮转' if f['capture_coverage'] == 'no_retained_overlap' else '时间证据不足')
+        lines.append(paint('  数据覆盖: ' + coverage, '36' if f['event_paths'] else '33'))
+        for clue in f['context'][-2:]:
+            lines.append(f'  关联日志: {clue["text"]}\n    位置: {clue["source"]}')
+        lines.append('  定位方向: ' + f['advice'])
+    if report.get('collector_totals'):
+        lines.append('采集器累计统计: ' + json.dumps(report['collector_totals'], ensure_ascii=False))
+        lines.append(f'所选时间线窗口内采集丢弃增量: {report.get("window_collector_drop_delta")}（采集丢弃不等于输入丢失）')
+    lines += [paint('注意: ' + w, '33') for w in report['warnings']]
     lines.append(report['limitation'])
     return '\n'.join(lines)
 
@@ -556,6 +784,8 @@ def main(argv=None):
     parser.add_argument('--pid', type=int, help='选择指定的运行中定位实例')
     parser.add_argument('--root', help='无定位进程时使用的导出根目录')
     parser.add_argument('--json', action='store_true', help='输出结构化 JSON')
+    parser.add_argument('--color', choices=('auto', 'always', 'never'), default='auto', help='终端颜色；auto 尊重 NO_COLOR，重定向不着色')
+    parser.add_argument('--all', action='store_true', help='文本显示全部判据段；默认显示最近 12 段及全部分类汇总')
     parser.add_argument('--log-mb', type=int, default=32, help='最多检查日志尾部 MiB，默认 32')
     parser.add_argument('--bag-mb', type=int, default=128, help='裸 bag 最大扫描大小 MiB，默认 128')
     args = parser.parse_args(argv)
@@ -566,7 +796,7 @@ def main(argv=None):
         path, process, selection, warnings = select(args)
         report = analyze(path, process, selection, warnings, args.log_mb, args.bag_mb)
         report['scheduling'] = scheduling
-        print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report))
+        print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
         return 0 if report['has_safety_evidence'] else 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(error=str(exc)), ensure_ascii=False) if args.json else '无法完成诊断: ' + str(exc))
