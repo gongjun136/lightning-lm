@@ -207,7 +207,7 @@ def events_in(root):
             ((p / 'summary.json').is_file() or (p / 'timeline.csv').is_file())]
 
 
-def choose_path(path, run=None, pid=None, start_wall_ns=0):
+def choose_path(path, run=None, pid=None, start_wall_ns=0, preserve_run=False):
     path = Path(path).expanduser().resolve()
     if not path.exists():
         raise ValueError('路径不存在: ' + str(path))
@@ -219,6 +219,8 @@ def choose_path(path, run=None, pid=None, start_wall_ns=0):
         return path
     candidates = events_in(path) + events_in(path / 'incidents')
     if (path / 'logs/run_loc_online.stderr.log').is_file():
+        if preserve_run:
+            return path
         candidates += [e for e in events_in(path.parent / 'incidents') if same_run(e, path, pid)]
         candidates += events_in(path / 'results/incidents')
         candidates = [e for e in candidates if same_run(e, path, pid)]
@@ -237,7 +239,7 @@ def choose_path(path, run=None, pid=None, start_wall_ns=0):
 
 def select(args, processes=None, roots=None):
     if args.path:
-        return choose_path(args.path), None, '指定路径', []
+        return choose_path(args.path, preserve_run=True), None, '指定路径', []
     processes = find_processes() if processes is None else processes
     if args.pid:
         processes = [p for p in processes if p['pid'] == args.pid]

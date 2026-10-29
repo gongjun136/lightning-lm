@@ -97,10 +97,38 @@ class DiagnosisTest(unittest.TestCase):
         self.event(200)
         self.assertEqual(d.select(self.args(path=str(event / 'summary.json')), [self.p])[0], event)
 
-    def test_explicit_run_only_its_own_events(self):
+    def test_automatic_run_path_only_selects_its_own_events(self):
         own = self.event(100)
         self.event(200, 99, self.root / 'other')
         self.assertEqual(d.choose_path(self.run), own)
+
+    def test_explicit_run_cli_keeps_early_faults_when_newer_own_event_exists(self):
+        event_ns = int(dt.datetime(2026, 10, 28, 12, 0, 10, tzinfo=dt.timezone.utc).timestamp() * 10**9)
+        event = self.event(event_ns)
+        (event / 'timeline.csv').write_text('wall_ns,raw,published\n' + f'{event_ns},0,0\n')
+        self.log.write_text(
+            'I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=4 published_runstate=4 localization_uncertainty=0\n'
+            'I1028 12:00:02.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=-9 published_runstate=-9 localization_lost=1 output_age_sec=0.01\n'
+            'I1028 12:00:10.000000 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=0 published_runstate=0\n')
+        selected, process, _, _ = d.select(self.args(path=str(self.run)), [self.p])
+        self.assertEqual(selected, self.run)
+        self.assertIsNone(process)
+        self.assertEqual(d.choose_path(self.run), event)
+        with patch.object(d, 'low_impact', return_value={}), patch('sys.stdout', new_callable=io.StringIO) as output:
+            status = d.main([str(self.run), '--log-mb', '64', '--json'])
+            report = json.loads(output.getvalue())
+        self.assertEqual(status, 0)
+        self.assertEqual(Path(report['selected']), self.run)
+        self.assertEqual(report['log_samples'], 3)
+        self.assertEqual([f['code'] for f in report['findings']], [4, -9])
+        self.assertTrue(any('首次已观测失锁' in item['text'] for item in report['priority_summary']))
+        with patch.object(d, 'low_impact', return_value={}), patch('sys.stdout', new_callable=io.StringIO) as output:
+            status = d.main([str(event), '--log-mb', '64', '--json'])
+            event_report = json.loads(output.getvalue())
+        self.assertEqual(status, 0)
+        self.assertEqual(Path(event_report['selected']), event)
+        self.assertEqual(event_report['log_samples'], 1)
+        self.assertEqual(event_report['findings'], [])
 
     def test_copied_run_prefers_its_local_log_over_original_absolute_path(self):
         (self.run / 'run_metadata.txt').write_text('run_dir=/unavailable/original/run\n')
