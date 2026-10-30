@@ -621,6 +621,7 @@ wait_for_inputs || fail "required sensor deliveries are unavailable; see ${run_d
   echo "config_path=${config_path}"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
+  echo "match_failure_dir=${out_root}/match_failures"
   echo "record_bag=${record_bag}"
   echo "enable_pose_vel_watchdog=${enable_pose_vel_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
@@ -694,6 +695,8 @@ if command -v tegrastats >/dev/null 2>&1; then
 fi
 
 # [sany-lidar-launch-arguments]
+# Older running installs safely ignore this until the new binary is activated.
+export SANY_MATCH_FAILURE_DIR="${out_root}/match_failures"
 algorithm_args=(
   ros2 run lightning_lm run_loc_online
   --config="${config_path}"

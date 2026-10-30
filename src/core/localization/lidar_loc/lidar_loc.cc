@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
 #include <execution>
 #include <filesystem>
 #include <limits>
@@ -35,10 +37,28 @@
 #include "io/yaml_io.h"
 #include "ui/pangolin_window.h"
 #include "utils/compute_budget.h"
+#include "utils/match_failure_recorder.h"
+#include "diagnostic_build_info.h"
 #include "utils/timer.h"
 
 namespace lightning::loc {
 namespace {
+
+diagnostics::MatchFailureRecorder::CloudView EvidenceCloud(const CloudPtr& cloud) {
+    return {cloud.get(), cloud ? cloud->size() : 0, [](const void* data, std::size_t index) {
+        const auto& point = static_cast<const PointCloudType*>(data)->points[index];
+        return diagnostics::MatchFailureRecorder::Point{point.x, point.y, point.z,
+                                                       static_cast<std::uint32_t>(point.lidar_id)};
+    }};
+}
+
+diagnostics::MatchFailureRecorder::Pose EvidencePose(const SE3& pose) {
+    diagnostics::MatchFailureRecorder::Pose result;
+    const auto matrix = pose.matrix();
+    for (unsigned row = 0; row < 4; ++row)
+        for (unsigned col = 0; col < 4; ++col) result[row*4+col] = matrix(row,col);
+    return result;
+}
 
 SE3 ReadLidarToImu(const YAML::Node& root) {
     Mat3d rotation = Mat3d::Identity();
@@ -96,6 +116,8 @@ LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
 }
 
 LidarLoc::~LidarLoc() {
+    // The writer reads the immutable validation map, so drain before releasing it.
+    if (match_failure_recorder_) match_failure_recorder_->Stop();
     if (update_map_thread_.joinable()) {
         update_map_quit_ = true;
         update_map_thread_.join();
@@ -463,6 +485,37 @@ bool LidarLoc::Init(const std::string& config_path) {
         fp_recover.name_ = "recover";
         fp_recover.pose_ = pose;
         map_->AddFP(fp_recover);
+    }
+
+    // Capture only when an explicit archive root was supplied by the runtime.
+    // Failure to record diagnostics must never change localization acceptance.
+    try {
+        const auto capture_options = diagnostics::MatchFailureRecorder::Options::FromYaml(
+            root["diagnostics"] ? root["diagnostics"]["match_failure_capture"] : YAML::Node());
+        const char* directory = std::getenv("SANY_MATCH_FAILURE_DIR");
+        if (capture_options.enabled && directory && *directory && relocalization_static_map_) {
+            diagnostics::MatchFailureRecorder::Context context;
+            context.directory = directory;
+            context.config_path = std::filesystem::absolute(config_path).string();
+            context.config_snapshot = YAML::Dump(root);
+            context.run_dir = std::filesystem::path(context.config_path).parent_path().string();
+            context.map_path = (std::filesystem::absolute(options_.map_option_.map_path_) / "global.pcd").string();
+            context.build_commit = diagnostics::kDiagnosticRevision;
+            context.build_dirty = diagnostics::kDiagnosticDirty;
+            context.build_utc = diagnostics::kDiagnosticBuiltAt;
+            for (unsigned k = 0; k < 3; ++k) {
+                context.map_min[k] = relocalization_map_min_[k];
+                context.map_max[k] = relocalization_map_max_[k];
+            }
+            match_failure_recorder_ = std::make_unique<diagnostics::MatchFailureRecorder>(
+                capture_options, std::move(context), EvidenceCloud(relocalization_static_map_));
+            if (!match_failure_recorder_->Start())
+                LOG(WARNING) << "MATCH_FAILURE_CAPTURE unavailable; localization continues unchanged";
+        } else if (capture_options.enabled) {
+            LOG(WARNING) << "MATCH_FAILURE_CAPTURE disabled: explicit archive root or validation map unavailable";
+        }
+    } catch (const std::exception& error) {
+        LOG(ERROR) << "MATCH_FAILURE_CAPTURE initialization failed: " << error.what();
     }
 
     update_map_thread_ = std::thread([this]() { LidarLoc::UpdateMapThread(); });
@@ -1812,6 +1865,41 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
     // [loc-tracking-acceptance]
     last_match_stats_.success = loc_success;
+    // Snapshot the actual checked pose before the rejected-match fallback below.
+    // No serialization, filesystem work or additional nearest-neighbor queries
+    // are performed here; retention and map cropping belong to the writer.
+    if (match_failure_recorder_) {
+        match_failure_recorder_->ObserveTracking(loc_success);
+        if (!loc_success) {
+            using Recorder = diagnostics::MatchFailureRecorder;
+            Recorder::Frame frame;
+            frame.sensor_stamp_ns = static_cast<std::int64_t>(std::llround(current_timestamp_ * 1e9));
+            frame.guess = EvidencePose(guess_from_lo);
+            frame.ndt = EvidencePose(res_of_lo);
+            frame.check = EvidencePose(current_pose_esti);
+            frame.evaluated = last_match_stats_.map_consistency_evaluated;
+            frame.validation_stride = std::max<std::size_t>(1, (input->size() + 1999) / 2000);
+            frame.validation_points = last_match_stats_.map_consistency_points;
+            frame.overlap = last_match_stats_.map_overlap_ratio;
+            frame.inside_xy = last_match_stats_.map_inside_xy_ratio;
+            frame.inside_xyz = last_match_stats_.map_inside_xyz_ratio;
+            frame.gravity_cos = last_match_stats_.map_gravity_alignment_cos;
+            frame.min_overlap = options_.relocalization_min_overlap_ratio_;
+            frame.min_inside_xy = options_.relocalization_min_inside_xy_ratio_;
+            frame.min_gravity_cos = options_.relocalization_min_gravity_alignment_cos_;
+            frame.nearest_neighbor_distance_m = options_.relocalization_nearest_neighbor_distance_;
+            frame.bounds_margin_m = options_.relocalization_bounds_margin_;
+            frame.confidence = fitness_score;
+            frame.iterations = last_match_stats_.iterations;
+            frame.raw_odom_valid = lidar_loc_odom_valid;
+            frame.raw_odom_delta = delta_rel_abs_pose;
+            if (frame.evaluated) {
+                frame.reason = frame.inside_xy < frame.min_inside_xy ? Recorder::Reason::kBounds :
+                    frame.overlap < frame.min_overlap ? Recorder::Reason::kOverlap : Recorder::Reason::kGravity;
+            } else frame.reason = lidar_loc_odom_valid ? Recorder::Reason::kRegistration : Recorder::Reason::kOdometry;
+            match_failure_recorder_->Capture(EvidenceCloud(input), frame);
+        }
+    }
     if (loc_success) {
         match_fail_count_ = 0;
         last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间

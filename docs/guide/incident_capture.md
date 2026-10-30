@@ -49,6 +49,16 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
+## 匹配失败点云证据
+
+普通 tracking 匹配拒绝时，证据独立保存到 `runs/match_failures`，与 `incidents` 分开；启动和全局候选仍使用原有诊断，不能假定已有三视图。配置位于定位 YAML 的 `diagnostics.match_failure_capture`。启动器导出 `SANY_MATCH_FAILURE_DIR=$out_root/match_failures` 并写入 `run_metadata.match_failure_dir`；应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。
+
+完整包含 `summary.json`、实际配置 `config.yaml`、`scan.bin` 和 `map_local.bin`，记录 guess、NDT、check 三个位姿、阈值、地图和数据 SHA256 等信息。局部地图覆盖三个位姿下保存点的潜在近邻，因此可脱离原地图路径离线复核。`run_loc.sh --diagnose` 默认选择同次运行最新完整失败帧，生成三位姿并排图：灰色地图、绿色三维最近邻命中、红色未命中；以原始判据样本重算分数并与记录值对照。没有有效判据样本时仅显示探索性分数，不能声称复现原判据。红色只表示未命中，是否为动态物体还需前后帧证据。可用 `--no-match-image` 跳过绘图，`--match-output-dir` 指定输出目录；缺少绘图库时文字诊断仍可继续。
+
+采集复用现有数据，不增加 DDS 订阅或独立进程。低优先级 worker 避开隔离核 10/11，队列容量为 2；每帧最多保存 50000 个展示点及 2000 个实际判据点。持续失败按 30 秒限频，连续恢复 2 秒后下一次失败立即尝试采集。默认单事件上限 64 MiB、总预算 1 GiB、最小空闲 2 GiB，写速限制 10 MiB/s；`protect_days` 为至少 7 的整数。partial 和未知目录也计入预算，但不会自动删除；保护期内旧证据不删除。空间不足或采集丢弃可在 `collector_status.json` 和当前运行诊断中查看，累计计数不等于所选包损坏。
+
+该功能需要部署后的新采集才能提供证据，不能恢复已经轮转的 2026-10-30 16:29 原始点云。现场验证结果以实际验收为准。
+
 ## 现场三步
 
 1. 找到 `$out_root/incidents` 下对应时间的事件目录，先打开本地 `summary.html`。查看触发原因、首个观测异常阶段、原始和上报码、图表与丢失计数。

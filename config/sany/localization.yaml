@@ -267,6 +267,18 @@ backend:
 loop_closing:
   with_height: false
 diagnostics:
+  # Independent matching evidence; protected packages are never evicted to make
+  # room for new ones. A full archive reports skipped captures instead.
+  match_failure_capture:
+    enabled: true
+    cooldown_seconds: 30.0
+    recovery_seconds: 2.0
+    max_scan_points: 50000
+    event_mb: 64
+    disk_mb: 1024
+    min_free_mb: 2048
+    protect_days: 7
+    write_mb_per_second: 10.0
   incident_capture:
     enabled: true
     pre_seconds: 30.0

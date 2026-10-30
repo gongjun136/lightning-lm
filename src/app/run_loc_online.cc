@@ -22,6 +22,7 @@
 #include <cmath>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <filesystem>
 #include <stdexcept>
@@ -50,6 +51,7 @@ DEFINE_string(output_tum, "", "optional PGO global-correction TUM trajectory");
 DEFINE_string(output_high_frequency_tum, "", "optional live high-frequency TUM trajectory");
 DEFINE_string(output_published_tum, "", "optional live published rear-axle TUM trajectory");
 DEFINE_string(incident_dir, "", "bounded incident archive; defaults beside output_tum when enabled in YAML");
+DEFINE_string(match_failure_dir, "", "protected matching evidence archive; independent of rolling incident bags");
 
 namespace {
 
@@ -148,6 +150,19 @@ int main(int argc, char** argv) {
 
     // 阶段 3：初始化 LiDAR 系统。
     // [online-loc-create-system]
+    // Resolve the optional archive before constructing the matching worker. No
+    // image generation or additional sensor subscription runs in this process.
+    std::string match_failure_dir = FLAGS_match_failure_dir;
+    if (match_failure_dir.empty() && !std::getenv("SANY_MATCH_FAILURE_DIR") && !FLAGS_output_tum.empty()) {
+        match_failure_dir = (std::filesystem::absolute(FLAGS_output_tum).parent_path() / "match_failures").string();
+    }
+    if (!match_failure_dir.empty()) {
+        match_failure_dir = std::filesystem::absolute(match_failure_dir).string();
+        if (setenv("SANY_MATCH_FAILURE_DIR", match_failure_dir.c_str(), 1) != 0) {
+            LOG(ERROR) << "could not configure matching evidence directory";
+            return 2;
+        }
+    }
     LocSystem::Options opt;
     if (!FLAGS_incident_dir.empty()) opt.incident_directory = std::filesystem::absolute(FLAGS_incident_dir).string();
     else if (!FLAGS_output_tum.empty()) opt.incident_directory =

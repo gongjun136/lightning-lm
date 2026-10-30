@@ -23,6 +23,9 @@
 namespace lightning::ui {
 class PangolinWindow;
 }
+namespace lightning::diagnostics {
+class MatchFailureRecorder;
+}
 
 namespace lightning::loc {
 
@@ -409,6 +412,7 @@ class LidarLoc {
     std::string relocalization_backend_name_ = "btc";  ///< 全局检索后端名称，如 BTC 或 SOLiD。
     std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;  ///< 重定位候选的点面精配验证器。
     CloudPtr relocalization_static_map_;  ///< 重定位一致性验证使用的静态地图点云。
+    std::unique_ptr<diagnostics::MatchFailureRecorder> match_failure_recorder_;  ///< 有界保存被拒绝的原始匹配证据。
     Vec3d relocalization_map_min_ = Vec3d::Zero();  ///< 静态地图空间包围盒下界（m）。
     Vec3d relocalization_map_max_ = Vec3d::Zero();  ///< 静态地图空间包围盒上界（m）。
     std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;  ///< 按验证工作线程保存的静态地图最近邻索引。

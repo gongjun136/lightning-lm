@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "contract_id": "3ab5a925f7b4ddac0950bc22ec99c771282f806dacd4562201b49302d6753484",
+  "contract_id": "190d38777525f942e638d9bc811f0d86fee8246c0b15abfde694415b7980dcec",
   "reviewed_sources": {
-    "src/core/localization/lidar_loc/lidar_loc.cc": "ebb59562bebe6bcc11ef50596055c741f8b5c943386b8f352c03f147e37800d0",
+    "src/core/localization/lidar_loc/lidar_loc.cc": "ebce033a365ad925a6ff8fba14019405496bffa08d0f2de459acb9ac67bc7891",
     "src/core/localization/localization_dtc_monitor.cc": "79ea2b708a797514f32bb1ef3443fa3e657a0c0977abc4d222f05ebd8b2f7cbb",
     "src/core/localization/localization_dtc_monitor.h": "9ee735804cc1a8f85ef01ba9ce551309ed0d0abed888e4466be7aac2dcd74f84",
     "src/utils/radar_dtc_state.h": "a06b054102ab71ac85d5b05a99e2e6e040b007db1231a77375941a4260224ac4",
@@ -10,10 +10,12 @@
     "src/utils/localization_dtc_reporting.h": "d16ebee17f3f10eae1be210ce2dd37ca394fe39078240423e29ccc1380924a8c",
     "src/utils/incident_recorder.cc": "8e6fe166f92e5be0e94ac6eb33cfa9b887cbcfa5a65d6b427cc0a265891df0d3",
     "src/utils/incident_recorder.h": "725f53d993fa6814ac0573d48e7e083cdc0aeaaa6e2ff61c76250c6d9b091216",
+    "src/utils/match_failure_recorder.cc": "d226237632982e6a6a258f73bbf48c1b2ce646eb9fd37fdadc02cea65e6dbc40",
+    "src/utils/match_failure_recorder.h": "2b88eb59a5d839c11ea0988211db293df3527dd1871e90cb959e17e9a4bafe73",
     "src/core/system/loc_system.cc#PublishSafety": "cc8043304a45f7d054d04b17817e46aebf25b152bd6bf09a4408bd580e305050",
     "src/core/system/loc_system.cc#DtcLocalizationLost": "f8ad8e718acf4042e8428b6309540f7adbc5daea2a1ac18af0fce17a141e35bc",
     "src/core/system/loc_system.cc#DtcInitialization": "dc8d9fc2db835ffad2bcbe28e4e992d8baf8b794bcd1fe6cb0a9ffbe9c32e93e",
-    "config/sany/localization.yaml#diagnostics": "5589dc9712921ce0c25a380bb61b0260320a3bd91b9a1d7cab060d6868221e7f",
+    "config/sany/localization.yaml#diagnostics": "21a1e006e10e6a2efb1f68a0f2add12321623b95dd2a09e96cf1db9ed4d8263d",
     "workspace.repos": "1013e851200593c7c105793711ce241d0534691ac41d19593e2aaf334f4c19e9"
   }
 }

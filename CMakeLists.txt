@@ -39,7 +39,7 @@ add_definitions(-DROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/") # 设置项目根目�
 install(DIRECTORY config
         DESTINATION lib/${PROJECT_NAME}/
 )
-install(PROGRAMS scripts/diagnose_localization.sh scripts/diagnose_localization.py
+install(PROGRAMS scripts/diagnose_localization.sh scripts/diagnose_localization.py scripts/match_failure_birdseye.py
         DESTINATION lib/${PROJECT_NAME})
 install(FILES scripts/diagnose_contract.json DESTINATION lib/${PROJECT_NAME})
 

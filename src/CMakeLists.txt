@@ -52,6 +52,7 @@ add_library(${PROJECT_NAME}.libs SHARED
         utils/online_logging.cc
         utils/causal_trace.cc
         utils/incident_recorder.cc
+        utils/match_failure_recorder.cc
         utils/functional_safety_heartbeat.cc
         utils/pointcloud_utils.cc
         utils/thread_scheduling.cc
@@ -109,11 +110,17 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(match_failure_recorder_test test/match_failure_recorder_test.cc utils/match_failure_recorder.cc)
+    target_include_directories(match_failure_recorder_test PRIVATE ${PROJECT_BINARY_DIR}/generated)
+    target_link_libraries(match_failure_recorder_test ${PCL_LIBRARIES} yaml-cpp glog OpenSSL::Crypto)
+    add_test(NAME match_failure_recorder_test COMMAND $<TARGET_FILE:match_failure_recorder_test>)
     add_executable(incident_recorder_test test/incident_recorder_test.cc utils/incident_recorder.cc)
     ament_target_dependencies(incident_recorder_test rclcpp rosbag2_cpp sensor_msgs std_msgs)
     target_link_libraries(incident_recorder_test yaml-cpp glog)
     add_test(NAME incident_recorder_test COMMAND $<TARGET_FILE:incident_recorder_test>)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME match_failure_birdseye_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_match_failure_birdseye.py)
     add_test(NAME diagnose_localization_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_diagnose_localization.py)
     add_test(NAME diagnostic_contract_test

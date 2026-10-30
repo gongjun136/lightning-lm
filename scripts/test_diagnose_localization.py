@@ -1274,5 +1274,132 @@ class DiagnosisTest(unittest.TestCase):
         self.assertFalse((self.root/'must-not-exist').exists())
 
 
+class MatchFailureSelectionTest(unittest.TestCase):
+    def setUp(self):
+        from test_match_failure_birdseye import fixture
+        self.fixture = fixture
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.run = self.root / 'run'
+        self.run.mkdir()
+        self.frames = self.root / 'match_failures'
+        self.report = dict(selected=str(self.run), resolved_run=str(self.run),
+                           process=dict(run=str(self.run), pid=42, start_wall_ns=1000))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rendered(self):
+        return subprocess.CompletedProcess([], 0, json.dumps(dict(status='generated', image='test.png')))
+
+    def test_only_latest_complete_same_run_and_pid_lifetime_is_selected(self):
+        old, _ = self.fixture(self.frames, self.run, 900)
+        expected, _ = self.fixture(self.frames, self.run, 2000)
+        self.fixture(self.frames, self.root / 'other', 3000)
+        self.fixture(self.frames, self.run, 4000, pid=43)
+        partial, value = self.fixture(self.frames, self.run, 5000)
+        value['status'] = 'capturing'
+        (partial / 'summary.json').write_text(json.dumps(value))
+        with patch.object(d.subprocess, 'run', return_value=self.rendered()) as run:
+            result = d.match_failure_image(self.report)
+        self.assertEqual(result['selection'], 'latest_same_run_frame')
+        self.assertEqual(run.call_args.args[0][-1], str(expected))
+        self.assertIn('-s', run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs['timeout'], 30)
+        self.assertEqual(run.call_args.kwargs['env']['OPENBLAS_NUM_THREADS'], '1')
+        self.assertEqual(run.call_args.kwargs['env']['PYTHONNOUSERSITE'], '1')
+
+    def test_explicit_incident_does_not_borrow_later_frame(self):
+        event = self.root / 'incidents/event_1500_42'
+        event.mkdir(parents=True)
+        self.report.update(selected=str(event), process=None,
+                           capture_windows=[dict(path=str(event), start_ns=1000, end_ns=1800)])
+        expected, _ = self.fixture(self.frames, self.run, 1500)
+        self.fixture(self.frames, self.run, 2000)
+        with patch.object(d.subprocess, 'run', return_value=self.rendered()) as run:
+            result = d.match_failure_image(self.report)
+        self.assertEqual(result['selection'], 'latest_same_run_frame_in_event')
+        self.assertEqual(run.call_args.args[0][-1], str(expected))
+        self.report['capture_windows'] = []
+        with patch.object(d.subprocess, 'run', side_effect=AssertionError('no timeframe')):
+            self.assertEqual(d.match_failure_image(self.report)['status'], 'unavailable')
+
+    def test_copied_run_uses_recorded_full_identity_not_basename(self):
+        self.report['process'] = None
+        original = self.root / 'original/run'
+        (self.run / 'run_metadata.txt').write_text('run_dir=' + str(original) + '\n')
+        expected, _ = self.fixture(self.frames, original, 2000)
+        self.fixture(self.frames, self.root / 'other/run', 3000)
+        with patch.object(d.subprocess, 'run', return_value=self.rendered()) as run:
+            d.match_failure_image(self.report)
+        self.assertEqual(run.call_args.args[0][-1], str(expected))
+
+    def test_timeout_or_dependencies_do_not_abort_diagnosis(self):
+        self.fixture(self.frames, self.run, 2000)
+        with patch.object(d.subprocess, 'run', side_effect=subprocess.TimeoutExpired('figure', 30)):
+            self.assertEqual(d.match_failure_image(self.report)['status'], 'timeout')
+        response = subprocess.CompletedProcess([], 2, json.dumps(dict(status='dependency_missing', message='scipy')))
+        with patch.object(d.subprocess, 'run', return_value=response):
+            self.assertEqual(d.match_failure_image(self.report)['status'], 'dependency_missing')
+        with patch.object(d.subprocess, 'run', side_effect=AssertionError('disabled')):
+            self.assertEqual(d.match_failure_image(self.report, enabled=False)['status'], 'disabled')
+
+    def test_direct_failure_package_preserves_scope(self):
+        evidence, _ = self.fixture(self.frames, self.run, 2000)
+        self.assertEqual(d.choose_path(evidence), evidence.resolve())
+        self.report.update(selected=str(evidence), process=None)
+        with patch.object(d.subprocess, 'run', return_value=self.rendered()) as run:
+            result = d.match_failure_image(self.report)
+        self.assertEqual(result['selection'], 'selected_frame')
+        self.assertEqual(run.call_args.args[0][-1], str(evidence))
+
+    def test_protected_quota_status_explains_missing_image(self):
+        self.frames.mkdir()
+        value = dict(schema=1, kind='lightning_match_failure_collector', pid=42, run_dir=str(self.run),
+                     session_start_wall_ns=1100, running=True, received=2, admitted=2, saved=0,
+                     rejected_disk=2, rejected_map=0, writer_errors=0, protection_days=30, disk_mb=2048,
+                     last_error='protected evidence quota full')
+        (self.frames / 'collector_status.json').write_text(json.dumps(value))
+        result = d.match_failure_image(self.report)
+        self.assertEqual(result['status'], 'not_found')
+        self.assertEqual(result['collector']['status'], 'observed')
+        self.assertEqual(result['collector']['counters']['rejected_disk'], 2)
+        self.assertEqual(result['collector']['last_error'], 'protected evidence quota full')
+
+    def test_collector_rejects_cross_run_reused_pid_and_historical_scope(self):
+        self.frames.mkdir()
+        path = self.frames / 'collector_status.json'
+        value = dict(schema=1, kind='lightning_match_failure_collector', pid=42,
+                     run_dir=str(self.root / 'other'), session_start_wall_ns=1100, running=True, saved=99)
+        path.write_text(json.dumps(value))
+        self.assertEqual(d.match_failure_collector(self.report)['status'], 'unavailable')
+        value.update(run_dir=str(self.run), session_start_wall_ns=900)
+        path.write_text(json.dumps(value))
+        self.assertEqual(d.match_failure_collector(self.report)['status'], 'unavailable')
+        value['session_start_wall_ns'] = 1100
+        path.write_text(json.dumps(value))
+        self.report['evidence_scope'] = 'historical'
+        self.assertEqual(d.match_failure_collector(self.report)['status'], 'not_requested')
+
+    def test_disabled_collector_is_reported_as_configuration_not_runtime_fact(self):
+        (self.run / 'config.yaml').write_text('diagnostics:\n  match_failure_capture:\n    enabled: false\n')
+        result = d.match_failure_collector(self.report)
+        self.assertEqual(result['status'], 'configured_disabled')
+
+    def test_custom_capture_root_from_run_metadata_keeps_identity_checks(self):
+        custom = self.root / 'custom_capture'
+        expected, _ = self.fixture(custom, self.run, 2000)
+        self.fixture(custom, self.root / 'foreign', 3000)
+        (self.run / 'run_metadata.txt').write_text('match_failure_dir=' + str(custom) + '\n')
+        (custom / 'collector_status.json').write_text(json.dumps(dict(schema=1,
+            kind='lightning_match_failure_collector', pid=42, run_dir=str(self.run),
+            session_start_wall_ns=1100, running=True, saved=1)))
+        with patch.object(d.subprocess, 'run', return_value=self.rendered()) as run:
+            result = d.match_failure_image(self.report)
+        self.assertEqual(run.call_args.args[0][-1], str(expected))
+        self.assertEqual(result['collector']['status'], 'observed')
+        self.assertEqual(result['collector']['counters']['saved'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

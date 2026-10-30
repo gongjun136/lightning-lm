@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only field diagnosis; no ROS node, playback, or changes to localization."""
+"""Field diagnosis with optional cached figures; no ROS node or localization changes."""
 import argparse
 from collections import Counter, deque
 import csv
@@ -141,6 +141,7 @@ def find_processes(proc=PROC):
             start_ticks = int(read_text(entry / 'stat').rsplit(')', 1)[1].split()[19])
             found.append(dict(pid=int(entry.name), comm=read_text(entry / 'comm').strip(),
                               exe=exe, config=config, log=log, run=run, archive=archive,
+                              match_failure_root=resolved('--match_failure_dir'),
                               start_ticks=start_ticks,
                               start_wall_ns=int((boot + start_ticks / os.sysconf('SC_CLK_TCK')) * 1e9) if boot else 0))
         except (OSError, ValueError, IndexError):
@@ -1058,6 +1059,166 @@ def capture_windows(path, run, process, summary, rows, warnings):
     return windows
 
 
+def match_failure_collector(report):
+    """Only a live process can authorize reading its current collector status."""
+    process = report.get('process')
+    if not process or report.get('evidence_scope') in ('explicit', 'historical'):
+        return dict(status='not_requested', message='历史/指定包未拼接当前采集器状态。')
+    run = Path(process['run'])
+    roots = [run / 'match_failures', run / 'results/match_failures', run.parent / 'match_failures']
+    declared_root = key_values(run / 'run_metadata.txt').get('match_failure_dir')
+    if declared_root:
+        roots.insert(0, Path(declared_root))
+    if process.get('match_failure_root'):
+        roots.insert(0, Path(process['match_failure_root']))
+    for root in dict.fromkeys(roots):
+        path = root / 'collector_status.json'
+        if root.is_symlink() or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > MIB:
+                continue
+            value = json.loads(read_text(path))
+            if not isinstance(value, dict) or value.get('schema') != 1 or value.get('kind') != 'lightning_match_failure_collector':
+                continue
+            if value.get('pid') != process['pid'] or not value.get('run_dir') or Path(value['run_dir']).resolve() != run.resolve():
+                continue
+            if int(value.get('session_start_wall_ns', 0)) < process.get('start_wall_ns', 0):
+                continue
+            counters = {}
+            for key in ('received', 'admitted', 'saved', 'suppressed', 'dropped_busy', 'dropped_queue',
+                        'dropped_oversize', 'rejected_disk', 'rejected_map', 'writer_errors'):
+                count = number(value.get(key))
+                if count is not None and count >= 0:
+                    counters[key] = int(count)
+            age = max(0, (time.time_ns() - path.stat().st_mtime_ns) / 1e9)
+            return dict(status='observed', source=str(path), running=value.get('running') is True,
+                        status_age_sec=round(age, 3), fresh=age <= 10, counters=counters,
+                        last_error=str(value.get('last_error', ''))[:1024],
+                        protection_days=number(value.get('protection_days')), disk_mb=number(value.get('disk_mb')),
+                        limitation='采集器进程累计计数，不代表所选快照损坏；rejected_disk 含配额/剩余空间不足。')
+        except (OSError, ValueError, TypeError, OverflowError):
+            continue
+    # This is a declared setting, not a claim that a missing writer is healthy.
+    config = Path(process.get('config') or run / 'config.yaml')
+    try:
+        section = False
+        level = None
+        for line in read_text(config).splitlines():
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
+            if stripped == 'match_failure_capture:':
+                section, level = True, indent
+                continue
+            if section and stripped and not stripped.startswith('#') and indent <= level:
+                section = False
+            if section and re.fullmatch(r'enabled:\s*(false|False|FALSE|0)(\s*#.*)?', stripped):
+                return dict(status='configured_disabled', source=str(config), message='运行配置快照关闭了失败匹配采集；未找到同次采集器状态。')
+    except OSError:
+        pass
+    return dict(status='unavailable', message='未找到与当前运行/PID/启动时间匹配的采集器状态，无法确认是否启用或写入成功。')
+
+
+def match_failure_image(report, explicit=None, output_dir=None, enabled=True):
+    result = _match_failure_image(report, explicit, output_dir, enabled)
+    result['collector'] = match_failure_collector(report)
+    return result
+
+
+def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
+    """Select one complete, same-run frame; rendering is bounded and optional."""
+    if not enabled:
+        return dict(status='disabled', message='已跳过失败匹配俯视图。')
+    import match_failure_birdseye as bird
+    chosen = Path(report['selected']) if report.get('selected') else None
+    process = report.get('process')
+    run = Path(report.get('resolved_run') or process.get('run')) if (report.get('resolved_run') or process) else None
+    direct = Path(explicit).expanduser() if explicit else chosen
+    if direct and direct.name == 'summary.json':
+        direct = direct.parent
+    evidence = None
+    selection = 'explicit_frame' if explicit else 'selected_frame'
+    if direct and bird.is_evidence(direct):
+        evidence = direct
+    elif explicit:
+        return dict(status='unavailable', message='指定路径不是完整的失败匹配证据包: ' + str(direct))
+    elif run:
+        # A copied run can retain its original absolute identity in metadata.
+        # Never associate merely by directory basename or reused PID.
+        run_meta = key_values(run / 'run_metadata.txt')
+        identities = {str(run.resolve())}
+        if run_meta.get('run_dir'):
+            identities.add(str(Path(run_meta['run_dir']).resolve()))
+        window = None
+        if chosen and chosen != run and not process:
+            windows = [w for w in report.get('capture_windows', []) if Path(w['path']).resolve() == chosen.resolve()]
+            if not windows:
+                return dict(status='unavailable', message='指定事件缺少时间范围，未使用同次运行其他时刻的匹配图。')
+            window = (min(w['start_ns'] for w in windows), max(w['end_ns'] for w in windows))
+        roots = [run / 'match_failures', run / 'results/match_failures', run.parent / 'match_failures']
+        if run_meta.get('match_failure_dir'):
+            roots.insert(0, Path(run_meta['match_failure_dir']))
+        if chosen and chosen != run:
+            roots.insert(0, chosen / 'match_failures')
+        if process and process.get('match_failure_root'):
+            roots.insert(0, Path(process['match_failure_root']))
+        candidates, checked, invalid = [], 0, 0
+        for root in dict.fromkeys(roots):
+            if not root.is_dir() or root.is_symlink():
+                continue
+            # Names contain creation timestamps; cap discovery before reading
+            # JSON, and report truncation instead of silently claiming coverage.
+            directories = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()),
+                                 key=lambda p: p.name, reverse=True)
+            for item in directories[:bird.MAX_CANDIDATES - checked]:
+                checked += 1
+                try:
+                    summary = bird.read_summary(item)
+                    if summary.get('synthetic_fixture') is True:
+                        continue
+                    if not summary.get('run_dir') or str(Path(summary['run_dir']).resolve()) not in identities:
+                        continue
+                    wall = int(summary['wall_ns'])
+                    if process and (summary.get('pid') != process['pid'] or wall < process.get('start_wall_ns', 0)):
+                        continue
+                    if window and not window[0] <= wall <= window[1]:
+                        continue
+                    candidates.append((wall, item))
+                except (OSError, ValueError, TypeError, KeyError):
+                    invalid += 1
+            if checked >= bird.MAX_CANDIDATES:
+                break
+        if candidates:
+            _, evidence = max(candidates, key=lambda pair: pair[0])
+            selection = 'latest_same_run_frame_in_event' if window else 'latest_same_run_frame'
+        else:
+            return dict(status='not_found', checked=checked, unreadable_or_incomplete=invalid,
+                        discovery_limited=checked >= bird.MAX_CANDIDATES,
+                        message='未找到所选运行/事件范围内完整的失败匹配点云证据；日志和轨迹不能重建当时动态物体。')
+    if evidence is None:
+        return dict(status='not_found', message='没有可关联的失败匹配证据。')
+    # Avoid user-site NumPy shadowing the distro SciPy/matplotlib ABI on Orin.
+    command = [sys.executable, '-s', str(Path(__file__).with_name('match_failure_birdseye.py')), str(evidence)]
+    if output_dir:
+        command += ['--output-dir', str(output_dir)]
+    environment = dict(os.environ)
+    environment.update(PYTHONNOUSERSITE='1', PYTHONIOENCODING='utf-8', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1', NUMEXPR_NUM_THREADS='1')
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                   timeout=30, env=environment)
+        if len(completed.stdout) > MIB:
+            raise ValueError('绘图返回内容超过限制')
+        result = json.loads(completed.stdout)
+        if not isinstance(result, dict) or result.get('status') not in ('generated', 'cached', 'unavailable', 'dependency_missing'):
+            raise ValueError('绘图返回格式无效')
+        result['selection'] = selection
+        return result
+    except subprocess.TimeoutExpired:
+        return dict(status='timeout', evidence=str(evidence), message='俯视图计算超过 30 秒，已终止绘图；故障诊断结果保留。')
+    except (OSError, ValueError, TypeError) as exc:
+        return dict(status='unavailable', evidence=str(evidence), message='俯视图生成失败，诊断继续: ' + str(exc))
+
+
 def runtime_contract(logged_limits, warnings):
     built = logged_limits.get('_build', {})
     try:
@@ -1083,8 +1244,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     run = path
     if process:
         run = Path(process['run'])
-    elif not is_run_directory(path) and meta.get('run_dir'):
-        original = Path(meta['run_dir'])
+    elif not is_run_directory(path) and (meta.get('run_dir') or summary.get('kind') == 'lightning_match_failure' and summary.get('run_dir')):
+        original = Path(meta.get('run_dir') or summary['run_dir'])
         relocated = path.parent.parent / original.name
         run = relocated if (relocated / 'logs/run_loc_online.stderr.log').is_file() else original
     config = path / 'config.yaml' if path.is_dir() else path.parent / 'config.yaml'
@@ -1203,7 +1364,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
     dropped = [number(r.get('collector_dropped')) for r in rows]
     dropped = [v for v in dropped if v is not None]
-    return dict(schema=2, selected=str(path), selection=selection, process=process,
+    return dict(schema=2, selected=str(path), resolved_run=str(run), selection=selection, process=process,
+                has_match_evidence=summary.get('kind') == 'lightning_match_failure' and summary.get('status') == 'complete',
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
                 trigger_reasons=summary.get('reasons', []), thresholds=limits,
                 latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'published_runstate', '_source', '_scope')},
@@ -1240,8 +1402,51 @@ def render(report, color=False, all_events=False):
                   '  定位方向: ' + finding['advice']]
     if report.get('upstream_lidar'):
         lines += render_driver_diagnosis(report['upstream_lidar'])
+    match_image = report.get('match_failure_image', {})
+    if match_image:
+        lines.append(paint('失败匹配三姿态俯视图: ' + str(match_image.get('status')), '1;36'))
+        collector = match_image.get('collector', {})
+        if collector.get('status') == 'observed':
+            lines.append('  失败证据采集器: ' + ('运行标记为 true' if collector.get('running') else '运行标记为 false') +
+                         f'；状态文件距今 {collector.get("status_age_sec")} 秒；累计计数=' + json.dumps(collector.get('counters', {}), ensure_ascii=False))
+            lines.append('  ' + collector['limitation'])
+            lines.append('  采集状态证据: ' + collector['source'])
+            if not collector.get('fresh'):
+                lines.append(paint('  采集器状态文件已陈旧，不能视为当前实时状态。', '33'))
+            if collector.get('counters', {}).get('rejected_disk', 0):
+                lines.append(paint('  曾因配额/剩余空间不足拒绝保存；保护期内旧证据不会为新事件让位，缺图不能解释为没有匹配失败。', '33'))
+            if collector.get('last_error'):
+                lines.append(paint('  采集器最近错误: ' + collector['last_error'], '33'))
+        elif collector.get('status') in ('configured_disabled', 'unavailable'):
+            lines.append('  ' + collector.get('message', ''))
+        if match_image.get('image'):
+            scope = {'explicit_frame': '明确指定的失败帧', 'selected_frame': '所选失败帧',
+                     'latest_same_run_frame_in_event': '指定事件时间范围内最新失败帧',
+                     'latest_same_run_frame': '同次运行最新保留失败帧'}.get(match_image.get('selection'), '未知')
+            lines += ['  采集时间: ' + wall_time(match_image.get('wall_ns')) + '；扫描时间: ' + wall_time(match_image.get('sensor_stamp_ns')),
+                      '  失败原因: ' + str(match_image.get('reason')),
+                      '  范围: ' + scope + '；这是保留帧，不保证对应最新 Safety 故障。',
+                      '  原始证据: ' + str(match_image.get('evidence')),
+                      '  图片: ' + match_image['image'], '  可离线打开: ' + match_image['html'],
+                      '  初值 / NDT 结果 / 实际检查位姿；按三维最近邻计分后俯视投影，红点不等于动态物体。']
+            if match_image.get('synthetic_fixture'):
+                lines.append(paint('  合成测试数据，不是现场事故证据。', '33'))
+            for name, title in (('guess', '初值'), ('ndt', 'NDT 结果'), ('check', '实际检查位姿')):
+                value = match_image.get('comparison', {}).get(name, {})
+                lines.append(f'  {title}: 命中={value.get("hit_points")}/{value.get("validation_points")}，重合率={value.get("overlap")}')
+            if match_image.get('check_score_matches_recorded') is False:
+                lines.append(paint('  注意: 重算检查分数与记录不一致，不能视为精确复现；请核查证据/版本。', '33'))
+            elif match_image.get('original_sample_replay_available') is False:
+                lines.append(paint('  原判据未执行或无有效样本；图中比分仅针对保存的显示样本，不能视为原判据复现。', '33'))
+            else:
+                lines.append('  原检查重合率: ' + str(match_image.get('original_check_overlap')) + '；复算对照: ' + str(match_image.get('check_score_matches_recorded')))
+        elif match_image.get('message'):
+            lines.append('  ' + match_image['message'])
     if report.get('localization_error'):
         lines.append('定位证据不可用: ' + report['localization_error'])
+        return '\n'.join(lines)
+    if report.get('has_match_evidence'):
+        lines.append('本次指定失败匹配快照；图中三姿态不代表独立真值，动态物体需结合连续帧判断。')
         return '\n'.join(lines)
     if report.get('launch_findings') and not report.get('has_safety_evidence'):
         lines.append('本包没有可解析的算法 Safety 记录；以上为启动入口失败，不是运行中 2/4/-9 判据。')
@@ -1345,7 +1550,14 @@ def main(argv=None):
     parser.add_argument('--all', action='store_true', help='文本显示全部判据段；默认显示最近 12 段及全部分类汇总')
     parser.add_argument('--log-mb', type=int, default=32, help='最多检查日志尾部 MiB，默认 32')
     parser.add_argument('--bag-mb', type=int, default=128, help='裸 bag 最大扫描大小 MiB，默认 128')
+    parser.add_argument('--match-evidence', help='指定失败匹配证据包；默认仅绘制所选运行/事件范围内最新一帧')
+    parser.add_argument('--match-output-dir', help='俯视图输出目录；默认失败证据包内 birdseye')
+    parser.add_argument('--no-match-image', action='store_true', help='跳过失败匹配俯视图，保留文字诊断')
     args = parser.parse_args(argv)
+    if args.match_evidence:
+        if args.path:
+            parser.error('path 与 --match-evidence 二选一，避免混合两个证据范围')
+        args.path = args.match_evidence
     if not 1 <= args.log_mb <= 1024 or not 1 <= args.bag_mb <= 8192:
         parser.error('log-mb 必须为 1..1024，bag-mb 必须为 1..8192')
     try:
@@ -1360,12 +1572,13 @@ def main(argv=None):
         else:
             report = analyze(path, process, selection, warnings, args.log_mb, args.bag_mb)
             report['evidence_scope'] = 'explicit' if args.path else 'live_run' if process else 'historical'
+        report['match_failure_image'] = match_failure_image(report, args.match_evidence, args.match_output_dir, not args.no_match_image)
         report['upstream_lidar'] = (dict(status='not_requested', message='指定定位历史包，未拼接本机当前雷达结果；没有已关联的同次驱动证据。')
                                     if args.path else driver_diagnosis(args.root))
         report['scheduling'] = scheduling
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
         has_driver = report['upstream_lidar'].get('report', {}).get('has_evidence') is True
-        return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or has_driver else 2
+        return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or report.get('has_match_evidence') or has_driver else 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(error=str(exc)), ensure_ascii=False) if args.json else '无法完成诊断: ' + str(exc))
         return 2

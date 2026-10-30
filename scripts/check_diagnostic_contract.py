@@ -17,6 +17,8 @@ SOURCES = (
     'src/utils/localization_dtc_reporting.h',
     'src/utils/incident_recorder.cc',
     'src/utils/incident_recorder.h',
+    'src/utils/match_failure_recorder.cc',
+    'src/utils/match_failure_recorder.h',
     'src/core/system/loc_system.cc#PublishSafety',
     'src/core/system/loc_system.cc#DtcLocalizationLost',
     'src/core/system/loc_system.cc#DtcInitialization',
