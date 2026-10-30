@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 
@@ -111,6 +112,8 @@ def argument(args, name):
 def find_processes(proc=PROC):
     """Linux comm is loc_executor after pthread_setname_np; never match comm."""
     found = []
+    if not proc.is_dir():
+        return found
     try:
         boot = int(re.search(r'^btime (\d+)$', read_text(proc / 'stat'), re.M)[1])
     except (OSError, TypeError, ValueError):
@@ -143,7 +146,7 @@ def find_processes(proc=PROC):
     return sorted(found, key=lambda p: p['start_ticks'], reverse=True)
 
 
-def default_roots(env=None, home=None):
+def workspace_config(env=None, home=None):
     env = dict(os.environ if env is None else env)
     home = Path.home() if home is None else Path(home)
     # Parse only literal exports/variable references, never execute a config file.
@@ -160,12 +163,93 @@ def default_roots(env=None, home=None):
     except OSError:
         pass
     config.update(env)
+    return config
+
+
+def default_roots(env=None, home=None):
+    home = Path.home() if home is None else Path(home)
+    config = workspace_config(env, home)
     roots = [config.get('LIGHTNING_LM_OUT_ROOT')]
     for key in ('SANY_WS', 'LIGHTNING_LM_WS'):
         if config.get(key):
             roots.append(str(Path(config[key]) / 'runs'))
     roots += [str(home / 'Sany/runs'), '/home/nvidia/project/gj_ws/runs']
     return list(dict.fromkeys(Path(p).expanduser().resolve() for p in roots if p))
+
+
+def find_driver_diagnostic(env=None, home=None, script=None):
+    """Check known install/source locations only; no ROS discovery or recursive scan."""
+    config = workspace_config(env, home)
+    script = Path(__file__ if script is None else script).resolve()
+    prefixes = [Path(p) for p in config.get('AMENT_PREFIX_PATH', '').split(os.pathsep) if p]
+    if config.get('LIGHTNING_LM_INSTALL_SETUP'):
+        setup = Path(config['LIGHTNING_LM_INSTALL_SETUP']).expanduser()
+        prefixes += [setup.parent, setup.parent.parent]
+    for key in ('SANY_WS', 'LIGHTNING_LM_WS'):
+        if config.get(key):
+            workspace = Path(config[key]).expanduser()
+            prefixes += [workspace / 'lightning_lm_ws/install', workspace / 'install']
+    prefixes += [script.parents[2], script.parents[2].parent, script.parents[1] / 'install']
+    relative = Path('lib/livox_ros_driver2_core/diagnose_lidar.py')
+    candidates = [p / suffix for p in prefixes for suffix in (relative, Path('livox_ros_driver2_core') / relative)]
+    candidates.append(script.parents[2] / 'sdk/livox_sdk/src/livox_ros_driver2/scripts/diagnose_lidar.py')
+    return next((p.resolve() for p in candidates if p.is_file()), None)
+
+
+def driver_diagnosis(root=None):
+    """Delegate driver rules; exit 0/has_evidence means evidence, never health."""
+    script = find_driver_diagnostic()
+    if script is None:
+        return dict(status='unavailable', message='未找到独立雷达诊断脚本；上游状态未检查。')
+    result = dict(script=str(script))
+    command = [sys.executable, '-B', str(script), '--json', '--no-refresh']
+    if root:
+        command += ['--root', str(root)]
+    try:
+        def reject_nonfinite(value):
+            raise ValueError('雷达报告包含非有限数值: ' + value)
+        completed = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
+                                   errors='replace', timeout=10, check=False)
+        data = json.loads(completed.stdout, parse_constant=reject_nonfinite)
+        if not isinstance(data, dict) or data.get('schema') != 1 or data.get('kind') != 'livox_driver_diagnosis':
+            return dict(result, status='unsupported', message='雷达诊断接口版本不兼容；请更新独立雷达诊断脚本。')
+        if data.get('error'):
+            return dict(result, status='unavailable', message='雷达诊断未取得证据: ' + str(data['error']))
+        if (completed.returncode not in (0, 2) or not isinstance(data.get('active'), bool)
+                or not isinstance(data.get('has_evidence'), bool)
+                or not isinstance(data.get('findings'), list) or not isinstance(data.get('warnings'), list)
+                or not all(isinstance(f, dict) for f in data['findings'])
+                or not isinstance(data.get('roles'), list)
+                or not all(isinstance(r, dict) and isinstance(r.get('device'), dict) for r in data['roles'])
+                or (completed.returncode == 2 and data['has_evidence'])):
+            return dict(result, status='failed', message='雷达诊断返回了不完整或不一致的结果；上游状态未知。')
+        return dict(result, status='available' if data['has_evidence'] else 'no_evidence', report=data,
+                    message='独立雷达诊断仅读取本机已有证据（--no-refresh），未刷新设备状态；与定位包未建立同次采集关联。')
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return dict(result, status='failed', message='雷达诊断调用失败或接口不可读，上游状态未知: ' + str(exc))
+
+
+def render_driver_diagnosis(upstream):
+    lines = ['上游雷达独立诊断: ' + upstream['message']]
+    data = upstream.get('report')
+    if not data:
+        return lines
+    scope = '当前驱动运行实例（设备证据未刷新）' if data['active'] else '历史驱动包（当前未发现雷达 worker）'
+    lines += ['  范围: ' + scope, '  雷达数据包: ' + str(data.get('selected'))]
+    for role in data.get('roles', []):
+        device = role.get('device', {})
+        lines.append(f'  {role.get("role")}: 设备证据={device.get("evidence_scope", "未知")}，'
+                     f'采集={device.get("collected_at")}，距采集={device.get("age_sec")} 秒')
+    findings = data['findings']
+    for finding in findings[:10]:
+        lines.append(f'  [{finding.get("severity", "未知")}] {finding.get("role") or "生命周期"}: {finding.get("message", "未知判据")}')
+        lines.append('    证据: ' + json.dumps(finding.get('evidence', []), ensure_ascii=False))
+    if len(findings) > 10:
+        lines.append(f'  共 {len(findings)} 条雷达判据，仅展示前 10 条；--json 保留完整独立报告。')
+    elif not findings:
+        lines.append('  已读取证据中没有列出雷达异常；不能据此确认当前设备或数据流正常。')
+    lines += ['  雷达提示: ' + str(w) for w in data['warnings']]
+    return lines
 
 
 def summary_at(path):
@@ -997,11 +1081,20 @@ def render(report, color=False, all_events=False):
         p = report['process']
         lines.append(f'定位: PID {p["pid"]}, 线程名 {p["comm"]}, exe={p["exe"]}')
     lines.append(f'检查器调度: {report.get("scheduling", {})}')
+    if report.get('evidence_scope') == 'historical':
+        lines.append('定位证据范围: 历史包；当前未发现定位进程，包内状态码不代表当前状态。')
+    elif report.get('evidence_scope') == 'explicit':
+        lines.append('定位证据范围: 指定包（离线）。')
+    if report.get('upstream_lidar'):
+        lines += render_driver_diagnosis(report['upstream_lidar'])
+    if report.get('localization_error'):
+        lines.append('定位证据不可用: ' + report['localization_error'])
+        return '\n'.join(lines)
     if report['event_status']:
         lines.append(f'事件: {report["trigger_time"]}, {report["event_status"]}, 触发={report["trigger_reasons"]}')
     latest = report['latest']
     age = report.get('latest_age_sec')
-    fresh = age is None or age <= 5
+    fresh = report.get('evidence_scope') not in ('historical', 'explicit') and (age is None or age <= 5)
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
@@ -1100,11 +1193,22 @@ def main(argv=None):
         parser.error('log-mb 必须为 1..1024，bag-mb 必须为 1..8192')
     try:
         scheduling = low_impact()
-        path, process, selection, warnings = select(args)
-        report = analyze(path, process, selection, warnings, args.log_mb, args.bag_mb)
+        try:
+            path, process, selection, warnings = select(args)
+        except (OSError, ValueError) as exc:
+            if args.path or args.pid:
+                raise
+            report = dict(schema=2, selected=None, process=None, selection='未找到可读取的定位包',
+                          evidence_scope='unavailable', localization_error=str(exc), has_safety_evidence=False)
+        else:
+            report = analyze(path, process, selection, warnings, args.log_mb, args.bag_mb)
+            report['evidence_scope'] = 'explicit' if args.path else 'live_run' if process else 'historical'
+        report['upstream_lidar'] = (dict(status='not_requested', message='指定定位历史包，未拼接本机当前雷达结果；没有已关联的同次驱动证据。')
+                                    if args.path else driver_diagnosis(args.root))
         report['scheduling'] = scheduling
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
-        return 0 if report['has_safety_evidence'] else 2
+        has_driver = report['upstream_lidar'].get('report', {}).get('has_evidence') is True
+        return 0 if report['has_safety_evidence'] or has_driver else 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(error=str(exc)), ensure_ascii=False) if args.json else '无法完成诊断: ' + str(exc))
         return 2

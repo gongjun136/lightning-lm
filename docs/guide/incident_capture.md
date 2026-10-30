@@ -33,6 +33,8 @@ bash ~/Sany/run_loc.sh --diagnose --json > diagnosis.json
 bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 ```
 
+自动检查当前定位时，会调用雷达诊断的 `--json --no-refresh` 汇总当前上游证据；显式指定历史定位包时不拼入当前雷达状态。雷达独立检查可使用 `bash ~/Sany/run_lidar.sh --diagnose`，其退出码 0 只表示有证据，并不表示健康。
+
 不带路径时，脚本通过 `/proc/<pid>/exe` 识别 `run_loc_online`，不依赖可能显示为 `loc_executor` 的线程名。多个实例时选择启动最晚的实例，并提示可用 `--pid` 指定；通过 `run_metadata` 和启动时间关联本次运行，避免 PID 复用或误选其他运行的事件。本次运行尚无事件时分析本次运行日志。无定位进程时，在 `LIGHTNING_LM_OUT_ROOT`、`SANY_WS/runs` 等默认路径寻找最新包；前者可来自环境或 `~/.config/sany/workspace.bash` 中的导出值。`--root` 仅覆盖无进程时的搜索根目录。
 
 脚本默认用标准库读取摘要、时间线和运行日志尾部 32 MiB，另读取日志头部 1 MiB 以获取配置；`--log-mb` 可调整尾部范围，报告会标明覆盖范围。新版本时间线包含细分 Safety 判据；旧包需要同次运行日志补充判据证据；日志无法恢复未记录的物理根因。指定事件只关联其时间窗内的日志；自动检查正在运行的实例时，还会显示当前运行日志尾部的历史故障并标明来源时间。

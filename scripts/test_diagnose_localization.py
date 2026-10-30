@@ -147,6 +147,155 @@ class DiagnosisTest(unittest.TestCase):
         (config / 'workspace.bash').write_text('export SANY_WS="$HOME/vehicle"\nexport SANY_WS="${SANY_WS%/}"\nexport LIGHTNING_LM_OUT_ROOT="$SANY_WS/runs"\ntouch /tmp/should_not_execute\n')
         self.assertEqual(d.default_roots({}, self.root)[0], self.root / 'vehicle/runs')
 
+    def driver_report(self, active=True, has_evidence=True):
+        return dict(schema=1, kind='livox_driver_diagnosis', selected='/runs/lidar_test',
+                    active=active, has_evidence=has_evidence,
+                    roles=[dict(role='front', device=dict(evidence_scope='stored_snapshot',
+                        collected_at='2026-10-30T10:00:00+08:00', age_sec=120))],
+                    findings=[dict(code='device_not_normal', severity='error', role='front',
+                        message='历史快照 work_state=4 (Error)',
+                        evidence=[dict(path='/runs/lidar_test/device.json', field='parameters.work_state',
+                                       time='2026-10-30T10:00:00+08:00')])],
+                    warnings=['当前未刷新；启动流量证据不能证明当前持续出数。'])
+
+    def test_driver_discovery_prefers_configured_install_over_sibling_source(self):
+        script = self.root / 'source/lightning-lm/scripts/diagnose_localization.py'
+        sibling = self.root / 'source/sdk/livox_sdk/src/livox_ros_driver2/scripts/diagnose_lidar.py'
+        installed = self.root / 'vehicle/lightning_lm_ws/install/livox_ros_driver2_core/lib/livox_ros_driver2_core/diagnose_lidar.py'
+        for path in (sibling, installed):
+            path.parent.mkdir(parents=True)
+            path.write_text('')
+        config = self.root / '.config/sany'
+        config.mkdir(parents=True)
+        (config / 'workspace.bash').write_text('export SANY_WS="$HOME/vehicle"\n')
+        self.assertEqual(d.find_driver_diagnostic({}, self.root, script), installed)
+        self.assertEqual(d.find_driver_diagnostic({'SANY_WS': ''}, self.root, script), sibling)
+        self.assertEqual(d.find_driver_diagnostic({'SANY_WS': '', 'LIGHTNING_LM_INSTALL_SETUP':
+                         str(installed.parents[3] / 'setup.bash')}, self.root, script), installed)
+
+    def test_driver_subprocess_uses_cache_only_and_keeps_report(self):
+        data = self.driver_report()
+        completed = subprocess.CompletedProcess([], 0, json.dumps(data), '')
+        with patch.object(d, 'find_driver_diagnostic', return_value=self.root / 'diagnose_lidar.py'), \
+                patch.object(d.subprocess, 'run', return_value=completed) as run:
+            upstream = d.driver_diagnosis(str(self.root))
+        self.assertEqual(upstream['status'], 'available')
+        self.assertEqual(upstream['report'], data)
+        self.assertEqual(run.call_args.args[0], [d.sys.executable, '-B', str(self.root / 'diagnose_lidar.py'),
+                                               '--json', '--no-refresh', '--root', str(self.root)])
+        self.assertEqual(run.call_args.kwargs['timeout'], 10)
+        text = '\n'.join(d.render_driver_diagnosis(upstream))
+        self.assertIn('当前驱动运行实例（设备证据未刷新）', text)
+        self.assertIn('stored_snapshot', text)
+        self.assertIn('距采集=120 秒', text)
+        self.assertIn('当前未刷新', text)
+        self.assertIn('parameters.work_state', text)
+
+    def test_driver_missing_old_failed_or_malformed_does_not_break_localization(self):
+        self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
+        cases = [subprocess.CompletedProcess([], 2, '', 'unrecognized arguments: --no-refresh'),
+                 subprocess.CompletedProcess([], 0, json.dumps(dict(schema=0, kind='livox_driver_diagnosis')), ''),
+                 subprocess.CompletedProcess([], 2, json.dumps(dict(schema=1, kind='livox_driver_diagnosis',
+                                                    has_evidence=False, error='没有雷达包')), ''),
+                 subprocess.CompletedProcess([], 0, json.dumps(self.driver_report() | {'roles': [None]}), ''),
+                 subprocess.CompletedProcess([], 0, json.dumps(self.driver_report() | {'value': float('nan')}), ''),
+                 subprocess.TimeoutExpired('driver', 10), OSError('unavailable')]
+        for response in cases:
+            with self.subTest(response=response), \
+                    patch.object(d, 'low_impact', return_value={}), \
+                    patch.object(d, 'select', return_value=(self.run, None, '历史包', [])), \
+                    patch.object(d, 'find_driver_diagnostic', return_value=self.root / 'driver.py'), \
+                    patch.object(d.subprocess, 'run', **({'side_effect': response} if isinstance(response, Exception)
+                                                       else {'return_value': response})), \
+                    patch('sys.stdout', new_callable=io.StringIO) as output:
+                self.assertEqual(d.main(['--json']), 0)
+                report = json.loads(output.getvalue())
+                self.assertTrue(report['has_safety_evidence'])
+                self.assertIn(report['upstream_lidar']['status'], ('unsupported', 'unavailable', 'failed'))
+        with patch.object(d, 'find_driver_diagnostic', return_value=None), patch.object(d.subprocess, 'run') as run:
+            self.assertEqual(d.driver_diagnosis()['status'], 'unavailable')
+            run.assert_not_called()
+
+    def test_explicit_localization_path_never_queries_current_driver(self):
+        self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
+        with patch.object(d, 'low_impact', return_value={}), patch.object(d, 'driver_diagnosis') as driver, \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main([str(self.run), '--json']), 0)
+            report = json.loads(output.getvalue())
+        driver.assert_not_called()
+        self.assertEqual(report['evidence_scope'], 'explicit')
+        self.assertEqual(report['upstream_lidar']['status'], 'not_requested')
+
+    def test_auto_history_zero_is_not_current_health_with_active_driver_error(self):
+        self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
+        upstream = dict(status='available', message='缓存证据', report=self.driver_report())
+        with patch.object(d, 'low_impact', return_value={}), \
+                patch.object(d, 'select', return_value=(self.run, None, '历史包', [])), \
+                patch.object(d, 'driver_diagnosis', return_value=upstream), \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main(['--color', 'always']), 0)
+            text = output.getvalue()
+        self.assertNotIn('\x1b[1;32m', text)
+        self.assertIn('当前未发现定位进程，包内状态码不代表当前状态', text)
+        self.assertIn('当前驱动运行实例', text)
+        self.assertIn('历史快照 work_state=4 (Error)', text)
+
+    def test_auto_no_localization_package_can_report_driver_only(self):
+        upstream = dict(status='available', message='缓存证据', report=self.driver_report())
+        with patch.object(d, 'low_impact', return_value={}), \
+                patch.object(d, 'select', side_effect=ValueError('无定位包')), \
+                patch.object(d, 'driver_diagnosis', return_value=upstream), \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main(['--json']), 0)
+            report = json.loads(output.getvalue())
+        self.assertFalse(report['has_safety_evidence'])
+        self.assertEqual(report['evidence_scope'], 'unavailable')
+        self.assertIn('定位证据不可用: 无定位包', d.render(report))
+        self.assertIn('历史快照 work_state=4', d.render(report))
+
+    def test_active_localization_and_historical_driver_keep_separate_scopes(self):
+        self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=4 published_runstate=4 yaw_condition=2\n')
+        upstream = dict(status='available', message='缓存证据', report=self.driver_report(active=False))
+        with patch.object(d, 'low_impact', return_value={}), \
+                patch.object(d, 'select', return_value=(self.run, self.p, '运行中的定位实例', [])), \
+                patch.object(d, 'driver_diagnosis', return_value=upstream), \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main(['--json']), 0)
+            report = json.loads(output.getvalue())
+        self.assertEqual(report['evidence_scope'], 'live_run')
+        self.assertEqual(report['process']['pid'], 42)
+        self.assertEqual(report['latest']['raw_runstate'], 4)
+        self.assertIn('历史驱动包（当前未发现雷达 worker）', d.render(report))
+
+    def test_auto_without_evidence_remains_exit_two(self):
+        upstream = dict(status='no_evidence', message='无证据',
+                        report=self.driver_report(active=False, has_evidence=False) | {'findings': []})
+        with patch.object(d, 'low_impact', return_value={}), \
+                patch.object(d, 'select', side_effect=ValueError('无定位包')), \
+                patch.object(d, 'driver_diagnosis', return_value=upstream), \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main([]), 2)
+        self.assertIn('历史驱动包（当前未发现雷达 worker）', output.getvalue())
+        self.assertIn('不能据此确认当前设备或数据流正常', output.getvalue())
+
+    def test_explicit_selection_or_analysis_errors_are_not_hidden_by_driver(self):
+        for argv in ([str(self.root / 'missing'), '--json'], ['--pid', '99', '--json']):
+            with self.subTest(argv=argv), patch.object(d, 'low_impact', return_value={}), \
+                    patch.object(d, 'select', side_effect=ValueError('指定路径或 PID 无效')), \
+                    patch.object(d, 'driver_diagnosis') as driver, \
+                    patch('sys.stdout', new_callable=io.StringIO) as output:
+                self.assertEqual(d.main(argv), 2)
+                self.assertIn('error', json.loads(output.getvalue()))
+                driver.assert_not_called()
+        with patch.object(d, 'low_impact', return_value={}), \
+                patch.object(d, 'select', return_value=(self.run, self.p, '当前定位', [])), \
+                patch.object(d, 'analyze', side_effect=ValueError('损坏的定位包')), \
+                patch.object(d, 'driver_diagnosis') as driver, \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(d.main(['--json']), 2)
+            self.assertEqual(json.loads(output.getvalue())['error'], '损坏的定位包')
+            driver.assert_not_called()
+
     def causes(self, **kwargs):
         row = dict(raw_runstate=4, published_runstate=4, covariance_valid=1,
                    pose_unobservable=0, localization_uncertainty=1,
