@@ -100,6 +100,17 @@ digraph map_products {
 角色赋值日志可与 `/proc/<pid>/task/*/status` 对照，但不能单独证明调度时限。
 没有启用角色环境变量时不会改变调用线程的亲和性。
 
+## 计算预算与诊断工具
+
+| API 入口 | 职责与阅读边界 |
+|---|---|
+| @ref lightning::compute::ComputeBudget "ComputeBudget"、@ref lightning::compute::LoadComputeBudget "LoadComputeBudget()" | 以调用方默认值为起点，读取 YAML 与环境覆盖，校验后整体提交；加载函数不创建线程或实际应用亲和性 |
+| @ref lightning::profiling::Stopwatch "Stopwatch"、@ref lightning::profiling::MultiStageTimingWindow "MultiStageTimingWindow" | 区分单调经过时间、调用线程 CPU 与含并发线程的进程 CPU；窗口由 Add() 驱动，输入停止后不自动输出未到期窗口 |
+| @ref lightning::profiling::CausalEvent "CausalEvent"、@ref lightning::profiling::CausalTraceEnabled "CausalTraceEnabled()"、@ref lightning::profiling::RecordCausalEvent "RecordCausalEvent()" | 首次调用按输出路径初始化共享追踪器；事件经有界队列异步写入，允许因容量或锁竞争丢弃诊断记录 |
+
+接口页说明单位、无效值、配置覆盖和生命周期约束；预算使用场景见 @ref sensor_pipeline "传感器与算力预算"，
+计时日志解释见 @ref resource_diagnostics "资源与端到端延迟"，事件文件与完整性检查见 @ref causal_diagnostics "因果链与时间关联"。
+
 # 阅读时的跨模块约束
 
 - 坐标系名称必须和变换方向一起读；不能仅从变量含 `map`/`odom` 猜乘法方向。

@@ -31,13 +31,13 @@ export LIGHTNING_LM_RESOURCE_INTERVAL_SEC=1
 | `sensor_process` | 每个LiDAR消息及慢IMU消息的Header、frame_id、入队等待、消费回调墙钟/调用线程CPU。IMU详细记录条件为排队≥5ms或处理≥20ms，不能用这些详细记录计算全量IMU分位数；原全量窗口摘要仍保留。 |
 | `lock_wait` | IMU/LiDAR入口的生命周期锁与处理锁等待≥0.2ms的记录；未涵盖所有第三方库或OpenMP内部锁。 |
 
-追踪每行包含wall_ns、steady_ns、TID、唯一sequence。不同事件用stamp/input_stamp/prior_stamp区分输出状态、所选输入和更新前状态历元。未测字段为NaN、未适用布尔为−1，不是零。两个高频重建状态可能处于不同历元，先比较历元才能解释速度差。重放滤波器分支中的CAN接受次数不等于独立CAN消息数。
+追踪每行包含wall_ns、steady_ns、TID、唯一sequence。不同事件用stamp/input_stamp/prior_stamp区分输出状态、所选输入和更新前状态历元。浮点字段默认以NaN表示未测量，未适用布尔为−1，不是零；`sensor_process.queue_wait_ms` 未取得入队采样时为−1，入队采样依赖 `LIGHTNING_LM_COMPUTE_PROFILE` 开关。两个高频重建状态可能处于不同历元，先比较历元才能解释速度差。重放滤波器分支中的CAN接受次数不等于独立CAN消息数。字段契约见 @ref lightning::profiling::CausalEvent "CausalEvent"。
 
 CAN速度更新只改变速度状态；reason区分stale、invalid_measurement、nonfinite_prediction、innovation_gate、invalid_variance、nis_gate、velocity_step_gate、accepted。当前0.35m/s步长门槛用于拒绝异常更新，不是平滑器，也不是下游发布相邻速度步长的绝对上限。
 
 ## 开销与完整性
 
-- C++追踪用8192条固定容量的缓冲、try-lock入队，独立线程约100ms一批写出并flush；估计线程不等待文件I/O或缓冲空间。满缓冲/争用会丢诊断记录，不丢传感器消息。字段数值格式化在写线程执行。
+- C++追踪使用待接收容量为8192条的双缓冲队列、try-lock入队，后台处理中的批次另占一组缓冲。独立线程每轮等待20ms后取批次写出并flush，实际间隔还包含回调执行和线程调度时间；入队不主动唤醒，停止时提前唤醒。估计线程不等待文件I/O或缓冲空间。满缓冲/争用会丢诊断记录，不丢传感器消息。字段数值格式化在写线程执行，队列机制见 @ref lightning::BoundedAsyncQueue "BoundedAsyncQueue"。
 - 正常结束末尾输出 `# received=... written=... dropped=... io_errors=...`，运行元数据会摘录它。分析必须核对footer、行数、丢弃和I/O错误。SIGKILL、断电或磁盘错误可能缺末尾，不能将缺失事件当成未发生。
 - 进程采样只读 `/proc/*/stat`、定位线程wchan及已有资源字段；不读取全机命令行、其他进程环境、内核栈。新/退出进程没有配对CPU差分会记录未配对/消失数；短命进程可能遗漏。没有权限的记录不等于零CPU。
 - 采样器自身耗时仍保留。Top20是截断榜单，不代表所有进程CPU之和。进程名可能被截断或重复，结合PID及start_ticks判断。

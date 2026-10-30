@@ -267,7 +267,7 @@ publication gate 综合“是否曾有 GOOD 结果”、连续失配、LiDAR 匹
 
 @ref lightning::sys::AsyncMessageProcess "AsyncMessageProcess" 每次只从有界 deque 取一条消息到 worker 外执行。入队超过 `max_size_` 时从队头删除，因此丢弃的是最旧的尚未执行消息；`Quit()` 设置退出标志，但 `ProcLoop()` 仅在“退出且队列为空”时结束，故会 drain 已接收队列。正在执行的消息计入 pending，丢弃数和完成数可进入运行诊断。
 
-统一 sensor worker 是正确性的组成部分：源码明确要求 LIO 按回调顺序观察 IMU 与 LiDAR；若把二者放到两个 worker，后到 IMU 可能越过点云，在线结果会偏离离线顺序。`processing_mutex_` 再串行保护实际 LIO 更新；`lifecycle_mutex_` 防止 `Finish()` 在算法仍被访问时释放成员。
+统一 sensor worker 是正确性的组成部分：源码明确要求 LIO 按回调顺序观察 IMU 与 LiDAR；若把二者放到两个 worker，后到 IMU 可能越过点云，在线结果会偏离离线顺序。`processing_mutex_` 再串行保护实际 LIO 更新；`lifecycle_mutex_` 协调模块创建/替换与正在进行的处理。`Finish()` 先不持生命周期锁排空并回收队列，再持独占锁停止地图定位与 UI，并不在此清空或释放所有模块成员。
 
 **推断：** `rclcpp::spin(node_)` 当前通常使用单线程 executor，但源码没有把“所有 ROS 回调永久串行”声明为公共契约；本文只依赖 `Localization` 内部队列与锁提供的顺序保证。
 

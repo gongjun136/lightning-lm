@@ -4,6 +4,8 @@
 
 @ref lightning::loc::Localization "Localization" 是定位数据面：它初始化 LIO、@ref lightning::loc::LidarLoc "LidarLoc" 和定位 PGO，接收 IMU/LiDAR/轮速并输出 @ref lightning::loc::LocalizationResult "LocalizationResult"。@ref lightning::LocSystem "LocSystem" 是 ROS 2 编排层，负责订阅、发布、TF、轨迹记录和功能安全心跳；两者不要混为一个对象。
 
+本类的 `Options::online_mode_` 控制队列异步调用与当前线程同步调用。当前 @ref run_loc_offline.cc "离线定位入口" 自行组装 LIO、`LidarLoc` 与 PGO，复用底层算法模块，并未创建 `Localization` 对象。
+
 如果目标是从入口系统阅读在线定位，请先看 @ref online_localization_flow "在线定位端到端流程"。本页先交代类边界，再用四个问题核对地图匹配和重定位的实际分支。每段片段均从真实源码生成；读完例子和边界即可返回主线，需要细查时再进入完整 API。
 
 <b>代码依据：</b> `src/core/localization/localization.h`、`src/core/system/loc_system.h`（公开接口、成员所有权）
@@ -39,7 +41,7 @@ digraph localization_flow {
 }
 @enddot
 
-- 在线模式把 IMU 和 LiDAR 包装成统一 `SensorInput`，交给 `sensor_proc_`；处理函数根据变体类型调用 `ProcessIMUData()` 或点云路径。
+- 在线模式把 IMU 和 LiDAR 包装成统一 `SensorInput`，交给 `sensor_proc_`；处理函数根据 `is_imu` 标志调用 `ProcessIMUData()` 或点云路径。
 - 点云路径在 `processing_mutex_` 内把数据交给 LIO，并循环调用 @ref lightning::LaserMapping::RunDetailed() "RunDetailed()"，直到无更多数据。
 - 每个 LIO 输出先把 LO 状态送入 `LidarLoc::ProcessLO()` 与定位 PGO；通过关键帧筛选后，定位用投影点云、发布点云和同帧状态组成 `LidarLocInput`，在线模式提交定位处理队列，离线模式直接调用定位处理函数。
 - `LidarLoc` 以地图匹配/重定位结果形成定位状态；结果再送入 PGO、点云回调和高频输出路径。
@@ -148,7 +150,7 @@ digraph localization_flow {
 
 | 对象/资源 | 拥有者 | 并发约束 |
 |---|---|---|
-| LIO、LidarLoc、PGO、UI | `Localization` 的 `shared_ptr` | 初始化/销毁与输入之间由 `lifecycle_mutex_` 协调 |
+| LIO、LidarLoc、PGO、UI | `Localization` 的 `shared_ptr` | 模块创建/替换及停止与输入/算法处理之间由 `lifecycle_mutex_` 协调 |
 | sensor 队列 | `Localization` | 在线模式启动；串行保持跨传感器到达次序 |
 | 定位点云队列 | `Localization` | 将 LIO 与地图匹配解耦；同帧状态和点云一起传递 |
 | 高频输出队列 | `Localization` | 仅在线模式启动 |
@@ -161,7 +163,8 @@ digraph localization_flow {
 
 ## 关键约束
 
-- 生命周期状态读写必须取得 `lifecycle_mutex_`；输入路径使用共享锁，重新初始化/停止路径使用独占锁。
+- @ref lightning::loc::Localization::lifecycle_mutex_ "生命周期锁" 协调模块的创建、替换和停止：输入及算法处理路径持共享锁，`Init()` 装配模块时持独占锁；`Finish()` 先不持此锁排空并回收队列，再持独占锁结束地图定位与 UI。`Finish()` 不清空模块指针，也不代替对象析构；不应将此锁理解为所有公开接口的并发安全保证。
+- @ref lightning::loc::Localization::input_mutex_ "输入锁" 保护点云预处理、跳帧计数及入队；@ref lightning::loc::Localization::processing_mutex_ "处理锁" 串行化 IMU、LIO 点云及外部位姿处理。共享生命周期锁允许多个处理路径同时持有，不提供这两类串行化职责。
 - 多生产者不能绕过统一 sensor 队列直接并发调用 LIO；源码注释明确要求保持 IMU/LiDAR 回调顺序。
 - 地图匹配结果、LIO 里程计和 DR 状态有独立互斥量，读取组合状态时要使用已有 getter，避免自行跨锁拼接。
 - 运行统计、时间戳回退检测和静止检测各有专用锁；它们不等同于定位主状态锁。
