@@ -243,11 +243,25 @@ def render_driver_diagnosis(upstream):
         lines.append(f'  {role.get("role")}: 设备证据={device.get("evidence_scope", "未知")}，'
                      f'采集={device.get("collected_at")}，距采集={device.get("age_sec")} 秒')
     findings = data['findings']
-    for finding in findings[:10]:
+    history = [f for f in findings if f.get('stage') == 'device_history']
+    other = [f for f in findings if f.get('stage') != 'device_history']
+    # Retain each device's history/coverage summary even when lifecycle and
+    # startup failures fill the ordinary ten-item summary.
+    for finding in other[:10] + history:
         lines.append(f'  [{finding.get("severity", "未知")}] {finding.get("role") or "生命周期"}: {finding.get("message", "未知判据")}')
-        lines.append('    证据: ' + json.dumps(finding.get('evidence', []), ensure_ascii=False))
-    if len(findings) > 10:
-        lines.append(f'  共 {len(findings)} 条雷达判据，仅展示前 10 条；--json 保留完整独立报告。')
+        evidence = finding.get('evidence', [])
+        if finding.get('stage') == 'device_history':
+            locations = []
+            for item in evidence:
+                if isinstance(item, dict) and item.get('path'):
+                    position = (f':line={item["line"]}' if item.get('line') is not None
+                                else f':byte={item["byte_offset"]}' if item.get('byte_offset') is not None else '')
+                    locations.append(str(item['path']) + position + (' @ ' + str(item['time']) if item.get('time') else ''))
+            lines.append('    证据: ' + ' | '.join(dict.fromkeys(locations)))
+        else:
+            lines.append('    证据: ' + json.dumps(evidence, ensure_ascii=False))
+    if len(other) > 10:
+        lines.append(f'  共 {len(findings)} 条雷达记录；普通判据展示前 10 条，设备历史摘要单独保留；--json 保留完整独立报告。')
     elif not findings:
         lines.append('  已读取证据中没有列出雷达异常；不能据此确认当前设备或数据流正常。')
     lines += ['  雷达提示: ' + str(w) for w in data['warnings']]

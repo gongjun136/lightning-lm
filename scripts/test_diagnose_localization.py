@@ -258,6 +258,22 @@ class DiagnosisTest(unittest.TestCase):
         self.assertIn('当前未刷新', text)
         self.assertIn('parameters.work_state', text)
 
+    def test_driver_history_survives_many_startup_findings(self):
+        report = self.driver_report()
+        report['findings'] = [dict(code='startup', severity='error', message=f'启动异常 {i}', evidence=[])
+                              for i in range(12)]
+        report['findings'] += [dict(code='device_history', stage='device_history', severity='info',
+            role='right', message='右雷达历史 Normal → Error → Normal；不代表当前状态',
+            evidence=[dict(path='/runs/lidar/diagnostics/right_state.jsonl', line=22,
+                           time='2026-10-30T14:00:00+08:00', seq=10, steady_ns=100)])]
+        text = '\n'.join(d.render_driver_diagnosis(dict(message='读取完成', report=report)))
+        self.assertIn('启动异常 9', text)
+        self.assertNotIn('启动异常 10', text)
+        self.assertIn('右雷达历史 Normal → Error → Normal；不代表当前状态', text)
+        self.assertIn('/runs/lidar/diagnostics/right_state.jsonl:line=22 @ 2026-10-30T14:00:00+08:00', text)
+        self.assertNotIn('steady_ns', text)
+        self.assertIn('设备历史摘要单独保留', text)
+
     def test_driver_missing_old_failed_or_malformed_does_not_break_localization(self):
         self.log.write_text('I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC raw_runstate=0 published_runstate=0\n')
         cases = [subprocess.CompletedProcess([], 2, '', 'unrecognized arguments: --no-refresh'),

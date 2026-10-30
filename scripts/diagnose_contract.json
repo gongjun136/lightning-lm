@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "ff49ecdcf3fcecfb20d934306432ab2ab09da806b514bb57794f39895ed99c58",
+  "contract_id": "3ab5a925f7b4ddac0950bc22ec99c771282f806dacd4562201b49302d6753484",
   "reviewed_sources": {
     "src/core/localization/lidar_loc/lidar_loc.cc": "ebb59562bebe6bcc11ef50596055c741f8b5c943386b8f352c03f147e37800d0",
     "src/core/localization/localization_dtc_monitor.cc": "79ea2b708a797514f32bb1ef3443fa3e657a0c0977abc4d222f05ebd8b2f7cbb",
@@ -14,6 +14,6 @@
     "src/core/system/loc_system.cc#DtcLocalizationLost": "f8ad8e718acf4042e8428b6309540f7adbc5daea2a1ac18af0fce17a141e35bc",
     "src/core/system/loc_system.cc#DtcInitialization": "dc8d9fc2db835ffad2bcbe28e4e992d8baf8b794bcd1fe6cb0a9ffbe9c32e93e",
     "config/sany/localization.yaml#diagnostics": "5589dc9712921ce0c25a380bb61b0260320a3bd91b9a1d7cab060d6868221e7f",
-    "workspace.repos": "9813e94798f241b1e6c73ae1b73687c434c6638b7ca01376b7a6c3cd558d0df3"
+    "workspace.repos": "1013e851200593c7c105793711ce241d0534691ac41d19593e2aaf334f4c19e9"
   }
 }
