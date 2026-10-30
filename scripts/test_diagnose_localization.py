@@ -92,6 +92,73 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(got, newer)  # trigger time, not copying/directory mtime
         self.assertIsNone(p)
 
+    def test_latest_partial_launch_failure_beats_old_event_and_names_loader_layer(self):
+        old_ns = int(dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc).timestamp() * 1e9)
+        self.event(old_ns)
+        failed = self.root / 'sany_lidar_20261030_102537'
+        (failed / 'logs').mkdir(parents=True)
+        (failed / 'config.yaml').write_text('diagnostics: {}\n')
+        message = '/install/export_map_manifest: error while loading shared libraries: liblightning_lm.libs.so: cannot open shared object file: No such file or directory'
+        (failed / 'logs/map_manifest.log').write_text(message + '\n[ros2run]: Process exited with failure 127\n')
+        os.utime(failed, (1000000000, 1000000000))  # copied/changed mtime must not replace launch time
+        selected, process, selection, warnings = d.select(self.args(), [], [self.root])
+        self.assertEqual(selected, failed)
+        self.assertIsNone(process)
+        with patch.object(d, 'bag_rows', side_effect=AssertionError('preflight failure is not a rosbag')):
+            report = d.analyze(selected, process, selection, warnings)
+        self.assertTrue(report['has_launch_evidence'])
+        self.assertFalse(report['has_safety_evidence'])
+        self.assertEqual(len(report['launch_findings']), 1)
+        finding = report['launch_findings'][0]
+        self.assertEqual(finding['key'], 'shared_library_missing')
+        self.assertEqual(finding['stage'], 'runtime_loader')
+        self.assertIn('liblightning_lm.libs.so', finding['title'])
+        self.assertEqual(finding['evidence'], message)
+        self.assertIn('map_manifest.log:byte=0', finding['source'])
+        self.assertNotEqual(finding['key'], 'map_preflight_rejected')
+        self.assertIn('工具执行前', finding['advice'])
+        self.assertIn('入口阻断证据', d.render(report))
+        with patch.object(d, 'low_impact', return_value={}), patch.object(d, 'driver_diagnosis') as driver, \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            status = d.main([str(failed), '--json'])
+        self.assertEqual(status, 0)
+        driver.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue())['launch_findings'][0]['key'], 'shared_library_missing')
+
+    def test_old_partial_run_does_not_displace_newer_healthy_history(self):
+        old = self.root / 'sany_lidar_20261027_102537'
+        (old / 'logs').mkdir(parents=True)
+        (old / 'logs/map_manifest.log').write_text('[ros2run]: Process exited with failure 127\n')
+        expected = self.event(int(dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc).timestamp() * 1e9))
+        self.assertEqual(d.select(self.args(), [], [self.root])[0], expected)
+
+    def test_launch_preflight_reasons_are_kept_distinct(self):
+        cases = [('Map manifest rejected: required map_manifest.yaml is missing: /maps/a/map_manifest.yaml\n',
+                  'map_manifest.log', 'map_preflight_rejected'),
+                 ('[ros2run]: Process exited with failure 127\n', 'map_manifest.log', 'preflight_tool_failed'),
+                 ('ERROR: sensor delivery check timed out; check publishers, ROS_DOMAIN_ID\n',
+                  'input_check.log', 'input_check_timeout'),
+                 ('SANY vehicle configuration rejected: unknown VIN\n', 'config_resolution.log', 'configuration_rejected')]
+        for content, name, key in cases:
+            with self.subTest(key=key):
+                path = self.run / 'logs' / name
+                path.write_text(content)
+                result = d.launch_failures(self.run, [])
+                self.assertEqual([f['key'] for f in result], [key])
+                path.unlink()
+
+    def test_successful_or_incomplete_preflight_is_not_a_failure(self):
+        (self.run / 'logs/map_manifest.log').write_text('/maps/map_manifest.yaml\n')
+        (self.run / 'logs/input_check.log').write_text('Sensor delivery check passed for 4 required topics\n')
+        self.assertEqual(d.launch_failures(self.run, []), [])
+        partial = self.root / 'sany_lidar_20261030_103000'
+        (partial / 'logs').mkdir(parents=True)
+        self.assertEqual(d.choose_path(partial, preserve_run=True), partial)
+        with patch.object(d, 'bag_rows', return_value=[]):
+            report = d.analyze(partial, None, '指定路径', [])
+        self.assertFalse(report['has_launch_evidence'])
+        self.assertIn('可能仍在启动或提前退出', '\n'.join(report['warnings']))
+
     def test_explicit_event_is_not_replaced_by_live(self):
         event = self.event(100)
         self.event(200)

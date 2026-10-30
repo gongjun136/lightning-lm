@@ -98,6 +98,10 @@ endif ()
 
 add_subdirectory(src)
 
+# Register the installed shared libraries in this scope so ament_package()
+# generates the relocatable runtime library-path hook for local_setup.*.
+ament_export_libraries(${PROJECT_NAME}.libs miao.core miao.utils)
+
 option(BUILD_DOCS "Build the Doxygen developer and algorithm manual" OFF)
 if (BUILD_DOCS)
     find_package(Doxygen REQUIRED COMPONENTS dot)

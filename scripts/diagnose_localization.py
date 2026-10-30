@@ -26,6 +26,8 @@ LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'motion_window_sec', 'evaluation_timeout_sec', 'config_version')
 FAULT_CODES = (2, 4, -9)
 CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
+LAUNCH_LOGS = ('map_manifest.log', 'input_check.log', 'config_resolution.log',
+               'launcher.log', 'launch.log', 'launch_compute_config.log')
 
 
 def color_enabled(mode='auto', stream=None, env=None):
@@ -268,7 +270,69 @@ def stamp(path):
     try:
         return int(dt.datetime.fromisoformat(meta['started_at']).timestamp() * 1e9)
     except (KeyError, ValueError):
+        # Before preflight succeeds, the launcher has not written metadata yet.
+        # Its standard directory name records launch time, unlike copy/mtime.
+        match = re.fullmatch(r'sany_lidar_(\d{8}_\d{6})', path.name)
+        if match:
+            try:
+                return int(dt.datetime.strptime(match[1], '%Y%m%d_%H%M%S').astimezone().timestamp() * 1e9)
+            except ValueError:
+                pass
         return path.stat().st_mtime_ns
+
+
+def is_run_directory(path):
+    return path.is_dir() and ((path / 'logs/run_loc_online.stderr.log').is_file() or
+        any((path / 'logs' / name).is_file() for name in LAUNCH_LOGS) or
+        (re.fullmatch(r'sany_lidar_\d{8}_\d{6}', path.name) is not None and (path / 'logs').is_dir()))
+
+
+def launch_failures(run, warnings):
+    """Explain recorded preflight errors without assuming every tool error is a bad map."""
+    findings = []
+    for name in LAUNCH_LOGS:
+        path = run / 'logs' / name
+        if not path.is_file():
+            continue
+        try:
+            with path.open('rb') as stream:
+                size = path.stat().st_size
+                stream.seek(max(0, size - 256 * 1024))
+                if size > 256 * 1024:
+                    stream.readline()
+                    warnings.append(f'启动日志 {name} 仅读取末尾 256 KiB。')
+                while stream.tell() < size:
+                    offset = stream.tell()
+                    line = stream.readline(min(65536, size - offset)).decode(errors='replace').strip()
+                    key = title = advice = None
+                    layer = 'map_preflight' if name == 'map_manifest.log' else 'input_preflight' if name == 'input_check.log' else 'launcher'
+                    missing = re.search(r'error while loading shared libraries:\s*([^:\s]+):', line)
+                    if missing:
+                        key, layer = 'shared_library_missing', 'runtime_loader'
+                        title = f'启动工具动态库加载失败: {missing[1]}'
+                        advice = '检查安装空间、动态库搜索路径和工具链接配置；此错误发生在工具执行前，不能据此判断地图损坏或传感器故障。'
+                    elif 'Map manifest rejected:' in line:
+                        key, title = 'map_preflight_rejected', '地图预检工具校验未通过'
+                        advice = '按原始拒绝原因检查地图清单或运行配置；工具拒绝不等于地图文件损坏。'
+                    elif 'ERROR: sensor delivery check timed out' in line:
+                        key, title = 'input_check_timeout', '定位输入检查超时，算法尚未通过启动输入门槛'
+                        advice = '核对 input_check.log 的各 topic 接收计数及本次 DDS 环境；接收缺失不能单独区分设备停流与订阅环境问题。'
+                    elif 'ERROR: sensor delivery check:' in line:
+                        key, title = 'input_check_error', '定位输入检查执行失败'
+                        advice = '按原始错误检查检查器参数或运行环境，不将执行失败直接解释为传感器故障。'
+                    elif 'SANY vehicle configuration rejected:' in line or 'vehicle configuration resolution failed' in line:
+                        key, title = 'configuration_rejected', '车辆/定位配置解析未通过'
+                        advice = '按原始错误检查所选车辆配置与必填字段；缺少详细原因时不猜测具体配置项。'
+                    elif '[ros2run]: Process exited with failure' in line or 'map manifest validation failed;' in line:
+                        key, title = 'preflight_tool_failed', '启动预检工具失败，现有记录未确定具体原因'
+                        advice = '核对同一日志中更早的错误和工具运行环境；不能仅凭日志名称认定地图有问题。'
+                    if key:
+                        findings.append(dict(key=key, stage=layer, title=title, advice=advice,
+                                             source=f'{path}:byte={offset}', evidence=line))
+                        break  # The first explicit error is more specific than a trailing ros2run status.
+        except OSError as error:
+            warnings.append(f'启动日志读取失败 {path}: {error}')
+    return findings
 
 
 def same_run(event, run, pid=None):
@@ -302,7 +366,7 @@ def choose_path(path, run=None, pid=None, start_wall_ns=0, preserve_run=False):
     if path.is_file() or (path / 'summary.json').is_file() or (path / 'timeline.csv').is_file():
         return path
     candidates = events_in(path) + events_in(path / 'incidents')
-    if (path / 'logs/run_loc_online.stderr.log').is_file():
+    if is_run_directory(path):
         if preserve_run:
             return path
         candidates += [e for e in events_in(path.parent / 'incidents') if same_run(e, path, pid)]
@@ -312,8 +376,10 @@ def choose_path(path, run=None, pid=None, start_wall_ns=0, preserve_run=False):
     if run:
         candidates = [p for p in candidates if same_run(p, run, pid) and stamp(p) >= start_wall_ns]
     else:
-        candidates += [p.parent for p in path.glob('*/run_metadata.txt')
-                       if (p.parent / 'logs/run_loc_online.stderr.log').is_file()]
+        runs = {p.parent for p in path.glob('*/run_metadata.txt') if is_run_directory(p.parent)}
+        runs.update(p.parent.parent for name in LAUNCH_LOGS for p in path.glob('*/logs/' + name))
+        runs.update(p for p in path.glob('sany_lidar_*') if is_run_directory(p))
+        candidates += list(runs)
     if candidates:
         return max(candidates, key=stamp)
     if (path / 'metadata.yaml').is_file() or list(path.glob('*.mcap')) or list(path.glob('*.db3')):
@@ -946,11 +1012,12 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     run = path
     if process:
         run = Path(process['run'])
-    elif not (path / 'logs/run_loc_online.stderr.log').is_file() and meta.get('run_dir'):
+    elif not is_run_directory(path) and meta.get('run_dir'):
         original = Path(meta['run_dir'])
         relocated = path.parent.parent / original.name
         run = relocated if (relocated / 'logs/run_loc_online.stderr.log').is_file() else original
     config = path / 'config.yaml' if path.is_dir() else path.parent / 'config.yaml'
+    launch_findings = launch_failures(run, warnings) if run == path and not summary else []
     limits = thresholds(config)
     matching = matching_thresholds(config)
     log = process.get('log') if process else str(run / 'logs/run_loc_online.stderr.log')
@@ -984,7 +1051,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
             logdata = []
         if not logdata:
             warnings.append('未找到与指定事件时间窗口对应的详细运行日志；只使用包内证据。')
-    if not rows and not logdata:
+    if not rows and not logdata and not launch_findings:
         rows = bag_rows(path, int(bag_mb * MIB), warnings)
     if summary:
         if summary.get('status') != 'complete':
@@ -1029,7 +1096,10 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     if absent:
         warnings.append(f'{absent} 个日志判据段的起始时刻未找到保留事件范围覆盖；可能尚在写入、触发被抑制或已轮转，不代表从未采集。')
     if not rows and not logdata:
-        warnings.append('没有可解析的 Safety 判据记录；此次不能给出故障原因。')
+        warnings.append('未产生算法 Safety 判据；已单独解释启动前失败日志。' if launch_findings else
+                        '没有可解析的 Safety 判据记录；此次不能给出故障原因。')
+        if is_run_directory(path) and not launch_findings:
+            warnings.append('所选运行目录尚无算法判据和明确入口错误；可能仍在启动或提前退出，不能只凭文件缺失认定故障。')
     all_rows = rows + logdata
     coexisting_radar = {}
     for row in all_rows:
@@ -1069,6 +1139,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 priority_summary=priority_summary(findings, matching), matching_thresholds=matching,
                 runtime_protections=list(protections.values()), runtime_protection_scope=protection_scope,
                 coexisting_radar_conditions=list(coexisting_radar.values()),
+                launch_findings=launch_findings, has_launch_evidence=bool(launch_findings),
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
 
@@ -1085,10 +1156,20 @@ def render(report, color=False, all_events=False):
         lines.append('定位证据范围: 历史包；当前未发现定位进程，包内状态码不代表当前状态。')
     elif report.get('evidence_scope') == 'explicit':
         lines.append('定位证据范围: 指定包（离线）。')
+    for finding in report.get('launch_findings', []):
+        prefix = ('入口阻断证据' if not report.get('has_safety_evidence') and not report.get('process') else
+                  '启动预检历史失败记录（也存在算法实例或判据，不据此认定当前仍阻断）')
+        lines += [paint(f'{prefix}: {finding["title"]}；层级={finding["stage"]}', '1;31'),
+                  '  原始错误: ' + finding['evidence'], '  证据: ' + finding['source'],
+                  '  定位方向: ' + finding['advice']]
     if report.get('upstream_lidar'):
         lines += render_driver_diagnosis(report['upstream_lidar'])
     if report.get('localization_error'):
         lines.append('定位证据不可用: ' + report['localization_error'])
+        return '\n'.join(lines)
+    if report.get('launch_findings') and not report.get('has_safety_evidence'):
+        lines.append('本包没有可解析的算法 Safety 记录；以上为启动入口失败，不是运行中 2/4/-9 判据。')
+        lines += [paint('注意: ' + w, '33') for w in report['warnings']]
         return '\n'.join(lines)
     if report['event_status']:
         lines.append(f'事件: {report["trigger_time"]}, {report["event_status"]}, 触发={report["trigger_reasons"]}')
@@ -1208,7 +1289,7 @@ def main(argv=None):
         report['scheduling'] = scheduling
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
         has_driver = report['upstream_lidar'].get('report', {}).get('has_evidence') is True
-        return 0 if report['has_safety_evidence'] or has_driver else 2
+        return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or has_driver else 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(error=str(exc)), ensure_ascii=False) if args.json else '无法完成诊断: ' + str(exc))
         return 2

@@ -25,7 +25,7 @@ bash ~/Sany/run_loc.sh --diagnose --all --color always
 bash ~/Sany/run_loc.sh --diagnose --json > diagnosis.json
 ```
 
-开发联调也可从仓库根目录直接执行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`，并附加相同选项。仓库入口在启动定位、录包或创建运行目录之前转入 `scripts/diagnose_localization.sh`；独立 shell 和 Python 脚本仍可直接使用。支持 `--pid`、`--root`、`--log-mb`、`--bag-mb`、`--all` 和 `--color auto|always|never`。默认文本显示最近 12 段及按来源分类的全部汇总；同一真实故障可能同时出现在日志段和事件时间线段，不能将这些统计相加当作事件数。诊断开头优先给出结论和简短问题链，同时保留最近明确航向一致性 FAIL 的段数、时间、残差及恢复情况，避免较早失锁掩盖后续状态 4；`--all` 展开所有已扫描判据，JSON 包含全部已分析段，日志读取仍受预算限制，不能保证覆盖全量日志。`auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；JSON 始终无 ANSI。红色表示最新记录故障，黄色表示历史或缺失证据，绿色仅表示最新记录为 0，青色为信息。
+开发联调也可从仓库根目录直接执行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`，并附加相同选项。仓库入口在启动定位、录包或创建运行目录之前转入 `scripts/diagnose_localization.sh`；独立 shell 和 Python 脚本仍可直接使用。支持 `--pid`、`--root`、`--log-mb`、`--bag-mb`、`--all` 和 `--color auto|always|never`。默认文本显示最近 12 段及按来源分类的全部汇总；同一真实故障可能同时出现在日志段和事件时间线段，不能将这些统计相加当作事件数。仅有入口日志的新运行也优先于旧事件检查；报告区分 runtime_loader 缺库、map_preflight 拒绝和 input_preflight 超时，若运行目录创建之前未留下日志则不能推断原因。诊断开头优先给出结论和简短问题链，同时保留最近明确航向一致性 FAIL 的段数、时间、残差及恢复情况，避免较早失锁掩盖后续状态 4；`--all` 展开所有已扫描判据，JSON 包含全部已分析段，日志读取仍受预算限制，不能保证覆盖全量日志。`auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；JSON 始终无 ANSI。红色表示最新记录故障，黄色表示历史或缺失证据，绿色仅表示最新记录为 0，青色为信息。
 
 `path` 可以是事件目录、`summary.json`、`timeline.csv`、运行目录、归档根目录、裸 MCAP 或 db3 文件，也可以是 rosbag 目录；不支持压缩归档。显式指定运行目录时检查该次运行日志，仍受 `--log-mb` 预算限制；显式指定事件目录时按该事件时间窗检查。无进程自动查找仍选择最新包。例如：
 
