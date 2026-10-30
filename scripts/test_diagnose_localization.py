@@ -188,7 +188,7 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(Path(report['selected']), self.run)
         self.assertEqual(report['log_samples'], 3)
         self.assertEqual([f['code'] for f in report['findings']], [4, -9])
-        self.assertTrue(any('首次已观测失锁' in item['text'] for item in report['priority_summary']))
+        self.assertTrue(any('首次已观测门控关闭' in item['text'] for item in report['priority_summary']))
         with patch.object(d, 'low_impact', return_value={}), patch('sys.stdout', new_callable=io.StringIO) as output:
             status = d.main([str(event), '--log-mb', '64', '--json'])
             event_report = json.loads(output.getvalue())
@@ -949,7 +949,7 @@ class DiagnosisTest(unittest.TestCase):
         report = d.analyze(self.run, None, '指定路径', [])
         summary = '\n'.join(item['text'] for item in report['priority_summary'])
         self.assertIn('启动无有效定位输出', summary)
-        self.assertIn('首次已观测失锁: 10-28 12:00:02.010000', summary)
+        self.assertIn('首次已观测门控关闭: 10-28 12:00:02.010000', summary)
         self.assertIn('map_overlap=0.728835 < relocalization.solid_kiss.map_min_overlap_ratio=0.75', summary)
         self.assertIn('运行配置判据', summary)
         self.assertIn('已证实未满足项: map_overlap', summary)
@@ -994,7 +994,78 @@ class DiagnosisTest(unittest.TestCase):
         self.assertIn('残差 2.42853°', summary[0]['text'])
         self.assertIn('已观测到原始码 0: 10-29 19:52:05.814821', summary[0]['text'])
         self.assertEqual(summary[0]['source'], findings[-1]['source'])
-        self.assertTrue(any('首次已观测失锁' in item['text'] for item in summary[1:]))
+        self.assertTrue(any('首次已观测门控关闭' in item['text'] for item in summary[1:]))
+
+    def test_priority_separates_first_severe_gate_clear_and_later_raw_recovery(self):
+        rows = [self.log_row(1, -9, output_stale=1, radar_all_failed=1, localization_lost=0),
+                self.log_row(1.02, -9, output_stale=1, localization_lost=1),
+                self.log_row(1.2, -9, output_stale=1, localization_lost=0), self.log_row(1.5, 0),
+                self.log_row(2, -9, radar_all_failed=1, localization_lost=0),
+                self.log_row(2.02, -9, localization_lost=1),
+                self.log_row(2.4, -9, output_stale=1, localization_lost=0),
+                self.log_row(2.5, 4, localization_consistency=0, localization_uncertainty=1,
+                             unknown_tolerated=0, optional_can_unavailable=0), self.log_row(3, 0)]
+        summary = '\n'.join(f['text'] for f in d.priority_summary(d.fault_episodes(rows, {}), {}))
+        self.assertIn('首次已观测 -9: t=1；当时判据: 定位输出超时、所有必需雷达均不可用', summary)
+        self.assertIn('首次已观测门控关闭: t=1.02', summary)
+        self.assertIn('最长已观测门控关闭段: t=2.02 → t=2.4；门控关闭判据已解除', summary)
+        self.assertIn('该时刻原始码仍为 -9；后续已观测到原始码 0: t=3', summary)
+        self.assertNotIn('未在本段结束时确认恢复为 0', summary)
+
+    def test_priority_includes_severe_without_gate_and_sync_role_recovery(self):
+        rows = [self.log_row(1, -9, radar_all_failed=1, localization_lost=0), self.log_row(2, 0),
+                self.log_row(3, 2, time_sync_fault_mask=1, bounded_policy_enabled=1,
+                             bounded_sync_warning_mask=0, non_sync_fault=0, non_sync_all_pass=1),
+                self.log_row(27.1, 0)]
+        summary = '\n'.join(f['text'] for f in d.priority_summary(d.fault_episodes(rows, {}), {}))
+        self.assertIn('首次已观测 -9: t=1', summary)
+        self.assertNotIn('门控关闭', summary)
+        self.assertIn('雷达同步故障 2: front，已读取 1 个判据段；最近段 t=3', summary)
+        self.assertIn('已观测到原始码 0: t=27.1', summary)
+        for ending in (self.log_row(27.1, 4, localization_uncertainty=0), None):
+            changed = rows[:-1] + ([ending] if ending else [])
+            text = '\n'.join(f['text'] for f in d.priority_summary(d.fault_episodes(changed, {}), {}))
+            sync = next(line for line in text.splitlines() if '雷达同步故障 2:' in line)
+            self.assertNotIn('已观测到原始码 0:', sync)
+            self.assertIn('当时未恢复为原始码 0' if ending else '尚未观测到该段恢复', sync)
+
+    def test_queue_lag_near_severe_is_timed_corroboration_not_root_cause(self):
+        lines = [
+            'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=0',
+            'I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=-9 output_stale=1 radar_all_failed=1 localization_lost=0',
+            'W1028 12:00:01.001000 42] sensor queue lag reached 0.709954 sec; keeping fresh lidar admissible while the bounded queue evicts stale input',
+            'I1028 12:00:01.002000 42] sensor queue lag recovered to 0 sec; resuming lidar input',
+            'W1028 12:00:01.004000 42] drop stale lidar correction before matching: age=0.682182 sec, hard_deadline=0.3',
+            'I1028 12:00:01.020000 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=-9 output_stale=1 localization_lost=1',
+            'I1028 12:00:01.800000 42] SAFETY_DIAGNOSTIC sequence=4 raw_runstate=0 localization_lost=0',
+            'W1028 12:00:01.900000 42] sensor queue lag reached 9 sec; after healthy recovery',
+            'W1028 12:00:01.901000 42] drop stale lidar correction before matching: age=9 sec, hard_deadline=0.3',
+        ]
+        self.log.write_text('\n'.join(lines) + '\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        summaries = [s for s in report['priority_summary'] if '处理链线索' in s['text']]
+        self.assertEqual(len(summaries), 1)  # one queue record, despite several -9 predicates
+        text = summaries[0]['text']
+        self.assertIn('与 -9 起点 10-28 12:00:01.000000 相近', text)
+        self.assertIn('10-28 12:00:01.001000 处理进度落后 0.709954s', text)
+        self.assertIn('最新入队与最新处理的传感器时间差', text)
+        self.assertIn('10-28 12:00:01.004000 过期 LIO 校正被丢弃，age=0.682182s', text)
+        self.assertIn('不证明最早物理根因', text)
+        self.assertNotIn('处理进度落后 9s', text)
+        self.assertEqual(summaries[0]['source'].count('run_loc_online.stderr.log:byte='), 2)
+        for finding in report['findings']:
+            self.assertFalse(any('after healthy recovery' in c['text'] for c in finding['onset_context']))
+        self.assertEqual(report['runtime_protections'][0]['count'], 2)  # full-run protection statistics remain separate
+
+    def test_queue_recovery_alone_does_not_invent_processing_lag(self):
+        self.log.write_text(
+            'I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=-9 output_stale=1\n'
+            'I1028 12:00:01.001000 42] sensor queue lag recovered to 0 sec; resuming lidar input\n'
+            'W1028 12:00:01.002000 42] drop stale lidar correction before matching: age=0.4 sec, hard_deadline=0.3\n'
+            'I1028 12:00:02.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertFalse(any('处理进度落后' in s['text'] for s in report['priority_summary']))
+        self.assertTrue(any('sensor queue lag recovered' in c['text'] for c in report['findings'][0]['context']))
 
     def test_priority_summary_does_not_invent_yaw_fail_for_unknown_or_uncertainty(self):
         for extra in (
