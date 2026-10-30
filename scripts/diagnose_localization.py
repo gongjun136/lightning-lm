@@ -1433,6 +1433,8 @@ def render(report, color=False, all_events=False):
                 lines.append(paint('  合成测试数据，不是现场事故证据。', '33'))
             for name, title in (('guess', '初值'), ('ndt', 'NDT 结果'), ('check', '实际检查位姿')):
                 value = match_image.get('comparison', {}).get(name, {})
+                if value.get('candidate_status') == 'unconfirmed':
+                    title = 'NDT 尝试（结果未确认）' if name == 'ndt' else '接受候选（未取得有效重合率检查）'
                 lines.append(f'  {title}: 命中={value.get("hit_points")}/{value.get("validation_points")}，重合率={value.get("overlap")}')
             if match_image.get('check_score_matches_recorded') is False:
                 lines.append(paint('  注意: 重算检查分数与记录不一致，不能视为精确复现；请核查证据/版本。', '33'))

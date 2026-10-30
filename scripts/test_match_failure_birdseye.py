@@ -169,6 +169,39 @@ class BirdseyeTest(unittest.TestCase):
         self.assertTrue(result['synthetic_fixture'])
         self.assertIn('SYNTHETIC TEST FIXTURE', Path(result['html']).read_text())
 
+    def test_registration_rejection_does_not_claim_optimized_ndt_pose(self):
+        self.dependencies()
+        self.summary['reason'] = 'registration_rejected'
+        self.summary['poses']['ndt'] = self.summary['poses']['guess'].copy()
+        self.save()
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'generated', result)
+        self.assertEqual(result['comparison']['ndt']['candidate_status'], 'unconfirmed')
+        self.assertIn('may remain initial guess', result['comparison']['ndt']['label'])
+        self.assertNotEqual(result['comparison']['ndt']['label'], 'NDT result')
+        self.assertEqual(result['recorded_reason'], 'registration_rejected')
+
+    def test_zero_sample_map_bounds_reason_does_not_prove_outside_map(self):
+        self.dependencies()
+        content = bytearray((self.evidence / 'scan.bin').read_bytes())
+        for offset in range(20, len(content), 24):
+            content[offset:offset + 4] = struct.pack('<I', 0)
+        (self.evidence / 'scan.bin').write_bytes(content)
+        self.summary['files_sha256']['scan'] = hashlib.sha256(content).hexdigest()
+        self.summary['reason'] = 'map_bounds'
+        self.summary['criterion'].update(evaluated=True, points=0, sample_replay_available=False)
+        self.summary['scan']['validation_points'] = 0
+        self.save()
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'generated', result)
+        self.assertEqual(result['recorded_reason'], 'map_bounds')
+        self.assertIn('rejection predicate not established', result['display_reason'])
+        self.assertNotEqual(result['reason'], 'map_bounds')
+        self.assertIn('Acceptance candidate', result['comparison']['check']['label'])
+        self.assertIn('no usable overlap samples', result['comparison']['check']['label'])
+        self.assertEqual(result['comparison']['check']['score_basis'], 'saved_display_sample_only')
+        self.assertIsNone(result['check_score_matches_recorded'])
+
 
 if __name__ == '__main__':
     unittest.main()

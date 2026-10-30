@@ -13,7 +13,7 @@ import tempfile
 
 SCHEMA = 1
 KIND = 'lightning_match_failure'
-RENDER_VERSION = 2
+RENDER_VERSION = 3
 MAX_SUMMARY_BYTES = 1024 * 1024
 MAX_SCAN_POINTS = 52000
 MAX_MAP_BYTES = 64 * 1024 * 1024
@@ -231,10 +231,26 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         replay = evaluated and bool(validation.any())
         original = _finite(summary['criterion'].get('overlap'), 'recorded overlap') if evaluated else None
         exact = (abs(comparison['check']['overlap'] - original) <= max(1e-6, 0.01 / int(validation.sum()))) if replay else None
+        recorded_reason = summary.get('reason')
+        no_sample_reason = 'map check has no usable samples; rejection predicate not established'
+        display_reason = recorded_reason if replay else no_sample_reason
+        titles = dict(guess='Initial guess', ndt='NDT result', check='Actual overlap-check pose')
+        comparison['ndt']['candidate_status'] = 'recorded_registration_candidate'
+        comparison['check']['candidate_status'] = 'recorded_overlap_check'
+        if recorded_reason == 'registration_rejected':
+            titles['ndt'] = 'NDT attempt\n(unconfirmed; may remain initial guess)'
+            comparison['ndt']['candidate_status'] = 'unconfirmed'
+        if not replay:
+            qualifier = 'overlap not evaluated' if not evaluated else 'no usable overlap samples'
+            titles['check'] = 'Acceptance candidate\n(' + qualifier + ')'
+            comparison['check']['candidate_status'] = 'unconfirmed'
+        for name in POSES:
+            comparison[name]['label'] = titles[name]
         result = dict(schema=1, kind='match_failure_birdseye', status='generated', cached=False,
                       fingerprint=fingerprint, evidence=str(directory), wall_ns=summary.get('wall_ns'),
                       sensor_stamp_ns=summary.get('sensor_stamp_ns'), pid=summary.get('pid'), run_dir=summary.get('run_dir'),
-                      reason=summary.get('reason'), synthetic_fixture=summary.get('synthetic_fixture') is True,
+                      reason=display_reason, recorded_reason=recorded_reason, display_reason=display_reason,
+                      synthetic_fixture=summary.get('synthetic_fixture') is True,
                       original_sample_replay_available=replay, poses=summary['poses'],
                       provenance=dict(summary=str(directory / 'summary.json'), scan=str(scan_path), map=str(map_path),
                                       map_identity_sha256=summary.get('map', {}).get('identity_sha256'), build=summary.get('build'),
@@ -264,7 +280,6 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         # Reserve explicit header/legend space across matplotlib 3.5+; equal
         # axes can otherwise push their titles into a multiline suptitle.
         fig.subplots_adjust(left=.04, right=.99, top=.79, bottom=.17, wspace=.20)
-        titles = dict(guess='Initial guess', ndt='NDT result', check='Actual overlap-check pose')
         try:
             for axis, name in zip(axes, POSES):
                 value = comparison[name]
@@ -297,6 +312,7 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         document = ('<!doctype html><meta charset="utf-8"><title>Match failure comparison</title>'
                     '<style>body{font:16px system-ui;margin:24px;color:#203040}img{width:100%;height:auto}pre{white-space:pre-wrap}</style>'
                     '<h1>' + fixture_note + 'Match failure: three saved poses</h1><p>' + html.escape(NOTE) + '</p><p>' + html.escape(score_note) + '</p>'
+                    '<p>' + html.escape(str(display_reason)) + '</p>'
                     '<p>Height filtering affects display only. Reported scores use all original validation points and 3D distances.</p>'
                     '<img alt="Map and scan comparison at initial, NDT and actual check poses" src="data:image/png;base64,' + base64.b64encode(png).decode() + '">'
                     '<details><summary>Provenance and scores</summary><pre>' + html.escape(payload) + '</pre></details>')
