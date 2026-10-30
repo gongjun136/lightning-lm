@@ -525,8 +525,10 @@ def classify(row, limits):
                                      ('translation_condition', '平移运动一致性检查失败', ['translation_condition', 'error_x', 'error_y'])]:
             if row.get(key) == 2:
                 add(key, title, evidence, '比较位姿增量与 IMU/CAN 积分；运动阈值包含增量比例项，不是不确定度阈值。')
-                if key == 'yaw_condition' and number(row.get('error_yaw_rad')) is not None:
-                    causes[-1]['evidence']['error_yaw_deg'] = row['error_yaw_rad'] * 180 / math.pi
+                if key == 'yaw_condition':
+                    causes[-1]['advice'] = '比较位姿航向增量与 IMU 机体系 z 角速度积分；CAN 用于平移检查。旧字段缺少累计转角 turn 及窗口/位姿分支，无法重建确切动态阈值；这不是协方差不确定度阈值。'
+                    if number(row.get('error_yaw_rad')) is not None:
+                        causes[-1]['evidence']['error_yaw_deg'] = row['error_yaw_rad'] * 180 / math.pi
         if row.get('localization_consistency') == 2 and row.get('yaw_condition') != 2 and row.get('translation_condition') != 2:
             add('consistency_fail', '运动一致性检查失败，缺少平移/航向细分状态', ['localization_consistency'], '需要同次运行的细分判据或完整事件。')
         latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
@@ -756,6 +758,16 @@ def priority_summary(findings, matching):
     summary = []
     def add(text, source):
         summary.append(dict(text=text, source=source))
+    yaw_failures = [f for f in findings if f['key'] == 'yaw_condition' and f['evidence'].get('yaw_condition') == 2]
+    if yaw_failures:
+        last = max(yaw_failures, key=lambda f: f['start_ns'] or 0)
+        error = number(last['evidence'].get('error_yaw_deg'))
+        residual = f'{error:.6g}°' if error is not None else '未记录'
+        recovery = ('已观测到原始码 0: ' + last['end_time']) if last.get('state') == 'recovered' else (
+            '后续存在观测缺口，恢复时刻未知' if last.get('state') == 'observation_gap' else '未观测到本段恢复为 0')
+        kind = '日志判据段' if last['scope'] == '运行日志（有界尾部）' else '判据段'
+        add(f'航向运动一致性 FAIL: 已读取 {len(yaw_failures)} 个{kind}（不等于物理故障次数）；'
+            f'最近段 {last["first_time"]}，残差 {residual}（样例 {last["time"]}）；{recovery}。', last['source'])
     startup = next((f for f in findings if f.get('phase') == 'startup'), None)
     losses = [f for f in findings if f['key'] == 'localization_lost' and f['start_ns'] is not None]
     if losses:

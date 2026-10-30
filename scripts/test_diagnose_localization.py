@@ -159,6 +159,11 @@ class DiagnosisTest(unittest.TestCase):
         out = self.causes(localization_consistency=2, yaw_condition=2, error_yaw_rad=.0428282, confirmed_failure=1)
         self.assertEqual([f['key'] for f in out], ['yaw_condition'])
         self.assertAlmostEqual(out[0]['evidence']['error_yaw_deg'], 2.45387595, places=4)
+        self.assertIn('位姿航向增量与 IMU 机体系 z 角速度积分', out[0]['advice'])
+        self.assertIn('CAN 用于平移检查', out[0]['advice'])
+        self.assertIn('缺少累计转角 turn 及窗口/位姿分支', out[0]['advice'])
+        self.assertIn('无法重建确切动态阈值', out[0]['advice'])
+        self.assertNotIn('IMU/CAN 积分', out[0]['advice'])
 
     def test_unknown_grace_expired_without_input_silence(self):
         out = self.causes(localization_consistency=0, yaw_condition=0, translation_condition=0,
@@ -750,6 +755,39 @@ class DiagnosisTest(unittest.TestCase):
         self.assertIn('运行日志判据: map_overlap=0.7 < map_min_overlap=0.8', text)
         self.assertIn('已证实未满足项: map_inside_xy、map_overlap、map_gravity_cos', text)
         self.assertNotIn('运行配置判据', text)
+
+    def test_recent_yaw_fail_summary_keeps_four_real_shaped_segments_ahead_of_old_loss(self):
+        def row(clock, code, **extra):
+            stamp = dt.datetime.fromisoformat('2026-10-29T' + clock).replace(tzinfo=dt.timezone.utc)
+            result = self.log_row(stamp.timestamp(), code, **extra)
+            result['_time'] = '10-29 ' + clock
+            return result
+        rows = [row('17:29:21.998689', -9, localization_lost=1, output_age_sec=.0052619),
+                row('17:44:03.471648', 0)]
+        for start, end, error in (
+                ('18:45:42.800266', '18:45:42.820221', .0489574),
+                ('18:45:42.900221', '18:45:42.920220', .0455395),
+                ('19:24:28.811980', '19:24:28.911988', .0583416),
+                ('19:52:05.714780', '19:52:05.814821', .0423858)):
+            rows += [row(start, 4, localization_consistency=2, localization_uncertainty=1,
+                         yaw_condition=2, error_yaw_rad=error), row(end, 0)]
+        findings = d.fault_episodes(rows, {})
+        summary = d.priority_summary(findings, {})
+        self.assertIn('航向运动一致性 FAIL: 已读取 4 个日志判据段', summary[0]['text'])
+        self.assertIn('最近段 10-29 19:52:05.714780', summary[0]['text'])
+        self.assertIn('残差 2.42853°', summary[0]['text'])
+        self.assertIn('已观测到原始码 0: 10-29 19:52:05.814821', summary[0]['text'])
+        self.assertEqual(summary[0]['source'], findings[-1]['source'])
+        self.assertTrue(any('首次已观测失锁' in item['text'] for item in summary[1:]))
+
+    def test_priority_summary_does_not_invent_yaw_fail_for_unknown_or_uncertainty(self):
+        for extra in (
+                dict(localization_consistency=0, yaw_condition=0, unknown_tolerated=0,
+                     optional_can_unavailable=0, yaw_pass_age_sec='inf', output_age_sec=.01),
+                dict(localization_uncertainty=2, covariance_valid=1, major_sigma=.7)):
+            rows = [self.log_row(1, 4, **extra), self.log_row(2, 0)]
+            summary = d.priority_summary(d.fault_episodes(rows, {'major_sigma_limit_m': .5}), {})
+            self.assertFalse(any('航向运动一致性 FAIL' in item['text'] for item in summary))
 
     def test_matching_summary_does_not_attribute_zero_points_or_unchecked_defaults(self):
         for extra, expected in [('map_checked=0 map_points=0', '未确认执行'),
