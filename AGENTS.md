@@ -26,3 +26,9 @@ The local newer dependency hid this mistake. Keep the checks above in future wor
 
 - Changes to Safety, lidar diagnostics, incident capture or relevant configuration must update the diagnostic parser and regression cases, then review the contract before running `python3 scripts/check_diagnostic_contract.py --update`. Do not merely refresh hashes. CMake configuration and CTest check the reviewed contract.
 - Keep the incident guide and diagnostic output aligned with actual evidence, build markers and coverage limits; distinguish source checks from validation of the running binary.
+
+# 代码修改前同步
+
+- 每次开始新的代码修改任务前，确认仓库、分支、目标上游及工作区和暂存区状态，先 fetch 目标远端；干净且可快进时使用 `git pull --ff-only`，否则通过安全整合或基于最新目标上游的隔离工作树完成同步后再修改。同步失败时不得在未同步的旧代码上继续新代码编辑。
+- 保留已有本地和暂存改动；不得擅自丢弃、覆盖、stash、强推或切换无关分支。目标上游不明确时先确定正确目标，不猜测分支。
+- 修改固定依赖前读取工作区根目录的 `../../AGENTS.md` 和 `workspace.repos`，并继续遵守本文件的依赖提交、接口验证与交付约束。

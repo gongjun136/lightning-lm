@@ -8,8 +8,8 @@
 
 1. @subpage localization_troubleshooting "定位失效：按流水线排查"：先定位输入、LIO、地图匹配、融合还是最终发布层。
 2. @subpage timing_contracts "时间一致性与回归"：核对传感器、轮速、消费及输出的时间边界。
-3. @subpage resource_diagnostics "资源、处理时间与排队延迟"：区分算法耗时和等待时间，检查主 Orin 运行证据。
-4. @subpage causal_diagnostics "因果链与时间关联"：沿输入、队列、状态和输出寻找关联，使用可复现对照。
+3. @subpage resource_diagnostics "资源、处理时间与排队延迟"：查询资源字段、单位与计算及排队耗时口径。
+4. @subpage causal_diagnostics "因果链与时间关联"：联合资源、耗时和业务事件分析输入、队列与状态变化，并使用可复现对照。
 5. @subpage compute_budget "点数预算与计算回归"：理解观测点选择、负载降级与恢复条件。
 6. @subpage speed_smoothing_shadow "速度平滑影子诊断"：区分记录的候选输出和实际业务输出。
 7. @subpage dtc_delivery "DTC 与安全状态接口交付"：核对源 DTC、兼容安全状态、标定与验收边界。
