@@ -28,7 +28,7 @@ namespace lightning::diagnostics {
 namespace {
 namespace fs = std::filesystem;
 constexpr std::uint64_t MiB = 1024 * 1024;
-constexpr unsigned MaxValidation = 2000, MaxSource = 1000000;
+constexpr unsigned MaxValidation = 50000, MaxSource = 1000000, EpisodeLimit = 3;
 constexpr char Owner[] = "LIGHTNING_LM_MATCH_FAILURE_V1";
 using Recorder = MatchFailureRecorder;
 std::int64_t Now(bool wall = false) {
@@ -66,8 +66,34 @@ const char* ReasonName(Recorder::Reason reason) {
         case Recorder::Reason::kBounds: return "map_bounds";
         case Recorder::Reason::kGravity: return "map_gravity";
         case Recorder::Reason::kOdometry: return "raw_odometry_disagreement";
+        case Recorder::Reason::kSearch: return "global_search_rejected";
+        case Recorder::Reason::kUnavailable: return "initialization_unavailable";
+        case Recorder::Reason::kConfirmation: return "awaiting_confirmation";
         default: return "registration_rejected";
     }
+}
+const char* PhaseName(Recorder::Phase phase) {
+    return phase == Recorder::Phase::kStartup ? "startup" :
+           phase == Recorder::Phase::kGlobalRelocalization ? "global_relocalization" : "tracking";
+}
+const char* StageName(Recorder::Stage stage) {
+    switch (stage) {
+        case Recorder::Stage::kSeedRegistration: return "seed_registration";
+        case Recorder::Stage::kSearch: return "search";
+        case Recorder::Stage::kMapPrecheck: return "map_precheck";
+        case Recorder::Stage::kRefinement: return "refinement";
+        case Recorder::Stage::kMapValidation: return "map_validation";
+        case Recorder::Stage::kConfirmation: return "confirmation";
+        case Recorder::Stage::kUnavailable: return "unavailable";
+        default: return "tracking_acceptance";
+    }
+}
+const char* BackendName(Recorder::Backend backend) {
+    return backend == Recorder::Backend::kPlaneIcp ? "plane_icp" : backend == Recorder::Backend::kNone ? "none" : "ndt";
+}
+std::string Detail(const Recorder::Frame& frame) {
+    const auto end = std::find(frame.rejection_reason.begin(), frame.rejection_reason.end(), '\0');
+    return end == frame.rejection_reason.begin() ? ReasonName(frame.reason) : std::string(frame.rejection_reason.begin(),end);
 }
 void Sync(const fs::path& path, bool directory = false) {
     int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | (directory ? O_DIRECTORY : 0));
@@ -153,13 +179,22 @@ class MatchFailureRecorder::Impl {
         enum State { kEmpty, kReady, kWriting } state = kEmpty;
         Frame frame; std::vector<SavedPoint> points;
         std::uint64_t source_points = 0, sequence = 0, validation_points = 0;
+        std::uint64_t episode_id = 0;
+        unsigned episode_index = 0, selection = 0;
         std::int64_t wall = 0; bool downsampled = false;
     };
     Options options; Context context; CloudView map;
     std::array<Slot, 2> slots;
     std::mutex mutex; std::condition_variable wake; std::thread writer;
     std::atomic<bool> running{false}, stopping{false};
-    std::atomic<std::int64_t> last_capture{0}, good_since{0};
+    static constexpr std::int64_t RecoveryMaxGapNs = 500000000;
+    std::atomic<std::int64_t> last_capture{0}, good_since{0}, last_good_observation{0};
+    std::atomic<bool> recovered{false};
+    std::uint64_t episode_id = 1, episode_captures = 0, episode_limited = 0;
+    Frame last_admitted_frame{}, latest_observation{};
+    bool have_observation = false;
+    std::int64_t latest_observation_wall = 0;
+    double best_overlap = -1, best_retrieval = -std::numeric_limits<double>::infinity();
     std::atomic<std::uint64_t> received{0}, admitted{0}, saved{0}, suppressed{0}, busy{0}, queue_full{0}, oversize{0}, disk_rejected{0}, map_rejected{0}, errors{0};
     const std::int64_t session = Now(true);
     int lock_fd = -1; std::string scheduling = "null", map_identity, last_error;
@@ -188,19 +223,34 @@ class MatchFailureRecorder::Impl {
     }
     void Observe(bool accepted) {
         if (!running) return;
-        if (!accepted) { good_since = 0; return; }
-        const auto now = Now(); std::int64_t zero = 0; good_since.compare_exchange_strong(zero, now);
-        if (now - good_since.load() >= options.recovery_seconds * 1e9) last_capture = 0;
+        if (!accepted) { good_since = 0; last_good_observation = 0; return; }
+        const auto now = Now();
+        const auto previous = last_good_observation.exchange(now);
+        if (!previous || now - previous > RecoveryMaxGapNs) good_since = now;
+        else { std::int64_t zero = 0; good_since.compare_exchange_strong(zero, now); }
+        if (now - good_since.load() >= options.recovery_seconds * 1e9) recovered = true;
     }
     bool Capture(const CloudView& input, const Frame& frame) {
         if (!running || stopping) return false;
         ++received; const auto now = Now();
-        if (last_capture && now - last_capture.load() < options.cooldown_seconds * 1e9) { ++suppressed; return false; }
         if (!input.data || !input.point || !input.size || input.size > MaxSource ||
-            frame.validation_points > MaxValidation || !frame.validation_stride) { ++oversize; return false; }
+            frame.validation_points > MaxValidation || !frame.validation_stride ||
+            (frame.evaluated && frame.validation_points > 0 && !frame.pose_available[2])) { ++oversize; return false; }
         std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
         if (!lock.owns_lock()) { ++busy; return false; }
-        if (last_capture && now - last_capture.load() < options.cooldown_seconds * 1e9) { ++suppressed; return false; }
+        if (recovered.exchange(false)) {
+            ++episode_id; episode_captures = 0; last_capture = 0;
+            best_overlap = -1; best_retrieval = -std::numeric_limits<double>::infinity();
+        }
+        latest_observation = frame; latest_observation_wall = Now(true); have_observation = true;
+        if (episode_captures >= EpisodeLimit) { ++episode_limited; ++suppressed; return false; }
+        const bool changed = frame.phase != last_admitted_frame.phase || frame.stage != last_admitted_frame.stage ||
+            frame.reason != last_admitted_frame.reason ||
+            std::strncmp(frame.rejection_reason.data(),last_admitted_frame.rejection_reason.data(),frame.rejection_reason.size()) != 0;
+        const bool improved = (frame.candidate_available && !last_admitted_frame.candidate_available) ||
+            (frame.evaluated && frame.validation_points > 0 && frame.overlap >= best_overlap + .05) ||
+            (std::isfinite(frame.retrieval_score) && frame.retrieval_score >= best_retrieval + .10);
+        if (episode_captures && !changed && !improved) { ++suppressed; return false; }
         Slot* slot = nullptr; for (auto& item : slots) if (item.state == Slot::kEmpty) { slot = &item; break; }
         if (!slot) { ++queue_full; return false; }
         slot->points.clear(); slot->validation_points = 0;
@@ -219,11 +269,20 @@ class MatchFailureRecorder::Impl {
             ++oversize; slot->points.clear(); return false;
         }
         slot->frame = frame; slot->source_points = input.size; slot->downsampled = display_stride > 1;
+        slot->episode_id = episode_id; slot->episode_index = static_cast<unsigned>(++episode_captures);
+        slot->selection = slot->episode_index == 1 ? 0 : changed ? 1 : 2;
+        last_admitted_frame = frame;
+        if (frame.evaluated && frame.validation_points > 0) best_overlap = std::max(best_overlap,frame.overlap);
+        if (std::isfinite(frame.retrieval_score)) best_retrieval = std::max(best_retrieval,frame.retrieval_score);
         slot->wall = Now(true); slot->sequence = ++admitted; slot->state = Slot::kReady;
         last_capture = now; wake.notify_one(); return true;
     }
     void Status() {
         const Stats s = GetStats();
+        Frame latest; bool has_latest; std::int64_t latest_wall;
+        std::uint64_t episode, captures, limited;
+        { std::lock_guard<std::mutex> lock(mutex); latest=latest_observation; has_latest=have_observation;
+          latest_wall=latest_observation_wall; episode=episode_id; captures=episode_captures; limited=episode_limited; }
         std::ostringstream out; out << "{\"schema\":1,\"kind\":\"lightning_match_failure_collector\",\"pid\":" << getpid()
             << ",\"session_start_wall_ns\":" << session << ",\"run_dir\":" << Json(context.run_dir)
             << ",\"running\":" << (running && !stopping ? "true" : "false")
@@ -233,6 +292,16 @@ class MatchFailureRecorder::Impl {
             << ",\"rejected_disk\":" << s.rejected_disk << ",\"rejected_map\":" << s.rejected_map
             << ",\"writer_errors\":" << s.writer_errors << ",\"last_error\":" << Json(last_error)
             << ",\"protection_days\":" << options.protect_days << ",\"disk_mb\":" << options.disk_mb
+            << ",\"episode\":{\"id\":" << episode << ",\"admitted\":" << captures << ",\"limit\":" << EpisodeLimit
+            << ",\"suppressed_at_limit\":" << limited << ",\"recovery_seconds\":" << Number(options.recovery_seconds)
+            << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "},\"latest_observation\":";
+        if (!has_latest) out << "null";
+        else out << "{\"wall_ns\":" << latest_wall << ",\"sensor_stamp_ns\":" << latest.sensor_stamp_ns
+            << ",\"phase\":" << Json(PhaseName(latest.phase)) << ",\"stage\":" << Json(StageName(latest.stage))
+            << ",\"rejection_reason\":" << Json(Detail(latest)) << ",\"candidate_available\":" << (latest.candidate_available ? "true" : "false")
+            << ",\"candidate_id\":" << latest.candidate_id << ",\"retrieval_score\":" << Number(latest.retrieval_score)
+            << ",\"map_evaluated\":" << (latest.evaluated ? "true" : "false") << ",\"map_overlap\":" << Number(latest.overlap) << "}";
+        out
             << ",\"writer_scheduling\":" << scheduling << "}\n";
         const fs::path path = fs::path(context.directory)/"collector_status.json";
         WriteText(path.string()+".tmp", out.str()); fs::rename(path.string()+".tmp", path);
@@ -267,8 +336,11 @@ class MatchFailureRecorder::Impl {
     void Save(const Slot& slot) {
         const Frame& f = slot.frame;
         std::array<double,3> low, high; low.fill(std::numeric_limits<double>::infinity()); high.fill(-std::numeric_limits<double>::infinity());
-        for (const auto& p : slot.points) for (const auto* pose : {&f.guess, &f.ndt, &f.check}) {
-            const auto transformed = Transform(p.point, *pose);
+        const std::array<const Pose*,3> poses{{&f.guess,&f.ndt,&f.check}};
+        const bool any_pose = f.pose_available[0] || f.pose_available[1] || f.pose_available[2];
+        for (const auto& p : slot.points) for (unsigned pose_index=0;pose_index<3;++pose_index) {
+            if (!f.pose_available[pose_index]) continue;
+            const auto transformed = Transform(p.point, *poses[pose_index]);
             for (unsigned axis = 0; axis < 3; ++axis) {
                 if (!std::isfinite(transformed[axis])) throw std::runtime_error("nonfinite captured pose");
                 low[axis] = std::min(low[axis], transformed[axis]); high[axis] = std::max(high[axis], transformed[axis]);
@@ -276,13 +348,13 @@ class MatchFailureRecorder::Impl {
         }
         // Include float conversion error in PCL's transformed XYZ as well as the
         // accepted radius. This crop preserves every possible nearest hit.
-        for (unsigned k = 0; k < 3; ++k) {
+        for (unsigned k = 0; any_pose && k < 3; ++k) {
             const double margin = f.nearest_neighbor_distance_m + 1e-4 + 2*std::numeric_limits<float>::epsilon()*std::max(std::abs(low[k]), std::abs(high[k]));
             low[k] -= margin; high[k] += margin;
         }
-        auto inside = [&](const Point& p) { return Finite(p) && p.x >= low[0] && p.x <= high[0] && p.y >= low[1] && p.y <= high[1] && p.z >= low[2] && p.z <= high[2]; };
+        auto inside = [&](const Point& p) { return any_pose && Finite(p) && p.x >= low[0] && p.x <= high[0] && p.y >= low[1] && p.y <= high[1] && p.z >= low[2] && p.z <= high[2]; };
         std::uint64_t map_points = 0;
-        for (std::size_t i = 0; i < map.size; ++i) if (inside(map.point(map.data, i))) ++map_points;
+        for (std::size_t i = 0; any_pose && i < map.size; ++i) if (inside(map.point(map.data, i))) ++map_points;
         const std::uint64_t needed = slot.points.size()*24 + map_points*12 + context.config_snapshot.size() + 65536;
         if (needed > options.event_mb*MiB) { ++map_rejected; last_error = "local map exceeds complete event budget; evidence was not truncated"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE " << last_error; return; }
         if (!Reserve(needed)) { ++disk_rejected; last_error = "protected evidence/disk budget or minimum free space prevents new capture"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE " << last_error; return; }
@@ -309,22 +381,32 @@ class MatchFailureRecorder::Impl {
               for (const auto& p : slot.points) { char bytes[24]; EncodePoint(bytes, p.point); Put32(bytes+12, p.point.lidar_id); Put32(bytes+16, p.index); Put32(bytes+20, p.validation); scan.write(bytes, sizeof(bytes)); scan_hash.Add(bytes,sizeof(bytes)); throttle(sizeof(bytes)); }
               scan.flush(); if (!scan) throw std::runtime_error("scan write failed"); }
             { std::ofstream target(temporary/"map_local.bin", std::ios::binary);
-              for (std::size_t i = 0; i < map.size; ++i) { const auto p = map.point(map.data, i); if (!inside(p)) continue; char bytes[12]; EncodePoint(bytes,p); target.write(bytes,sizeof(bytes)); map_hash.Add(bytes,sizeof(bytes)); throttle(sizeof(bytes)); }
+              for (std::size_t i = 0; any_pose && i < map.size; ++i) { const auto p = map.point(map.data, i); if (!inside(p)) continue; char bytes[12]; EncodePoint(bytes,p); target.write(bytes,sizeof(bytes)); map_hash.Add(bytes,sizeof(bytes)); throttle(sizeof(bytes)); }
               target.flush(); if (!target) throw std::runtime_error("map write failed"); }
             Sync(temporary/"scan.bin"); Sync(temporary/"map_local.bin");
             std::ostringstream s;
-            s << "{\"schema\":1,\"kind\":\"lightning_match_failure\",\"status\":\"complete\",\"wall_ns\":" << slot.wall
+            s << "{\"schema\":2,\"kind\":\"lightning_match_failure\",\"status\":\"complete\",\"wall_ns\":" << slot.wall
               << ",\"sensor_stamp_ns\":" << f.sensor_stamp_ns << ",\"pid\":" << getpid() << ",\"sequence\":" << slot.sequence
               << ",\"session_start_wall_ns\":" << session << ",\"config_path\":" << Json(context.config_path) << ",\"run_dir\":" << Json(context.run_dir)
               << ",\"synthetic_fixture\":" << (context.synthetic_fixture ? "true" : "false")
+              << ",\"phase\":" << Json(PhaseName(f.phase)) << ",\"stage\":" << Json(StageName(f.stage))
+              << ",\"rejection_reason\":" << Json(Detail(f)) << ",\"candidate_available\":" << (f.candidate_available ? "true" : "false")
+              << ",\"candidate_id\":" << f.candidate_id << ",\"retrieval_score\":" << Number(f.retrieval_score)
+              << ",\"refinement_backend\":" << Json(BackendName(f.refinement_backend))
+              << ",\"query\":{\"points\":" << f.query_points << ",\"descriptors\":" << f.query_descriptors << ",\"search_ms\":" << Number(f.search_ms) << "}"
+              << ",\"episode\":{\"id\":" << slot.episode_id << ",\"index\":" << slot.episode_index << ",\"limit\":" << EpisodeLimit
+              << ",\"selection\":" << Json(slot.selection == 0 ? "first_failure" : slot.selection == 1 ? "reason_changed" : "candidate_improved")
+              << ",\"recovery_seconds\":" << Number(options.recovery_seconds)
+              << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "}"
               << ",\"reason\":" << Json(ReasonName(f.reason)) << ",\"build\":{\"commit\":" << Json(context.build_commit) << ",\"dirty\":" << Json(context.build_dirty) << ",\"built_utc\":" << Json(context.build_utc) << "}"
-              << ",\"poses\":{\"guess\":" << Array(f.guess) << ",\"ndt\":" << Array(f.ndt) << ",\"check\":" << Array(f.check) << "}"
+              << ",\"poses\":{\"guess\":" << (f.pose_available[0] ? Array(f.guess) : "null") << ",\"ndt\":" << (f.pose_available[1] ? Array(f.ndt) : "null") << ",\"check\":" << (f.pose_available[2] ? Array(f.check) : "null") << "}"
+              << ",\"pose_available\":{\"guess\":" << (f.pose_available[0] ? "true" : "false") << ",\"ndt\":" << (f.pose_available[1] ? "true" : "false") << ",\"check\":" << (f.pose_available[2] ? "true" : "false") << "}"
               << ",\"pose_frame\":\"internal_map_from_primary_lidar_at_scan_end\",\"map\":{\"path\":" << Json(context.map_path)
               << ",\"source_points\":" << map.size << ",\"bounds_min\":" << Array(context.map_min) << ",\"bounds_max\":" << Array(context.map_max)
-              << ",\"local_bounds_min\":" << Array(low) << ",\"local_bounds_max\":" << Array(high) << ",\"local_points\":" << map_points
-              << ",\"coverage\":\"all_possible_neighbors_for_saved_scan_and_all_three_poses\",\"identity_sha256\":" << Json(map_identity)
+              << ",\"local_bounds_min\":" << (any_pose ? Array(low) : "null") << ",\"local_bounds_max\":" << (any_pose ? Array(high) : "null") << ",\"local_points\":" << map_points
+              << ",\"coverage\":" << Json(any_pose ? "all_possible_neighbors_for_saved_scan_and_available_poses" : "unavailable_no_candidate") << ",\"identity_sha256\":" << Json(map_identity)
               << ",\"identity_encoding\":\"loaded_map_ordered_xyz_f32_le\",\"record_bytes\":12}"
-              << ",\"scan\":{\"source_points\":" << slot.source_points << ",\"saved_points\":" << slot.points.size() << ",\"validation_points\":" << slot.validation_points
+              << ",\"scan\":{\"frame\":\"primary_lidar_at_scan_end\",\"source_points\":" << slot.source_points << ",\"saved_points\":" << slot.points.size() << ",\"validation_points\":" << slot.validation_points
               << ",\"display_downsampled\":" << (slot.downsampled ? "true" : "false") << ",\"record_bytes\":24,\"encoding\":\"little_endian_xyz_f32_lidar_u32_source_index_u32_validation_u32\"}"
               << ",\"criterion\":{\"evaluated\":" << (f.evaluated ? "true" : "false")
               << ",\"sample_replay_available\":" << (f.evaluated && f.validation_points > 0 ? "true" : "false")
@@ -332,7 +414,14 @@ class MatchFailureRecorder::Impl {
               << ",\"overlap\":" << Number(f.overlap) << ",\"inside_xy\":" << Number(f.inside_xy) << ",\"inside_xyz\":" << Number(f.inside_xyz) << ",\"gravity_cos\":" << Number(f.gravity_cos)
               << ",\"min_overlap\":" << Number(f.min_overlap) << ",\"min_inside_xy\":" << Number(f.min_inside_xy) << ",\"min_gravity_cos\":" << Number(f.min_gravity_cos)
               << ",\"nearest_neighbor_distance_m\":" << Number(f.nearest_neighbor_distance_m) << ",\"bounds_margin_m\":" << Number(f.bounds_margin_m) << "}"
-              << ",\"registration\":{\"confidence\":" << Number(f.confidence) << ",\"iterations\":" << f.iterations << ",\"raw_odom_valid\":" << (f.raw_odom_valid ? "true" : "false") << ",\"raw_odom_delta\":" << Number(f.raw_odom_delta) << "}"
+              << ",\"registration\":{\"confidence\":" << Number(f.confidence) << ",\"min_confidence\":" << Number(f.min_confidence) << ",\"iterations\":" << f.iterations << ",\"raw_odom_valid\":" << (f.raw_odom_valid ? "true" : "false") << ",\"raw_odom_delta\":" << Number(f.raw_odom_delta) << "},\"plane_icp\":";
+            if (!f.plane_icp.available) s << "null";
+            else s << "{\"matches\":" << f.plane_icp.matches << ",\"inlier_ratio\":" << Number(f.plane_icp.inlier_ratio)
+                << ",\"rmse\":" << Number(f.plane_icp.rmse) << ",\"condition_number\":" << Number(f.plane_icp.condition_number)
+                << ",\"translation_correction_m\":" << Number(f.plane_icp.translation_correction_m)
+                << ",\"rotation_correction_deg\":" << Number(f.plane_icp.rotation_correction_deg)
+                << ",\"converged\":" << (f.plane_icp.converged ? "true" : "false") << "}";
+            s
               << ",\"files\":{\"scan\":\"scan.bin\",\"map\":\"map_local.bin\",\"config\":" << (context.config_snapshot.empty() ? "null" : "\"config.yaml\"") << "},\"files_sha256\":{\"scan\":" << Json(scan_hash.Finish()) << ",\"map\":" << Json(map_hash.Finish()) << "}"
               << ",\"protection_days\":" << options.protect_days << ",\"writer_scheduling\":" << scheduling << "}\n";
             WriteText(temporary/"summary.json", s.str()); Sync(temporary,true);

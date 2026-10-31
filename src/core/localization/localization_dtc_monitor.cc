@@ -145,6 +145,7 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
         poses_.clear(); epoch_ = epoch;
         consistency_pass_seen_ = false;
         yaw_pass_seen_ = false;
+        continuous_output_start_ = now;
     }
     if (!poses_.empty() && stamp <= poses_.back().stamp) return;
     if (!poses_.empty()) {
@@ -155,8 +156,11 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
         if (std::abs(stamp_step - arrival_step) > config_.max_input_gap_sec) {
             consistency_pass_seen_ = false;
             yaw_pass_seen_ = false;
+            continuous_output_start_ = now;
         }
     }
+    if (!output_seen_ || Age(now, output_time_) > config_.output_timeout_sec)
+        continuous_output_start_ = now;
     output_time_ = evaluation_time_ = now;
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
@@ -200,16 +204,37 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
 }
 Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
+    TrackingEvidence tracking;
+    tracking.available = false;  // Standalone quality checks have no map-match proof for radar suppression.
+    tracking.initialized = output_seen_;
+    tracking.confirmed_lost = lost;
+    return EvaluateLocked(tracking, now);
+}
+Snapshot Monitor::Evaluate(const TrackingEvidence& tracking, Clock::time_point now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return EvaluateLocked(tracking, now);
+}
+Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_point now) const {
     Snapshot out = snapshot_;
+    const bool lost = tracking.confirmed_lost;
     if (!poses_.empty()) {
         if (!speeds_.empty()) out.speed_stamp_lag_sec = poses_.back().stamp - speeds_.back().stamp;
         if (!gyros_.empty()) out.gyro_stamp_lag_sec = poses_.back().stamp - gyros_.back().stamp;
     }
     // [dtc-output-severity]
-    const bool stale = output_seen_ ? Age(now, output_time_) > config_.output_timeout_sec : Age(now, start_) > config_.startup_grace_sec;
-    out.severe = lost || stale;
+    const bool stale = output_seen_ ? Age(now, output_time_) > config_.output_timeout_sec : tracking.initialized;
+    out.startup_pending = !tracking.initialized;
+    out.startup_age_sec = std::max(0.0, Age(now, start_));
+    out.startup_expired = out.startup_pending && out.startup_age_sec > config_.startup_grace_sec;
+    out.severe = lost || out.startup_expired;
     out.output_stale = stale;
     out.localization_lost = lost;
+    out.match_evidence_available = tracking.available;
+    out.output_gate_open = tracking.output_gate_open;
+    out.match_stale = tracking.match_stale;
+    out.latest_match_valid = tracking.latest_match_valid;
+    out.valid_match_age_sec = tracking.valid_match_age_sec;
+    out.output_continuous = output_seen_ && !stale && Age(output_time_, continuous_output_start_) >= config_.window_sec;
     // [dtc-output-severity]
     const double missing = std::numeric_limits<double>::infinity();
     out.output_age_sec = output_seen_ ? Age(now, output_time_) : missing;
@@ -263,6 +288,8 @@ Snapshot Monitor::Evaluate(bool lost, Clock::time_point now) const {
 // [dtc-safety-priority]
 int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool radar_all_pass, bool mask_radar_fault) {
     if (loc.severe || all_failed) return -9;
+    if (loc.startup_pending || loc.output_stale ||
+        (loc.match_evidence_available && !loc.output_gate_open)) return 4;
     if (loc.confirmed_failure || loc.observations[0].condition == kFail ||
         loc.observations[1].condition != kPass) return 4;
     if (loc.observations[0].condition != kPass && !loc.consistency_unknown_tolerated &&
@@ -271,12 +298,24 @@ int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool 
     return 0;
 }
 // [dtc-safety-priority]
+bool HealthyLocalizationForDegradedRadar(const Snapshot& loc) {
+    // UNKNOWN grace is not positive evidence for running with a degraded radar.
+    return !loc.severe && !loc.confirmed_failure && !loc.startup_pending && !loc.output_stale &&
+        loc.output_continuous && loc.match_evidence_available && loc.output_gate_open &&
+        !loc.match_stale && loc.latest_match_valid && std::isfinite(loc.valid_match_age_sec) &&
+        loc.covariance_valid && !loc.pose_unobservable && loc.observations[1].condition == kPass &&
+        loc.yaw_condition == kPass &&
+        (loc.observations[0].condition == kPass || loc.optional_can_unavailable);
+}
 SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_failed,
                                      bool radar_fault, bool radar_all_pass,
                                      bool reporting_enabled, bool mask_radar_fault) {
     SafetyDecision decision;
     decision.raw = SafetyValue(localization, all_failed, radar_fault, radar_all_pass);
-    decision.selected = SafetyValue(localization, all_failed, radar_fault, radar_all_pass, mask_radar_fault);
+    decision.partial_radar_suppressed = !all_failed && !mask_radar_fault && decision.raw == 2 &&
+        HealthyLocalizationForDegradedRadar(localization);
+    decision.selected = SafetyValue(localization, all_failed, radar_fault, radar_all_pass,
+                                   mask_radar_fault || decision.partial_radar_suppressed);
     decision.published = reporting_enabled ? decision.selected : 0;
     return decision;
 }

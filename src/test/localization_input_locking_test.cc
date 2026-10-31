@@ -11,6 +11,9 @@ namespace lightning::loc {
 
 class LocalizationLockingTestPeer {
    public:
+    static std::shared_lock<std::shared_mutex> LockLifecycleReader(Localization& localization) {
+        return std::shared_lock<std::shared_mutex>(localization.lifecycle_mutex_);
+    }
     static std::unique_lock<std::mutex> LockBackend(Localization& localization) {
         return std::unique_lock<std::mutex>(localization.processing_mutex_);
     }
@@ -65,6 +68,26 @@ int main() {
     using namespace std::chrono_literals;
     using lightning::loc::Localization;
     using lightning::loc::LocalizationLockingTestPeer;
+
+    // An external relocalization must drain an in-flight map callback before
+    // resetting its seed/PGO; otherwise that older GOOD can undo the reset.
+    Localization resetting;
+    auto map_callback = LocalizationLockingTestPeer::LockLifecycleReader(resetting);
+    std::promise<void> reset_started;
+    auto reset_started_future = reset_started.get_future();
+    auto reset = std::async(std::launch::async, [&] {
+        reset_started.set_value();
+        resetting.SetExternalPose(Eigen::Quaterniond::Identity(), Eigen::Vector3d::Zero());
+    });
+    const bool started = reset_started_future.wait_for(2s) == std::future_status::ready;
+    const bool drained = reset.wait_for(100ms) != std::future_status::ready;
+    map_callback.unlock();
+    const bool finished = reset.wait_for(2s) == std::future_status::ready;
+    if (!started || !drained || !finished) {
+        std::cerr << "external pose reset did not drain the previous map callback" << std::endl;
+        return 1;
+    }
+    reset.get();
 
     Localization localization;
     auto backend_lock = LocalizationLockingTestPeer::LockBackend(localization);

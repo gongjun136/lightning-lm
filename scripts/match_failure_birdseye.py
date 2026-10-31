@@ -11,11 +11,11 @@ from pathlib import Path
 import sys
 import tempfile
 
-SCHEMA = 1
+SCHEMA = 2
 KIND = 'lightning_match_failure'
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 MAX_SUMMARY_BYTES = 1024 * 1024
-MAX_SCAN_POINTS = 52000
+MAX_SCAN_POINTS = 100000
 MAX_MAP_BYTES = 64 * 1024 * 1024
 MAX_CANDIDATES = 256
 POSES = ('guess', 'ndt', 'check')
@@ -33,7 +33,7 @@ def read_summary(directory):
     def invalid(value):
         raise ValueError('nonfinite JSON value: ' + value)
     value = json.loads(path.read_text(encoding='utf-8'), parse_constant=invalid)
-    if not isinstance(value, dict) or value.get('kind') != KIND or value.get('schema') != SCHEMA:
+    if not isinstance(value, dict) or value.get('kind') != KIND or value.get('schema') not in (1, SCHEMA):
         raise ValueError('unsupported match-failure evidence schema')
     if value.get('status') != 'complete':
         raise ValueError('match-failure evidence is not complete')
@@ -120,13 +120,17 @@ def load_points(directory, summary, np):
         raise ValueError('original overlap validation sample is missing/incomplete')
     if not criterion.get('evaluated') and validation.any():
         raise ValueError('unevaluated criterion unexpectedly has validation samples')
-    if summary.get('map', {}).get('coverage') != 'all_possible_neighbors_for_saved_scan_and_all_three_poses':
-        raise ValueError('local map does not guarantee all 3D neighbours for the three saved poses')
-    distance = _finite(criterion.get('nearest_neighbor_distance_m'), 'distance threshold', positive=True)
-    if distance > 10:
-        raise ValueError('distance threshold exceeds visualization limit')
+    extended = summary['schema'] == 2
     poses = {}
     for name in POSES:
+        if extended:
+            available = summary.get('pose_available', {}).get(name)
+            if not isinstance(available, bool):
+                raise ValueError('pose availability is missing: ' + name)
+            if not available:
+                if summary.get('poses', {}).get(name) is not None:
+                    raise ValueError('unavailable pose must be null: ' + name)
+                continue
         matrix = np.asarray(summary.get('poses', {}).get(name), dtype=np.float64)
         if matrix.size != 16 or not np.isfinite(matrix).all():
             raise ValueError('missing/invalid pose: ' + name)
@@ -134,6 +138,18 @@ def load_points(directory, summary, np):
         if not np.allclose(matrix[3], [0, 0, 0, 1], atol=1e-7) or not np.allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-4) or abs(np.linalg.det(matrix[:3, :3]) - 1) > 1e-4:
             raise ValueError('pose is not a rigid transform: ' + name)
         poses[name] = matrix
+    if extended and (not isinstance(summary.get('candidate_available'), bool) or summary['candidate_available'] != bool(poses)):
+        raise ValueError('candidate availability disagrees with saved poses')
+    if criterion.get('evaluated') and 'check' not in poses:
+        raise ValueError('evaluated overlap has no actual check pose')
+    coverage = summary.get('map', {}).get('coverage')
+    expected = ('all_possible_neighbors_for_saved_scan_and_available_poses' if extended and poses else
+                'unavailable_no_candidate' if extended else 'all_possible_neighbors_for_saved_scan_and_all_three_poses')
+    if coverage != expected or (not poses and len(cloud)):
+        raise ValueError('local map coverage does not agree with available poses')
+    distance = _finite(criterion.get('nearest_neighbor_distance_m'), 'distance threshold', positive=True) if poses else None
+    if distance is not None and distance > 10:
+        raise ValueError('distance threshold exceeds visualization limit')
     return scan, cloud, validation, poses, distance
 
 
@@ -224,45 +240,61 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         scan, cloud, validation, poses, distance = load_points(directory, summary, np)
         bounds = (np.asarray(summary['map'].get('bounds_min'), dtype=np.float64),
                   np.asarray(summary['map'].get('bounds_max'), dtype=np.float64))
-        if any(value.shape != (3,) or not np.isfinite(value).all() for value in bounds) or np.any(bounds[0] > bounds[1]):
+        if poses and (any(value.shape != (3,) or not np.isfinite(value).all() for value in bounds) or np.any(bounds[0] > bounds[1])):
             raise ValueError('invalid original map bounds')
-        comparison = compare(scan, cloud, validation, poses, distance, np, tree_type, bounds)
+        comparison = compare(scan, cloud, validation, poses, distance, np, tree_type, bounds) if poses else {}
         evaluated = summary['criterion'].get('evaluated') is True
         replay = evaluated and bool(validation.any())
         original = _finite(summary['criterion'].get('overlap'), 'recorded overlap') if evaluated else None
         exact = (abs(comparison['check']['overlap'] - original) <= max(1e-6, 0.01 / int(validation.sum()))) if replay else None
-        recorded_reason = summary.get('reason')
+        recorded_reason = summary.get('rejection_reason') or summary.get('reason')
         no_sample_reason = 'map check has no usable samples; rejection predicate not established'
-        display_reason = recorded_reason if replay else no_sample_reason
+        map_reason = summary.get('reason') in ('map_bounds', 'map_overlap', 'map_gravity')
+        display_reason = recorded_reason if replay or (summary.get('schema') == 2 and not map_reason) else no_sample_reason
         titles = dict(guess='Initial guess', ndt='NDT result', check='Actual overlap-check pose')
-        comparison['ndt']['candidate_status'] = 'recorded_registration_candidate'
-        comparison['check']['candidate_status'] = 'recorded_overlap_check'
-        if recorded_reason == 'registration_rejected':
-            titles['ndt'] = 'NDT attempt\n(unconfirmed; may remain initial guess)'
+        if 'ndt' in comparison:
+            comparison['ndt']['candidate_status'] = 'recorded_registration_candidate'
+        if 'check' in comparison:
+            comparison['check']['candidate_status'] = 'recorded_overlap_check'
+        if summary.get('refinement_backend') == 'plane_icp':
+            titles['ndt'] = 'Plane ICP refinement candidate'
+        if summary.get('reason') == 'registration_rejected' and 'ndt' in comparison:
+            attempt = 'Plane ICP' if summary.get('refinement_backend') == 'plane_icp' else 'NDT'
+            titles['ndt'] = attempt + ' attempt\n(unconfirmed; may remain initial guess)'
             comparison['ndt']['candidate_status'] = 'unconfirmed'
-        if not replay:
+        if not replay and 'check' in comparison:
             qualifier = 'overlap not evaluated' if not evaluated else 'no usable overlap samples'
             titles['check'] = 'Acceptance candidate\n(' + qualifier + ')'
             comparison['check']['candidate_status'] = 'unconfirmed'
-        for name in POSES:
+        for name in comparison:
             comparison[name]['label'] = titles[name]
         result = dict(schema=1, kind='match_failure_birdseye', status='generated', cached=False,
                       fingerprint=fingerprint, evidence=str(directory), wall_ns=summary.get('wall_ns'),
                       sensor_stamp_ns=summary.get('sensor_stamp_ns'), pid=summary.get('pid'), run_dir=summary.get('run_dir'),
                       reason=display_reason, recorded_reason=recorded_reason, display_reason=display_reason,
+                      phase=summary.get('phase', 'tracking'), stage=summary.get('stage', 'tracking_acceptance'),
+                      candidate_available=bool(poses), candidate_id=summary.get('candidate_id'),
+                      retrieval_score=summary.get('retrieval_score'), refinement_backend=summary.get('refinement_backend', 'ndt'),
+                      registration=summary.get('registration', {}), episode=summary.get('episode', {}),
+                      query=summary.get('query', {}), plane_icp=summary.get('plane_icp'),
+                      candidate_coverage='one_representative_attempt_not_all_topk',
+                      visualization_mode='map_overlay' if poses else 'sensor_only',
                       synthetic_fixture=summary.get('synthetic_fixture') is True,
                       original_sample_replay_available=replay, poses=summary['poses'],
                       provenance=dict(summary=str(directory / 'summary.json'), scan=str(scan_path), map=str(map_path),
                                       map_identity_sha256=summary.get('map', {}).get('identity_sha256'), build=summary.get('build'),
-                                      renderer_version=RENDER_VERSION, distance_dimension=3, map_coverage=summary['map']['coverage'],
+                                      renderer_version=RENDER_VERSION, distance_dimension=3 if poses else None, map_coverage=summary['map']['coverage'],
                                       verified_file_sha256=hashes, score_arithmetic='double_transform_float32_query_and_squared_distance'),
                       criterion=summary['criterion'], original_check_overlap=original,
                       check_score_matches_recorded=exact, comparison={name: {k: v for k, v in values.items() if k not in ('xyz', 'hit')}
                                                                   for name, values in comparison.items()},
                       display=dict(z_min=z_min, z_max=z_max, height_filter_affects_score=False,
+                                   frame='internal_map' if poses else summary['scan'].get('frame', 'primary_lidar_at_scan_end'),
+                                   map_bounds_outline=bool(poses) and len(cloud) == 0,
                                    source_scan_points=summary['scan'].get('source_points'), saved_scan_points=len(scan),
                                    validation_points=int(validation.sum()), display_downsampled=summary['scan'].get('display_downsampled')),
-                      warning=NOTE, image=str(output / 'comparison.png'), html=str(output / 'index.html'), analysis=str(cached_path))
+                      warning=NOTE if poses else 'No localization candidate: sensor-frame scan only; map alignment and overlap are unavailable.',
+                      image=str(output / 'comparison.png'), html=str(output / 'index.html'), analysis=str(cached_path))
         def visible(points):
             mask = np.ones(len(points), dtype=bool)
             if z_min is not None:
@@ -274,17 +306,26 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         # Only the map display is thinned; the NN test always uses every saved
         # map point and every original validation sample.
         shown_map = shown_map[::max(1, math.ceil(len(shown_map) / 100000))]
-        all_xy = np.concatenate([v['xyz'][:, :2] for v in comparison.values()])
+        all_xy = np.concatenate([v['xyz'][:, :2] for v in comparison.values()]) if poses else scan['xyz'][:, :2]
+        if poses and not len(cloud):
+            all_xy = np.vstack((all_xy, bounds[0][:2], bounds[1][:2]))
         lower, upper = all_xy.min(axis=0) - 2, all_xy.max(axis=0) + 2
-        fig, axes = plt.subplots(1, 3, figsize=(18, 7.3))
+        panels = max(1, len(comparison))
+        fig, axes = plt.subplots(1, panels, figsize=(max(8, panels * 6), 7.3))
+        axes = np.atleast_1d(axes)
         # Reserve explicit header/legend space across matplotlib 3.5+; equal
         # axes can otherwise push their titles into a multiline suptitle.
         fig.subplots_adjust(left=.04, right=.99, top=.79, bottom=.17, wspace=.20)
         try:
-            for axis, name in zip(axes, POSES):
+            for axis, name in zip(axes, comparison):
                 value = comparison[name]
                 shown = visible(value['xyz'])
                 axis.scatter(shown_map[:, 0], shown_map[:, 1], s=.35, c='#aeb4bc', label='Map', rasterized=True)
+                if not len(cloud):
+                    x0, y0 = bounds[0][:2]
+                    x1, y1 = bounds[1][:2]
+                    axis.plot([x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0], '--', color='#7c8794',
+                              linewidth=1, label='Map XY bounds (not map points)')
                 for match, color, label in [(True, '#168559', 'Map neighbour <= threshold'), (False, '#d63d42', 'No map neighbour')]:
                     points = value['xyz'][shown & (value['hit'] == match)]
                     axis.scatter(points[:, 0], points[:, 1], s=2, c=color, label=label, rasterized=True)
@@ -294,14 +335,25 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
                          title=f'{titles[name]}\n3D overlap {value["overlap"]:.4%} ({value["hit_points"]}/{value["validation_points"]})')
                 axis.set_aspect('equal', adjustable='box')
                 axis.grid(alpha=.15)
+            if not poses:
+                axis = axes[0]
+                shown = scan['xyz'][visible(scan['xyz'])]
+                axis.scatter(shown[:, 0], shown[:, 1], s=2, c='#2873ad', label='Saved sensor-frame scan', rasterized=True)
+                axis.scatter([0], [0], marker='^', s=35, c='#203852', label='Sensor origin')
+                axis.set(xlim=(lower[0], upper[0]), ylim=(lower[1], upper[1]), xlabel='Sensor X [m]', ylabel='Sensor Y [m]',
+                         title='No candidate pose available\nNo map overlay or overlap score')
+                axis.set_aspect('equal', adjustable='box')
+                axis.grid(alpha=.15)
             handles, labels = axes[0].get_legend_handles_labels()
             fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(.5, .025), ncol=4, fontsize=9)
-            score_note = (f'recorded check {original:.4%}, reproduced' if exact else
+            score_note = ('No localization candidate; alignment unavailable' if not poses else
+                          f'recorded check {original:.4%}, reproduced' if exact else
                           f'WARNING: recorded check {original:.4%}, recomputation differs' if replay else
                           'No original validation sample: scores use saved display sample only')
             fixture_note = 'SYNTHETIC TEST FIXTURE | ' if summary.get('synthetic_fixture') else ''
-            fig.suptitle(f'{fixture_note}Match-failure comparison | sensor stamp {summary.get("sensor_stamp_ns")}\n'
-                         f'3D NN threshold {distance:g} m | {score_note}\n{NOTE}', fontsize=11, y=.98)
+            threshold_note = f'3D NN threshold {distance:g} m | ' if poses else ''
+            fig.suptitle(f'{fixture_note}{result["phase"]}: {result["stage"]} | sensor stamp {summary.get("sensor_stamp_ns")}\n'
+                         f'{threshold_note}{score_note}\n{result["warning"]}', fontsize=11, y=.98)
             import io
             buffer = io.BytesIO()
             fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
@@ -311,10 +363,11 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
         document = ('<!doctype html><meta charset="utf-8"><title>Match failure comparison</title>'
                     '<style>body{font:16px system-ui;margin:24px;color:#203040}img{width:100%;height:auto}pre{white-space:pre-wrap}</style>'
-                    '<h1>' + fixture_note + 'Match failure: three saved poses</h1><p>' + html.escape(NOTE) + '</p><p>' + html.escape(score_note) + '</p>'
+                    '<h1>' + fixture_note + 'Localization failure evidence</h1><p>' + html.escape(result['warning']) + '</p><p>' + html.escape(score_note) + '</p>'
                     '<p>' + html.escape(str(display_reason)) + '</p>'
                     '<p>Height filtering affects display only. Reported scores use all original validation points and 3D distances.</p>'
-                    '<img alt="Map and scan comparison at initial, NDT and actual check poses" src="data:image/png;base64,' + base64.b64encode(png).decode() + '">'
+                    '<img alt="' + ('Map and scan at available candidate poses' if poses else 'Sensor-frame scan; no map pose available') +
+                    '" src="data:image/png;base64,' + base64.b64encode(png).decode() + '">'
                     '<details><summary>Provenance and scores</summary><pre>' + html.escape(payload) + '</pre></details>')
         _atomic(output / 'comparison.png', png)
         _atomic(output / 'index.html', document.encode('utf-8'))
@@ -330,8 +383,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('evidence', help='complete match-failure directory')
     parser.add_argument('--output-dir')
-    parser.add_argument('--z-min', type=float, help='map-frame display filter only')
-    parser.add_argument('--z-max', type=float, help='map-frame display filter only')
+    parser.add_argument('--z-min', type=float, help='display-frame filter only: map if a pose is available, otherwise sensor')
+    parser.add_argument('--z-max', type=float, help='display-frame filter only: map if a pose is available, otherwise sensor')
     args = parser.parse_args(argv)
     # Standalone use observes the same isolated-core policy as --diagnose.
     from diagnose_localization import low_impact

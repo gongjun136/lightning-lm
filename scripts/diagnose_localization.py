@@ -23,8 +23,10 @@ LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'longitudinal_tolerance_m', 'lateral_tolerance_m', 'yaw_tolerance_deg',
           'distance_tolerance_ratio', 'angle_tolerance_ratio', 'max_input_gap_sec',
           'consistency_unknown_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
-          'motion_window_sec', 'evaluation_timeout_sec', 'config_version')
+          'motion_window_sec', 'evaluation_timeout_sec', 'config_version',
+          'localization_output_max_lidar_age_sec', 'lost_frame_threshold', 'degraded_continuous_output_sec')
 FAULT_CODES = (2, 4, -9)
+CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
 CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
 LAUNCH_LOGS = ('map_manifest.log', 'input_check.log', 'config_resolution.log',
                'launcher.log', 'launch.log', 'launch_compute_config.log')
@@ -669,10 +671,59 @@ def classify(row, limits):
     causes = []
     def add(key, title, evidence, advice, confidence='判据已确认'):
         values = {k: row[k] for k in evidence if k in row}
+        values.update({k: row[k] for k in ('policy_version', 'strict_runstate', 'selected_runstate',
+                      'partial_radar_suppressed', 'partial_radar_suppression_reason', 'localization_healthy_for_degraded') if k in row})
+        if row.get('policy_version') == CONFIRMED_LOSS_POLICY:
+            values.update({k: limits[k] for k in ('output_timeout_sec', 'startup_grace_sec',
+                          'localization_output_max_lidar_age_sec', 'lost_frame_threshold') if k in limits})
         causes.append(dict(code=int(code), key=key, title=title, evidence=values,
                            advice=advice, confidence=confidence, time=row.get('_time'),
                            source=row.get('_source'), scope=row.get('_scope'),
                            published=row.get('published_runstate')))
+    modern = row.get('policy_version') == CONFIRMED_LOSS_POLICY
+    if row.get('policy_version') not in (None, '', CONFIRMED_LOSS_POLICY) and code in FAULT_CODES:
+        add('unsupported_policy', '未知 Safety 策略版本，不能沿用旧版故障含义', ['policy_version', 'raw_runstate'],
+            '核对运行合同并同步诊断脚本；原始码保留，但不猜测该版本的具体判据。', '规则缺失')
+        return causes
+    if modern and code in (4, -9):
+        state_fields = ['policy_version', 'startup_pending', 'startup_expired', 'startup_age_sec',
+                        'confirmed_tracking_lost', 'localization_lost', 'output_gate_open',
+                        'output_stale', 'output_age_sec', 'match_stale', 'valid_match_age_sec',
+                        'latest_match_valid', 'lost_frames', 'radar_all_failed']
+        if code == -9:
+            if row.get('startup_expired') == 1:
+                add('startup_expired', '初始定位仍未成功，已超过启动等待期限', state_fields,
+                    '检查本轮初始位姿/全局重定位证据的阶段、候选缺失或拒绝原因；不是运行中输出超时的同义词。')
+                causes[-1]['phase'] = 'startup'
+            if row.get('confirmed_tracking_lost') == 1 or row.get('localization_lost') == 1:
+                add('confirmed_tracking_lost', '运行中已确认定位失锁', state_fields,
+                    '定位从跟踪转为确认失锁；检查最早连续匹配拒绝与全局重定位阶段，门控关闭本身不是确认失锁证据。')
+                causes[-1]['phase'] = 'runtime'
+            if row.get('radar_all_failed') == 1:
+                add('radar_all_failed', '所有必需雷达均不可用', state_fields,
+                    '检查各雷达原始诊断和输入，不将单台雷达异常等同全部不可用。')
+            if not causes:
+                add('policy_state_incomplete', '新版记录为 -9，但缺少启动超时/确认失锁/全部雷达失败的依据', state_fields,
+                    '核对运行合同及完整字段；新版运行输出超时或匹配陈旧单独应归为 4，不能沿用旧版 -9 解释。', '证据不足')
+            return causes
+        if row.get('startup_pending') == 1:
+            add('startup_pending', '初始定位尚未成功，处于启动等待期', state_fields,
+                '检查本轮初始定位/全局重定位候选及拒绝原因；在等待期内为降级 4，不能据此判为运行中失锁。')
+            causes[-1]['phase'] = 'startup'
+            return causes
+        if row.get('output_stale') == 1:
+            add('output_stale_degraded', '定位输出超过新鲜度期限，降级为 4', state_fields,
+                '检查输入、处理队列和发布阶段；输出超时尚不等于已确认失锁。')
+        if row.get('match_stale') == 1:
+            add('match_stale_degraded', '有效匹配结果陈旧，尚未确认失锁，降级为 4', state_fields,
+                '检查有效匹配年龄和处理积压；不能把陈旧结果直接解释成已确认失锁。')
+        if row.get('output_gate_open') == 0 and row.get('latest_match_valid') == 0 and row.get('confirmed_tracking_lost') == 0:
+            add('match_rejected_unconfirmed', '匹配被拒绝，输出门控关闭，尚未达到确认失锁条件', state_fields,
+                '查看对应失败帧的真实拒绝项、候选位姿和地图重合图；单帧拒绝不能证明车辆出图。')
+        if causes:
+            for cause in causes:
+                cause['phase'] = 'runtime'
+            return causes
     if code == 4:
         uncertainty = number(row.get('localization_uncertainty'))
         if row.get('pose_unobservable') == 1:
@@ -886,9 +937,9 @@ def context_bounds(finding, rows):
     return lower, upper
 
 
-def matching_summary(clue, matching):
+def matching_summary(clue, matching, prefix='首次失锁前匹配记录'):
     values = fields(clue['text'])
-    text = f'首次失锁前匹配记录: {clue["time"]}，map_checked={values.get("map_checked", "未知")}，map_overlap={values.get("map_overlap", "未知")}，raw_odom_valid={values.get("raw_odom_valid", "未知")}。'
+    text = f'{prefix}: {clue["time"]}，map_checked={values.get("map_checked", "未知")}，map_overlap={values.get("map_overlap", "未知")}，raw_odom_valid={values.get("raw_odom_valid", "未知")}。'
     points, overlap = number(values.get('map_points')), number(values.get('map_overlap'))
     if values.get('map_checked') != 1:
         return text + ' 地图一致性未确认执行，不判断其失败项。', False
@@ -938,6 +989,15 @@ def priority_summary(findings, matching):
         add(f'航向运动一致性 FAIL: 已读取 {len(yaw_failures)} 个{kind}（不等于物理故障次数）；'
             f'最近段 {last["first_time"]}，残差 {residual}（样例 {last["time"]}）；{recovery}。', last['source'])
     startup = next((f for f in findings if f.get('phase') == 'startup'), None)
+    modern_states = [f for f in findings if f['key'] in ('output_stale_degraded', 'match_stale_degraded',
+                    'match_rejected_unconfirmed', 'confirmed_tracking_lost')]
+    for key in dict.fromkeys(f['key'] for f in modern_states):
+        latest_state = max((f for f in modern_states if f['key'] == key), key=lambda f: f.get('start_ns') or 0)
+        add(f'新版判据 [{latest_state["code"]}]: {latest_state["title"]}；最近段 {latest_state["first_time"]}。', latest_state['onset_source'])
+        clue = next((c for c in latest_state.get('onset_context', []) if 'localization failed!' in c['text']), None)
+        if clue:
+            text, config_used = matching_summary(clue, matching, '该判据起点附近匹配记录')
+            add(text, clue['source'] + ('；配置: ' + matching['source'] if config_used else ''))
     severe = [f for f in findings if f['code'] == -9 and f['start_ns'] is not None]
     if severe:
         first_severe = min(severe, key=lambda f: f['start_ns'])
@@ -1079,7 +1139,7 @@ def match_failure_collector(report):
             if path.stat().st_size > MIB:
                 continue
             value = json.loads(read_text(path))
-            if not isinstance(value, dict) or value.get('schema') != 1 or value.get('kind') != 'lightning_match_failure_collector':
+            if not isinstance(value, dict) or value.get('schema') not in (1, 2) or value.get('kind') != 'lightning_match_failure_collector':
                 continue
             if value.get('pid') != process['pid'] or not value.get('run_dir') or Path(value['run_dir']).resolve() != run.resolve():
                 continue
@@ -1092,10 +1152,17 @@ def match_failure_collector(report):
                 if count is not None and count >= 0:
                     counters[key] = int(count)
             age = max(0, (time.time_ns() - path.stat().st_mtime_ns) / 1e9)
+            latest = value.get('latest_observation', {})
+            latest = {k: latest[k] for k in ('wall_ns', 'sensor_stamp_ns', 'phase', 'stage', 'rejection_reason',
+                      'candidate_available', 'candidate_id', 'retrieval_score', 'map_evaluated', 'map_overlap') if k in latest} if isinstance(latest, dict) else {}
+            episode = value.get('episode', {})
+            episode = {k: episode[k] for k in ('id', 'admitted', 'limit', 'suppressed_at_limit') if k in episode} if isinstance(episode, dict) else {}
+            json.dumps([latest, episode], allow_nan=False)
             return dict(status='observed', source=str(path), running=value.get('running') is True,
                         status_age_sec=round(age, 3), fresh=age <= 10, counters=counters,
                         last_error=str(value.get('last_error', ''))[:1024],
                         protection_days=number(value.get('protection_days')), disk_mb=number(value.get('disk_mb')),
+                        latest_observation=latest, episode=episode,
                         limitation='采集器进程累计计数，不代表所选快照损坏；rejected_disk 含配额/剩余空间不足。')
         except (OSError, ValueError, TypeError, OverflowError):
             continue
@@ -1197,6 +1264,15 @@ def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
                         message='未找到所选运行/事件范围内完整的失败匹配点云证据；日志和轨迹不能重建当时动态物体。')
     if evidence is None:
         return dict(status='not_found', message='没有可关联的失败匹配证据。')
+    try:
+        evidence_summary = bird.read_summary(evidence)
+    except (OSError, ValueError, TypeError) as exc:
+        return dict(status='unavailable', evidence=str(evidence), message='所选失败快照已不可读，文字诊断继续: ' + str(exc))
+    failure_observation = {k: evidence_summary.get(k) for k in
+        ('phase', 'stage', 'reason', 'rejection_reason', 'candidate_available', 'candidate_id',
+         'retrieval_score', 'refinement_backend', 'registration', 'query', 'plane_icp', 'episode', 'wall_ns', 'sensor_stamp_ns')}
+    failure_observation['phase'] = evidence_summary.get('phase', 'tracking')
+    failure_observation['stage'] = evidence_summary.get('stage', 'tracking_acceptance')
     # Avoid user-site NumPy shadowing the distro SciPy/matplotlib ABI on Orin.
     command = [sys.executable, '-s', str(Path(__file__).with_name('match_failure_birdseye.py')), str(evidence)]
     if output_dir:
@@ -1212,11 +1288,14 @@ def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
         if not isinstance(result, dict) or result.get('status') not in ('generated', 'cached', 'unavailable', 'dependency_missing'):
             raise ValueError('绘图返回格式无效')
         result['selection'] = selection
+        result['failure_observation'] = failure_observation
         return result
     except subprocess.TimeoutExpired:
-        return dict(status='timeout', evidence=str(evidence), message='俯视图计算超过 30 秒，已终止绘图；故障诊断结果保留。')
+        return dict(status='timeout', evidence=str(evidence), failure_observation=failure_observation,
+                    message='俯视图计算超过 30 秒，已终止绘图；故障诊断结果保留。')
     except (OSError, ValueError, TypeError) as exc:
-        return dict(status='unavailable', evidence=str(evidence), message='俯视图生成失败，诊断继续: ' + str(exc))
+        return dict(status='unavailable', evidence=str(evidence), failure_observation=failure_observation,
+                    message='俯视图生成失败，诊断继续: ' + str(exc))
 
 
 def runtime_contract(logged_limits, warnings):
@@ -1272,6 +1351,11 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     if not limits:
         limits = {k: v for k, v in logged_limits.items() if k in LIMITS}
         warnings.append('缺少配置快照，使用能找到的运行配置日志；未知阈值不作超限判断。')
+    else:
+        runtime_limits = {k: v for k, v in logged_limits.items() if k in LIMITS}
+        if any(key in limits and limits[key] != value for key, value in runtime_limits.items()):
+            warnings.append('配置快照与运行时阈值记录有差异；已优先采用本次运行日志中明确记录的生效值。')
+        limits.update(runtime_limits)
     build = runtime_contract(logged_limits, warnings)
     if rows and not all(k in rows[-1] for k in ('translation_condition', 'yaw_condition', 'output_stale', 'time_sync_fault_mask')):
         warnings.append('事件时间线是旧格式或缺少细分字段；需同次运行日志补充，不能仅凭包头源码版本认定已升级。')
@@ -1359,6 +1443,19 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 evidence={k: row[k] for k in ('time_sync_fault_mask', 'bounded_policy_enabled',
                           'bounded_sync_warning_mask', 'non_sync_fault') if k in row})
     latest = max(enumerate(all_rows), key=lambda pair: (row_ns(pair[1]) or 0, pair[0]))[1] if all_rows else {}
+    suppressed_radar = {}
+    for row in all_rows:
+        if row.get('policy_version') != CONFIRMED_LOSS_POLICY or row.get('partial_radar_suppressed') != 1:
+            continue
+        scope = row.get('_scope')
+        if scope in suppressed_radar and (suppressed_radar[scope]['wall_ns'] or 0) > (row_ns(row) or 0):
+            continue
+        suppressed_radar[scope] = dict(time=row.get('_time'), wall_ns=row_ns(row), scope=scope, source=row.get('_source'),
+            evidence={k: row[k] for k in ('raw_runstate', 'strict_runstate', 'selected_runstate', 'published_runstate',
+                'time_sync_fault_mask', 'non_sync_fault', 'non_sync_all_pass', 'partial_radar_suppressed',
+                'partial_radar_suppression_reason',
+                'localization_healthy_for_degraded', 'output_continuous', 'output_age_sec', 'valid_match_age_sec',
+                'latest_match_valid', 'localization_consistency', 'localization_uncertainty') if k in row})
     age = max(0, (time.time_ns() - row_ns(latest)) / 1e9) if process and row_ns(latest) else None
     if age is not None and age > 5:
         warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
@@ -1368,7 +1465,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 has_match_evidence=summary.get('kind') == 'lightning_match_failure' and summary.get('status') == 'complete',
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
                 trigger_reasons=summary.get('reasons', []), thresholds=limits,
-                latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'published_runstate', '_source', '_scope')},
+                latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
+                       'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
@@ -1377,6 +1475,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 priority_summary=priority_summary(findings, matching), matching_thresholds=matching,
                 runtime_protections=list(protections.values()), runtime_protection_scope=protection_scope,
                 coexisting_radar_conditions=list(coexisting_radar.values()),
+                partial_radar_suppressions=list(suppressed_radar.values()),
                 launch_findings=launch_findings, has_launch_evidence=bool(launch_findings),
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
@@ -1404,7 +1503,7 @@ def render(report, color=False, all_events=False):
         lines += render_driver_diagnosis(report['upstream_lidar'])
     match_image = report.get('match_failure_image', {})
     if match_image:
-        lines.append(paint('失败匹配三姿态俯视图: ' + str(match_image.get('status')), '1;36'))
+        lines.append(paint('定位失败证据与俯视图: ' + str(match_image.get('status')), '1;36'))
         collector = match_image.get('collector', {})
         if collector.get('status') == 'observed':
             lines.append('  失败证据采集器: ' + ('运行标记为 true' if collector.get('running') else '运行标记为 false') +
@@ -1417,8 +1516,29 @@ def render(report, color=False, all_events=False):
                 lines.append(paint('  曾因配额/剩余空间不足拒绝保存；保护期内旧证据不会为新事件让位，缺图不能解释为没有匹配失败。', '33'))
             if collector.get('last_error'):
                 lines.append(paint('  采集器最近错误: ' + collector['last_error'], '33'))
+            if collector.get('latest_observation'):
+                current_observation = collector['latest_observation']
+                lines.append('  采集器最后观察（不是下方保留快照）: ' + wall_time(current_observation.get('wall_ns')) + '；' +
+                             json.dumps(current_observation, ensure_ascii=False))
+                lines.append('  这是最后一次可记录观察，不保证覆盖每次尝试；map_evaluated=false 时不解释 map_overlap。')
+            if collector.get('episode'):
+                lines.append('  当前采集轮次: ' + json.dumps(collector['episode'], ensure_ascii=False) + '；admitted 是入队数，不是已保存数。')
         elif collector.get('status') in ('configured_disabled', 'unavailable'):
             lines.append('  ' + collector.get('message', ''))
+        observation = match_image.get('failure_observation') or match_image
+        if observation.get('phase'):
+            phase = {'tracking': '运行跟踪', 'startup': '初始定位', 'global_relocalization': '全局重定位'}.get(observation['phase'], observation['phase'])
+            lines.append(f'  保留快照阶段: {phase} / {observation.get("stage")}；拒绝原因: ' + str(observation.get('rejection_reason') or observation.get('recorded_reason') or observation.get('reason')))
+            lines.append('  候选位姿可用: ' + str(observation.get('candidate_available')) + '；候选 ID: ' + str(observation.get('candidate_id')) + '；检索分数: ' + str(observation.get('retrieval_score')))
+            lines.append('  配准质量记录: ' + json.dumps(observation.get('registration', {}), ensure_ascii=False))
+            if observation.get('query'):
+                lines.append('  查询规模/耗时: ' + json.dumps(observation['query'], ensure_ascii=False))
+            if observation.get('plane_icp'):
+                lines.append('  Plane ICP 质量记录: ' + json.dumps(observation['plane_icp'], ensure_ascii=False))
+            if observation['phase'] == 'global_relocalization':
+                lines.append('  此包保存一个代表性失败候选，不代表所有 TopK 候选或全部尝试。')
+            if observation.get('episode'):
+                lines.append('  采样轮次: ' + json.dumps(observation['episode'], ensure_ascii=False) + '；保留样本数不等于尝试次数。')
         if match_image.get('image'):
             scope = {'explicit_frame': '明确指定的失败帧', 'selected_frame': '所选失败帧',
                      'latest_same_run_frame_in_event': '指定事件时间范围内最新失败帧',
@@ -1427,17 +1547,27 @@ def render(report, color=False, all_events=False):
                       '  失败原因: ' + str(match_image.get('reason')),
                       '  范围: ' + scope + '；这是保留帧，不保证对应最新 Safety 故障。',
                       '  原始证据: ' + str(match_image.get('evidence')),
-                      '  图片: ' + match_image['image'], '  可离线打开: ' + match_image['html'],
-                      '  初值 / NDT 结果 / 实际检查位姿；按三维最近邻计分后俯视投影，红点不等于动态物体。']
+                      '  图片: ' + match_image['image'], '  可离线打开: ' + match_image['html']]
+            if match_image.get('visualization_mode') == 'sensor_only':
+                lines.append('  无候选位姿：仅展示传感器坐标系扫描，不叠加地图、不计算地图重合率，不能据此判断是否在图内。')
+                lines.append('  候选缺失本身不能区分地图外、场景差异或点云输入不足；物理原因需要进一步证据。')
+            else:
+                lines.append('  仅展示真实可用的候选位姿；按三维最近邻计分后俯视投影，红点不等于动态物体。')
             if match_image.get('synthetic_fixture'):
                 lines.append(paint('  合成测试数据，不是现场事故证据。', '33'))
             for name, title in (('guess', '初值'), ('ndt', 'NDT 结果'), ('check', '实际检查位姿')):
                 value = match_image.get('comparison', {}).get(name, {})
+                if not value:
+                    continue
+                if name == 'ndt' and match_image.get('refinement_backend') == 'plane_icp':
+                    title = 'Plane ICP 精配候选'
                 if value.get('candidate_status') == 'unconfirmed':
                     title = 'NDT 尝试（结果未确认）' if name == 'ndt' else '接受候选（未取得有效重合率检查）'
                 lines.append(f'  {title}: 命中={value.get("hit_points")}/{value.get("validation_points")}，重合率={value.get("overlap")}')
             if match_image.get('check_score_matches_recorded') is False:
                 lines.append(paint('  注意: 重算检查分数与记录不一致，不能视为精确复现；请核查证据/版本。', '33'))
+            elif match_image.get('visualization_mode') == 'sensor_only':
+                pass
             elif match_image.get('original_sample_replay_available') is False:
                 lines.append(paint('  原判据未执行或无有效样本；图中比分仅针对保存的显示样本，不能视为原判据复现。', '33'))
             else:
@@ -1448,7 +1578,7 @@ def render(report, color=False, all_events=False):
         lines.append('定位证据不可用: ' + report['localization_error'])
         return '\n'.join(lines)
     if report.get('has_match_evidence'):
-        lines.append('本次指定失败匹配快照；图中三姿态不代表独立真值，动态物体需结合连续帧判断。')
+        lines.append('本次指定定位失败快照；候选位姿不代表独立真值，动态物体需结合连续帧判断。')
         return '\n'.join(lines)
     if report.get('launch_findings') and not report.get('has_safety_evidence'):
         lines.append('本包没有可解析的算法 Safety 记录；以上为启动入口失败，不是运行中 2/4/-9 判据。')
@@ -1462,6 +1592,13 @@ def render(report, color=False, all_events=False):
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
+    if latest.get('policy_version') == CONFIRMED_LOSS_POLICY:
+        lines.append(f'新版策略: 严格原始={latest.get("strict_runstate")} → 策略选择={latest.get("selected_runstate")} → 上报={latest.get("published_runstate")}')
+    for suppressed in report.get('partial_radar_suppressions', []):
+        lines.append(paint('部分雷达诊断曾由定位综合健康策略抑制（原始原因仍保留，不等于雷达故障已修复）', '33'))
+        lines += ['  时间: ' + str(suppressed['time']) + '；范围: ' + str(suppressed['scope']),
+                  '  原因与健康证据: ' + json.dumps(suppressed['evidence'], ensure_ascii=False),
+                  '  证据: ' + str(suppressed['source'])]
     if raw == 0:
         lines.append('最新记录为 0，不代表整个运行无故障；下方保留历史证据。')
     if report.get('priority_summary'):

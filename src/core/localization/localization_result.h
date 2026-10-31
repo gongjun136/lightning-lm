@@ -38,6 +38,8 @@ struct LocalizationResult {
     SE3 unsmoothed_pose_;  // independent consistency check also sees pre-smoothing output
     bool unsmoothed_pose_valid_ = false;
     bool lidar_loc_valid_ = false;        // 该时刻lidarLoc是否有效
+    double lidar_match_stamp_ = 0.0;     ///< 最近一次真实接受的地图匹配时间；停车复用/无匹配不推进。
+    std::int64_t lidar_match_started_steady_ns_ = 0;  ///< 上述匹配开始的单调时钟；拒绝外部重定位请求前的在途结果。
     bool lidar_loc_inlier_ = false;       ///< 该时刻lidarLoc在PGO中是否是内点
     double confidence_ = 1.0;             ///< lidarLoc的confidence(若有效)
     double lidar_loc_error_vert_ = 0;     ///< lidarLoc相对于PGO定位的误差（纵向）

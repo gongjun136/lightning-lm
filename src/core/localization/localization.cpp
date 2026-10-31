@@ -1358,7 +1358,10 @@ void Localization::Finish() {
 }
 
 void Localization::SetExternalPose(const Eigen::Quaterniond& q, const Eigen::Vector3d& t) {
-    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+    // Drain map matching and its callbacks before replacing the initialization
+    // request. A shared lock allowed an older match to overwrite this reset.
+    // Keep the established lifecycle -> processing lock order.
+    std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     UL lock(processing_mutex_);
     /// 设置外部重定位的pose
     if (lidar_loc_) {

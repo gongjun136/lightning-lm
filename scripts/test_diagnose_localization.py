@@ -1274,6 +1274,83 @@ class DiagnosisTest(unittest.TestCase):
         self.assertFalse((self.root/'must-not-exist').exists())
 
 
+class ConfirmedLossPolicyTest(unittest.TestCase):
+    def row(self, code, **values):
+        return dict(raw_runstate=code, published_runstate=code,
+                    policy_version=d.CONFIRMED_LOSS_POLICY, _time='now', _source='test', _scope='test', **values)
+
+    def test_startup_grace_and_expiration_are_distinct_from_runtime_stale(self):
+        pending = d.classify(self.row(4, startup_pending=1, startup_expired=0, startup_age_sec=7.9, output_age_sec='inf'), {})
+        expired = d.classify(self.row(-9, startup_pending=1, startup_expired=1, startup_age_sec=8.1, output_stale=1), {})
+        self.assertEqual([x['key'] for x in pending], ['startup_pending'])
+        self.assertEqual([x['key'] for x in expired], ['startup_expired'])
+        self.assertTrue(all(x['phase'] == 'startup' for x in pending + expired))
+
+    def test_runtime_stale_is_degraded_and_does_not_claim_confirmed_loss(self):
+        values = d.classify(self.row(4, output_stale=1, output_age_sec=.6, match_stale=1,
+                           valid_match_age_sec=.7, confirmed_tracking_lost=0, localization_lost=0), {})
+        self.assertEqual([x['key'] for x in values], ['output_stale_degraded', 'match_stale_degraded'])
+        self.assertTrue(all(x['code'] == 4 for x in values))
+        confirmed = d.classify(self.row(-9, output_stale=1, confirmed_tracking_lost=1, localization_lost=1), {})
+        self.assertEqual([x['key'] for x in confirmed], ['confirmed_tracking_lost'])
+
+    def test_one_rejection_closes_gate_without_establishing_loss(self):
+        values = d.classify(self.row(4, startup_pending=0, output_gate_open=0,
+                                    latest_match_valid=0, confirmed_tracking_lost=0, lost_frames=1), {})
+        self.assertEqual([x['key'] for x in values], ['match_rejected_unconfirmed'])
+        self.assertIn('尚未达到', values[0]['title'])
+
+    def test_legacy_minus9_stale_keeps_legacy_meaning_but_new_version_does_not(self):
+        legacy = d.classify(dict(raw_runstate=-9, output_stale=1, output_age_sec=.4), {})
+        modern = d.classify(self.row(-9, output_stale=1, output_age_sec=.4), {})
+        self.assertEqual(legacy[0]['key'], 'output_stale')
+        self.assertEqual(modern[0]['key'], 'policy_state_incomplete')
+
+    def test_unknown_future_policy_is_not_silently_treated_as_legacy(self):
+        future = d.classify(dict(raw_runstate=-9, output_stale=1,
+                                policy_version='localization-dtc-v99'), {})
+        self.assertEqual(future[0]['key'], 'unsupported_policy')
+
+    def test_suppressed_partial_radar_preserves_original_fault_and_strict_code(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            (run / 'logs').mkdir()
+            (run / 'config.yaml').write_text('diagnostics: {}\n')
+            (run / 'logs/run_loc_online.stderr.log').write_text(
+                'I1031 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 policy_version=' + d.CONFIRMED_LOSS_POLICY +
+                ' raw_runstate=2 strict_runstate=2 selected_runstate=0 published_runstate=0 time_sync_fault_mask=4'
+                ' partial_radar_suppressed=1 localization_healthy_for_degraded=1 output_continuous=1'
+                ' output_age_sec=0.01 valid_match_age_sec=0.1 latest_match_valid=1 localization_consistency=1 localization_uncertainty=1\n')
+            report = d.analyze(run, None, '指定路径', [])
+        self.assertEqual(report['findings'][0]['code'], 2)
+        self.assertEqual(report['findings'][0]['published'], 0)
+        self.assertEqual(report['latest']['selected_runstate'], 0)
+        self.assertEqual(report['partial_radar_suppressions'][0]['evidence']['strict_runstate'], 2)
+        self.assertIn('不等于雷达故障已修复', d.render(report))
+
+    def test_no_candidate_output_has_no_fake_overlap_or_three_pose_claim(self):
+        report = dict(selection='指定路径', selected='/evidence', process=None, has_match_evidence=True,
+                      match_failure_image=dict(status='generated', phase='startup', stage='search',
+                      candidate_available=False, candidate_id=-1, retrieval_score=None,
+                      reason='no_descriptor_candidates', visualization_mode='sensor_only', comparison={},
+                      image='/evidence/comparison.png', html='/evidence/index.html', wall_ns=1000000000,
+                      sensor_stamp_ns=1000000000, original_sample_replay_available=False))
+        text = d.render(report)
+        self.assertIn('初始定位 / search', text)
+        self.assertIn('不叠加地图、不计算地图重合率', text)
+        self.assertNotIn('命中=None', text)
+        self.assertNotIn('初值 / NDT 结果', text)
+
+    def test_incident_csv_policy_marker_preserves_new_startup_semantics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'timeline.csv'
+            path.write_text('wall_ns,raw,published,policy_version,startup_pending,startup_expired,startup_age_sec,output_stale\n'
+                            '1793400000000000000,-9,-9,' + d.CONFIRMED_LOSS_POLICY + ',1,1,8.1,1\n')
+            rows = d.timeline_rows(path, [])
+        self.assertEqual(rows[0]['policy_version'], d.CONFIRMED_LOSS_POLICY)
+        self.assertEqual(d.classify(rows[0], {})[0]['key'], 'startup_expired')
+
+
 class MatchFailureSelectionTest(unittest.TestCase):
     def setUp(self):
         from test_match_failure_birdseye import fixture
@@ -1399,6 +1476,20 @@ class MatchFailureSelectionTest(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][-1], str(expected))
         self.assertEqual(result['collector']['status'], 'observed')
         self.assertEqual(result['collector']['counters']['saved'], 1)
+
+    def test_latest_observation_remains_distinct_from_retained_snapshot(self):
+        self.frames.mkdir()
+        value = dict(schema=2, kind='lightning_match_failure_collector', pid=42, run_dir=str(self.run),
+                     session_start_wall_ns=1100, running=True, saved=3, dropped_busy=2,
+                     episode=dict(id=4, admitted=3, limit=3, suppressed_at_limit=12),
+                     latest_observation=dict(wall_ns=9999, sensor_stamp_ns=9900, phase='startup', stage='search',
+                     rejection_reason='no_candidates', candidate_available=False, candidate_id=-1,
+                     retrieval_score=None, map_evaluated=False, map_overlap=0))
+        (self.frames / 'collector_status.json').write_text(json.dumps(value))
+        result = d.match_failure_image(self.report)
+        self.assertEqual(result['status'], 'not_found')
+        self.assertEqual(result['collector']['latest_observation']['wall_ns'], 9999)
+        self.assertEqual(result['collector']['episode']['admitted'], 3)
 
 
 if __name__ == '__main__':

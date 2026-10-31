@@ -50,6 +50,11 @@ class IncidentRecorder {
         double error_x = 0, error_y = 0, error_yaw_rad = 0;
         double output_age_sec = -1, imu_arrival_age_sec = -1, imu_stamp_lag_sec = -1;
         double can_arrival_age_sec = -1, can_stamp_lag_sec = -1, yaw_pass_age_sec = -1;
+        const char* policy_version = "";  ///< Static policy marker; an unobserved default sample has no policy evidence.
+        bool startup_pending = false, startup_expired = false;
+        double startup_age_sec = -1, valid_match_age_sec = -1;
+        bool output_gate_open = false, match_stale = false, latest_match_valid = false, output_continuous = false;
+        bool localization_healthy_for_degraded = false, partial_radar_suppressed = false;
     };
     struct Pipeline {
         std::uint64_t sensor_pending = 0, localization_pending = 0, high_frequency_pending = 0;

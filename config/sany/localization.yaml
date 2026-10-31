@@ -271,7 +271,7 @@ diagnostics:
   # room for new ones. A full archive reports skipped captures instead.
   match_failure_capture:
     enabled: true
-    cooldown_seconds: 30.0
+    cooldown_seconds: 30.0  # Legacy key; continuous failures now use a three-package episode limit.
     recovery_seconds: 2.0
     max_scan_points: 50000
     event_mb: 64
@@ -297,7 +297,7 @@ diagnostics:
     input_timeout_seconds: 0.5
     cooldown_seconds: 10.0
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v4-relaxed-uncertainty
+  config_version: localization-dtc-v5-confirmed-loss
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
@@ -330,8 +330,10 @@ diagnostics:
   covariance_variance_scale: 1.0
   position_sigma_floor_m: 0.1
   angle_sigma_floor_deg: 0.5
-  output_timeout_sec: 0.3
-  evaluation_timeout_sec: 0.3
+  # Output/match staleness alone stops with 4; confirmed localization loss is -9.
+  output_timeout_sec: 0.5
+  # The quality result belongs to that output; expire both at the same age.
+  evaluation_timeout_sec: 0.5
   # TOTAL steady age of prior passing required yaw evidence; CAN is optional.
   # This is not extra time after
   # max_input_gap_sec. 150 ms is a commissioning candidate from the 2026-10-21

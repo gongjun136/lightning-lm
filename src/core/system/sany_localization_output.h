@@ -18,6 +18,7 @@
 #include "common/eigen_types.h"
 #include "common/point_def.h"
 #include "core/localization/localization_result.h"
+#include "core/localization/localization_dtc_monitor.h"
 #include "lightning/msg/fault_status.hpp"
 #include "lightning/msg/localization_status.hpp"
 #include "lightning/msg/vehicle_pose.hpp"
@@ -72,8 +73,15 @@ class LocalizationPublicationGate {
 
     void SetLostFrameThreshold(std::size_t lost_frame_threshold);
     void SetMaxLidarMatchAge(double max_age_sec);
-    void ObserveLidarMatch(bool valid, double sensor_stamp = 0.0,
-                           Clock::time_point now = Clock::now());
+    bool ObserveLidarMatch(bool valid, double sensor_stamp = 0.0,
+                           Clock::time_point now = Clock::now(),
+                           loc::LocalizationStatus status = loc::LocalizationStatus::IDLE,
+                           double accepted_match_stamp = std::numeric_limits<double>::quiet_NaN(),
+                           std::int64_t match_started_steady_ns = 0);
+    bool ObserveRelocalizationRequested();  ///< Close outputs immediately; return whether runtime tracking existed.
+    void CompleteRelocalizationRequest(Clock::time_point now = Clock::now());
+    loc::dtc::TrackingEvidence TrackingState(double current_sensor_stamp = 0.0,
+                                           Clock::time_point now = Clock::now()) const;
     bool PoseOutputsEnabled(double current_sensor_stamp = 0.0,
                             Clock::time_point now = Clock::now()) const;
     bool MapOutputsEnabled(double current_sensor_stamp = 0.0,
@@ -91,6 +99,10 @@ class LocalizationPublicationGate {
     std::size_t lost_frame_threshold_ = 5;  ///< 判定定位失锁所需的连续无效匹配帧数。
     std::size_t consecutive_lost_frames_ = 0;  ///< 当前连续无效地图匹配的帧数。
     bool has_valid_match_ = false;  ///< 是否已观察到有效地图匹配。
+    bool confirmed_lost_ = false;  ///< 明确失锁证据；匹配陈旧和单次拒绝不设置此标志。
+    bool relocalization_request_pending_ = false;
+    std::int64_t earliest_match_start_steady_ns_ = 0;  ///< 只接受外部重定位请求完成后开始的新匹配。
+    double last_result_stamp_ = 0.0;  ///< 结果去重独立于真实地图匹配的时间戳。
     double max_lidar_match_age_sec_ = 0.0;  ///< 有效地图匹配允许的最大年龄（s）。
     double last_lidar_match_stamp_ = 0.0;  ///< 最近一次地图匹配输入的时间戳（s）。
     double last_valid_lidar_match_stamp_ = 0.0;  ///< 最近有效地图匹配的传感器时间戳（s）。
@@ -146,6 +158,7 @@ class LocalizationTelemetryState {
     std::uint8_t current_status_ = lightning::msg::LocalizationStatus::STATUS_IDLE;  ///< 最近一次定位模块报告的运行状态。
     bool has_good_localization_ = false;  ///< 定位是否曾达到有效状态。
     bool localization_lost_latched_ = false;  ///< 失锁后保持的故障状态，供健康消息使用。
+    bool localization_stale_ = false;  ///< 时效降级不伪装成确认失锁。
     std::deque<geometry_msgs::msg::PoseStamped> path_poses_;  ///< 按时间保存的后轴可视化位姿路径。
     double last_path_sample_time_ = 0.0;  ///< 最近一次路径采样的传感器时间戳（s）。
     double last_offline_health_publish_time_ = 0.0;  ///< 离线诊断最近一次发布的传感器时间戳（s）。

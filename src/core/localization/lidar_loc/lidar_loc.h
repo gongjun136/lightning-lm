@@ -17,14 +17,12 @@
 #include "core/localization/point_to_plane_registration.h"
 #include "core/maps/tiled_map.h"
 #include "utils/compute_profiling.h"
+#include "utils/match_failure_recorder.h"
 
 #include "pclomp/ndt_omp_impl.hpp"
 
 namespace lightning::ui {
 class PangolinWindow;
-}
-namespace lightning::diagnostics {
-class MatchFailureRecorder;
 }
 
 namespace lightning::loc {
@@ -98,6 +96,8 @@ class LidarLoc {
         double confidence = 0.0;  ///< 本次匹配得到的置信度。
         int iterations = 0;  ///< 本次匹配使用的迭代次数。
         bool success = false;  ///< 本次地图定位是否成功。
+        bool registration_pose_available = false;  ///< 本次精配确实产生了有限位姿，不能将初值伪装成匹配结果。
+        const char* registration_reason = "not_attempted";  ///< NDT 原始拒绝原因，指向静态字符串。
         int active_map_chunks = 0;  ///< 本次匹配加载的地图块数量。
         bool relocalization_attempted = false;  ///< 本帧是否尝试全局重定位。
         bool relocalization_candidate_found = false;  ///< 本次重定位是否检索到候选。
@@ -296,6 +296,12 @@ class LidarLoc {
      * @see @ref loc_read_confirmation "全局候选的连续确认"
      */
     bool TryGlobalRelocalization(const CloudPtr& input);
+    diagnostics::MatchFailureRecorder::Frame MakeFailureEvidence(
+        const CloudPtr& input, const MatchStats& stats,
+        diagnostics::MatchFailureRecorder::Stage stage, const char* detail,
+        std::size_t maximum_points, double minimum_overlap) const;
+    void RecordFailureEvidence(const CloudPtr& input,
+                               const diagnostics::MatchFailureRecorder::Frame& frame);
     struct MapConsistencyResult {
         bool evaluated = false;  ///< 是否执行了地图一致性检查。
         bool passed = false;  ///< 候选是否通过地图一致性检查。
@@ -350,8 +356,10 @@ class LidarLoc {
     bool initial_pose_set_ = false;  ///< 定位是否被手动设置
     SE3 initial_pose_;               ///< 手动设置的初始位姿
     bool loc_inited_ = false;        ///< 定位是否初始化成功
+    bool evidence_ever_localized_ = false;  ///< 区分首次启动与运行中的全局重定位取证。
 
     double current_timestamp_ = 0;  ///< 本次输入的时间戳
+    std::int64_t current_match_started_steady_ns_ = 0;  ///< 本次 ProcessCloud 开始，接受匹配后才对外提交。
     double last_timestamp_ = 0;     ///< 上次输入的时间戳
 
     bool last_lo_pose_set_ = false;  ///< 是否已有上一帧 LIO 相对位姿。

@@ -68,6 +68,9 @@ void MaskedFaultAndReadback() {
     }
     Recorder::Safety fault; fault.raw = fault.selected = 4; fault.published = 0; fault.uncertainty = 2;
     fault.yaw_condition = 2; fault.confirmed_failure = true; fault.error_yaw_rad = .0428282;
+    fault.policy_version = "localization-dtc-v5-confirmed-loss";
+    fault.startup_age_sec = 12.5; fault.valid_match_age_sec = .51;
+    fault.match_stale = true; fault.latest_match_valid = true;
     r.ObserveSafety(fault); Sleep(.01); r.ObserveSafety({});  // shorter than a monitor period
     for (int i = 0; i < 6; ++i) {
         auto msg = std::make_shared<std_msgs::msg::String>(); msg->data = "after-" + std::to_string(i);
@@ -93,6 +96,13 @@ void MaskedFaultAndReadback() {
     const auto header = columns(line);
     const auto yaw_column = std::find(header.begin(), header.end(), "yaw_condition") - header.begin();
     const auto error_column = std::find(header.begin(), header.end(), "error_yaw_rad") - header.begin();
+    const auto policy_column = std::find(header.begin(), header.end(), "policy_version") - header.begin();
+    const auto lost_column = std::find(header.begin(), header.end(), "confirmed_tracking_lost") - header.begin();
+    const auto match_column = std::find(header.begin(), header.end(), "valid_match_age_sec") - header.begin();
+    const auto stale_column = std::find(header.begin(), header.end(), "match_stale") - header.begin();
+    const auto suppression_column = std::find(header.begin(), header.end(), "partial_radar_suppressed") - header.begin();
+    Check(policy_column < header.size() && lost_column < header.size() && match_column < header.size() &&
+          stale_column < header.size() && suppression_column < header.size(), "policy evidence columns missing");
     bool detailed_fault_seen = false;
     while (std::getline(csv, line)) {
         const auto values = columns(line);
@@ -100,6 +110,9 @@ void MaskedFaultAndReadback() {
         if (values[2] == "4") {
             Check(values[yaw_column] == "2" && std::abs(std::stod(values[error_column]) - .0428282) < 1e-9,
                   "fault details assigned to wrong CSV columns");
+            Check(values[policy_column] == "localization-dtc-v5-confirmed-loss" && values[lost_column] == "0" &&
+                  values[stale_column] == "1" && std::abs(std::stod(values[match_column]) - .51) < 1e-9 &&
+                  values[suppression_column] == "0", "stale-vs-confirmed-loss policy evidence assigned incorrectly");
             detailed_fault_seen = true;
         }
     }
@@ -230,6 +243,28 @@ void RetentionAndFailureIsolation() {
     broken.Stop();
 }
 
+void SuppressedRadarEvidence() {
+    Fixture f;
+    const auto archive = f.root / "incidents";
+    Recorder r(Options(), archive.string(), (f.root / "config.yaml").string());
+    Check(r.Start(), "suppressed-radar fixture start failed");
+    Recorder::Safety fault;
+    fault.raw = fault.strict = 2;
+    fault.policy_version = "localization-dtc-v5-confirmed-loss";
+    fault.output_gate_open = fault.latest_match_valid = fault.output_continuous = true;
+    fault.localization_healthy_for_degraded = fault.partial_radar_suppressed = true;
+    fault.valid_match_age_sec = .02;
+    r.ObserveSafety(fault);
+    const auto path = WaitComplete(archive);
+    const auto summary = YAML::LoadFile((path / "summary.json").string());
+    Check(summary["reasons"][0].as<std::string>() == "raw_2", "suppressed radar fault did not trigger capture");
+    const auto csv = Read(path / "timeline.csv");
+    Check(csv.find(",2,0,0,2,") != std::string::npos &&
+          csv.find(",1,1,healthy_localization") != std::string::npos,
+          "suppressed radar capture lost raw/selected/strict or suppression reason");
+    r.Stop();
+}
+
 void CrashFixture(const fs::path& path) {
     Check(!fs::exists(path) || fs::is_empty(path), "crash fixture directory must be empty");
     auto o = Options(); o.pre_seconds = 1; o.post_seconds = o.max_event_seconds = 60;
@@ -254,7 +289,7 @@ int main(int argc, char** argv) {
         Check(IncidentAgeSeconds(1000000000, 0) == -1.0, "missing publication sentinel changed");
         Check(std::abs(IncidentAgeSeconds(1000000000, 800000000) - .2) < 1e-9, "stale observation age changed");
         if (argc == 3 && std::string(argv[1]) == "--crash-fixture") { CrashFixture(argv[2]); return 1; }
-        MaskedFaultAndReadback(); BoundedAdmissionAndSlowWriter(); IndependentTimeouts();
+        MaskedFaultAndReadback(); SuppressedRadarEvidence(); BoundedAdmissionAndSlowWriter(); IndependentTimeouts();
         ExportBudgetAndMergedFaults(); RetentionAndFailureIsolation();
         std::cout << "incident_recorder_test passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

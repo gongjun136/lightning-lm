@@ -240,7 +240,7 @@ class LocSystem {
      * @note 阶段名称对应函数体；影子评估日志不替代阶段 2 已发布的值。
      */
     void PublishSafety();
-    bool DtcLocalizationLost() const;
+    loc::dtc::Snapshot EvaluateLocalizationDtc() const;
     void PublishPath();
     void RegisterLidarInput(int lidar_id, const std::string& topic);
     /**
@@ -312,6 +312,7 @@ class LocSystem {
     std::atomic<double> last_published_pose_stamp_{0.0};  ///< 最近实际发布的 pose_vel 时间戳（s）。
     std::atomic<std::uint64_t> cloud_publish_suppressed_count_{0};  ///< 因输入完整性要求而抑制点云发布的帧数。
     std::mutex pose_publish_mutex_;  ///< 串行保护位姿时间戳检查和业务消息发布。
+    std::mutex initial_pose_request_mutex_;  ///< 串行外部重定位请求；不在算法调用期间持发布锁。
     MonotonicTimestampGate pose_timestamp_gate_;  ///< 保证 pose_vel 业务输出时间戳严格递增。
     std::atomic_bool map_outputs_ever_enabled_{false};  ///< 地图输出门控是否曾经开启，用于状态变化诊断。
     std::atomic_bool map_outputs_enabled_last_{false};  ///< 上一次观察到的地图输出门控状态。
@@ -344,7 +345,7 @@ class LocSystem {
     int last_safety_strict_ = -128, last_safety_shadow_ = -128;
     uint8_t last_safety_sync_mask_ = 0;
     uint64_t safety_shadow_ticks_ = 0;
-    std::array<int, 18> last_safety_diagnostic_state_{};
+    std::array<int, 25> last_safety_diagnostic_state_{};
     bool safety_diagnostic_seen_ = false;
     uint64_t safety_diagnostic_ticks_ = 0, safety_diagnostic_sequence_ = 0;
     std::mutex dtc_publish_mutex_;

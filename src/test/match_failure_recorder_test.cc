@@ -137,14 +137,104 @@ void OversizeMapAndQueue() {
     R slow(options,context,View(large_map)); Check(slow.Start(),"queue test start");
     auto frame=Frame(cloud); Check(slow.Capture(View(cloud),frame),"queue first capture");
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    frame.reason=R::Reason::kBounds;
     Check(slow.Capture(View(cloud),frame),"queue second capture");
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    frame.reason=R::Reason::kGravity;
     const auto begin=std::chrono::steady_clock::now();
     Check(!slow.Capture(View(cloud),frame),"queue failed to remain bounded");
     const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
     Check(elapsed<.1,"full queue blocked algorithm callback");
     Check(slow.GetStats().dropped_queue==1,"queue loss not visible"); slow.Stop();
     Check(slow.GetStats().saved==2,"normal stop did not drain evidence");
+}
+
+void WaitSaved(R& recorder,std::uint64_t count) {
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while (recorder.GetStats().saved<count && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Check(recorder.GetStats().saved==count,"asynchronous evidence save timed out");
+}
+
+void EpisodeAndUnavailable() {
+    Fixture f; Cloud cloud{{0,0,0,0},{.1f,0,0,0}};
+    auto context=Context(f.root); auto options=Options(); options.recovery_seconds=2;
+    R recorder(options,context,View(cloud)); Check(recorder.Start(),"episode start");
+    auto frame=Frame(cloud); frame.phase=R::Phase::kStartup; frame.stage=R::Stage::kSearch;
+    frame.reason=R::Reason::kSearch; frame.candidate_available=false; frame.pose_available={{false,false,false}};
+    frame.evaluated=false; frame.validation_points=0; frame.refinement_backend=R::Backend::kNone;
+    std::strcpy(frame.rejection_reason.data(),"geometric_registration_failed");
+    Check(recorder.Capture(View(cloud),frame),"first startup failure missing"); WaitSaved(recorder,1);
+    for (int i=0;i<120;++i) { ++frame.sensor_stamp_ns; Check(!recorder.Capture(View(cloud),frame),"same startup reason produced periodic capture"); }
+    auto paths=Events(context.directory); auto meta=YAML::LoadFile((paths[0]/"summary.json").string());
+    Check(meta["schema"].as<int>()==2 && meta["poses"]["guess"].IsNull() && meta["poses"]["ndt"].IsNull() && meta["poses"]["check"].IsNull(),"unavailable poses fabricated");
+    Check(fs::file_size(paths[0]/"map_local.bin")==0 && meta["map"]["coverage"].as<std::string>()=="unavailable_no_candidate","no-candidate map was fabricated");
+    frame.phase=R::Phase::kGlobalRelocalization; frame.stage=R::Stage::kMapPrecheck;
+    frame.reason=R::Reason::kOverlap; frame.candidate_available=true; frame.pose_available={{true,false,true}};
+    frame.guess=frame.check=Pose(); frame.evaluated=true; frame.validation_stride=1; frame.validation_points=2;
+    frame.overlap=.50; frame.retrieval_score=.6;
+    std::strcpy(frame.rejection_reason.data(),"candidate_map_precheck_rejected");
+    Check(recorder.Capture(View(cloud),frame),"changed reason not captured"); WaitSaved(recorder,2);
+    frame.overlap=.54; Check(!recorder.Capture(View(cloud),frame),"minor score drift used evidence slot");
+    frame.overlap=.56; Check(recorder.Capture(View(cloud),frame),"meaningful candidate improvement not captured"); WaitSaved(recorder,3);
+    frame.reason=R::Reason::kBounds; frame.stage=R::Stage::kMapValidation;
+    for (int i=0;i<120;++i) { ++frame.sensor_stamp_ns; Check(!recorder.Capture(View(cloud),frame),"episode exceeded three snapshots"); }
+    // A single apparently successful candidate does not reset the quota.
+    recorder.ObserveTracking(true); recorder.ObserveTracking(false);
+    Check(!recorder.Capture(View(cloud),frame),"single success reset episode");
+    // Two isolated successes separated by missing/invalid inputs must not be
+    // mistaken for a continuously healthy two-second recovery interval.
+    recorder.ObserveTracking(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+    recorder.ObserveTracking(true); recorder.ObserveTracking(false);
+    Check(!recorder.Capture(View(cloud),frame),"missing observation interval reset episode");
+    // Repeated success notifications must measure from the first success, not
+    // perpetually reset the start time on each frame.
+    recorder.ObserveTracking(true);
+    for (int i=0;i<11;++i) { std::this_thread::sleep_for(std::chrono::milliseconds(200)); recorder.ObserveTracking(true); }
+    recorder.ObserveTracking(false);
+    Check(recorder.Capture(View(cloud),frame),"continuous successful recovery did not reset episode"); recorder.Stop();
+    Check(recorder.GetStats().saved==4,"new episode count wrong");
+    paths=Events(context.directory); meta=YAML::LoadFile((paths.back()/"summary.json").string());
+    Check(meta["episode"]["id"].as<int>()==2 && meta["episode"]["index"].as<int>()==1,"new episode metadata wrong");
+    Check(meta["episode"]["recovery_seconds"].as<double>()==2 && meta["episode"]["recovery_max_gap_sec"].as<double>()==.5,"recovery continuity policy missing");
+    const auto status=YAML::LoadFile((fs::path(context.directory)/"collector_status.json").string());
+    Check(status["latest_observation"]["sensor_stamp_ns"].as<std::int64_t>()==frame.sensor_stamp_ns,"latest lightweight observation lost after cap");
+    Check(status["episode"]["suppressed_at_limit"].as<int>()>=120,"episode limit not visible");
+}
+
+void FullGlobalSamples() {
+    Fixture f; Cloud cloud;
+    for (unsigned i=0;i<60001;++i) cloud.push_back({float(i%200)*.1f,float(i/200)*.1f,0,0});
+    cloud[4].x=std::numeric_limits<float>::quiet_NaN();
+    auto options=Options(); options.max_scan_points=4;
+    auto frame=Frame(cloud); frame.phase=R::Phase::kGlobalRelocalization; frame.stage=R::Stage::kMapPrecheck;
+    frame.validation_stride=2; frame.validation_points=30000;
+    auto context=Context(f.root); R recorder(options,context,View(cloud)); Check(recorder.Start(),"global samples start");
+    Check(recorder.Capture(View(cloud),frame),"global >2000 validation samples rejected"); recorder.Stop();
+    auto paths=Events(context.directory); Check(paths.size()==1,"global validation package missing");
+    const auto bytes=Read(paths[0]/"scan.bin"); std::vector<unsigned> actual,expected;
+    for (std::size_t i=0;i<bytes.size();i+=24) if(U32(&bytes[i+20])) actual.push_back(U32(&bytes[i+16]));
+    unsigned finite=0; for (unsigned i=0;i<cloud.size();++i) if(std::isfinite(cloud[i].x)) { if(finite%2==0)expected.push_back(i); ++finite; }
+    Check(actual==expected && actual.size()==30000,"global exact finite-index sampling changed");
+}
+
+void ExportRelocalizationFixtures(const fs::path& root) {
+    Cloud cloud{{0,0,0,0},{.1f,.1f,0,0},{0,.1f,0,0}};
+    auto context=Context(root); R recorder(Options(),context,View(cloud)); Check(recorder.Start(),"relocalization fixture start");
+    auto frame=Frame(cloud); frame.phase=R::Phase::kStartup; frame.stage=R::Stage::kSearch;
+    frame.reason=R::Reason::kSearch; frame.evaluated=false; frame.validation_points=0;
+    frame.candidate_available=false; frame.pose_available={{false,false,false}}; frame.refinement_backend=R::Backend::kNone;
+    std::strcpy(frame.rejection_reason.data(),"geometric_registration_failed");
+    Check(recorder.Capture(View(cloud),frame),"no-candidate fixture capture"); WaitSaved(recorder,1);
+    frame=Frame(cloud); frame.phase=R::Phase::kGlobalRelocalization; frame.stage=R::Stage::kMapPrecheck;
+    frame.reason=R::Reason::kBounds; frame.candidate_available=true; frame.candidate_id=42; frame.retrieval_score=.66;
+    frame.pose_available={{true,false,true}}; frame.guess=frame.check=Pose(500); frame.refinement_backend=R::Backend::kNone;
+    frame.overlap=frame.inside_xy=frame.inside_xyz=0;
+    std::strcpy(frame.rejection_reason.data(),"candidate_map_precheck_rejected");
+    Check(recorder.Capture(View(cloud),frame),"outside-map fixture capture"); recorder.Stop();
+    Check(recorder.GetStats().saved==2,"relocalization fixture save");
+    for (const auto& event:Events(context.directory)) std::cout<<event<<'\n';
 }
 void ValidationAndLock() {
     auto options=Options(); options.protect_days=6;
@@ -194,12 +284,14 @@ fs::path ExportFixture(const fs::path& root) {
 int main(int argc,char** argv) {
     google::InitGoogleLogging(argv[0]);
     try {
-        if (argc==3 && (std::string(argv[1])=="--output" || std::string(argv[1])=="--export-fixture")) {
+        if (argc==3 && (std::string(argv[1])=="--output" || std::string(argv[1])=="--export-fixture" || std::string(argv[1])=="--export-relocalization-fixtures")) {
             const auto root=fs::absolute(argv[2]); fs::create_directories(root);
             Check(!fs::exists(root/"evidence"),"example output must be new");
-            std::cout<<ExportFixture(root)<<'\n'; return 0;
+            if (std::string(argv[1])=="--export-relocalization-fixtures") ExportRelocalizationFixtures(root);
+            else std::cout<<ExportFixture(root)<<'\n';
+            return 0;
         }
-        Fixture f; ExactSelection(f.root); ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota();
+        Fixture f; ExactSelection(f.root); ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota(); EpisodeAndUnavailable(); FullGlobalSamples();
         std::cout<<"match_failure_recorder_test passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

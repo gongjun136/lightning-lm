@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <execution>
 #include <filesystem>
 #include <limits>
@@ -524,10 +525,13 @@ bool LidarLoc::Init(const std::string& config_path) {
 }
 
 bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
+    current_match_started_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     // 阶段 1：检查定位点云。
     assert(cloud_input != nullptr);
 
     if (cloud_input->empty() || cloud_input->size() < 50) {
+        if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(false);
         LOG(WARNING) << "loc input is empty or invalid, sz: " << cloud_input->size();
         return false;
     }
@@ -546,7 +550,12 @@ bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
     frame_profiling_ = FrameProfiling{};
     profiling::Stopwatch outer_profile_timer(profiling_enabled);
     current_scan_ = cloud_input;
+    const double previous_match_stamp = localization_result_.lidar_match_stamp_;
     Align(cloud_input);
+    // Parking, pending initialization and other no-match paths are not evidence
+    // of continuous successful matching, even when their cached result is GOOD.
+    if (match_failure_recorder_ && localization_result_.lidar_match_stamp_ <= previous_match_stamp)
+        match_failure_recorder_->ObserveTracking(false);
     // 阶段 3：记录耗时并结束处理。
     if (profiling_enabled) {
         const profiling::TimingSample outer_timing = outer_profile_timer.Stop();
@@ -723,7 +732,7 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     assert(input != nullptr && !input->empty());
 
     // 使用功能点的位置进行定位初始化
-    double fitness_score;
+    double fitness_score = 0;
     SE3 pose_esti = fp_pose;
     CloudPtr output_cloud(new PointCloudType);
     // loc_inited_ = YawSearch(pose_esti, fitness_score, input, output_cloud);
@@ -734,11 +743,15 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     }
 
     if (loc_inited_) {
+        evidence_ever_localized_ = true;
+        if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(true);
         current_timestamp_ = math::ToSec(input->header.stamp);
         localization_result_.confidence_ = fitness_score;
         current_abs_pose_ = pose_esti;
         localization_result_.pose_ = pose_esti;
         localization_result_.timestamp_ = current_timestamp_;
+        localization_result_.lidar_match_stamp_ = current_timestamp_;
+        localization_result_.lidar_match_started_steady_ns_ = current_match_started_steady_ns_;
         localization_result_.lidar_loc_valid_ = true;
         localization_result_.status_ = LocalizationStatus::GOOD;
 
@@ -762,12 +775,68 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
         //  定位成功，则清空失败记录
         fp_init_fail_pose_vec_.clear();
     } else {
+        auto evidence = MakeFailureEvidence(input, last_match_stats_,
+            diagnostics::MatchFailureRecorder::Stage::kSeedRegistration,
+            last_match_stats_.map_consistency_evaluated ? "seed_map_consistency_rejected" : last_match_stats_.registration_reason,
+            options_.relocalization_map_consistency_max_points_, options_.relocalization_min_overlap_ratio_);
+        evidence.candidate_available = true;
+        evidence.pose_available = {{true, last_match_stats_.registration_pose_available,
+                                   last_match_stats_.map_consistency_evaluated}};
+        evidence.guess = EvidencePose(fp_pose);
+        evidence.ndt = evidence.check = EvidencePose(pose_esti);
+        RecordFailureEvidence(input,evidence);
         // 添加失败历史记录
         LOG(INFO) << "init failed, score: " << fitness_score;
         fp_init_fail_pose_vec_.emplace_back(fp_pose);
         fp_last_tried_time_ = 1e-6 * static_cast<double>(input->header.stamp);
     }
     return loc_inited_;
+}
+
+diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
+    const CloudPtr& input, const MatchStats& stats,
+    diagnostics::MatchFailureRecorder::Stage stage, const char* detail,
+    std::size_t maximum_points, double minimum_overlap) const {
+    using Recorder = diagnostics::MatchFailureRecorder;
+    Recorder::Frame frame;
+    frame.sensor_stamp_ns = static_cast<std::int64_t>(std::llround(current_timestamp_ * 1e9));
+    frame.phase = evidence_ever_localized_ ? Recorder::Phase::kGlobalRelocalization : Recorder::Phase::kStartup;
+    frame.stage = stage;
+    std::snprintf(frame.rejection_reason.data(),frame.rejection_reason.size(),"%s",detail ? detail : "unknown");
+    frame.pose_available = {{false,false,false}};
+    frame.candidate_available = false;
+    frame.evaluated = stats.map_consistency_evaluated;
+    const auto maximum = std::max<std::size_t>(1,maximum_points);
+    frame.validation_stride = std::max<std::size_t>(1,(input->size()+maximum-1)/maximum);
+    frame.validation_points = stats.map_consistency_points;
+    frame.overlap = stats.map_overlap_ratio;
+    frame.inside_xy = stats.map_inside_xy_ratio;
+    frame.inside_xyz = stats.map_inside_xyz_ratio;
+    frame.gravity_cos = stats.map_gravity_alignment_cos;
+    frame.min_overlap = minimum_overlap;
+    frame.min_inside_xy = options_.relocalization_min_inside_xy_ratio_;
+    frame.min_gravity_cos = options_.relocalization_min_gravity_alignment_cos_;
+    frame.nearest_neighbor_distance_m = options_.relocalization_nearest_neighbor_distance_;
+    frame.bounds_margin_m = options_.relocalization_bounds_margin_;
+    frame.confidence = stats.confidence;
+    frame.min_confidence = options_.min_init_confidence_;
+    frame.iterations = stats.iterations;
+    if (frame.evaluated) {
+        frame.reason = frame.inside_xy < frame.min_inside_xy ? Recorder::Reason::kBounds :
+            frame.overlap < frame.min_overlap ? Recorder::Reason::kOverlap : Recorder::Reason::kGravity;
+    } else frame.reason = stage == Recorder::Stage::kSearch ? Recorder::Reason::kSearch :
+        stage == Recorder::Stage::kUnavailable ? Recorder::Reason::kUnavailable : Recorder::Reason::kRegistration;
+    return frame;
+}
+
+void LidarLoc::RecordFailureEvidence(const CloudPtr& input,
+                                    const diagnostics::MatchFailureRecorder::Frame& frame) {
+    if (!match_failure_recorder_) return;
+    // A successful functional-point seed can precede the optional global search
+    // in this same initialization call. Its later search result is not a loss.
+    if (loc_inited_ && frame.phase != diagnostics::MatchFailureRecorder::Phase::kTracking) return;
+    match_failure_recorder_->ObserveTracking(false);
+    match_failure_recorder_->Capture(EvidenceCloud(input),frame);
 }
 
 bool LidarLoc::BuildRelocalizationMapCache() {
@@ -820,7 +889,15 @@ bool LidarLoc::BuildRelocalizationMapCache() {
 bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     // 阶段 1：取得待确认或新检索候选。
     if (!global_relocalizer_ || !global_relocalizer_->IsReady() ||
-        !current_lo_pose_set_) return false;
+        !current_lo_pose_set_) {
+        auto evidence = MakeFailureEvidence(input, MatchStats{},
+            diagnostics::MatchFailureRecorder::Stage::kUnavailable,
+            !current_lo_pose_set_ ? "lio_pose_unavailable" : "global_backend_unavailable", 1,
+            options_.relocalization_min_overlap_ratio_);
+        evidence.refinement_backend = diagnostics::MatchFailureRecorder::Backend::kNone;
+        RecordFailureEvidence(input,evidence);
+        return false;
+    }
 
     // Confirm on the next processed scan. Online processing deliberately
     // drops stale scans, so an expensive first search can make the sensor-time
@@ -871,6 +948,18 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     summary.relocalization_reason = result->reason;
     if (!result->accepted || result->candidates.empty()) {
         last_match_stats_ = summary;
+        auto evidence = MakeFailureEvidence(input, summary,
+            diagnostics::MatchFailureRecorder::Stage::kSearch, result->reason.c_str(), 1,
+            options_.relocalization_min_overlap_ratio_);
+        evidence.candidate_id = result->candidate_id;
+        evidence.retrieval_score = result->score;
+        evidence.query_points = result->point_count;
+        evidence.query_descriptors = result->descriptor_count;
+        evidence.search_ms = result->search_time_ms;
+        evidence.refinement_backend = diagnostics::MatchFailureRecorder::Backend::kNone;
+        // Retrieval may have found a descriptor ID without a valid geometric
+        // candidate. Never serialize default identity as a map alignment.
+        RecordFailureEvidence(input,evidence);
         LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                      << "] rejected: reason=" << result->reason
                      << ", candidate=" << result->candidate_id << ", score=" << result->score
@@ -886,6 +975,35 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         relocalization_event_active_ = false;
         return false;
     }
+
+    using EvidenceRecorder = diagnostics::MatchFailureRecorder;
+    std::optional<EvidenceRecorder::Frame> best_failed_candidate;
+    int best_failed_progress = -1;
+    auto remember_failure = [&](EvidenceRecorder::Frame frame, int progress) {
+        if (!best_failed_candidate || progress > best_failed_progress ||
+            (progress == best_failed_progress &&
+             ((frame.evaluated && (!best_failed_candidate->evaluated || frame.overlap > best_failed_candidate->overlap)) ||
+              (!frame.evaluated && !best_failed_candidate->evaluated && frame.retrieval_score > best_failed_candidate->retrieval_score)))) {
+            best_failed_candidate = frame;
+            best_failed_progress = progress;
+        }
+    };
+    auto candidate_evidence = [&](const RelocalizationCandidate& candidate, const MatchStats& stats,
+                                  EvidenceRecorder::Stage stage, const char* detail,
+                                  std::size_t maximum, double minimum) {
+        auto frame = MakeFailureEvidence(input,stats,stage,detail,maximum,minimum);
+        frame.candidate_available = true; frame.candidate_id = candidate.candidate_id;
+        frame.retrieval_score = candidate.score;
+        frame.query_points = result->point_count;
+        frame.query_descriptors = result->descriptor_count;
+        frame.search_ms = result->search_time_ms;
+        frame.guess = EvidencePose(candidate.T_world_imu); frame.pose_available[0] = true;
+        frame.refinement_backend = options_.relocalization_refinement_backend_ == "plane_icp" ?
+            EvidenceRecorder::Backend::kPlaneIcp : EvidenceRecorder::Backend::kNdt;
+        if (frame.refinement_backend != EvidenceRecorder::Backend::kNdt)
+            frame.min_confidence = std::numeric_limits<double>::quiet_NaN();
+        return frame;
+    };
 
     // 阶段 3：预检地图并限制细化数量。
     std::vector<MapConsistencyResult> prechecks(result->candidates.size());
@@ -917,6 +1035,21 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     for (std::size_t index = 0; index < result->candidates.size(); ++index) {
         const auto& candidate = result->candidates[index];
         if (!prechecks[index].passed) {
+            MatchStats checked;
+            checked.map_consistency_evaluated = prechecks[index].evaluated;
+            checked.map_consistency_points = prechecks[index].points;
+            checked.map_inside_xy_ratio = prechecks[index].inside_xy_ratio;
+            checked.map_inside_xyz_ratio = prechecks[index].inside_xyz_ratio;
+            checked.map_overlap_ratio = prechecks[index].overlap_ratio;
+            checked.map_gravity_alignment_cos = prechecks[index].gravity_alignment_cos;
+            auto evidence = candidate_evidence(candidate,checked,EvidenceRecorder::Stage::kMapPrecheck,
+                "candidate_map_precheck_rejected",options_.relocalization_precheck_max_points_,
+                options_.relocalization_precheck_min_overlap_ratio_);
+            evidence.check = EvidencePose(candidate.T_world_imu);
+            evidence.pose_available[2] = prechecks[index].evaluated;
+            evidence.refinement_backend = EvidenceRecorder::Backend::kNone;
+            evidence.min_confidence = std::numeric_limits<double>::quiet_NaN();
+            remember_failure(evidence,1);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] candidate rejected by map precheck: candidate="
                          << candidate.candidate_id << ", query_frames="
@@ -965,6 +1098,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         const auto& candidate = result->candidates[index];
         map_->LoadOnPose(candidate.T_world_imu);
         if (!UpdateGlobalMap()) {
+            remember_failure(candidate_evidence(candidate,MatchStats{},EvidenceRecorder::Stage::kRefinement,
+                "refinement_target_unavailable",1,options_.relocalization_min_overlap_ratio_),2);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] candidate refinement target unavailable: candidate="
                          << candidate.candidate_id << ", refinement_backend="
@@ -1031,6 +1166,26 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                           << ", map_consistency_passed="
                           << attempted_pose_map_passed;
             }
+            auto evidence = candidate_evidence(candidate,last_match_stats_,EvidenceRecorder::Stage::kRefinement,
+                options_.relocalization_refinement_backend_ == "plane_icp" ? "plane_icp_quality_rejected" :
+                    last_match_stats_.registration_reason,
+                options_.relocalization_map_consistency_max_points_,options_.relocalization_min_overlap_ratio_);
+            // A diagnostic map check may pass even though the refinement quality
+            // failed. Do not relabel such a failure as gravity/map rejection.
+            evidence.reason = EvidenceRecorder::Reason::kRegistration;
+            const bool attempted_pose_available = options_.relocalization_refinement_backend_ == "plane_icp" ?
+                plane_result.attempted_pose_valid : last_match_stats_.registration_pose_available;
+            if (attempted_pose_available) {
+                const SE3& attempted = options_.relocalization_refinement_backend_ == "plane_icp" ? plane_result.attempted_pose : refined_pose;
+                evidence.ndt = EvidencePose(attempted); evidence.pose_available[1] = true;
+                if (evidence.evaluated) { evidence.check = EvidencePose(attempted); evidence.pose_available[2] = true; }
+            }
+            if (options_.relocalization_refinement_backend_ == "plane_icp") {
+                evidence.plane_icp = {true,plane_result.converged,plane_result.matches,plane_result.inlier_ratio,
+                    plane_result.rmse,plane_result.hessian_condition_number,
+                    plane_result.translation_correction,plane_result.rotation_correction_deg};
+            }
+            remember_failure(evidence,2);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] candidate rejected by refinement/map: candidate="
                          << candidate.candidate_id << ", retrieval score=" << candidate.score
@@ -1042,6 +1197,12 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             continue;
         }
         if (!ValidateRelocalizationMapConsistency(input, refined_pose)) {
+            auto evidence = candidate_evidence(candidate,last_match_stats_,EvidenceRecorder::Stage::kMapValidation,
+                "refined_map_consistency_rejected",options_.relocalization_map_consistency_max_points_,
+                options_.relocalization_min_overlap_ratio_);
+            evidence.ndt = evidence.check = EvidencePose(refined_pose);
+            evidence.pose_available = {{true,true,last_match_stats_.map_consistency_evaluated}};
+            remember_failure(evidence,3);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                          << "] candidate rejected by refinement/map: candidate="
                          << candidate.candidate_id << ", retrieval score=" << candidate.score
@@ -1106,6 +1267,13 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         if (confirmation_count < options_.relocalization_confirmation_count_) {
             summary.relocalization_reason = "awaiting_consistent_window";
             last_match_stats_ = summary;
+            auto evidence = candidate_evidence(candidate,candidate_stats,EvidenceRecorder::Stage::kConfirmation,
+                "awaiting_consistent_window",options_.relocalization_map_consistency_max_points_,
+                options_.relocalization_min_overlap_ratio_);
+            evidence.reason = EvidenceRecorder::Reason::kConfirmation;
+            evidence.ndt = evidence.check = EvidencePose(refined_pose);
+            evidence.pose_available = {{true,true,candidate_stats.map_consistency_evaluated}};
+            RecordFailureEvidence(input,evidence);
             LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                       << "] awaiting confirmation: candidate="
                       << candidate.candidate_id << ", count=" << confirmation_count
@@ -1132,6 +1300,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         localization_result_.timestamp_ = current_timestamp_;
         localization_result_.confidence_ = refinement_score;
         localization_result_.pose_ = refined_pose;
+        localization_result_.lidar_match_stamp_ = current_timestamp_;
+        localization_result_.lidar_match_started_steady_ns_ = current_match_started_steady_ns_;
         localization_result_.lidar_loc_valid_ = true;
         localization_result_.status_ = LocalizationStatus::GOOD;
         if (current_lo_pose_set_) {
@@ -1147,6 +1317,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         match_fail_count_ = 0;
         initial_pose_set_ = false;
         summary.success = true;
+        evidence_ever_localized_ = true;
+        if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(true);
         summary.relocalization_accepted = true;
         summary.relocalization_reason = "accepted";
         last_match_stats_ = summary;
@@ -1181,6 +1353,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     // 阶段 7：记录候选全部失败。
     summary.relocalization_reason = "all_candidates_rejected";
     last_match_stats_ = summary;
+    if (best_failed_candidate) RecordFailureEvidence(input,*best_failed_candidate);
     if (reuse_pending) pending_relocalization_ = PendingRelocalization{};
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                  << "] all Top-K candidates rejected: count="
@@ -1535,6 +1708,7 @@ void LidarLoc::UpdateMapThread() {
 void LidarLoc::SetInitialPose(SE3 init_pose) {
     UL lock(initial_pose_mutex_);
     loc_inited_ = false;
+    if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(false);
     // map_->ClearMap();
 
     initial_pose_set_ = true;
@@ -1545,6 +1719,7 @@ void LidarLoc::SetInitialPose(SE3 init_pose) {
 void LidarLoc::RequestGlobalRelocalization() {
     UL lock(initial_pose_mutex_);
     loc_inited_ = false;
+    if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(false);
     initial_pose_set_ = false;
     match_fail_count_ = 0;
     last_match_stats_ = MatchStats{};
@@ -1593,6 +1768,7 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     // 阶段 2：处理静止保持。
     if (parking_ && loc_inited_) {
+        if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(false);
         if (!profiling::ReduceNonessentialOverhead()) {
             LOG(INFO) << "车辆静止，不做匹配";
         }
@@ -1877,6 +2053,11 @@ void LidarLoc::Align(const CloudPtr& input) {
             frame.guess = EvidencePose(guess_from_lo);
             frame.ndt = EvidencePose(res_of_lo);
             frame.check = EvidencePose(current_pose_esti);
+            frame.pose_available = {{true,last_match_stats_.registration_pose_available,
+                                    last_match_stats_.map_consistency_evaluated}};
+            if (!last_match_stats_.map_consistency_evaluated)
+                std::snprintf(frame.rejection_reason.data(),frame.rejection_reason.size(),"%s",
+                              lidar_loc_odom_valid ? last_match_stats_.registration_reason : "raw_odometry_disagreement");
             frame.evaluated = last_match_stats_.map_consistency_evaluated;
             frame.validation_stride = std::max<std::size_t>(1, (input->size() + 1999) / 2000);
             frame.validation_points = last_match_stats_.map_consistency_points;
@@ -1890,6 +2071,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             frame.nearest_neighbor_distance_m = options_.relocalization_nearest_neighbor_distance_;
             frame.bounds_margin_m = options_.relocalization_bounds_margin_;
             frame.confidence = fitness_score;
+            frame.min_confidence = options_.min_tracking_confidence_;
             frame.iterations = last_match_stats_.iterations;
             frame.raw_odom_valid = lidar_loc_odom_valid;
             frame.raw_odom_delta = delta_rel_abs_pose;
@@ -1973,6 +2155,8 @@ void LidarLoc::Align(const CloudPtr& input) {
             localization_result_.lidar_loc_valid_ = false;
             localization_result_.status_ = LocalizationStatus::INITIALIZING;
         } else if (loc_success && lidar_loc_odom_valid) {
+            localization_result_.lidar_match_stamp_ = current_timestamp_;
+            localization_result_.lidar_match_started_steady_ns_ = current_match_started_steady_ns_;
             localization_result_.lidar_loc_valid_ = true;
             localization_result_.status_ = LocalizationStatus::GOOD;
         } else {
@@ -2106,6 +2290,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     }
 
     if (pcl_ndt_->getInputTarget() == nullptr) {
+        last_match_stats_.registration_reason = "ndt_target_unavailable";
         LOG(INFO) << "lidar loc target is null, skip";
         return false;
     }
@@ -2137,6 +2322,10 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         loc_inited_ ? options_.min_tracking_confidence_ : options_.min_init_confidence_;
     loc_success = ndt->hasConverged() && std::isfinite(confidence) && trans.allFinite() &&
                   confidence >= confidence_threshold;
+    last_match_stats_.registration_reason = !trans.allFinite() ? "ndt_transform_nonfinite" :
+        !std::isfinite(confidence) ? "ndt_confidence_nonfinite" :
+        !ndt->hasConverged() ? "ndt_not_converged" :
+        confidence < confidence_threshold ? "ndt_confidence_below_threshold" : "accepted";
     // [loc-ndt-acceptance]
 
     // 阶段 3：执行可选 ICP 微调。
@@ -2183,8 +2372,10 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         if (q_3d.norm() > 1e-9 && q_3d.coeffs().allFinite()) {
             q_3d.normalize();
             pose = SE3(q_3d, t_3d);
+            last_match_stats_.registration_pose_available = true;
         } else {
             loc_success = false;
+            last_match_stats_.registration_reason = "ndt_rotation_invalid";
         }
     }
 

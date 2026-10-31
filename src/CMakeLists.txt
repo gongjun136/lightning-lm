@@ -158,6 +158,10 @@ if(BUILD_TESTING)
     target_link_libraries(lidar_tracking_health_test ${PROJECT_NAME}.libs ${third_party_libs})
     add_test(NAME lidar_tracking_health_test COMMAND $<TARGET_FILE:lidar_tracking_health_test>)
 
+    add_executable(relocalization_evidence_test test/relocalization_evidence_test.cc)
+    target_link_libraries(relocalization_evidence_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME relocalization_evidence_test COMMAND $<TARGET_FILE:relocalization_evidence_test>)
+
     add_executable(eskf_update_velocity_gate_test test/eskf_update_velocity_gate_test.cc)
     target_link_libraries(eskf_update_velocity_gate_test ${PROJECT_NAME}.libs ${third_party_libs})
 

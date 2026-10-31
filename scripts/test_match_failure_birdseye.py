@@ -202,6 +202,83 @@ class BirdseyeTest(unittest.TestCase):
         self.assertEqual(result['comparison']['check']['score_basis'], 'saved_display_sample_only')
         self.assertIsNone(result['check_score_matches_recorded'])
 
+    def make_extended(self, candidate=True):
+        self.summary.update(schema=2, phase='global_relocalization', stage='map_validation',
+                            rejection_reason='map_overlap', candidate_available=candidate,
+                            candidate_id=7 if candidate else -1, retrieval_score=.82 if candidate else None,
+                            refinement_backend='plane_icp',
+                            pose_available=dict.fromkeys(b.POSES, candidate),
+                            episode=dict(id=1, index=1, limit=3, selection='first_failure'))
+        self.summary['scan']['frame'] = 'primary_lidar_at_scan_end'
+        self.summary['map']['coverage'] = ('all_possible_neighbors_for_saved_scan_and_available_poses'
+                                           if candidate else 'unavailable_no_candidate')
+        if not candidate:
+            self.summary.update(stage='search', rejection_reason='no_descriptor_candidates')
+            self.summary['poses'] = dict.fromkeys(b.POSES)
+            self.summary['map'].update(local_points=0, local_bounds_min=None, local_bounds_max=None)
+            (self.evidence / 'map_local.bin').write_bytes(b'')
+            self.summary['files_sha256']['map'] = hashlib.sha256(b'').hexdigest()
+            content = bytearray((self.evidence / 'scan.bin').read_bytes())
+            for offset in range(20, len(content), 24):
+                content[offset:offset + 4] = struct.pack('<I', 0)
+            (self.evidence / 'scan.bin').write_bytes(content)
+            self.summary['files_sha256']['scan'] = hashlib.sha256(content).hexdigest()
+            self.summary['criterion'].update(evaluated=False, points=0)
+            self.summary['scan']['validation_points'] = 0
+        self.save()
+
+    def test_no_global_candidate_renders_only_sensor_scan_without_fabricated_pose(self):
+        self.dependencies()
+        self.make_extended(candidate=False)
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'generated', result)
+        self.assertEqual(result['visualization_mode'], 'sensor_only')
+        self.assertEqual(result['comparison'], {})
+        self.assertFalse(result['candidate_available'])
+        self.assertEqual(result['poses'], dict.fromkeys(b.POSES))
+        self.assertIsNone(result['original_check_overlap'])
+        self.assertEqual(result['reason'], 'no_descriptor_candidates')
+        self.assertEqual(result['display']['frame'], 'primary_lidar_at_scan_end')
+        self.assertIn('map alignment and overlap are unavailable', Path(result['html']).read_text())
+
+    def test_global_refinement_draws_only_available_poses_and_names_actual_backend(self):
+        self.dependencies()
+        self.make_extended()
+        self.summary['poses']['guess'] = None
+        self.summary['pose_available']['guess'] = False
+        self.save()
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'generated', result)
+        self.assertEqual(set(result['comparison']), {'ndt', 'check'})
+        self.assertIn('Plane ICP', result['comparison']['ndt']['label'])
+        self.assertTrue(result['check_score_matches_recorded'])
+        self.assertEqual(result['candidate_id'], 7)
+        self.assertEqual(result['episode']['limit'], 3)
+
+    def test_no_candidate_manifest_cannot_smuggle_identity_map_pose(self):
+        self.dependencies()
+        self.make_extended(candidate=False)
+        self.summary['poses']['guess'] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        self.save()
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('must be null', result['message'])
+
+    def test_global_candidate_without_neighbour_map_points_is_valid_zero_score(self):
+        self.dependencies()
+        self.make_extended()
+        (self.evidence / 'map_local.bin').write_bytes(b'')
+        self.summary['files_sha256']['map'] = hashlib.sha256(b'').hexdigest()
+        self.summary['map']['local_points'] = 0
+        self.summary['criterion']['overlap'] = 0
+        self.save()
+        result = b.render_evidence(self.evidence)
+        self.assertEqual(result['status'], 'generated', result)
+        self.assertEqual(result['visualization_mode'], 'map_overlay')
+        self.assertEqual(result['comparison']['check']['overlap'], 0)
+        self.assertTrue(result['check_score_matches_recorded'])
+        self.assertTrue(result['display']['map_bounds_outline'])
+
 
 if __name__ == '__main__':
     unittest.main()

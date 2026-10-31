@@ -27,6 +27,109 @@ void FeedWithoutCan(Monitor& monitor, int ms, const SE3& pose, double gyro = 0,
     monitor.ObserveGyro(stamp, gyro, At(ms));
     monitor.ObservePose(stamp, pose, raw ? *raw : pose, SmallCov(), true, false, 1, At(ms));
 }
+void CheckConfirmedLossPolicy() {
+    Config cfg;
+    Require(cfg.output_timeout_sec == .5 && cfg.evaluation_timeout_sec == .5,
+            "output and output-quality freshness use the same 500 ms boundary");
+    Monitor startup(cfg, At(0));
+    TrackingEvidence tracking;
+    for (int ms : {0, 7999, 8000}) {
+        const auto state = startup.Evaluate(tracking, At(ms));
+        Require(state.startup_pending && !state.startup_expired && !state.localization_lost &&
+                SafetyValue(state, false, false, true) == 4,
+                "initial relocalization stays 4 through the inclusive eight-second boundary");
+    }
+    const auto expired = startup.Evaluate(tracking, At(8001));
+    Require(expired.startup_expired && !expired.localization_lost &&
+            SafetyValue(expired, false, false, true) == -9,
+            "initial timeout is severe with a distinct startup cause");
+    tracking.initialized = tracking.output_gate_open = tracking.latest_match_valid = true;
+    tracking.valid_match_age_sec = 0;
+    Require(SafetyValue(startup.Evaluate(tracking, At(8002)), false, false, true) == 4 &&
+            !startup.Evaluate(tracking, At(8002)).startup_expired,
+            "an accepted first map match ends startup grace even before business output exists");
+
+    Monitor running(cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(running, ms, Pose(ms * .001));
+    const auto healthy = running.Evaluate(tracking, At(1000));
+    Require(healthy.output_continuous && HealthyLocalizationForDegradedRadar(healthy),
+            "sustained fresh output and accepted map/quality evidence authorize degraded operation");
+    const auto degraded = EvaluateSafetyDecision(healthy, false, true, false, true, false);
+    Require(degraded.raw == 2 && degraded.selected == 0 && degraded.published == 0 && degraded.partial_radar_suppressed,
+            "partial radar failure preserves raw 2 and suppresses only its stop decision with healthy localization");
+    const auto reporting_off = EvaluateSafetyDecision(healthy, false, true, false, false, false);
+    Require(reporting_off.raw == 2 && reporting_off.partial_radar_suppressed && reporting_off.published == 0,
+            "disabling Safety reporting preserves the partial radar cause and suppression evidence");
+    Require(EvaluateSafetyDecision(healthy, true, true, false, true, false).selected == -9,
+            "healthy localization never overrides all required radars unavailable");
+    for (int missing = 0; missing < 5; ++missing) {
+        auto incomplete = healthy;
+        if (missing == 0) incomplete.output_continuous = false;
+        if (missing == 1) incomplete.match_evidence_available = false;
+        if (missing == 2) incomplete.latest_match_valid = false;
+        if (missing == 3) incomplete.covariance_valid = false;
+        if (missing == 4) incomplete.match_stale = true;
+        const auto decision = EvaluateSafetyDecision(incomplete, false, true, false, true, false);
+        Require(!decision.partial_radar_suppressed && decision.selected != 0,
+                "missing positive evidence never enables partial-radar suppression");
+    }
+    auto unknown = healthy;
+    unknown.observations[0].condition = kUnknown;
+    unknown.yaw_condition = kUnknown;
+    unknown.consistency_unknown_tolerated = true;
+    Require(EvaluateSafetyDecision(unknown, false, true, false, true, false).selected == 2,
+            "bounded UNKNOWN grace is insufficient evidence for radar-degraded operation");
+    unknown.consistency_unknown_tolerated = false;
+    Require(EvaluateSafetyDecision(unknown, false, true, false, true, false).selected == 4,
+            "required UNKNOWN without tolerance still stops");
+    auto failed = healthy;
+    failed.confirmed_failure = true;
+    Require(EvaluateSafetyDecision(failed, false, true, false, true, false).selected == 4,
+            "positive sensor evidence cannot erase a confirmed localization-quality failure");
+    Monitor optional(cfg, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) FeedWithoutCan(optional, ms, Pose(ms * .001));
+    Require(EvaluateSafetyDecision(optional.Evaluate(tracking, At(1000)), false, true, false, true, false).partial_radar_suppressed,
+            "legal optional CAN absence still requires explicit passing yaw, map and uncertainty evidence");
+
+    tracking.latest_match_valid = tracking.output_gate_open = false;
+    const auto rejected = running.Evaluate(tracking, At(1000));
+    Require(!rejected.localization_lost && !rejected.output_stale &&
+            SafetyValue(rejected, false, false, true) == 4,
+            "one rejected match closes outputs and reports 4 without inventing confirmed loss");
+    tracking.latest_match_valid = true;
+    tracking.match_stale = true;
+    const auto stale_match = running.Evaluate(tracking, At(1000));
+    Require(!stale_match.localization_lost && SafetyValue(stale_match, false, false, true) == 4,
+            "map-match freshness loss alone remains 4 while a recent output exists");
+    tracking.confirmed_lost = true;
+    Require(SafetyValue(running.Evaluate(tracking, At(1000)), false, false, true) == -9,
+            "confirmed runtime loss has no new startup grace");
+    tracking.confirmed_lost = tracking.match_stale = false;
+    tracking.output_gate_open = true;
+    // Only outputs pause. Independent input callbacks continue, avoiding a separate input-gap fault.
+    for (int ms = 1020; ms <= 1500; ms += 20) {
+        running.ObserveSpeed(100 + ms * .001, 1, At(ms));
+        running.ObserveGyro(100 + ms * .001, 0, At(ms));
+    }
+    for (int ms : {1490, 1500}) {
+        const auto state = running.Evaluate(tracking, At(ms));
+        Require(!state.output_stale && !state.severe && SafetyValue(state, false, false, true) == 0,
+                "fresh inputs do not turn an output-only pause into an early 300 ms quality timeout");
+    }
+    const auto timed_out = running.Evaluate(tracking, At(1501));
+    Require(timed_out.output_stale && !timed_out.severe && !timed_out.localization_lost &&
+            SafetyValue(timed_out, false, false, true) == 4,
+            "strictly over 500 ms output silence is 4, independently of confirmed loss");
+    Feed(running, 1520, Pose(1.52));
+    Require(!running.Evaluate(tracking, At(1520)).output_continuous,
+            "one recovered output cannot immediately certify continuous degraded operation");
+    for (int ms = 1540; ms <= 2020; ms += 20) Feed(running, ms, Pose(ms * .001));
+    Require(running.Evaluate(tracking, At(2020)).output_continuous,
+            "one complete motion window of recovered output requalifies continuity");
+    Feed(running, 2040, Pose(2.04), 1, 0, 2);
+    Require(!running.Evaluate(tracking, At(2040)).output_continuous,
+            "a new pose epoch cannot borrow continuous output evidence from before relocalization");
+}
 void CheckSanyUncertaintyConfig(const char* path) {
     const auto diagnostics = YAML::LoadFile(path)["diagnostics"];
     Config cfg;
@@ -79,10 +182,10 @@ void CheckSanyUncertaintyConfig(const char* path) {
     Feed(monitor, 1100, Pose(0), 0, 0, 1, nullptr, &recorded);
     Require(SafetyValue(monitor.Evaluate(false, At(1100)), false, false, true) == 0,
             "passing uncertainty clears its own confirmed failure");
-    Require(SafetyValue(monitor.Evaluate(false, At(1401)), false, false, true) == -9,
-            "SANY relaxed uncertainty does not mask the 300 ms output timeout");
+    Require(SafetyValue(monitor.Evaluate(false, At(1601)), false, false, true) == 4,
+            "SANY running output timeout remains a stop at 500 ms without claiming tracking loss");
     Require(SafetyValue(monitor.Evaluate(true, At(1100)), false, false, true) == -9,
-            "SANY relaxed uncertainty does not mask the localization output gate");
+            "SANY relaxed uncertainty does not mask confirmed tracking loss");
     Feed(monitor, 1120, Pose(2), 0, 0, 1, nullptr, &recorded);
     Require(SafetyValue(monitor.Evaluate(false, At(1120)), false, false, true) == 4,
             "SANY relaxed uncertainty does not mask a confirmed position jump");
@@ -94,6 +197,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     Config cfg;
+    CheckConfirmedLossPolicy();
     Monitor normal(cfg, At(0));
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");
     for (int ms = 0; ms <= 1000; ms += 20) Feed(normal, ms, Pose(ms * 0.001));
@@ -136,9 +240,10 @@ int main(int argc, char** argv) {
     Require(SafetyValue(snapshot, false, true, false) == 4, "localization wins over radar");
     Require(SafetyValue(snapshot, true, true, false) == -9, "all-radar failure is severe");
     snapshot.severe = true;
-    Require(SafetyValue(snapshot, false, false, true) == -9, "localization timeout is severe");
-    Require(normal.Evaluate(false, At(1301)).severe, "real output timeout stops normal");
-    Require(normal.Evaluate(true, At(1000)).severe, "output gate loss is severe immediately");
+    Require(SafetyValue(snapshot, false, false, true) == -9, "confirmed localization loss is severe");
+    Require(normal.Evaluate(false, At(1501)).output_stale && !normal.Evaluate(false, At(1501)).severe,
+            "running output timeout stops without inventing confirmed loss");
+    Require(normal.Evaluate(true, At(1000)).severe, "confirmed tracking loss is severe immediately");
 
     Monitor reverse(cfg, At(0)), curve(cfg, At(0));
     for (int ms = 0; ms <= 1000; ms += 20) {
@@ -238,8 +343,8 @@ int main(int argc, char** argv) {
             grace.Evaluate(false, At(1160)).optional_can_unavailable &&
             SafetyValue(grace.Evaluate(false, At(1160)), false, false, true) == 0,
             "frozen optional CAN does not stop while independent yaw and uncertainty pass");
-    Require(grace.Evaluate(false, At(1461)).severe,
-            "grace does not extend the 300 ms output timeout");
+    Require(grace.Evaluate(false, At(1661)).output_stale && !grace.Evaluate(false, At(1661)).severe,
+            "grace does not extend the 500 ms output timeout or turn it into confirmed loss");
     Feed(grace, 1180, Pose(1.18), 1, 0, 2);
     Require(!grace.Evaluate(false, At(1180)).consistency_unknown_tolerated,
             "epoch change invalidates prior passing evidence");
@@ -249,7 +354,7 @@ int main(int argc, char** argv) {
         invalid.consistency_unknown_grace_sec = invalid.output_timeout_sec;
         Monitor rejected(invalid, At(0));
     } catch (const std::invalid_argument&) { invalid_grace_rejected = true; }
-    Require(invalid_grace_rejected, "grace must remain below the unchanged severe output timeout");
+    Require(invalid_grace_rejected, "grace must remain below the output timeout");
 
     // Reproduce the stationary 2026-10-21 11:28 event: both independent
     // arrivals are 107 ms old, a pose just arrived, covariance still passes.
@@ -286,8 +391,9 @@ int main(int argc, char** argv) {
     Require(!bounded_gap.Evaluate(false, At(1151)).consistency_unknown_tolerated &&
             SafetyValue(bounded_gap.Evaluate(false, At(1151)), false, false, true) == 4,
             "fresh poses and repeated UNKNOWN cannot extend the 150 ms total deadline");
-    Require(bounded_gap.Evaluate(false, At(1452)).severe && delayed.confirmed_failure == false,
-            "output timeout remains 300 ms and missing evidence is not a confirmed failure");
+    Require(bounded_gap.Evaluate(false, At(1652)).output_stale &&
+            !bounded_gap.Evaluate(false, At(1652)).severe && delayed.confirmed_failure == false,
+            "output timeout is 500 ms and missing evidence is not confirmed loss");
     Feed(bounded_gap, 1160, Pose(0), 0);
     Require(bounded_gap.Evaluate(false, At(1160)).observations[0].condition == kUnknown,
             "receiving one new input does not prove a missing integration window is complete");
@@ -341,9 +447,9 @@ int main(int argc, char** argv) {
     no_can.ObservePose(160.151, Pose(300.755), Pose(300.755), SmallCov(), true, false, 1, At(60151));
     Require(SafetyValue(no_can.Evaluate(false, At(60151)), false, false, true) == 4,
             "fresh poses cannot hide required IMU loss beyond its deadline");
-    Require(SafetyValue(no_can.Evaluate(false, At(60452)), false, false, true) == -9 &&
+    Require(SafetyValue(no_can.Evaluate(false, At(60652)), false, false, true) == 4 &&
             SafetyValue(no_can.Evaluate(true, At(60151)), false, false, true) == -9,
-            "optional CAN never changes output timeout or lost-gate emergency stop");
+            "optional CAN never masks output timeout or confirmed tracking loss");
 
     Monitor no_can_yaw(cfg, At(0));
     for (int ms = 0; ms <= 1000; ms += 20) FeedWithoutCan(no_can_yaw, ms, Pose(ms * .001));

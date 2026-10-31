@@ -251,6 +251,8 @@ int main() {
     Require(!publication_gate.MapOutputsEnabled(), "map outputs wait for the first valid match");
     publication_gate.ObserveLidarMatch(false);
     Require(!publication_gate.MapOutputsEnabled(), "startup failures do not enable map outputs");
+    Require(!publication_gate.TrackingState().initialized && !publication_gate.TrackingState().confirmed_lost,
+            "startup without a valid match is pending, not confirmed runtime loss");
     publication_gate.ObserveLidarMatch(true);
     Require(publication_gate.PoseOutputsEnabled(), "first valid match enables pose outputs");
     Require(publication_gate.MapOutputsEnabled(), "first valid match enables map outputs");
@@ -258,13 +260,43 @@ int main() {
         publication_gate.ObserveLidarMatch(false);
         Require(!publication_gate.PoseOutputsEnabled(), "first rejected match stops pose outputs");
         Require(!publication_gate.MapOutputsEnabled(), "rejected match stops map outputs during loss debounce");
+        Require(!publication_gate.TrackingState().confirmed_lost &&
+                !publication_gate.TrackingState().latest_match_valid,
+                "rejected matches below the confirmation threshold are degraded, not lost");
     }
     publication_gate.ObserveLidarMatch(false);
     Require(!publication_gate.PoseOutputsEnabled(), "fifth failure disables pose outputs");
     Require(!publication_gate.MapOutputsEnabled(), "fifth consecutive failure disables map outputs");
+    Require(publication_gate.TrackingState().confirmed_lost,
+            "the existing consecutive-rejection threshold confirms tracking loss");
     publication_gate.ObserveLidarMatch(true);
     Require(publication_gate.PoseOutputsEnabled(), "one valid match resumes pose outputs");
     Require(publication_gate.MapOutputsEnabled(), "one valid match immediately resumes map outputs");
+    Require(!publication_gate.TrackingState().confirmed_lost, "accepted match clears confirmed tracking loss");
+
+    const auto status_time = LocalizationPublicationGate::Clock::now();
+    publication_gate.ObserveLidarMatch(false, 30.0, status_time, loc::LocalizationStatus::INITIALIZING);
+    Require(publication_gate.TrackingState(30.0, status_time).confirmed_lost,
+            "runtime transition back to relocalization confirms loss without a new eight-second grace");
+    publication_gate.ObserveLidarMatch(true, 30.1, status_time, loc::LocalizationStatus::GOOD);
+    publication_gate.ObserveLidarMatch(false, 30.2, status_time, loc::LocalizationStatus::FAIL);
+    Require(publication_gate.TrackingState(30.2, status_time).confirmed_lost,
+            "explicit algorithm failure confirms loss without waiting for five more frames");
+    publication_gate.ObserveLidarMatch(true, 30.3, status_time, loc::LocalizationStatus::GOOD);
+    publication_gate.ObserveLidarMatch(false, 30.3, status_time, loc::LocalizationStatus::FAIL);
+    Require(publication_gate.TrackingState(30.3, status_time).confirmed_lost &&
+            publication_gate.ConsecutiveLostFrames() == 0 && !publication_gate.PoseOutputsEnabled(30.3, status_time),
+            "same-stamp explicit failure is retained without counting a duplicate rejection");
+    publication_gate.ObserveLidarMatch(true, 30.3, status_time, loc::LocalizationStatus::GOOD);
+    Require(publication_gate.TrackingState(30.3, status_time).confirmed_lost,
+            "a duplicate good frame cannot clear the confirmed-loss latch");
+    publication_gate.ObserveLidarMatch(true, 30.4, status_time, loc::LocalizationStatus::GOOD);
+    publication_gate.ObserveLidarMatch(false, 30.3, status_time, loc::LocalizationStatus::INITIALIZING);
+    Require(!publication_gate.TrackingState(30.4, status_time).confirmed_lost,
+            "older cached relocalization status cannot roll back a newer accepted match");
+    publication_gate.ObserveLidarMatch(false, 30.4, status_time, loc::LocalizationStatus::INITIALIZING);
+    Require(publication_gate.TrackingState(30.4, status_time).confirmed_lost,
+            "same-stamp runtime relocalization is explicit loss, independent of frame counting");
 
     LocalizationPublicationGate freshness_gate(5);
     freshness_gate.SetMaxLidarMatchAge(0.6);
@@ -274,6 +306,9 @@ int main() {
     Require(!freshness_gate.PoseOutputsEnabled(),
             "stale lidar worker stops IMU/CAN DR business pose outputs");
     Require(freshness_gate.LidarMatchStale(10.61), "stale lidar worker is diagnosed explicitly");
+    Require(!freshness_gate.TrackingState(10.61).confirmed_lost &&
+            freshness_gate.TrackingState(10.61).valid_match_age_sec > .6,
+            "map-match age alone is not confirmed tracking loss");
     Require(Near(freshness_gate.LidarMatchAgeSec(10.7), 0.7), "lidar match age uses sensor time");
     Require(Near(freshness_gate.LastLidarMatchStamp(), 10.0), "last completed lidar match is retained");
     freshness_gate.ObserveLidarMatch(false, 10.7);
@@ -306,6 +341,65 @@ int main() {
             "fresh completion of an old scan cannot reopen outputs behind the known sensor watermark");
     silent_gate.ObserveLidarMatch(true, 23.1, silent_now);
     Require(silent_gate.PoseOutputsEnabled(23.1, silent_now), "caught-up match can reopen outputs");
+
+    const auto request_base = LocalizationPublicationGate::Clock::time_point{} + std::chrono::seconds(1);
+    const auto steady_ns = [](LocalizationPublicationGate::Clock::time_point time) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+    };
+    LocalizationPublicationGate request_gate(5);
+    request_gate.SetMaxLidarMatchAge(.5);
+    loc::dtc::Monitor request_monitor(loc::dtc::Config{}, request_base);
+    Require(!request_gate.ObserveRelocalizationRequested(), "initial pose before first localization stays startup");
+    const auto initial_request = request_monitor.Evaluate(request_gate.TrackingState(100, request_base), request_base);
+    Require(initial_request.startup_pending && !initial_request.localization_lost &&
+            loc::dtc::SafetyValue(initial_request, false, false, true) == 4,
+            "initial external-pose request does not invent runtime loss");
+    request_gate.CompleteRelocalizationRequest(request_base + std::chrono::milliseconds(10));
+    Require(request_gate.ObserveLidarMatch(true, 100, request_base + std::chrono::milliseconds(20),
+                loc::LocalizationStatus::GOOD, 100, steady_ns(request_base + std::chrono::milliseconds(15))),
+            "fresh match after initial request can establish localization");
+    Require(request_gate.ObserveRelocalizationRequested(), "runtime external-pose request remembers prior initialization");
+    const auto requested = request_monitor.Evaluate(
+        request_gate.TrackingState(100, request_base + std::chrono::milliseconds(30)),
+        request_base + std::chrono::milliseconds(30));
+    Require(requested.localization_lost && !requested.startup_pending &&
+            loc::dtc::SafetyValue(requested, false, false, true) == -9,
+            "runtime request reports confirmed loss immediately without waiting for another scan");
+    Require(!request_gate.ObserveLidarMatch(true, 100.1, request_base + std::chrono::milliseconds(40),
+                loc::LocalizationStatus::GOOD, 100.1, steady_ns(request_base + std::chrono::milliseconds(31))) &&
+            request_gate.TrackingState(100.1, request_base + std::chrono::milliseconds(40)).confirmed_lost,
+            "GOOD arriving while external reset is pending cannot clear confirmed loss");
+    request_gate.CompleteRelocalizationRequest(request_base + std::chrono::milliseconds(50));
+    Require(!request_gate.ObserveLidarMatch(true, 100.2, request_base + std::chrono::milliseconds(60),
+                loc::LocalizationStatus::GOOD, 100.2, steady_ns(request_base + std::chrono::milliseconds(20))) &&
+            request_gate.TrackingState(100.2, request_base + std::chrono::milliseconds(60)).confirmed_lost,
+            "pre-request in-flight GOOD cannot clear loss even when its callback arrives after reset");
+    Require(!request_gate.ObserveLidarMatch(true, 100.3, request_base + std::chrono::milliseconds(65),
+                loc::LocalizationStatus::GOOD, 100.3, steady_ns(request_base + std::chrono::milliseconds(49))),
+            "a match begun before reset completion is not recovery evidence");
+    Require(request_gate.ObserveLidarMatch(true, 100.4, request_base + std::chrono::milliseconds(70),
+                loc::LocalizationStatus::GOOD, 100.4, steady_ns(request_base + std::chrono::milliseconds(51))) &&
+            request_gate.PoseOutputsEnabled(100.4, request_base + std::chrono::milliseconds(70)),
+            "genuinely new accepted match after reset can recover the gate");
+
+    LocalizationPublicationGate cached_gate(5);
+    cached_gate.SetMaxLidarMatchAge(.5);
+    cached_gate.ObserveLidarMatch(true, 200, request_base, loc::LocalizationStatus::GOOD, 200, steady_ns(request_base));
+    for (int ms : {100, 200, 300, 400, 501}) {
+        Require(!cached_gate.ObserveLidarMatch(true, 200 + ms * .001,
+                    request_base + std::chrono::milliseconds(ms), loc::LocalizationStatus::GOOD,
+                    200, steady_ns(request_base)),
+                "advancing cached GOOD timestamps do not refresh real matching evidence");
+    }
+    const auto cached = cached_gate.TrackingState(200.501, request_base + std::chrono::milliseconds(501));
+    Require(cached.match_stale && !cached.confirmed_lost && !cached.output_gate_open &&
+            cached.valid_match_age_sec > .5 && Near(cached_gate.LastValidLidarMatchStamp(), 200) &&
+            Near(cached_gate.LastLidarMatchStamp(), 200),
+            "parked skipped matching becomes stale without fabricating a tracking failure or a fresh match");
+    const auto cached_dtc = request_monitor.Evaluate(cached, request_base + std::chrono::milliseconds(501));
+    Require(loc::dtc::SafetyValue(cached_dtc, false, true, false) == 4 &&
+            !loc::dtc::HealthyLocalizationForDegradedRadar(cached_dtc),
+            "cached parked GOOD cannot authorize partial-radar suppression");
 
     LocalizationTelemetryState telemetry(5, 500, 0.1);
     telemetry.Start();
@@ -347,12 +441,15 @@ int main() {
             "GOOD clears localization faults");
     telemetry.ObserveLocalizationStale(true);
     fault = telemetry.MakeFaultStatus(telemetry_stamp);
-    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0 &&
+    Require(fault.level == lightning::msg::FaultStatus::LEVEL_P1 &&
                 fault.fault_type == static_cast<std::int32_t>(
-                    LocalizationFaultType::LOCALIZATION_LOST) &&
+                    LocalizationFaultType::LOCALIZATION_DEGRADED) &&
                 telemetry.MakeLocalizationStatus(telemetry_stamp).status ==
-                    lightning::msg::LocalizationStatus::STATUS_FAIL,
-            "a stalled lidar worker reports FAIL/P0 while stopping poses");
+                    lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR,
+            "a stalled lidar worker reports degraded P1 without inventing tracking loss");
+    telemetry.ObserveLocalizationStale(false);
+    Require(telemetry.MakeFaultStatus(telemetry_stamp).level == lightning::msg::FaultStatus::LEVEL_NO_FAULT,
+            "freshness recovery clears only the freshness degradation");
     telemetry.ObserveLocalization(loc::LocalizationStatus::FAIL, 0);
     fault = telemetry.MakeFaultStatus(telemetry_stamp);
     Require(fault.level == lightning::msg::FaultStatus::LEVEL_P0,

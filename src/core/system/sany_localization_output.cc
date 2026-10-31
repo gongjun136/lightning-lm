@@ -254,6 +254,10 @@ void LocalizationPublicationGate::SetLostFrameThreshold(std::size_t lost_frame_t
     lost_frame_threshold_ = std::max<std::size_t>(1, lost_frame_threshold);
     consecutive_lost_frames_ = 0;
     has_valid_match_ = false;
+    confirmed_lost_ = false;
+    relocalization_request_pending_ = false;
+    earliest_match_start_steady_ns_ = 0;
+    last_result_stamp_ = 0.0;
     last_lidar_match_stamp_ = 0.0;
     last_valid_lidar_match_stamp_ = 0.0;
     latest_sensor_stamp_ = 0.0;
@@ -266,35 +270,85 @@ void LocalizationPublicationGate::SetMaxLidarMatchAge(double max_age_sec) {
     max_lidar_match_age_sec_ = std::max(0.0, max_age_sec);
 }
 
-void LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp,
-                                                   Clock::time_point now) {
+bool LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp,
+                                                    Clock::time_point now, loc::LocalizationStatus status,
+                                                    double accepted_match_stamp, std::int64_t match_started_steady_ns) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!std::isfinite(sensor_stamp) ||
-        (sensor_stamp > 0.0 && sensor_stamp <= last_lidar_match_stamp_)) return;
-    if (sensor_stamp > 0.0) {
-        last_lidar_match_stamp_ = std::max(last_lidar_match_stamp_, sensor_stamp);
-    }
+        (sensor_stamp > 0.0 && sensor_stamp < last_result_stamp_)) return false;
+    const bool explicit_loss = status == loc::LocalizationStatus::FAIL ||
+        (has_valid_match_ && status == loc::LocalizationStatus::INITIALIZING);
+    // The same cached frame can acquire an explicit failure (e.g. PGO rejection).
+    // Preserve that evidence, but do not count the frame twice or refresh freshness.
+    if (explicit_loss) confirmed_lost_ = true;
+    if (sensor_stamp > 0.0 && sensor_stamp == last_result_stamp_) return explicit_loss;
+    last_result_stamp_ = std::max(last_result_stamp_, sensor_stamp);
+    latest_sensor_stamp_ = std::max(latest_sensor_stamp_, sensor_stamp);
+    // A new result timestamp is not proof of a new registration: parked and
+    // cached GOOD results retain the timestamp of their last accepted match.
+    const bool explicit_match_stamp = !std::isnan(accepted_match_stamp);
+    const double match_stamp = explicit_match_stamp ? accepted_match_stamp : sensor_stamp;
+    if (valid && (relocalization_request_pending_ ||
+        (earliest_match_start_steady_ns_ > 0 && match_started_steady_ns < earliest_match_start_steady_ns_) ||
+        (explicit_match_stamp && (!std::isfinite(match_stamp) || match_stamp <= 0.0 ||
+                                  match_stamp <= last_valid_lidar_match_stamp_)))) return explicit_loss;
+    if (sensor_stamp > 0.0) last_lidar_match_stamp_ = valid ? match_stamp : sensor_stamp;
     // [output-match-state-update]
     if (valid) {
         has_valid_match_ = true;
+        confirmed_lost_ = false;
         consecutive_lost_frames_ = 0;
         stale_latched_ = false;
         last_valid_match_arrival_ = now;
-        if (sensor_stamp > 0.0) {
+        if (match_stamp > 0.0) {
             last_valid_lidar_match_stamp_ =
-                std::max(last_valid_lidar_match_stamp_, sensor_stamp);
+                std::max(last_valid_lidar_match_stamp_, match_stamp);
         }
     } else if (has_valid_match_) {
         ++consecutive_lost_frames_;
+        if (consecutive_lost_frames_ >= lost_frame_threshold_)
+            confirmed_lost_ = true;
     }
+    if (explicit_loss) confirmed_lost_ = true;
     // [output-match-state-update]
+    return true;
+}
+
+bool LocalizationPublicationGate::ObserveRelocalizationRequested() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    relocalization_request_pending_ = true;
+    if (has_valid_match_) confirmed_lost_ = true;
+    return has_valid_match_;
+}
+
+void LocalizationPublicationGate::CompleteRelocalizationRequest(Clock::time_point now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    earliest_match_start_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    relocalization_request_pending_ = false;
+}
+
+loc::dtc::TrackingEvidence LocalizationPublicationGate::TrackingState(double current_sensor_stamp,
+                                                                     Clock::time_point now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    loc::dtc::TrackingEvidence state;
+    state.initialized = has_valid_match_;
+    state.confirmed_lost = confirmed_lost_;
+    state.match_stale = MatchStaleLocked(current_sensor_stamp, now);
+    state.latest_match_valid = has_valid_match_ && consecutive_lost_frames_ == 0;
+    state.output_gate_open = state.latest_match_valid && !state.match_stale && !confirmed_lost_ && !relocalization_request_pending_;
+    if (has_valid_match_) {
+        state.valid_match_age_sec = std::max(0.0, std::chrono::duration<double>(now - last_valid_match_arrival_).count());
+        if (latest_sensor_stamp_ > 0.0 && last_valid_lidar_match_stamp_ > 0.0)
+            state.valid_match_age_sec = std::max(state.valid_match_age_sec, latest_sensor_stamp_ - last_valid_lidar_match_stamp_);
+    }
+    return state;
 }
 
 // [output-publication-permission]
 bool LocalizationPublicationGate::PoseOutputsEnabled(double current_sensor_stamp,
                                                       Clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return has_valid_match_ && !MatchStaleLocked(current_sensor_stamp, now) &&
+    return has_valid_match_ && !confirmed_lost_ && !relocalization_request_pending_ && !MatchStaleLocked(current_sensor_stamp, now) &&
            consecutive_lost_frames_ == 0;
 }
 
@@ -366,9 +420,11 @@ void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus sta
     if (status == loc::LocalizationStatus::GOOD) {
         has_good_localization_ = true;
         localization_lost_latched_ = false;
+        localization_stale_ = false;
         return;
     }
     if (status == loc::LocalizationStatus::FAIL ||
+        (has_good_localization_ && status == loc::LocalizationStatus::INITIALIZING) ||
         (has_good_localization_ && consecutive_lost_frames >= lost_frame_threshold_)) {
         localization_lost_latched_ = true;
     }
@@ -378,11 +434,9 @@ void LocalizationTelemetryState::ObserveLocalization(loc::LocalizationStatus sta
 }
 
 void LocalizationTelemetryState::ObserveLocalizationStale(bool stale) {
-    if (!stale) return;
     std::lock_guard<std::mutex> lock(mutex_);
     if (!has_good_localization_) return;
-    localization_lost_latched_ = true;
-    current_status_ = lightning::msg::LocalizationStatus::STATUS_FAIL;
+    localization_stale_ = stale;
 }
 
 void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamped& pose) {
@@ -391,7 +445,7 @@ void LocalizationTelemetryState::ObservePose(const geometry_msgs::msg::PoseStamp
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (current_status_ != lightning::msg::LocalizationStatus::STATUS_GOOD ||
-        localization_lost_latched_) {
+        localization_lost_latched_ || localization_stale_) {
         return;
     }
     constexpr double kTimestampTolerance = 1e-6;
@@ -409,7 +463,8 @@ lightning::msg::LocalizationStatus LocalizationTelemetryState::MakeLocalizationS
     std::lock_guard<std::mutex> lock(mutex_);
     lightning::msg::LocalizationStatus message;
     message.header.stamp = stamp;
-    message.status = current_status_;
+    message.status = localization_stale_ && !localization_lost_latched_
+                         ? lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR : current_status_;
     return message;
 }
 
@@ -421,11 +476,12 @@ lightning::msg::FaultStatus LocalizationTelemetryState::MakeFaultStatus(
     if (localization_lost_latched_) {
         message.level = lightning::msg::FaultStatus::LEVEL_P0;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_LOST);
-        message.description = "Localization lost or stale; pose outputs stopped";
-    } else if (current_status_ == lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR) {
+        message.description = "Localization tracking loss confirmed; pose outputs stopped";
+    } else if (localization_stale_ || current_status_ == lightning::msg::LocalizationStatus::STATUS_FOLLOWING_DR) {
         message.level = lightning::msg::FaultStatus::LEVEL_P1;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::LOCALIZATION_DEGRADED);
-        message.description = "Localization degraded; pose outputs stopped pending a valid match";
+        message.description = localization_stale_ ? "Localization match stale; pose outputs stopped; tracking loss not confirmed"
+                                                 : "Localization degraded; pose outputs stopped pending a valid match";
     } else {
         message.level = lightning::msg::FaultStatus::LEVEL_NO_FAULT;
         message.fault_type = static_cast<std::int32_t>(LocalizationFaultType::NONE);
