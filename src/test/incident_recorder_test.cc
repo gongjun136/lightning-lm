@@ -236,7 +236,16 @@ void RetentionAndFailureIsolation() {
     const auto id = broken.Register("/test/error", "std_msgs/msg/String", Recorder::Kind::kDiagnostic,
         [](const void*) -> std::shared_ptr<rclcpp::SerializedMessage> { throw std::runtime_error("injected export error"); });
     Check(broken.Start(), "failure fixture start failed");
-    broken.Capture(id, std::make_shared<std_msgs::msg::String>(), 100);
+    // Capture intentionally refuses lock contention. Confirm admission before
+    // triggering the event, otherwise this tests an empty successful export
+    // instead of the serializer exception (especially just after Start()).
+    const auto admission_deadline = Clock::now() + std::chrono::seconds(2);
+    bool injected = false;
+    while (!injected && Clock::now() < admission_deadline) {
+        injected = broken.Capture(id, std::make_shared<std_msgs::msg::String>(), 100);
+        if (!injected) Sleep(.005);
+    }
+    Check(injected, "serializer failure fixture was not admitted");
     Recorder::Safety fault; fault.raw = 4; broken.ObserveSafety(fault);
     const auto failed = YAML::LoadFile((WaitComplete(f.root / "broken_writer") / "summary.json").string());
     Check(failed["status"].as<std::string>() == "error" && broken.GetStats().writer_errors == 1, "writer error not isolated/reported");
