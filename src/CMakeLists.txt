@@ -127,6 +127,8 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_diagnostic_contract.py)
     add_test(NAME online_logging_slow_sink_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_online_logging.py)
+    add_test(NAME compute_profile_evidence_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_compute_profile_report.py)
     add_test(NAME causal_trace_order_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_causal_trace.py)
     add_executable(heartbeat_dtc_test test/heartbeat_dtc_test.cc utils/functional_safety_heartbeat.cc

@@ -127,8 +127,8 @@ Useful environment variables:
   LIGHTNING_LM_RUN_MODE       diagnostic or production (default: diagnostic;
                               ${SANY_WS}/run.sh selects the field release preset)
   LIGHTNING_LM_COMPUTE_PROFILE
-                              Emit machine-readable compute timing: 1=yes, 0=no
-                              (mode default: diagnostic=1, production=0)
+                              Full per-frame timing in results/compute_profile.log: 1=yes, 0=no
+                              (mode default: diagnostic=1, production=0; explicit overrides win)
   LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD
                               Skip high-rate diagnostic I/O: 1=yes, 0=no
                               (mode default: diagnostic=0, production=1)
@@ -319,6 +319,10 @@ if [[ "${record_bag}" == "1" ]]; then
   ((available_kb >= required_kb)) || fail "less than ${min_free_gb} GiB free under ${out_root}"
 fi
 mkdir -p "${run_dir}/logs" "${run_dir}/snapshots" "${run_dir}/results"
+unset LIGHTNING_LM_COMPUTE_PROFILE_PATH
+if [[ "${compute_profile}" == "1" ]]; then
+  export LIGHTNING_LM_COMPUTE_PROFILE_PATH="${run_dir}/results/compute_profile.log"
+fi
 unset LIGHTNING_LM_CAUSAL_TRACE_PATH
 if [[ "${causal_trace}" == "1" ]]; then
   export LIGHTNING_LM_CAUSAL_TRACE_PATH="${run_dir}/results/causal_trace.csv"
@@ -546,20 +550,13 @@ tegrastats_pid=""
 algorithm_pid=""
 resource_pid=""
 stopping=false
-profile_extracted=false
-extract_compute_profile() {
-  [[ "${profile_extracted}" == false ]] || return 0
-  local algorithm_log="${run_dir}/logs/run_loc_online.stderr.log"
-  [[ -f "${algorithm_log}" ]] || return 0
-  grep -E "COMPUTE_BENCH_|LIO_BENCH_FRAME" "${algorithm_log}" \
-    >"${run_dir}/results/compute_profile.log" || true
-  local profile_record_count
-  profile_record_count="$(wc -l <"${run_dir}/results/compute_profile.log")"
-  if [[ -f "${run_dir}/run_metadata.txt" ]]; then
-    echo "compute_profile_record_count=${profile_record_count}" \
-      >>"${run_dir}/run_metadata.txt"
-  fi
-  profile_extracted=true
+profile_finalized=false
+finalize_compute_profile() {
+  [[ "${profile_finalized}" == false ]] || return 0
+  [[ -f "${run_dir}/run_metadata.txt" ]] || return 0
+  python3 "${script_dir}/compute_profile_report.py" --run "${run_dir}" >>"${run_dir}/run_metadata.txt" ||
+    echo "WARNING: compute profile validation failed; raw evidence was preserved in ${run_dir}/results." >&2
+  profile_finalized=true
   if [[ -f "${run_dir}/results/causal_trace.csv" ]]; then
     echo "causal_trace_footer=$(tail -n 1 -- "${run_dir}/results/causal_trace.csv")" \
       >>"${run_dir}/run_metadata.txt"
@@ -591,7 +588,7 @@ stop_children() {
       wait "${pid}" 2>/dev/null || true
     fi
   done
-  extract_compute_profile
+  finalize_compute_profile
 }
 # [sany-lidar-register-cleanup]
 trap 'stop_children; exit 130' INT TERM
@@ -628,6 +625,8 @@ wait_for_inputs || fail "required sensor deliveries are unavailable; see ${run_d
   echo "enable_can_observation=${enable_can_observation}"
   echo "run_mode=${run_mode}"
   echo "compute_profile=${compute_profile}"
+  echo "compute_profile_storage=dedicated-v1"
+  echo "compute_profile_file=results/compute_profile.log"
   echo "resource_profile=${resource_profile}"
   echo "causal_trace=${causal_trace}"
   echo "resource_interval_sec=${resource_interval_sec}"
@@ -751,7 +750,7 @@ fi
 # [sany-lidar-finish-run]
 echo "algorithm_exit_code=${algorithm_status}" >>"${run_dir}/run_metadata.txt"
 echo "finished_at=$(date --iso-8601=ns)" >>"${run_dir}/run_metadata.txt"
-extract_compute_profile
+finalize_compute_profile
 stop_children
 trap - EXIT
 echo "${run_mode^} run artifacts saved to ${run_dir}"

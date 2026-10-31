@@ -6,13 +6,14 @@
 
 ## 默认行为与开销控制
 
-`LIGHTNING_LM_RUN_MODE=diagnostic` 默认开启现有逐帧/分阶段计时，并默认每1秒进行一次独立Python资源采样。只使用Linux `/proc` 和标准库，不需sudo、psutil、pidstat或新增ROS消息。采样器根据本次启动的进程组和完整可执行文件名寻找真实 `run_loc_online` PID，不将 `ros2 run` Python父进程或另一套定位混入。进程退出后不跟踪重启实例。
+`LIGHTNING_LM_RUN_MODE=diagnostic` 默认开启完整逐帧/分阶段计时，并默认每1秒进行一次独立Python资源采样。只使用Linux `/proc` 和标准库，不需sudo、psutil、pidstat或新增ROS消息。采样器根据本次启动的进程组和完整可执行文件名寻找真实 `run_loc_online` PID，不将 `ros2 run` Python父进程或另一套定位混入。进程退出后不跟踪重启实例。
 
-`production` 默认关闭此资源采样和现有高频诊断，保留已有10秒端到端汇总。环境显式覆盖仍优先：
+`production` 默认关闭资源采样和详细计算采样；两种模式均保留已有约10秒的 tracking 端到端汇总，该汇总依赖合格样本，不是停流心跳。环境显式覆盖仍优先：
 
 ```bash
 export LIGHTNING_LM_RUN_MODE=diagnostic
 export LIGHTNING_LM_RESOURCE_PROFILE=1       # 0可单独关闭资源采样
+unset LIGHTNING_LM_COMPUTE_PROFILE           # 清除显式覆盖，使用 diagnostic 默认 1
 export LIGHTNING_LM_RESOURCE_INTERVAL_SEC=1  # 0.5–60秒；建议首轮1秒
 ```
 
@@ -52,7 +53,7 @@ RSS等轻量信息每次读取，PSS/smaps_rollup默认30秒一次。记录采�
 - `COMPUTE_BENCH_SUMMARY module=sensor_queue source=imu|lidar`：分别按消息类型汇总进入传感器消息队列前到消费回调入口的墙钟时间，含入队锁开销，含三雷达消息但不是融合帧数；每秒输出P95/P99/max。
 - `COMPUTE_BENCH_FRAME module=lidar_loc_pipeline queue_wait_ms`：对应整帧进入地图定位队列前到消费回调入口的单调墙钟时间；离线直调或无入队记录时为−1。后续处理锁等待不含在此字段内。
 
-这些字段使用steady_clock，不与传感器Header/ROS时钟相减。不开启compute profile时不启用这些队列窗口记录；低频端到端汇总仍可能写入日志，`compute_profile.log` 的存在不能证明该开关已开启。队列丢弃数、陈旧观测丢弃数、高频latest-only队列覆盖数和相同历元候选拒绝数必须分别报告，不能混加成LiDAR丢帧。
+这些字段使用steady_clock，不与传感器Header/ROS时钟相减。不开启compute profile时不启用这些队列窗口记录；低频端到端汇总仍可能写入 stderr；详细采样启用时写入独立 `compute_profile.log`。队列丢弃数、陈旧观测丢弃数、高频latest-only队列覆盖数和相同历元候选拒绝数必须分别报告，不能混加成LiDAR丢帧。
 
 ## 域控运行
 
@@ -62,6 +63,6 @@ RSS等轻量信息每次读取，PSS/smaps_rollup默认30秒一次。记录采�
 LIO point budgets: [2200, 1804, 1500]
 ```
 
-将完整run目录导出，包括`launch_compute_config.json`、`process_resources.jsonl`、stderr和profile。下次记录感知/规划/控制启停时刻，分别保留运动、停车、起步段；先不改变线程数、点数和门槛。无原始bag/独立真值时，仍不能做严格同输入精度验收或证明所有速度台阶的真实原因。
+详细采样文件及完整性检查和启动方法见 @ref shell_script_guide "脚本使用指南"；分析前检查 `results/compute_profile_status.json`，不完整不等于算法故障。将完整run目录导出，包括`launch_compute_config.json`、`process_resources.jsonl`、stderr和profile。下次记录感知/规划/控制启停时刻，分别保留运动、停车、起步段；先不改变线程数、点数和门槛。无原始bag/独立真值时，仍不能做严格同输入精度验收或证明所有速度台阶的真实原因。
 
 测试入口：`python3 scripts/test_resource_diagnostics.py -v`。包括CPU核当量单位、TID复用、缺失计数、正式/候选配置一致性及Linux真实进程组采样；Windows会明确跳过Linux集成测试。

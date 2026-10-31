@@ -109,7 +109,7 @@ digraph map_products {
 | @ref lightning::profiling::CausalEvent "CausalEvent"、@ref lightning::profiling::CausalTraceEnabled "CausalTraceEnabled()"、@ref lightning::profiling::RecordCausalEvent "RecordCausalEvent()" | 首次调用按输出路径初始化共享追踪器；事件经有界队列异步写入，允许因容量或锁竞争丢弃诊断记录 |
 
 接口页说明单位、无效值、配置覆盖和生命周期约束；预算使用场景见 @ref sensor_pipeline "传感器与算力预算"，
-计时日志解释见 @ref resource_diagnostics "资源与端到端延迟"，事件文件与完整性检查见 @ref causal_diagnostics "因果链与时间关联"。
+计时日志解释见 @ref resource_diagnostics "资源与端到端延迟"，事件文件与完整性检查见 @ref causal_diagnostics "因果链与时间关联"。 `OnlineLogging` 将详细计算性能记录路由到独立有界队列与后台文件；端到端健康摘要仍在主日志。正常退出排空已接受记录，采集丢失和强制终止须按完整性结果解释。
 
 # 阅读时的跨模块约束
 

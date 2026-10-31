@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "e9c8045491a53bdf38be30b23eb4e36c59e7eca162c7211aa378aacd2ee6740e",
+  "contract_id": "1976789b42ad311b598ece10bde5e57a975836111f7648016b43b6e6560da08e",
   "reviewed_sources": {
     "src/core/localization/lidar_loc/lidar_loc.cc": "ffa6895c9eee8fa2208149808e80ae1d2817085533c181ec3558199774302cd6",
     "src/core/localization/localization_dtc_monitor.cc": "dad2579d41d4cf94a4457af9d4c650e4b0b866105e92a1e58b714c6da8095050",
@@ -16,6 +16,11 @@
     "src/utils/incident_recorder.h": "f42ff610f4e0bff5a5b2f99ea0900ad3b4ae2c77a74f1d40f4bd01d20f7af782",
     "src/utils/match_failure_recorder.cc": "2a1b264d3d267290f6d69dfc8ee0438d8f2d2f5e587099a1ce4ffd9e8d534b10",
     "src/utils/match_failure_recorder.h": "70fcc07b9ce32664a4538b56df8daac07917f1afe5d166a3bb9b70ec5540e1dd",
+    "src/utils/online_logging.cc": "33488e727e278da9edf0e8c85c0a9a90057be54ae05b58db8f14b5995ed0733a",
+    "src/utils/online_logging.h": "591b85ee197da2ae69b7fe3315823cd9f712f1faf49dc6e6bfc934615801d6a2",
+    "scripts/compute_profile_report.py": "6ee3847d08faa59fb855a1188b01d71aa163002c05c68b0d66d9fc1532016f98",
+    "scripts/diagnose_localization.py": "5ad3b924db0ee081feaca8d7ec26db12d7301ce92ec4f04ff458e85c72ed5a1a",
+    "scripts/run_sany_lidar_loc.sh": "1e2733fffe95c9757a41c99f0fac3145517cd85515848d6530c976a96121994b",
     "src/core/system/loc_system.cc": "76893844d21b4e9cacd4812c22a270c3cbcd0714b26551c1db4ceeebf8152dde",
     "src/core/system/loc_system.h": "132e6dba27b3aa44b7ff2bd81a1cc84e99c8ecc0d28ce841715661c22a7d93d9",
     "config/sany/localization.yaml#diagnostics": "2cbe1b7bd518f3a37cee26dcc98a369eccf33fa78b0dc10cb81239aad33d24e3",

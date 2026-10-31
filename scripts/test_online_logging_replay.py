@@ -26,6 +26,7 @@ out = Path(options.output).resolve()
 out.mkdir(parents=True, exist_ok=True)
 slow = options.slow
 name = 'slow' if slow else 'normal'
+os.environ['LIGHTNING_LM_COMPUTE_PROFILE_PATH'] = str(out / (name + '.compute_profile.log'))
 args = [str(Path(options.binary).resolve()), '--config=' + str(Path(options.config).resolve()), '--map=' + str(Path(options.map).resolve()), '--bag=' + str(Path(options.bag).resolve()), '--post_wait_seconds=2']
 rclpy.init()
 node = rclpy.create_node('async_logging_validation')

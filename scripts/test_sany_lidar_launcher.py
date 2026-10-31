@@ -16,7 +16,8 @@ LAUNCH_TIMEOUT = float(os.environ.get("LIGHTNING_TEST_LAUNCH_TIMEOUT_SEC", "30")
 
 class LauncherFailureTest(unittest.TestCase):
     def run_launcher(self, probe_exit, algorithm_exit, fixed_map_transform=None, missing_manifest=False,
-                     aligned_map=False, record_bag=False, can=True, tf=False, imu_override=None):
+                     aligned_map=False, record_bag=False, can=True, tf=False, imu_override=None,
+                     run_mode='production', compute_profile=None, legacy_profile=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "setup.bash").write_text(":\n")
@@ -54,6 +55,17 @@ elif [[ "$1 $2 $3" == 'run lightning_lm check_localization_inputs' ]]; then
   exit "${PROBE_EXIT}"
 elif [[ "$1 $2 $3" == 'run lightning_lm run_loc_online' ]]; then
   echo "algorithm arguments: ${*:4}"
+  echo "profile path: ${LIGHTNING_LM_COMPUTE_PROFILE_PATH:-<disabled>}"
+  if [[ "${LIGHTNING_LM_COMPUTE_PROFILE:-0}" == 1 ]]; then
+    if [[ "${LEGACY_PROFILE}" == 1 ]]; then
+      echo 'COMPUTE_BENCH_FRAME module=lidar_loc frame_id=42' >&2
+    else
+      printf '# COMPUTE_PROFILE schema=1 sampling=all sequence=profile_seq\n' >"${LIGHTNING_LM_COMPUTE_PROFILE_PATH}"
+      printf 'I1031 10:00:00.000000 1 fixture.cc:1] COMPUTE_BENCH_FRAME module=lidar_loc frame_id=42 profile_seq=0\n' >>"${LIGHTNING_LM_COMPUTE_PROFILE_PATH}"
+      printf 'COMPUTE_PROFILE_SUMMARY received=1 written=1 dropped=0 critical_dropped=0 io_errors=0 truncated=0\n' >>"${LIGHTNING_LM_COMPUTE_PROFILE_PATH}"
+      echo "COMPUTE_PROFILE_STATUS path=${LIGHTNING_LM_COMPUTE_PROFILE_PATH} COMPUTE_PROFILE_SUMMARY received=1 written=1 dropped=0 critical_dropped=0 io_errors=0 truncated=0" >&2
+    fi
+  fi
   echo 'mock algorithm failure' >&2
   exit "${ALGORITHM_EXIT}"
 elif [[ "$1 $2 $3" == 'bag list storage' ]]; then
@@ -84,7 +96,11 @@ exit 91
                 "LIGHTNING_LM_ROS_SETUP": str(root / "setup.bash"),
                 "LIGHTNING_LM_INSTALL_SETUP": str(root / "setup.bash"),
                 "LIGHTNING_LM_OUT_ROOT": str(root / "runs"),
-                "LIGHTNING_LM_RUN_MODE": "production",
+                "LIGHTNING_LM_RUN_MODE": run_mode,
+                "LIGHTNING_LM_RESOURCE_PROFILE": '0',
+                "LIGHTNING_LM_CAUSAL_TRACE": '0',
+                "LIGHTNING_LM_COMPUTE_PROFILE_PATH": str(root / 'stale_profile.log'),
+                "LEGACY_PROFILE": '1' if legacy_profile else '0',
                 "SANY_VEHICLE_CONFIG": str(root / "vehicle.yaml"),
                 "SANY_MAP_PATH": str(root / "map"),
                 "PROBE_EXIT": str(probe_exit),
@@ -93,6 +109,8 @@ exit 91
                 "SANY_RECORD_BAG": '1' if record_bag else '0',
                 "SANY_ENABLE_CAN_OBSERVATION": '1' if can else '0',
             })
+            if compute_profile is not None:
+                env['LIGHTNING_LM_COMPUTE_PROFILE'] = str(compute_profile)
             if imu_override is not None:
                 env['SANY_IMU_TOPIC'] = imu_override
             if fixed_map_transform is not None:
@@ -120,6 +138,47 @@ exit 91
         self.assertIn("algorithm_exit_code=23", files["run_metadata.txt"])
         self.assertIn("mock algorithm failure", files["logs/run_loc_online.stderr.log"])
         self.assertRegex(files["logs/run_loc_online.stdout.log"], r'--incident_dir=\S+/runs/incidents')
+
+    def test_diagnostic_mode_enables_full_profile_by_default(self):
+        result, files = self.run_launcher(0, 0, run_mode='diagnostic')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compute_profile=1\n', files['run_metadata.txt'])
+        self.assertIn('compute_profile_integrity=complete', files['run_metadata.txt'])
+        self.assertIn('frame_id=42 profile_seq=0', files['results/compute_profile.log'])
+        self.assertNotIn('COMPUTE_BENCH_FRAME', files['logs/run_loc_online.stderr.log'])
+        self.assertNotIn('stale_profile.log', files['logs/run_loc_online.stdout.log'])
+
+    def test_diagnostic_profile_can_be_disabled_explicitly(self):
+        result, files = self.run_launcher(0, 0, run_mode='diagnostic', compute_profile=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compute_profile=0\n', files['run_metadata.txt'])
+        self.assertIn('profile path: <disabled>', files['logs/run_loc_online.stdout.log'])
+        self.assertNotIn('results/compute_profile.log', files)
+        self.assertIn('compute_profile_integrity=disabled', files['run_metadata.txt'])
+
+    def test_production_mode_disables_full_profile_by_default(self):
+        result, files = self.run_launcher(0, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compute_profile=0\n', files['run_metadata.txt'])
+        self.assertNotIn('results/compute_profile.log', files)
+        self.assertIn('compute_profile_integrity=disabled', files['run_metadata.txt'])
+
+    def test_production_profile_can_be_enabled_explicitly(self):
+        result, files = self.run_launcher(0, 0, compute_profile=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compute_profile_storage=dedicated-v1', files['run_metadata.txt'])
+        self.assertIn('compute_profile_record_count=1', files['run_metadata.txt'])
+        self.assertIn('compute_profile_integrity=complete', files['run_metadata.txt'])
+        self.assertIn('frame_id=42 profile_seq=0', files['results/compute_profile.log'])
+        self.assertNotIn('COMPUTE_BENCH_FRAME', files['logs/run_loc_online.stderr.log'])
+        self.assertNotIn('stale_profile.log', files['logs/run_loc_online.stdout.log'])
+
+    def test_old_binary_missing_dedicated_file_is_reported_without_copying_or_masking_exit(self):
+        result, files = self.run_launcher(0, 23, compute_profile=1, legacy_profile=True)
+        self.assertEqual(result.returncode, 23)
+        self.assertNotIn('results/compute_profile.log', files)
+        self.assertIn('compute_profile_integrity=missing', files['run_metadata.txt'])
+        self.assertIn('compute profile evidence is incomplete', result.stderr)
 
     def test_recording_keeps_only_used_inputs_and_one_pose(self):
         result, files = self.run_launcher(0, 0, record_bag=True, can=False)

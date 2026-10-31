@@ -30,7 +30,7 @@ ${SANY_WS}/run.sh
 
 | 脚本 | 参数 / 主要环境 | cwd 与调用链 | 副作用 |
 |---|---|---|---|
-| @ref run_sany_lidar_loc.sh "run_sany_lidar_loc.sh" | 可选 run name；`LIGHTNING_LM_WS`, `LIGHTNING_LM_REPO_DIR`, `LIGHTNING_LM_RUN_MODE`, `ROS_DOMAIN_ID`, `SANY_*`, profile 变量 | `cd $REPO`；预检、配置快照 → `setsid ros2 run ... run_loc_online` → 采集与进程组收尾 | 写 logs/results/snapshots/config/metadata；可选录 bag、资源监控和静默快照；拒绝复用已有 run dir |
+| @ref run_sany_lidar_loc.sh "run_sany_lidar_loc.sh" | 可选 run name；`LIGHTNING_LM_WS`, `LIGHTNING_LM_REPO_DIR`, `LIGHTNING_LM_RUN_MODE`, `ROS_DOMAIN_ID`, `SANY_*`, profile 变量 | `cd $REPO`；预检、配置快照 → `setsid ros2 run ... run_loc_online` → 采集与进程组收尾 | 写 logs/results/snapshots/config/metadata；可选录 bag、资源监控和静默快照；详细计算采样独立新建文件并检查完整性；拒绝复用已有 run dir |
 | @ref run_sany_ins_only.sh "run_sany_ins_only.sh" | 必需现场 YAML；其余算法 flags 透传；`LIGHTNING_LM_INSTALL_SETUP`, `LIGHTNING_LM_BUILD_WS`, `ROS_DOMAIN_ID` | source ROS/overlay；确认 `system.localization_mode: ins_only`；`cd $repo` → `exec ros2 run ... run_loc_online` | 由 `InsLocSystem` 写审核记录和发布结果；驱动、录包与回放分别启动 |
 | @ref run_frontend_online.sh "run_frontend_online.sh" | `--config` 透传；`LIGHTNING_LM_{REPO_DIR,ROS_SETUP,INSTALL_SETUP,CONFIG}` | 不改 cwd；source 两个 setup → `ros2 run ... run_frontend_online` | 取决于节点配置：发布 ROS topic/UI/log |
 | @ref run_slam_online.sh "run_slam_online.sh" | `--config` + 透传；同上，另有 OUT_ROOT/RUN_NAME | 创建并 `cd` run dir（同名目录可复用）→ `ros2 run ... run_slam_online` | 写 logs/run metadata；在线建图服务可能写地图 |

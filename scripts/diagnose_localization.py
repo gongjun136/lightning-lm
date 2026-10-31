@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 
+import compute_profile_report
+
 MIB = 1024 * 1024
 PROC = Path('/proc')
 ALIASES = dict(raw='raw_runstate', published='published_runstate',
@@ -1357,6 +1359,10 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
             warnings.append('配置快照与运行时阈值记录有差异；已优先采用本次运行日志中明确记录的生效值。')
         limits.update(runtime_limits)
     build = runtime_contract(logged_limits, warnings)
+    compute_profile = compute_profile_report.inspect(run, live=bool(process))
+    if compute_profile['enabled'] and compute_profile['status'] in ('missing', 'incomplete', 'unverified'):
+        warnings.append('逐帧性能证据缺失、不完整或尚未校验；不能据此排除未记录阶段的问题。请检查 ' +
+                        str(run / compute_profile['path']) + ' 和 results/compute_profile_status.json。')
     if rows and not all(k in rows[-1] for k in ('translation_condition', 'yaw_condition', 'output_stale', 'time_sync_fault_mask')):
         warnings.append('事件时间线是旧格式或缺少细分字段；需同次运行日志补充，不能仅凭包头源码版本认定已升级。')
     if summary and not process:
@@ -1468,6 +1474,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
                        'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
+                compute_profile=compute_profile,
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
@@ -1489,6 +1496,11 @@ def render(report, color=False, all_events=False):
         p = report['process']
         lines.append(f'定位: PID {p["pid"]}, 线程名 {p["comm"]}, exe={p["exe"]}')
     lines.append(f'检查器调度: {report.get("scheduling", {})}')
+    profile = report.get('compute_profile', {})
+    if profile and profile.get('status') != 'legacy_unverified':
+        lines.append('逐帧性能采样: ' + profile['status'] + '；文件=' + str(Path(report['resolved_run']) / profile['path']))
+        if profile.get('footer'):
+            lines.append('  采集计数: ' + json.dumps(profile['footer'], ensure_ascii=False))
     if report.get('evidence_scope') == 'historical':
         lines.append('定位证据范围: 历史包；当前未发现定位进程，包内状态码不代表当前状态。')
     elif report.get('evidence_scope') == 'explicit':

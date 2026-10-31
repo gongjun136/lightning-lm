@@ -7,26 +7,30 @@
 | 证据 | 采集实现 | 输出文件 | 控制开关 |
 |---|---|---|---|
 | 资源概况 | `scripts/monitor_process_resources.py` 独立采样进程 | `results/process_resources.jsonl` | `LIGHTNING_LM_RESOURCE_PROFILE` |
-| 计算与队列耗时 | C++ 中的逐帧计时与窗口汇总；运行脚本退出整理时提取日志 | `results/compute_profile.log` | `LIGHTNING_LM_COMPUTE_PROFILE` |
+| 计算与队列耗时 | C++ 中的逐帧计时与窗口汇总；独立有界队列后台写入 | `results/compute_profile.log` | `LIGHTNING_LM_COMPUTE_PROFILE` |
 | 业务事件追踪 | C++ 调用方填写 `CausalEvent`，共享 `Sink` 异步写入 | `results/causal_trace.csv` | `LIGHTNING_LM_CAUSAL_TRACE` |
 
-资源文件提供进程、线程及整机 CPU 背景，CSV 提供业务事件与部分耗时记录。脚本退出整理时提取匹配的计时日志；即使关闭计算采样，低频端到端汇总仍可能出现，因此文件存在不证明计算采样已启用。各采集开关可以独立覆盖；`LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 只控制资源采样周期。资源字段的完整单位与统计口径见 @ref resource_diagnostics "资源与端到端延迟"，启动及文件收集流程见 @ref run_sany_lidar_loc.sh "运行脚本源码"。
+资源文件提供进程、线程及整机 CPU 背景，CSV 提供业务事件与部分耗时记录。详细计算采样直接写入独立文件，主 stderr 保留低频端到端健康摘要；该摘要依赖合格 tracking 样本，不是停流心跳。各采集开关可以独立覆盖；`LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 只控制资源采样周期。资源字段的完整单位与统计口径见 @ref resource_diagnostics "资源与端到端延迟"，启动及文件收集流程见 @ref run_sany_lidar_loc.sh "运行脚本源码"。
 
 ## 部署范围
 
 这里的诊断开关控制证据采集；CAN融合权重、速度步长门槛、静止检测条件、线程预算与保护阈值由各自配置决定。分析已有run时，需核对其代码版本与配置快照。当前输出坐标约定由所选地图包的 `map_manifest.yaml` 加载，入口为 @ref lightning::LocSystem::Init() "LocSystem::Init()"；配置归属见 @ref configuration "配置入口"。
 
-采集代码更新后需重新编译C++并部署脚本。`scripts/run_sany_lidar_loc.sh` 在 `LIGHTNING_LM_RUN_MODE=diagnostic` 时默认开启以上三类采集，`production` 时默认关闭；显式环境变量覆盖优先：
+采集代码更新后需重新编译C++并部署脚本。`scripts/run_sany_lidar_loc.sh` 在 `LIGHTNING_LM_RUN_MODE=diagnostic` 时默认开启详细计算、资源和因果采集，`production` 时默认关闭。显式环境变量覆盖优先：
 
 ```bash
 export LIGHTNING_LM_RUN_MODE=diagnostic
 export LIGHTNING_LM_CAUSAL_TRACE=1          # 业务事件追踪
-export LIGHTNING_LM_COMPUTE_PROFILE=1       # 逐帧计时、窗口汇总及入队时刻采样
+unset LIGHTNING_LM_COMPUTE_PROFILE          # 清除显式覆盖，使用 diagnostic 默认 1
 export LIGHTNING_LM_RESOURCE_PROFILE=1      # 进程/线程资源采样
 export LIGHTNING_LM_RESOURCE_INTERVAL_SEC=1 # 资源采样默认1秒，范围0.5–60秒
 ```
 
 运行脚本自动将异步追踪限制在本次run的 `results/causal_trace.csv`，清除继承的旧路径；不复用旧文件。直接调用二进制的离线回放可显式设置 `LIGHTNING_LM_CAUSAL_TRACE_PATH`，必须是不存在的新文件。没有设置路径时不创建后台线程或文件。
+
+详细计算采样不节流，使用独立队列与本次 run 的新文件 `results/compute_profile.log`；每条记录带成功入队序号 `profile_seq`，不再从 stderr 复制。序号连续本身不能证明无丢失，须结合 `received`、`dropped`、footer 和完整性状态检查。`profile_seq`、主日志 `async_seq` 与因果 CSV 的 `sequence` 各自独立，不能横向比较；应按可用的 `frame_id`、时间戳和 TID 关联。文件写入在后台，但现有 `FormatTimingSample` 字符串格式化仍在调用线程执行，详细采样有开销。正常结束后 `scripts/compute_profile_report.py` 检查 header、footer、序号、计数、丢弃、I/O 错误及截断，并写 `results/compute_profile_status.json`。metadata 记录存储方式、文件和完整性；`--diagnose` 显示证据状态。旧二进制缺少独立文件时报告缺证，不自动从 stderr 提取。采集损失告警不改变算法原退出码，也不能直接判定算法故障。手动复核用 `python3 scripts/compute_profile_report.py --run /path/to/run`，会更新状态文件并输出 metadata 键，不修改原始 profile。正常退出排空已接收记录；SIGKILL 可能缺 footer，断电持久性不受保证，完整采集也不能保证足以定位所有根因。
+
+直接运行安装了 `OnlineLogging` 的 `run_loc_online`（包括 `--bag` 回放）可设置 `LIGHTNING_LM_COMPUTE_PROFILE_PATH`，缺省为当前目录的 `compute_profile.log`；文件已存在时启动失败。运行脚本清除继承路径并使用本次 run 的新文件。计算采样与因果追踪独立；关闭因果追踪会失去对应时序关联证据。
 
 ## 资源概况：process_resources.jsonl
 

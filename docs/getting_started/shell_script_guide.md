@@ -122,7 +122,7 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 
 @snippet{lineno} run_sany_lidar_loc.sh sany-lidar-runtime-settings
 
-`${变量:-默认值}` 表示外部有效值优先。因此，现场根入口固定的地图、production 和关闭录包预设会传入本次运行。`LIGHTNING_LM_RUN_MODE` 同样可覆盖，决定计时、资源采样和诊断 I/O 的默认开关。此阶段得到 `config_path`、`map_path`、`out_root`、`run_name` 和各功能开关。
+仓库 LiDAR 子脚本的 `${变量:-默认值}` 表示传入的有效值优先；现场根入口可能先固定地图、production 和关闭录包等发布预设，不能假定它保留调用者传入的 `LIGHTNING_LM_RUN_MODE`。子脚本收到的模式决定计时、资源采样和诊断 I/O 的默认开关。此阶段得到 `config_path`、`map_path`、`out_root`、`run_name` 和各功能开关。
 
 @anchor sany_lidar_environment
 ### 2. 检查并加载环境
@@ -272,12 +272,46 @@ CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针�
 
 | 开关 | diagnostic 缺省 | production 缺省 | 作用 |
 |---|---|---|---|
-| `LIGHTNING_LM_COMPUTE_PROFILE` | `1` | `0` | 算法热点计时，退出后提取 `COMPUTE_BENCH_*` |
+| `LIGHTNING_LM_COMPUTE_PROFILE` | `1` | `0` | 控制完整逐帧和阶段计时，写入独立 profile 文件 |
 | `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` | `0` | `1` | 裁剪非必要的高频诊断 I/O |
 | `LIGHTNING_LM_RESOURCE_PROFILE` | `1` | `0` | 在本次进程组中找到定位进程，对其进程/线程进行 CPU、内存、I/O 等采样 |
 | `LIGHTNING_LM_CAUSAL_TRACE` | `1` | `0` | 采集有限的异步速度、队列与锁事件 |
 
-`LIGHTNING_LM_RUN_MODE` 缺省 `diagnostic`；显式子开关优先于模式默认值。录包与 watchdog 有独立开关，切到 diagnostic 不会自动开启它们。安装了 `tegrastats` 时，脚本还会记录 Orin 资源信息。
+仓库启动脚本的 `LIGHTNING_LM_RUN_MODE` 缺省 `diagnostic`，现场根入口可能预设 `production`；显式子开关优先于模式默认值。录包与 watchdog 有独立开关，切到 diagnostic 不会自动开启它们。安装了 `tegrastats` 时，脚本还会记录 Orin 资源信息。
+
+已加载并核对现场路径、选定地图和安装前缀等环境后，可直接调用仓库 LiDAR 入口。常规 diagnostic 默认采集完整性能记录；先清除可能遗留的显式覆盖：
+
+```bash
+export LIGHTNING_LM_RUN_MODE=diagnostic
+unset LIGHTNING_LM_COMPUTE_PROFILE
+bash "${LIGHTNING_LM_REPO_DIR}/scripts/run_sany_lidar_loc.sh"
+```
+
+如需在 diagnostic 中关闭详细采样，可显式覆盖：
+
+```bash
+export LIGHTNING_LM_RUN_MODE=diagnostic
+export LIGHTNING_LM_COMPUTE_PROFILE=0
+bash "${LIGHTNING_LM_REPO_DIR}/scripts/run_sany_lidar_loc.sh"
+```
+
+若根入口强制设置 production，应从上述子入口选择 diagnostic；实际生效值以本次 `run_metadata.txt` 的 `run_mode` 和 `compute_profile` 核对。production 也可显式设置 `LIGHTNING_LM_COMPUTE_PROFILE=1` 开启采样。现场验证结束后，在已核对现场环境的前提下切回 production，清除诊断显式覆盖并重启仓库 LiDAR 子入口：
+
+```bash
+export LIGHTNING_LM_RUN_MODE=production
+unset LIGHTNING_LM_COMPUTE_PROFILE LIGHTNING_LM_RESOURCE_PROFILE LIGHTNING_LM_CAUSAL_TRACE LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD
+bash "${LIGHTNING_LM_REPO_DIR}/scripts/run_sany_lidar_loc.sh"
+```
+
+核对新 run 的 metadata：`run_mode=production`、`compute_profile=0`、`resource_profile=0`、`causal_trace=0`、`reduce_nonessential_overhead=1`。详细采样不节流，原有逐帧和阶段字段均保留，文件可能较大。独立队列只将写文件移到后台，现有 `FormatTimingSample` 字符串格式化仍在调用线程执行，开启采样有开销。模式不改变资源和因果追踪的独立覆盖规则。计算开关首次读取后在进程内缓存，修改后须重启。主 stderr 保留约 10 秒的 tracking 端到端健康摘要；该摘要依赖合格样本，不是停流心跳。
+
+运行脚本为本次 run 固定新建的 `results/compute_profile.log`，不再从 stderr 复制；`profile_seq` 是成功入队的序号，连续本身不能证明无丢失；结束时结合 received、dropped、footer 和状态检查头尾、序号、计数、I/O 错误及截断，写 `results/compute_profile_status.json` 和 metadata 完整性字段。采集不完整会告警，不改写算法退出码；旧二进制不支持独立文件时会报告缺证，不回退提取 stderr。启用时，核对主 stderr 启动记录 `COMPUTE_PROFILE_STATUS enabled=1 storage=dedicated-v1 path=...`、metadata 和 `results/compute_profile.log` 的 schema 头，确认实际运行库支持新通道；启动时的 `git_commit` 本身不足以证明运行库版本。终端给出的 run 目录中，完整性报告位于 `results/`。可再次检查：
+
+```bash
+python3 scripts/compute_profile_report.py --run /path/to/run
+```
+
+此命令更新状态文件并输出 metadata 键，不修改原始 profile。`--diagnose` 可显示完整性信息；缺证不能直接认定算法故障。正常退出会排空已接收记录，强制终止可能没有 footer，断电持久性不受保证。直接调用安装了 `OnlineLogging` 的 `run_loc_online`（包括 `--bag` 回放）时可设置 `LIGHTNING_LM_COMPUTE_PROFILE_PATH`，默认 `./compute_profile.log`；文件已存在会拒绝启动，避免覆盖证据。
 
 计算资源覆盖包括 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、`LIGHTNING_LM_NDT_MAX_POINTS`、`LIGHTNING_LM_SOLID_ICP_WORKERS`、`LIGHTNING_LM_SOLID_WORKER_NICE`。SANY 启动脚本默认设置 `LIGHTNING_LM_LIO_THREADS=1`，优先于 YAML 中的线程数；显式设置环境变量可覆盖此默认值，例如 `LIGHTNING_LM_LIO_THREADS=6 bash ~/Sany/run_loc.sh`。三个诊断采集开关仍按运行模式及显式环境变量决定，不随单线程默认值改变。`LIGHTNING_LM_CPU_AFFINITY` 限定算法进程的核心，`LIGHTNING_LM_SOLID_CPU_AFFINITY` 限定 SOLiD worker 且须为前者有效核心的子集。`LIGHTNING_LM_RESOURCE_INTERVAL_SEC` 缺省 1 秒，范围 0.5–60 秒。实际预算同时受 YAML `compute_budget` 控制，见 @ref configuration "配置入口"。
 
@@ -319,11 +353,12 @@ CAN 是可选辅助输入，不加入必需清单。启用观测时启动探针�
 |---|---|
 | `config.yaml`、`launch_compute_config.json` | 实际配置快照和计算预算摘要 |
 | `run_metadata.txt`、`git_status.txt`、`topics_at_start.txt` | 本次版本、开关、输入图和退出状态 |
-| `logs/run_loc_online.stdout.log` / `.stderr.log` | 算法原始输出；glog 和热点计时主要在 stderr |
+| `logs/run_loc_online.stdout.log` / `.stderr.log` | 算法标准输出与主日志；stderr 保留状态、异常和端到端健康摘要，详细性能采样写独立文件 |
 | `results/trajectory_global.tum` | PGO 全局校正轨迹 |
 | `results/trajectory_high_frequency.tum` | 定位器内部高频轨迹 |
 | `results/trajectory_published_rear_axle.tum` | 实际发布边界后的后轴轨迹 |
-| `results/compute_profile.log` | 从 stderr 提取的计时记录；采集开关决定内容 |
+| `results/compute_profile.log` | 开启详细采样时独立写入的计时记录，带序号及完整性头尾 |
+| `results/compute_profile_status.json` | 结束时对详细采样文件的完整性检查结果 |
 | `results/process_resources.jsonl` | 定位进程/线程资源采样，以及整机 CPU 和其他进程的背景统计 |
 | `results/causal_trace.csv` | 开启追踪时保存的异步速度、队列与锁事件 |
 | `logs/tegrastats.log` | 工具可用时每秒记录的 Jetson/Orin 整机资源、温度和功耗 |
