@@ -1,3 +1,8 @@
+/**
+ * @file lidar_loc.h
+ * @brief 激光地图定位接口、配置与状态。
+ * @see lightning::loc::LidarLoc
+ */
 #pragma once
 
 #include <pcl/registration/icp.h>
@@ -27,7 +32,14 @@ class PangolinWindow;
 
 namespace lightning::loc {
 
-/// 激光定位对外接口类
+/**
+ * @brief 管理激光点云的地图定位、跟踪与重定位。
+ * @par 阅读顺序
+ * 先看 Init()，再看 ProcessLO()、ProcessDR() 和 ProcessCloud() 的输入，
+ * 最后通过 Align() 和 GetLocalizationResult() 了解处理与结果。
+ * @note 主要点云处理须由调用方串行调用；成员锁不表示所有接口均线程安全。
+ * @see @ref localization_module "定位模块"
+ */
 class LidarLoc {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -35,38 +47,38 @@ class LidarLoc {
 
     /// 定位方法
     enum class LocMethod {
-        NDT_OMP,  // OMP版本NDT
+        NDT_OMP,  ///< OMP 版本 NDT。
     };
 
     struct Options {
         Options() {}
 
-        bool display_realtime_cloud_ = false;          ///< 是否显示实时点云
-        bool debug_ = false;                           ///< 是否使用单测模式
-        LocMethod match_method_ = LocMethod::NDT_OMP;  ///< 匹配方式
-        bool try_self_extrap_ = false;                 ///< 是否尝试自己的外推pose
-        bool with_height_ = true;                      ///< 建图期间是否带有高度约束？
+        bool display_realtime_cloud_ = false;          ///< 保留配置；本类实现未读取。
+        bool debug_ = false;                           ///< 保留配置；本类实现未读取。
+        LocMethod match_method_ = LocMethod::NDT_OMP;  ///< 保留配置；本类实现未读取。
+        bool try_self_extrap_ = false;                 ///< 读取配置但对应的自身外推匹配分支当前停用。
+        bool with_height_ = true;                      ///< 读取配置但对应的高度约束分支当前停用。
         bool force_2d_ = true;                         ///< 强制在2D空间
         float min_init_confidence_ = 0.1;              ///< 初始化时要求的最小分值
         float min_tracking_confidence_ = 0.1;  ///< 正常跟踪接受匹配结果的最低置信度。
         int relocalization_lost_frame_threshold_ = 5;  ///< 触发失锁状态的连续匹配失败帧数。
         bool init_with_fp_ = true;                     ///< 是否使用功能点进行初始化
-        bool enable_parking_static_ = false;           ///< 是否在静止时输出固定位置
+        bool enable_parking_static_ = false;           ///< 停车保持分支是否额外设置结果 valid_ 和 is_parking_；不控制是否跳过匹配。
         bool enable_icp_adjust_ = false;               ///< 是否使用icp调整ndt匹配结果提高定位精度
 
-        /// 点云过滤
+        // 点云过滤
         // float filter_z_min_ = -1.0;
-        float filter_z_max_ = 30.0;
+        float filter_z_max_ = 30.0;  ///< 动态图层更新时点云 z 上限（m）；YAML 覆盖当前停用。
         // float filter_intensity_min_ = 10.0;
         // float filter_intensity_max_ = 100.0;
 
-        /// 地图配置
-        TiledMap::Options map_option_ = TiledMap::Options();
+        // 地图配置
+        TiledMap::Options map_option_ = TiledMap::Options();  ///< 分块地图加载和动态图层配置。
 
         // 动态图层更新相关
         bool update_dynamic_cloud_ = true;     ///< 是否使用定位后的点云来更新动态图层
-        double update_kf_dis_ = 5.0;           ///< 每隔多少米更新一次
-        double update_kf_time_ = 10.0;         ///< 每隔多少时间更新一次
+        double update_kf_dis_ = 5.0;           ///< 动态图层更新距离阈值（m）。
+        double update_kf_time_ = 10.0;         ///< 动态图层更新时间阈值（s）。
         double update_lidar_loc_score_ = 2.2;  ///< 更新时激光定位匹配分值阈值
         double lidar_loc_odom_th_ = 0.3;       ///< 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
 
@@ -124,6 +136,7 @@ class LidarLoc {
 
     /**
      * @brief 读取地图定位配置，准备地图与重定位后端，最后启动地图更新线程。
+     * @param config_path YAML 配置文件路径。
      * @return 必需配置或地图准备失败返回 false；后端不可用是否致命取决于地图归一化要求。
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
@@ -137,47 +150,70 @@ class LidarLoc {
      */
     bool Init(const std::string& config_path);
 
-    /// 处理 lidar odom 消息
+    /**
+     * @brief 缓存按时间非递减到达的 LO 状态并更新 LO 可靠性。
+     * @param state LO 状态，时间戳为传感器时间（s）；允许与队尾时间相等。
+     * @return 时间戳早于队尾时返回 false，否则缓存并返回 true；不检查 pose_is_ok_。
+     */
     bool ProcessLO(const NavState& state);
 
     /**
      * @brief 对定位点云做基础检查，运行初始化或跟踪并记录本帧耗时。
+     * @param cloud_input 非空定位点云。
      * @return 点数不足返回 false；返回 true 仅表示已调用 Align()，定位有效性应另查结果状态。
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
-     * 1. <b>检查定位点云</b>：要求指针非空，并拒绝少于 50 个点的输入。
+     * 1. <b>检查定位点云</b>：断言指针非空，并拒绝少于 50 个点的输入。
      * 2. <b>准备帧统计并运行匹配</b>：重置帧统计、保存输入点云，交给 Align() 处理初始化、静止或跟踪分支。
      * 3. <b>记录耗时并结束处理</b>：启用统计时记录匹配结果及各步骤耗时；函数随后返回 true，不以此替代定位有效标志。
      */
     bool ProcessCloud(CloudPtr cloud_input);
 
-    /// 处理DR状态
+    /**
+     * @brief 校验并缓存 DR 状态；帧处理时再按时间关联。
+     * @param state DR 状态，时间戳为传感器时间（s）；允许与队尾时间相等。
+     * @return pose_is_ok_ 为 false 或时间戳早于队尾时返回 false，否则缓存并返回 true。
+     * @see AssignDRPose()
+     */
     bool ProcessDR(const NavState& state);
 
-    /// 获取位姿
+    /**
+     * @brief 返回当前地图位姿、时间和分数，以及队尾 LO 状态的速度（若有）。
+     * @note 此结果本身不能判断定位是否有效；请检查 GetLocalizationResult()。
+     */
     NavState GetState();
 
-    /// 设置当前定位状态标志位
+    /// @brief 清零分数、清除激光定位有效标志并设为 INITIALIZING；不清除位姿。
     void SetInitRltState();
 
     /**
-     * 尝试在另一个位置进行定位
-     * @param input
-     * @param pose
-     * @return
+     * @brief 从另一初值配准，并仅在分数显著优于当前结果时采用。
+     * @param input 输入点云。
+     * @param pose 输入候选初值；接受时写回配准位姿。
+     * @return 采用候选时返回 true，否则返回 false。
      */
     bool TryOtherSolution(CloudPtr input, SE3& pose);
 
-    /// 使用功能点初始化
+    /**
+     * @brief 从给定位姿执行局部配准及可选地图一致性检查，成功时提交定位状态。
+     * @param input 非空且包含点的点云；调用前须准备对应地图匹配目标。
+     * @param fp_pose 地图系初始位姿。
+     * @return 配准和启用的一致性检查均通过时返回 true。
+     * @see Localize(), Align()
+     */
     bool InitWithFP(CloudPtr input, const SE3& fp_pose);
 
-    /// 更新全局地图
+    /**
+     * @brief 根据已加载地图重建 NDT 及可选 ICP 匹配目标。
+     * @return 使用点面 ICP 后端时，其目标准备失败返回 false；其他情况返回 true。
+     * @note 调用前须已创建地图；后台更新线程也会调用此函数。
+     */
     bool UpdateGlobalMap();
 
     /// @brief 定位是否已经成功初始化
     bool LocInited();
 
-    /// @brief 激光定位重置接口
+    /// @brief 仅替换上一地图位姿；不清空动态图层或重置初始化状态。
     void ResetLastPose(const SE3& last_pose);
 
     /**
@@ -201,22 +237,26 @@ class LidarLoc {
     /// 设置UI
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
 
-    /// 设置init pose
+    /// @brief 保存地图系初值并取消已初始化状态，后续点云尝试从该初值定位。
     void SetInitialPose(SE3 init_pose);
 
-    /// Clear the current map alignment and restart global BTC initialization.
-    /// This is also useful when an external health monitor detects localization
-    /// failure before the internal consecutive-match threshold is reached.
+    /// 清除当前地图定位状态并请求重新全局定位；外部健康监测也可触发。
     void RequestGlobalRelocalization();
 
-    /// 获取定位结果
+    /**
+     * @brief 在结果锁保护下复制缓存结果快照。
+     * @note lidar_loc_valid_ 表示缓存的匹配有效性；判断当前匹配和新鲜度需结合
+     * lidar_match_stamp_。valid_ 也不表示每帧都发生真实匹配。
+     */
     LocalizationResult GetLocalizationResult() {
         UL lock(result_mutex_);
         return localization_result_;
     }
 
+    /// @brief 复制最近匹配统计，并刷新当前活动地图块数。
     MatchStats GetLastMatchStats() const;
 
+    /// @brief 停止并等待地图线程，满足持久化配置时保存动态图层；应在 Init() 成功且停止输入后调用一次。
     void Finish();
 
     /// 激光定位是否认为LO有效
@@ -230,8 +270,8 @@ class LidarLoc {
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
      * 1. <b>对齐帧时间与里程计</b>：使用去畸变结束时刻，分别为本帧关联 LO 和 DR 位姿。
-     * 2. <b>处理静止保持</b>：已初始化且 parking_ 为真时沿用上一地图位姿，更新结果后直接返回。
-     * 3. <b>执行首次定位或重定位</b>：未初始化时尝试外部初值、可选功能点和全局候选；该分支结束本帧，不继续跟踪流程。
+     * 2. <b>处理静止保持</b>：已初始化且 parking_ 为真时跳过匹配并沿用上一地图位姿；可选设置结果的 valid_ 和 is_parking_，随后返回。
+     * 3. <b>执行首次定位或重定位</b>：未初始化时尝试外部初值、可选功能点和全局候选；DR 可控制功能点失败重试，该分支结束本帧。
      * 4. <b>构造跟踪初值</b>：将 LO 相对运动接到上次地图位姿上；自身外推只用于后续平滑性比较。
      * 5. <b>配准并限制单帧修正</b>：加载附近地图并调用 Localize()，保留原始解，再将修正缩放为 0.1 并应用可选二维限制。
      * 6. <b>验证匹配并决定恢复</b>：先用原始配准解检查 LO 增量，再做可选地图一致性验证；失败退回 LO 初值，连续失败可触发重定位。
@@ -243,42 +283,53 @@ class LidarLoc {
     void Align(const CloudPtr& input);
 
     /**
-     * 寻找当前帧对应的LO相对位姿
-     * @param timestamp
-     * @return
+     * @brief 按帧时间插值 LO 位姿并更新当前速度。
+     * @param timestamp 点云结束时刻（s）。
+     * @return 插值成功返回 true；失败时清除当前 LO 位姿有效标志。
      */
     bool AssignLOPose(double timestamp);
 
     /**
-     * 寻找当前帧对应的DR相对位姿
-     * @param timestamp
-     * @return
+     * @brief 按帧时间插值 DR 位姿，并从匹配状态设置静止标志。
+     * @param timestamp 点云结束时刻（s）。
+     * @return 插值成功返回 true；失败时清除 DR 位姿有效标志和静止标志。
      */
     bool AssignDRPose(double timestamp);
 
     /**
-     * 检查车辆是否静止
-     * @param timestamp
-     * @return
+     * @brief 遗留静止节流逻辑：根据 parking_ 计数周期性返回 false；当前无调用者。
+     * @param timestamp 保留参数，当前未使用。
+     * @return parking_ 为真且计数未达到阈值时返回 true，否则返回 false。
      */
     bool CheckStatic(double timestamp);
 
     /**
-     * 更新自身状态
-     * @param input
+     * @brief 将当前时间记为上次定位时间。
+     * @param input 保留参数，当前未使用。
      */
     void UpdateState(const CloudPtr& input);
 
     /**
-     * 更新地图
+     * @brief 后台更新地图匹配目标。
      */
     void UpdateMapThread();
 
     /**
-     * 使用网格搜索best yaw
+     * @brief 围绕输入偏航角粗搜索，选择最高分并在超过初始化阈值时精配。
+     * @param pose 输入地图系初值，输出最高分候选或精配位姿。
+     * @param confidence 输出最终分数。
+     * @param input 输入点云。
+     * @param output 配准输出点云。
+     * @return 最终分数严格大于初始化阈值时返回 true；当前初始化流程未调用此函数。
      */
     bool YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr output);
 
+    /**
+     * @brief 比较候选地图位姿和 LO 的水平平移增量，超阈值时更新 LO 可靠性。
+     * @param current_pose_esti 当前帧地图系候选位姿。
+     * @param delta_posi 输出水平平移增量差的范数（m）。
+     * @return 有上一帧 LO 且差值超阈值时返回 false，否则返回 true。
+     */
     bool CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_posi);
     /**
      * @brief 细化全局候选并做跨帧确认，通过后提交地图位姿和 GOOD 状态。
@@ -311,11 +362,14 @@ class LidarLoc {
         double overlap_ratio = 0.0;  ///< 在配置距离内找到静态地图近邻的点比例。
         double gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
+    /// @brief 加载 global.pcd 并建立边界及各验证线程的近邻索引；地图不可用返回 false。
     bool BuildRelocalizationMapCache();
+    /// @brief 检查候选的边界、重合率和重力方向；缺少当前 LO 或地图索引时不通过。
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
         const CloudPtr& input, const SE3& pose, std::size_t worker_index,
         double min_overlap_ratio, std::size_t maximum_points) const;
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
+    /// @brief 执行并记录一致性检查；配置禁用时直接返回 true。
     bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
                                     const Vec3d& map_min, const Vec3d& map_max,
@@ -364,26 +418,26 @@ class LidarLoc {
 
     bool last_lo_pose_set_ = false;  ///< 是否已有上一帧 LIO 相对位姿。
     bool current_lo_pose_set_ = false;  ///< 当前帧是否找到对应 LIO 位姿。
-    SE3 last_lo_pose_;     ///< 上一次相对位置，相对位置来自LO
-    SE3 current_lo_pose_;  ///< 本次的LO相对位置
+    SE3 last_lo_pose_;     ///< 上一定位帧关联的 LO 位姿。
+    SE3 current_lo_pose_;  ///< 当前帧关联的 LO 位姿。
 
     bool last_dr_pose_set_ = false;  ///< 是否已有上一帧 DR 相对位姿。
     bool current_dr_pose_set_ = false;  ///< 当前帧是否找到对应 DR 位姿。
-    SE3 last_dr_pose_;     ///< 上一次相对位置，相对位置来自DR
-    SE3 current_dr_pose_;  ///< 本次的DR相对位置
-    bool parking_ = false;  ///< 当前地图匹配是否处于静止保持状态。
+    SE3 last_dr_pose_;     ///< 上一定位帧关联的 DR 位姿。
+    SE3 current_dr_pose_;  ///< 当前帧关联的 DR 位姿。
+    bool parking_ = false;  ///< 按当前帧匹配到的 DR 状态设置的静止标志。
 
-    double try_other_guess_trans_th_ = 0.3;               ///< 在初始估计相差多少时，尝试其他的解
-    double try_other_guess_rot_th_ = 0.5 * M_PI / 180.0;  ///< 在初始估计相差多少时，尝试其他的解
+    double try_other_guess_trans_th_ = 0.3;               ///< 保留的初值平移差阈值（m）；对应分支当前停用。
+    double try_other_guess_rot_th_ = 0.5 * M_PI / 180.0;  ///< 保留的初值旋转差阈值（rad）；对应分支当前停用。
     // double low_vel_th_ = 1.0;                             // 低速阈值m/s
     // double update_cache_dis_ = 0;                         // 动态图层的更新缓冲距离
 
     std::deque<double> ave_scores_;  ///< 近期匹配的分值情况
 
-    Vec3d current_vel_b_ = Vec3d::Zero();  ///< 本次的车体系下的速度
-    Vec3d current_vel_ = Vec3d::Zero();    ///< 本次dr的速度
+    Vec3d current_vel_b_ = Vec3d::Zero();  ///< 当前帧关联的 LO 速度，转换至 LO 本体（IMU）坐标系（m/s）。
+    Vec3d current_vel_ = Vec3d::Zero();    ///< 当前帧关联的 LO 世界/里程计系速度（m/s）。
 
-    std::deque<TimedPose> lidar_loc_pose_queue_;  ///< lidar odom pose 轨迹
+    std::deque<TimedPose> lidar_loc_pose_queue_;  ///< 地图定位位姿历史
 
     bool lo_reliable_ = true;  ///< 当前 LIO 相对运动是否可信。
     int lo_reliable_cnt_ = 0;  ///< LIO 可靠性判定的累计计数。
@@ -407,7 +461,7 @@ class LidarLoc {
     std::deque<NavState> lo_pose_queue_;  ///< 按时间保存的 LIO 状态，用于匹配对应扫描。
 
     std::mutex dr_pose_mutex_;  ///< 保护 DR 状态历史队列。
-    std::deque<NavState> dr_pose_queue_;  ///< 按时间保存的 DR 状态，用于位姿猜测。
+    std::deque<NavState> dr_pose_queue_;  ///< 按时间保存的 DR 状态，用于帧时间关联及功能点初始化重试。
 
     /// 功能点初始化的记录
     std::vector<SE3> fp_init_fail_pose_vec_;

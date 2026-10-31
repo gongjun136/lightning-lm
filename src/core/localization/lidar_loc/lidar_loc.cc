@@ -1,3 +1,8 @@
+/**
+ * @file lidar_loc.cc
+ * @brief 激光地图定位、重定位与结果维护的实现。
+ * @see lightning::loc::LidarLoc
+ */
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -445,7 +450,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     auto fps = map_->GetAllFP();
     if (!fps.empty()) {
         map_->LoadOnPose(fps.front().pose_);
-        /// 更新一次地图，保证有初始数据
+        // 更新一次地图，保证有初始数据
         UpdateGlobalMap();
     }
 
@@ -473,7 +478,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     }
 
     // 阶段 7：加入恢复位姿并启动地图线程。
-    /// load recover pose if exist
+    // load recover pose if exist
     if (PathExists(options_.recover_pose_path_)) {
         std::ifstream fin(options_.recover_pose_path_);
         double data[7] = {0, 0, 0, 0, 0, 0, 1};
@@ -632,7 +637,7 @@ bool LidarLoc::ProcessDR(const NavState& state) {
 }
 
 bool LidarLoc::ProcessLO(const NavState& state) {
-    /// 理论上相对定位是按时间顺序到达的
+    // 理论上相对定位是按时间顺序到达的
     UL lock(lo_pose_mutex_);
     if (!lo_pose_queue_.empty()) {
         const double last_stamp = lo_pose_queue_.back().timestamp_;
@@ -691,7 +696,7 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     LOG(INFO) << "init yaw: " << init_yaw << ", p: " << RPYXYZ.pitch << ", ro: " << RPYXYZ.roll << ", search from "
               << searched_yaw.front() << " to " << searched_yaw.back();
 
-    /// 粗分辨率
+    // 粗分辨率
     std::for_each(index.begin(), index.end(), [&](int i) {
         double fitness_score = 0;
         RPYXYZ.yaw = searched_yaw[i];
@@ -708,7 +713,7 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     confidence = scores.at(best_score_idx);
     pose = pose_opti.at(best_score_idx);
 
-    /// 高分辨率
+    // 高分辨率
     if (confidence > options_.min_init_confidence_) {
         Localize(pose, confidence, input, output, false);
     }
@@ -1745,7 +1750,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                   << current_timestamp_;
     }
 
-    /// 设置当前帧对应的rel_pose
+    // 设置当前帧对应的rel_pose
     profiling::Stopwatch assign_pose_profile_timer(profiling::ComputeProfilingEnabled());
     const bool lo_pose_assigned = AssignLOPose(current_time);
     if (!lo_pose_assigned) {
@@ -1799,7 +1804,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         last_match_stats_ = MatchStats{};
 
         if (initial_pose_set_) {
-            /// 尝试在给定点初始化
+            // 尝试在给定点初始化
             if (InitWithFP(input, initial_pose_)) {
                 LOG(INFO) << "init with external pose: " << initial_pose_.translation().transpose();
                 initial_pose_set_ = false;
@@ -1808,8 +1813,8 @@ void LidarLoc::Align(const CloudPtr& input) {
         }
 
         if (options_.init_with_fp_) {
-            /// 从功能点初始化
-            /// 如果之前尝试过，那么需要间隔一段时间再进行搜索
+            // 从功能点初始化
+            // 如果之前尝试过，那么需要间隔一段时间再进行搜索
             if (!fp_init_fail_pose_vec_.empty() && current_dr_pose_set_) {
                 SE3 last_tried_pose = fp_init_fail_pose_vec_.back();
                 bool should_try =
@@ -1869,12 +1874,12 @@ void LidarLoc::Align(const CloudPtr& input) {
         frame_profiling_.relocalization_poll = relocalization_profile_timer.Stop();
         if (relocalization_complete) return;
 
-        /// 初始化未成功时，不往下走流程
+        // 初始化未成功时，不往下走流程
         return;
     }
 
     // 阶段 4：构造跟踪初值。
-    /// NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
+    // NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
 
     // [loc-lo-prior]
     SE3 guess_from_lo = last_abs_pose_;
@@ -1991,7 +1996,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     //     }
     // }
 
-    /// NOTE 如果LO, DR出发点和收敛点不同，但分值相近，说明场景可能处在退化状态，此时使用DR预测的Pose
+    // 以下 LO 与 DR 双初值比较逻辑当前未启用。
     // if (try_dr && (res_of_lo.translation() - res_of_dr.translation()).head<2>().norm() > 0.2 &&
     //     fabs(score_lo - score_dr) < 0.2 && score_lo < 1.2) {
     //     LOG(WARNING) << "判定激光定位进入退化状态，现在会使用DR递推pose而不是激光定位位置";
@@ -2123,14 +2128,14 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     // 阶段 7：更新位姿与定位状态。
     current_abs_pose_ = current_pose_esti;
-    // Keep the pose and odometry epochs paired, including DR fallback frames.
+    // 位姿与里程计时刻保持配对，包括退回 LO 初值的帧。
     last_abs_pose_ = current_pose_esti;
     last_lo_pose_ = current_lo_pose_;
     last_lo_pose_set_ = current_lo_pose_set_;
     last_dr_pose_ = current_dr_pose_;
     last_dr_pose_set_ = current_dr_pose_set_;
 
-    /// 确定激光定位是否满足平滑性要求
+    // 确定激光定位是否满足平滑性要求
     Vec3d dpred = current_abs_pose_.translation() - guess_from_self.translation();
     if (fabs(dpred[0]) < 0.5 && fabs(dpred[1]) < 0.5 &&
         (current_abs_pose_.so3().inverse() * guess_from_self.so3()).log().norm() < 2.0 * M_PI / 180.0) {
@@ -2483,7 +2488,7 @@ void LidarLoc::Finish() {
         update_map_quit_ = true;
         update_map_thread_.join();
 
-        /// 永久保存时，再存储地图
+        // 永久保存时，再存储地图
         // [online-loc-map-save]
         if (options_.map_option_.policy_ == TiledMap::DynamicCloudPolicy::PERSISTENT &&
             options_.map_option_.save_dyn_when_quit_ && !has_set_pose_) {

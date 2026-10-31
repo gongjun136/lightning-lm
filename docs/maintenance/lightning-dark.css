@@ -1,0 +1,386 @@
+/* Shared by the manual, API/source pages and search-result iframes. */
+:root {
+  color-scheme: dark;
+  --lm-bg: #080c12;
+  --lm-top: #0b1019;
+  --lm-surface: #101827;
+  --lm-raised: #1c293f;
+  --lm-code: #0b111b;
+  --lm-text: #cbd3df;
+  --lm-muted: #a1adc0;
+  --lm-border: #2b3b55;
+  --lm-link: #a2b8df;
+  --lm-menu-start: #293b5c;
+  --lm-menu-end: #101827;
+  --lm-selected: #405d90;
+  --lm-selected-end: #344b75;
+  --lm-selected-text: #f1f5ff;
+  --lm-keyword: #d2a6dc;
+  --lm-flow: #efaa5a;
+  --lm-type: #94d2cd;
+  --lm-comment: #8794ac;
+  --lm-string: #bad28f;
+  --lm-note-bg: #30270c;
+  --lm-note-text: #eed080;
+  --lm-note-border: #e0b83d;
+  --lm-warning-bg: #351b1d;
+  --lm-warning-text: #f0b7ba;
+  --lm-warning-border: #e18c96;
+}
+
+body, table, div, p, dl {
+  font-family: "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+}
+
+html, body, #doc-content {
+  background: var(--lm-bg);
+  color: var(--lm-text);
+}
+
+#top, #titlearea, #side-nav, #nav-tree, div.header,
+#main-menu, #main-menu ul, #main-menu a,
+.navpath ul, .navpath li, .navpath li.navelem a,
+div.toc, blockquote, .memtitle, .memproto, .memdoc, .memnav,
+dl.reflist dt, dl.reflist dd, .fieldtable th,
+#MSearchBox, #MSearchSelectWindow, #MSearchResultsWindow, #powerTip {
+  background: var(--lm-surface);
+  color: var(--lm-text);
+  border-color: var(--lm-border);
+  text-shadow: none;
+  box-shadow: none;
+}
+
+#top, #titlearea {
+  background: var(--lm-top);
+}
+
+#titlearea {
+  padding: 6px 12px;
+  box-sizing: border-box;
+}
+
+#projectname {
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+}
+
+#projectbrief {
+  font-size: 13px;
+  color: var(--lm-muted);
+}
+
+div.headertitle {
+  padding: 12px 24px;
+}
+
+.title {
+  margin: 4px 0;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+div.contents {
+  max-width: 1200px;
+  margin: 20px 24px 32px;
+}
+
+#lightning-source-version {
+  padding: 7px 20px;
+  font-size: 12px;
+  background: var(--lm-top);
+  color: var(--lm-muted);
+  border-top: 1px solid var(--lm-border);
+  overflow-wrap: anywhere;
+}
+
+a, a:visited, .contents a:visited,
+a.code, a.code:visited, a.line, a.line:visited,
+a.codeRef, a.codeRef:visited, a.lineRef, a.lineRef:visited,
+a.SRSymbol, a.SRScope, .directory .levels span,
+h2.groupheader, div.toc h3, .memtemplate, .memTemplParams {
+  color: var(--lm-link);
+}
+
+a.SelectItem, #MSearchField,
+.MSearchBoxActive #MSearchField, .alphachar a {
+  color: var(--lm-text);
+}
+
+#nav-tree a {
+  color: var(--lm-link);
+}
+
+#main-menu {
+  background: linear-gradient(180deg, var(--lm-menu-start), var(--lm-menu-end));
+  border-top: 1px solid var(--lm-border);
+  border-bottom: 1px solid var(--lm-border);
+}
+
+#main-menu a {
+  background: transparent;
+  border-right: 1px solid var(--lm-border);
+  font-weight: 600;
+}
+
+#main-menu ul a {
+  border-right: 0;
+}
+
+#nav-tree .item:hover, #main-menu a:hover, #main-menu a:focus,
+#main-menu a.highlighted, a.SelectItem:hover, a.SelectItem:focus {
+  background: var(--lm-raised);
+  color: var(--lm-link);
+  text-shadow: none;
+}
+
+#nav-tree .selected, #nav-tree .selected:hover {
+  background: linear-gradient(180deg, var(--lm-selected), var(--lm-selected-end));
+  box-shadow: inset 3px 0 var(--lm-link);
+}
+
+#nav-tree .selected a {
+  color: var(--lm-selected-text);
+}
+
+/* Keep leaf spacers aligned with expanders, including when titles wrap. */
+#nav-tree .item {
+  display: flex;
+  align-items: flex-start;
+  min-height: 24px;
+}
+
+#nav-tree .item > a, #nav-tree .item > .arrow {
+  flex: 0 0 auto;
+}
+
+#nav-tree .arrow {
+  display: inline-block;
+  width: 16px;
+  color: var(--lm-link);
+  line-height: 24px;
+}
+
+#nav-tree .label {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 24px;
+}
+
+#nav-tree .label a {
+  display: block;
+  padding: 0 8px 0 2px;
+}
+
+#main-menu a span.sub-arrow {
+  border-top-color: var(--lm-muted);
+}
+
+#main-menu ul a span.sub-arrow {
+  border-top-color: transparent;
+  border-left-color: var(--lm-muted);
+}
+
+#main-menu > li > ul::before, #main-menu > li > ul::after {
+  border-bottom-color: var(--lm-border);
+}
+
+.ui-resizable-e {
+  background: linear-gradient(90deg, var(--lm-top), var(--lm-border), var(--lm-top));
+}
+
+pre.fragment, div.fragment, code, pre {
+  background: var(--lm-code);
+  color: var(--lm-text);
+  border-color: var(--lm-border);
+}
+
+pre.fragment, div.fragment {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--lm-border);
+  border-radius: 6px;
+}
+
+pre.fragment, div.line, code {
+  font-family: "Cascadia Code", Consolas, "DejaVu Sans Mono", monospace;
+}
+
+pre.fragment, div.line {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.92em;
+}
+
+pre code, .fragment code {
+  padding: 0;
+  background: transparent;
+}
+
+span.lineno, span.lineno a, span.lineno a:hover {
+  background: transparent;
+  color: var(--lm-muted);
+  border-color: var(--lm-border);
+}
+
+span.keyword { color: var(--lm-keyword); }
+span.keywordflow, span.preprocessor { color: var(--lm-flow); }
+span.keywordtype, span.charliteral { color: var(--lm-type); }
+#powerTip div.ttdeci { color: var(--lm-type); }
+span.comment { color: var(--lm-comment); }
+span.stringliteral { color: var(--lm-string); }
+.paramname { color: var(--lm-flow); }
+
+.memtitle {
+  padding: 10px 14px;
+  background: linear-gradient(180deg, var(--lm-menu-start), var(--lm-raised));
+  border-radius: 6px 6px 0 0;
+  font-weight: 500;
+}
+
+.memproto {
+  padding: 14px 16px;
+  background: var(--lm-raised);
+  border-radius: 0 6px 0 0;
+}
+
+.memdoc {
+  padding: 16px 20px;
+  background: var(--lm-bg);
+  border-radius: 0 0 6px 6px;
+}
+
+.memitem {
+  margin-bottom: 24px;
+}
+
+dl.note, dl.warning, dl.attention {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-left: 4px solid;
+  border-radius: 6px;
+}
+
+dl.note {
+  background: var(--lm-note-bg);
+  color: var(--lm-note-text);
+  border-color: var(--lm-note-border);
+}
+
+dl.note dt {
+  color: var(--lm-note-border);
+}
+
+dl.warning, dl.attention {
+  background: var(--lm-warning-bg);
+  color: var(--lm-warning-text);
+  border-color: var(--lm-warning-border);
+}
+
+dl.note dd, dl.warning dd, dl.attention dd {
+  margin-left: 0;
+}
+
+td.indexkey, td.indexvalue, tr.memlist,
+.mdescLeft, .mdescRight, .memItemLeft, .memItemRight,
+.memTemplItemLeft, .memTemplItemRight, .memTemplParams,
+.directory tr.even, .classindex dl.odd, .searchresult,
+table.markdownTable .markdownTableRowEven {
+  background: var(--lm-surface);
+  border-color: var(--lm-border);
+}
+
+.mdescLeft, .mdescRight, address, .navpath li.footer, .SRStatus,
+#powerTip div.ttdoc {
+  color: var(--lm-muted);
+}
+
+table.doxtable th, table.markdownTable th, th.dirtab, span.mlabel {
+  background: var(--lm-raised);
+  color: var(--lm-text);
+  border-color: var(--lm-border);
+}
+
+table.doxtable td, table.doxtable th,
+table.markdownTable td, table.markdownTable th,
+table.fieldtable, .fieldtable td.fieldtype, .fieldtable td.fieldname,
+.fieldtable td.fielddoc, .dirtab, div.directory, .directory td.desc,
+.memSeparator, h2.groupheader, hr {
+  border-color: var(--lm-border);
+}
+
+table.markdownTable td, table.markdownTable th,
+table.doxtable td, table.doxtable th {
+  padding: 6px 10px;
+}
+
+#nav-tree, #doc-content, .fragment {
+  scrollbar-color: var(--lm-selected) var(--lm-top);
+  scrollbar-width: thin;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+div.line.glow, .memberdecls td.glow, .fieldtable tr.glow {
+  background: var(--lm-raised);
+  box-shadow: 0 0 4px var(--lm-link);
+}
+
+#powerTip.n::after, #powerTip.ne::after, #powerTip.nw::after {
+  border-top-color: var(--lm-surface);
+}
+
+#powerTip.s::after, #powerTip.se::after, #powerTip.sw::after {
+  border-bottom-color: var(--lm-surface);
+}
+
+#powerTip.e::after { border-left-color: var(--lm-surface); }
+#powerTip.w::after { border-right-color: var(--lm-surface); }
+
+/* Keep the original colors of embedded figures and diagrams. */
+img, object, iframe {
+  color-scheme: normal;
+}
+
+@media print {
+  :root {
+    color-scheme: light;
+    --lm-bg: #ffffff;
+    --lm-top: #ffffff;
+    --lm-surface: #f3f4f6;
+    --lm-raised: #e5e7eb;
+    --lm-code: #f3f4f6;
+    --lm-text: #202124;
+    --lm-muted: #4b5563;
+    --lm-border: #9ca3af;
+    --lm-link: #245b91;
+    --lm-menu-start: #edf2f9;
+    --lm-menu-end: #e0e7f1;
+    --lm-selected: #d7e6ff;
+    --lm-selected-end: #c6d8f4;
+    --lm-selected-text: #1b365f;
+    --lm-keyword: #6f358d;
+    --lm-flow: #9b4c08;
+    --lm-type: #17655e;
+    --lm-comment: #496437;
+    --lm-string: #804619;
+    --lm-note-bg: #fff5d4;
+    --lm-note-text: #6c4e07;
+    --lm-note-border: #866008;
+    --lm-warning-bg: #fff0f1;
+    --lm-warning-text: #8e3038;
+    --lm-warning-border: #b33d4b;
+  }
+}

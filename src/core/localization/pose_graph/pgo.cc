@@ -1,3 +1,8 @@
+/**
+ * @file pgo.cc
+ * @brief PGO 输入处理、高频输出与静止保持实现。
+ * @see lightning::loc::PGO
+ */
 #include "pgo.h"
 #include "core/localization/pose_covariance.h"
 #include "pgo_impl.h"
@@ -31,7 +36,7 @@ void PGO::SetHighFrequencyGlobalOutputHandleFunction(PGO::GlobalOutputHandleFunc
 
 void PGO::PubResult() {
     // 阶段 1：检查输出条件与匹配状态。
-    if (is_parking_) return;  // held pose is published only on the live DR clock
+    if (is_parking_) return;  // 保持位姿仅由实时 DR 时钟发布。
     // 在有需要时，高频外推然后向外发送数据
     if (high_freq_output_func_ && impl_->result_.valid_) {
         // 检查激光定位分值情况
@@ -89,7 +94,7 @@ void PGO::PubResult() {
         if (impl_->lidar_loc_pose_queue_.size() > 5 && impl_->result_.lidar_loc_smooth_flag_ &&
             (result.timestamp_ - impl_->lidar_loc_pose_queue_.back().timestamp_) < 0.3) {
             SE3 recent_lidar_loc_pose = impl_->lidar_loc_pose_queue_.back().pose_;
-            /// 要求激光pose队列有效，且激光定位自身满足平滑性要求
+            // 要求激光pose队列有效，且激光定位自身满足平滑性要求
 
             SE3 lidar_loc_extrap_pose;  // 外推之后的激光定位位姿
             TimedPose best_match;
@@ -98,9 +103,9 @@ void PGO::PubResult() {
                 [](const TimedPose& tp) { return tp.pose_; }, lidar_loc_extrap_pose, best_match, 1.0);
 
             if (interp_succ) {
-                /// 检查激光定位外推结果与DR外推的差异
+                // 检查激光定位外推结果与DR外推的差异
 
-                /// 条件1. 从激光定位指向外推结果的矢量方向 不应该与激光定位自身外推方向相差太多
+                // 条件1. 从激光定位指向外推结果的矢量方向 不应该与激光定位自身外推方向相差太多
                 // Vec3d v1 = result.pose_.translation() - recent_lidar_loc_pose.translation();
                 // Vec3d v2 = lidar_loc_extrap_pose.translation() - recent_lidar_loc_pose.translation();
                 // if (v1.norm() > 0.1 && v2.norm() > 0.1) {
@@ -178,12 +183,12 @@ void PGO::PubResult() {
         //                       " << std::setprecision(12) << result.timestamp_;
 
         if (!extrap_success) {
-            /// 外推失效，那么认为DR queue外推失效，清空DR队列
+            // 拒绝分支当前停用，extrap_success 保持为 true；此清理路径当前不可达。
             impl_->dr_pose_queue_.clear();
 
-            /// 同时清空final_output_pose，因为长时间依靠final output可能会导致发散
-            /// 所以当外推失效时，下个时刻就是激光定位+LO的pose。如果LO也失效，那就直接是激光定位的Pose
-            /// final_output_pose_.clear();
+            // 同时清空final_output_pose，因为长时间依靠final output可能会导致发散
+            // 所以当外推失效时，下个时刻就是激光定位+LO的pose。如果LO也失效，那就直接是激光定位的Pose
+            // final_output_pose_.clear();
         }
 
         return;
@@ -193,7 +198,7 @@ void PGO::PubResult() {
 bool PGO::ProcessDR(const NavState& dr_result) {
     // 阶段 1：接收有序 DR 并维护队列。
     UL lock(impl_->data_mutex_);
-    /// 假定DR定位是按时间顺序到达的
+    // 假定DR定位是按时间顺序到达的
     double delta_timestamp = 0;
     if (!impl_->dr_pose_queue_.empty()) {
         const double last_stamp = impl_->dr_pose_queue_.back().timestamp_;
@@ -225,27 +230,27 @@ bool PGO::ProcessDR(const NavState& dr_result) {
     // 阶段 2：更新静止保持切换。
     const bool was_parking = is_parking_;
     dr_is_parking_ = dr_result.is_parking_;
-    // A stationary request can arrive before the first fused map pose. Do not
-    // freeze an uninitialized (invalid) result and thereby block PGO startup.
+    // 静止请求可能先于首个有效融合地图位姿到达；
+    // 避免冻结未初始化的无效结果，阻碍 PGO 启动。
     is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
     if (is_parking_ && !was_parking && impl_->result_.valid_) {
         static_hold_start_stamp_ = dr_result.timestamp_;
         parking_result_ = impl_->result_;
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(parking_result_);
-        // A previous hold can leave an older raw pose in impl_->result_.
-        // Initialize both views at this stop before the next map update;
-        // otherwise the consistency monitor sees a fictitious jump back.
+        // 上次静止保持可能使 impl_->result_ 留有较旧的原始位姿。
+        // 本次停车时将 unsmoothed_pose_ 与 pose_ 对齐，
+        // 避免下次地图更新的一致性检查误判位姿回跳。
         parking_result_.unsmoothed_pose_ = parking_result_.pose_;
         parking_result_.unsmoothed_pose_valid_ = true;
         parking_result_.is_parking_ = true;
         parking_result_.vel_b_ = Vec3d::Zero();
     } else if (!is_parking_ && was_parking) {
-        // While parked, ProcessDR publishes parking_result_ on the live IMU
-        // clock but deliberately leaves impl_->result_ frozen.  After a long
-        // hold the DR queue no longer contains the frozen result timestamp, so
-        // ExtrapolateLocResult cannot bridge from impl_->result_ and PubResult
-        // would release that old timestamp when motion resumes.  Promote the
-        // last held output to the fused-state epoch before resuming instead.
+        // 静止期间，ProcessDR 按实时 IMU 时刻发布 parking_result_，
+        // ProcessDR 不推进 impl_->result_ 的时间戳（新地图帧仍可更新它）。
+        // 长时间停车后，有限的 DR 队列
+        // 可能不再覆盖该时刻，使 ExtrapolateLocResult 无法衔接，
+        // 导致 PubResult 在恢复运动时发布旧时间戳。因此退出静止时，
+        // 用最后一次保持输出恢复融合状态，并将时间戳对齐当前 DR 时刻。
         if (parking_result_.valid_) {
             impl_->result_ = parking_result_;
             impl_->result_.timestamp_ = dr_result.timestamp_;
@@ -279,7 +284,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
 bool PGO::ProcessLidarOdom(const NavState& lio_result) {
     // 阶段 1：接收有序 LO 并维护队列。
     UL lock(impl_->data_mutex_);
-    /// 假定LidarOdom定位是按时间顺序到达的
+    // 假定LidarOdom定位是按时间顺序到达的
     if (!impl_->lidar_odom_pose_queue_.empty()) {
         const double last_stamp = impl_->lidar_odom_pose_queue_.back().timestamp_;
         if (lio_result.timestamp_ < last_stamp) {
@@ -355,14 +360,9 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     lidar_loc_is_parking_ = loc_result.is_parking_;
     is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
     if (is_parking_) {
-        // Keep running LidarLoc for health monitoring and global relocalization,
-        // but do not feed scan-to-map jitter into a vehicle that the stationary
-        // detector confirms is stopped. An accepted global relocalization resets PGO first,
-        // so a genuine map correction can still initialize a new held pose.
-        // ProcessDR remains the single monotonic parked-output clock.
-        // Continue estimating the posterior on fresh map matches. The published
-        // held position stays fixed; its displacement from the fused mean is
-        // added to covariance below rather than being hidden by retimestamping.
+        // 新地图匹配仍用于更新融合后验；保持输出位姿不变，
+        // ProcessPGOFrame() 将其与后验均值的偏差计入协方差。
+        // 静止输出时钟仍由 ProcessDR() 驱动。
     }
 
     // 如果相对位姿(DR和LidarOdom有一个即可)还没来，也退出
@@ -449,7 +449,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         impl_->lidar_odom_valid_ = false;
         impl_->lidar_odom_valid_cnt_ = 10;
     } else {
-        /// 如果Odom有效，也需要累计一段时间
+        // 如果Odom有效，也需要累计一段时间
         if (impl_->lidar_odom_valid_cnt_ > 0) {
             impl_->lidar_odom_valid_cnt_--;
         } else {
@@ -639,7 +639,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
     if (!dr_pose_queue.empty() && dr_pose_queue.back().timestamp_ > output_result.timestamp_) {
         double dr_extrap_time = dr_pose_queue.back().timestamp_ - output_result.timestamp_;  // DR 递推的时间
 
-        /// NOTE 当LO失效，lidar loc有较大延时，可能需要DR递推较久的时间
+        // NOTE 当LO失效，lidar loc有较大延时，可能需要DR递推较久的时间
 
         double dr_pose_inc_th = 5.0 * dr_extrap_time;  // 允许DR外推的距离
         if (!impl_->lidar_odom_valid_) {
@@ -655,7 +655,7 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
         if (dr_interp_success) {
             SE3 pose_incre = interp_pose.inverse() * dr_pose_queue.back().GetPose();
 
-            /// 限制此处的pose incre大小
+            // 以下增量拒绝分支当前停用。
             // if (pose_incre.translation().norm() > dr_pose_inc_th) {
             //     LOG(WARNING) << "pose increment is too large: " << pose_incre.translation().norm()
             //               << ", skip extrapolate, dt=" << dr_extrap_time << ", th: " << dr_pose_inc_th;
@@ -674,14 +674,14 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
 
     // 阶段 4：使用地图历史补偿剩余延迟。
     if (output_result.timestamp_ < (latest_time - 0.05)) {
-        /// 如果中间失效导致最新定位无法更新，那么用激光定位将其外推至最新位置
+        // 如果中间失效导致最新定位无法更新，那么用激光定位将其外推至最新位置
         SE3 interp_pose_final;
         TimedPose best_match_final;
         if (math::PoseInterp<TimedPose>(
                 latest_time, impl_->lidar_loc_pose_queue_, [](const TimedPose& pose) { return pose.timestamp_; },
                 [](const TimedPose& pose) { return pose.pose_; }, interp_pose_final, best_match_final, 5.0)) {
             output_result.pose_ = interp_pose_final;
-            output_result.pose_covariance_valid_ = false;  // fallback has no matched covariance
+            output_result.pose_covariance_valid_ = false;  // 回退位姿没有对应协方差
             output_result.timestamp_ = latest_time;
         }
     }

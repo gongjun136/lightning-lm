@@ -17,6 +17,8 @@ from check_links import PAGE, manual_pages
 LOADER = re.compile(r"""script\.src\s*=\s*scriptName\s*\+\s*(['"])\.js(?:\?v=[0-9a-f]+)?\1""")
 ASSET = re.compile(r"""(<[A-Za-z][^>]*?\b(?:src|href)=["'])([^"']+\.(?:js|css)(?:\?[^"']*)?)(["'])""")
 VERSION_META = re.compile(r'<meta name="lightning-navigation-version" content="[^"]*" */?>')
+THEME_LINK = re.compile(r'<link id="lightning-theme"[^>]*>\n?')
+BASE_STYLESHEET = re.compile(r'''<link\b[^>]*\bhref=["'](?:\.\./)*doxygen\.css(?:\?[^"']*)?["'][^>]*>\n?''')
 SOURCE_BANNER = re.compile(r'<!-- lightning-source-version:start -->.*?<!-- lightning-source-version:end -->\n?', re.S)
 
 
@@ -119,8 +121,6 @@ def stamp_source(text, version):
     label += ' · 文档生成于 ' + version['generated_at_utc'] + '（UTC）'
     banner = ('<!-- lightning-source-version:start -->\n'
               '<div id="lightning-source-version" role="note" '
-              'style="padding:6px 12px;font-size:12px;background:#f3f6fa;color:#334155;'
-              'border-top:1px solid #d8dee8;overflow-wrap:anywhere" '
               'title="片段来自生成时的工作区；含未提交修改时，不等同于该提交的纯净源码。">'
               + escape(label) + '</div>\n<!-- lightning-source-version:end -->\n')
     return text.replace('</div><!-- top -->', banner + '</div><!-- top -->', 1)
@@ -128,6 +128,10 @@ def stamp_source(text, version):
 
 def prepare_html(folder):
     root = Path(__file__).resolve().parents[2]
+    # Deliver the layout and theme together, including in search-result iframes.
+    theme_name = 'lightning-dark.css'
+    base_style = (folder / 'doxygen.css').read_bytes()
+    (folder / theme_name).write_bytes(base_style + b'\n' + Path(__file__).with_name(theme_name).read_bytes())
     provenance = source_version(root)
     manual_targets = {folder / name for name in manual_html_names(root)}
     loader_file = folder / 'navtree.js'
@@ -161,6 +165,9 @@ def prepare_html(folder):
             header = VERSION_META.sub(meta, header)
         else:
             header += meta + '\n'
+        theme_url = '../' * (len(page.relative_to(folder).parts) - 1) + theme_name
+        header = THEME_LINK.sub('', BASE_STYLESHEET.sub('', header))
+        header += f'<link id="lightning-theme" href="{theme_url}" rel="stylesheet" type="text/css"/>\n'
         updated = header + separator + body
         if page in manual_targets:
             updated = strip_fragment_links(updated)

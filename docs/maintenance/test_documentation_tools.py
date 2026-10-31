@@ -112,10 +112,13 @@ class FragmentLinkChecks(unittest.TestCase):
             folder = root / 'html'
             folder.mkdir()
             (folder / 'navtree.js').write_text("script.src = scriptName+'.js';\n", encoding='utf-8')
+            base_style = 'body { margin: 0; }\n'
+            (folder / 'doxygen.css').write_text(base_style, encoding='utf-8')
             fragment = ('<div class="fragment"><div class="line"><a name="l00001"></a>'
                         '<span class="lineno">1</span><a class="code" href="wrong.html">x</a></div>'
                         '<div class="ttc"><div class="ttname">tooltip</div></div></div>')
-            page = '<html><head></head><body><div id="top"></div><!-- top -->' + fragment + '</body></html>'
+            page = ('<html><head><link href="doxygen.css?v=old" rel="stylesheet"/></head>'
+                    '<body><div id="top"></div><!-- top -->' + fragment + '</body></html>')
             names = ['index.html', 'new_topic.html', 'imported_topic.html',
                      'queue_8h_source.html', 'run_8sh-example.html', 'classQueue.html']
             for name in names:
@@ -127,9 +130,12 @@ class FragmentLinkChecks(unittest.TestCase):
                 prepare_html(folder)
                 first = {name: (folder / name).read_text(encoding='utf-8') for name in names}
                 prepare_html(folder)
+            self.assertTrue((folder / 'lightning-dark.css').read_text(encoding='utf-8').startswith(base_style))
             for name in names:
                 result = (folder / name).read_text(encoding='utf-8')
                 self.assertEqual(result, first[name], name)
+                self.assertEqual(result.count('id="lightning-theme"'), 1, name)
+                self.assertNotIn('href="doxygen.css', result, name)
                 if name in inventory:
                     self.assertIn(strip_fragment_links(fragment), result)
                     self.assertNotIn('href="wrong.html"', result)
