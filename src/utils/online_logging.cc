@@ -92,8 +92,9 @@ class AsyncLogWriter {
             auto size = row.size;
             if (size && row.text[size - 1] == '\n') --size;
             if (std::fwrite(row.text.data(), 1, size, file_) != size ||
-                std::fprintf(file_, " %s=%llu%s\n", profile_ ? "profile_seq" : "async_seq",
-                    static_cast<unsigned long long>(row.sequence),
+                (profile_ && std::fprintf(file_, " profile_seq=%llu",
+                    static_cast<unsigned long long>(row.sequence)) < 0) ||
+                std::fprintf(file_, "%s\n",
                     row.truncated ? " async_truncated=1" : "") < 0) {
                 ++io_errors_;
             } else {

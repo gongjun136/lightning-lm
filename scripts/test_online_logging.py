@@ -31,9 +31,9 @@ class OnlineLoggingTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def check_records(self, text):
-        rows = [line for line in text.splitlines() if ' async_seq=' in line]
-        seq = [int(re.search(r'async_seq=(\d+)', line)[1]) for line in rows]
-        self.assertEqual(seq, list(range(len(seq))))
+        rows = [line for line in text.splitlines() if re.match(r'^[IWEF]\d{4} ', line)]
+        self.assertTrue(rows, 'no glog records written')
+        self.assertNotIn('async_seq=', text)
         self.assertEqual(text.count('TEST_WARNING'), 1)
         self.assertEqual(text.count('TEST_ERROR'), 1)
         # No per-producer reversal, and no torn/interleaved records.

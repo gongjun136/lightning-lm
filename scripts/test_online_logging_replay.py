@@ -91,13 +91,14 @@ if blocks:
     inside = [p for p in poses if a <= p[0] <= b]
     result.update(poses_during_block=len(inside), max_gap_during_block=max([poses[i][0] - poses[i - 1][0] for i in range(1, len(poses)) if poses[i][0] >= a and poses[i - 1][0] <= b], default=None))
 text = (out / (name + '.stderr')).read_text(errors='replace')
-seq = [int(x) for x in re.findall('async_seq=(\\d+)', text)]
-result['log_sequence_ordered'] = seq == list(range(len(seq)))
+result['log_records'] = len(re.findall(r'^[IWEF]\d{4} ', text, re.MULTILINE))
+result['log_has_async_seq'] = 'async_seq=' in text
 result['summary'] = re.findall('ASYNC_LOG_SUMMARY.*', text)
 (out / (name + '.json')).write_text(json.dumps(result, indent=2))
 (out / (name + '_poses.json')).write_text(json.dumps(poses))
 print(json.dumps(result, indent=2))
 assert result['returncode'] == 0 and len(poses) > 100, 'online localization did not produce enough poses'
-assert result['log_sequence_ordered'] and result['sensor_time_monotonic'] and (deprecated_publishers == 0)
+assert result['log_records'] > 0 and not result['log_has_async_seq']
+assert result['sensor_time_monotonic'] and (deprecated_publishers == 0)
 if slow:
     assert blocked_writers and result.get('poses_during_block', 0) > 100 and (result['max_gap_during_block'] < 0.5)
