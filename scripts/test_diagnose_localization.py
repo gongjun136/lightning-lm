@@ -545,6 +545,22 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['published_runstate'], 0)
 
+    def test_safety_sequence_gap_is_preserved_without_async_log_suffix(self):
+        records = [
+            'I1028 21:10:58.502960 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=-9 published_runstate=-9 localization_lost=1',
+            'I1028 21:10:59.502960 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=0 published_runstate=0',
+        ]
+        for legacy_suffix in (False, True):
+            with self.subTest(legacy_suffix=legacy_suffix):
+                self.log.write_text(''.join(
+                    record + (f' async_seq={index}' if legacy_suffix else '') + '\n'
+                    for index, record in enumerate(records)))
+                warnings = []
+                rows, _ = d.log_rows(self.log, d.MIB, warnings)
+                self.assertEqual([row['sequence'] for row in rows], [1, 3])
+                self.assertEqual([row['raw_runstate'] for row in rows], [-9, 0])
+                self.assertTrue(any('Safety 日志序号有 1 处不连续' in item for item in warnings))
+
     def test_legacy_shadow_keeps_unknown_raw_warning(self):
         self.log.write_text('I1028 21:10:58.502960 42] SAFETY_TIME_SYNC_SHADOW published_runstate=4 localization_uncertainty=2\n')
         rows, _ = d.log_rows(self.log, d.MIB, [])

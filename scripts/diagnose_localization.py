@@ -617,6 +617,8 @@ def log_rows(path, budget, warnings, reference=None, context=None,
     # Avoid double-counting shadow and unconditional diagnostics from the same run.
     if any(r['_scope'] == '运行日志（有界尾部）' for r in result):
         result = [r for r in result if r['_scope'] == '运行日志（有界尾部）']
+    # Safety sequence belongs to the diagnostic record; optional legacy async_seq
+    # is transport metadata and cannot replace missing Safety evidence.
     gaps = sum(1 for a, b in zip(result, result[1:])
                if number(a.get('sequence')) is not None and number(b.get('sequence')) is not None
                and b['sequence'] != a['sequence'] + 1)
