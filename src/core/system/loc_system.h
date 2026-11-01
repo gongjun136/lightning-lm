@@ -30,6 +30,7 @@
 #include "common/timestamp_gate.h"
 #include "core/lio/multi_lidar_fusion.h"
 #include "core/localization/localization_result.h"
+#include "core/localization/radar_input_frame_monitor.h"
 #include "core/system/sany_localization_output.h"
 #include "core/system/speed_smoothing_shadow.h"
 #include "lightning/msg/debug_message.hpp"
@@ -345,7 +346,7 @@ class LocSystem {
     int last_safety_strict_ = -128, last_safety_shadow_ = -128;
     uint8_t last_safety_sync_mask_ = 0;
     uint64_t safety_shadow_ticks_ = 0;
-    std::array<int, 25> last_safety_diagnostic_state_{};
+    std::array<int, 27> last_safety_diagnostic_state_{};
     bool safety_diagnostic_seen_ = false;
     uint64_t safety_diagnostic_ticks_ = 0, safety_diagnostic_sequence_ = 0;
     std::mutex dtc_publish_mutex_;
@@ -353,6 +354,7 @@ class LocSystem {
     rclcpp::Publisher<geosun_msgs::msg::Safety>::SharedPtr safety_pub_;
     std::array<rclcpp::Subscription<livox_ros_driver2::msg::LidarDiagnosticState>::SharedPtr, 4> radar_availability_subs_;
     rclcpp::TimerBase::SharedPtr dtc_timer_, safety_timer_;
+    std::unique_ptr<loc::RadarInputFrameMonitor> lidar_frame_watchdog_;
 
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_ = nullptr;  ///< 发布后轴位姿 PoseStamped。
     rclcpp::Publisher<lightning::msg::VehiclePose>::SharedPtr vehicle_pose_pub_ = nullptr;  ///< 发布车辆位姿与速度消息。

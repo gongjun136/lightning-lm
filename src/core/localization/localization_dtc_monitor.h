@@ -6,13 +6,14 @@
 #include <limits>
 #include <mutex>
 #include "common/eigen_types.h"
+#include "utils/lidar_frame_watchdog.h"
 
 namespace lightning::loc::dtc {
 using Clock = std::chrono::steady_clock;
 enum Condition : uint8_t { kUnknown = 0, kPass = 1, kFail = 2 };
 constexpr uint32_t kConsistency = 0x30811813;
 constexpr uint32_t kUncertainty = 0x40450198;
-constexpr const char* kSafetyPolicyVersion = "localization-dtc-v5-confirmed-loss";
+constexpr const char* kSafetyPolicyVersion = "localization-dtc-v6-radar-input";
 struct Config {
     double window_sec = 0.5, max_input_gap_sec = 0.1;
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
@@ -108,4 +109,6 @@ bool HealthyLocalizationForDegradedRadar(const Snapshot& localization);
 SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_lidar_failed,
                                      bool radar_fault, bool radar_all_pass,
                                      bool reporting_enabled, bool mask_radar_fault);
+SafetyDecision EvaluateFrameSafetyDecision(const Snapshot& localization,
+    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled);
 }

@@ -1,5 +1,17 @@
 @page dtc_delivery DTC 与安全状态接口交付
 
+@section dtc_frame_supply_v6 雷达输入组帧策略（v6）
+
+新策略及配置版本均为 `localization-dtc-v6-radar-input`，取代后文历史 v5 中以雷达 DTC 直接决定 Safety 的规则；历史记录和 v5 解析保留。业务状态读取 `runstate`，兼容接口 `errorcode` 默认仍为 0。状态优先级为：确认定位失锁 `-9`；雷达输入组帧超时及恢复确认阶段 `2`，优先于其后果性输出过期和无输入造成的启动过期；其他启动、质量或输出降级 `4`；健康 `0`。雷达 DTC、独立心跳和严格 DTC 对照继续保留，但设备 DTC 不直接触发 2 或 -9。
+
+现有定位 C++ 进程内 20 ms Safety wall timer 以 `steady_clock` 独立监测，覆盖组帧回调彻底断流，不新增 Python 运行检测或独立服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒故障，`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格帧恢复；启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。诊断展示 frame age、seen、started、warning、fault 和 recovery count。阈值为候选值，200 ms 和 300 ms 均未由本文证明适合现场安全要求。
+
+检查位于 `LocSystem` 原始雷达订阅入口，在预处理、限流和 LIO 排队之前，复用组帧器的时间戳、来源及最低来源数规则，不合并点云、不执行算法计算。仅接受非空原始消息，要求主雷达；完成新鲜输入组帧条件检查时更新进度，原始主雷达接收索引用于防止旧输入缓存续命。算法排队、处理或地图匹配滞后不参与计时和恢复，不能作为报 2 的原因。`cloud_publish_min_lidars=3` 仅控制对外点云发布，不能用于报 2。部分雷达故障但仍满足实际组帧最低来源规则时不报 2，无法满足时可报 2；该状态表示雷达输入组帧中断，不等价于所有雷达硬件损坏。现场 100 ms 时间桶、20 ms 同桶容差和 100 ms 乱序窗口中，20 ms 是相对组帧跨度，不保证绝对授时或雷达与 IMU 对齐。
+
+新策略需完成构建回归及目标机部署验收，覆盖完全断流、旧缓存、时间戳不前进、主雷达或来源不足、启动宽限、恢复滞回和状态优先级，并实测触发与恢复延迟及发布字段。本文不表示已经部署或通过实车验收。后文涉及旧状态判据的描述均为对应版本的历史记录。
+
+启动边界：定位 Monitor 从 `Init` 开始，帧看门狗在 `SetInitPose` 后启动。Monitor 已启动超时而尚无合格雷达输入组帧时，只要帧看门狗宽限尚未结束，仍为 4；帧看门狗启动后满 8 秒仍无首帧则报 2。若已经见过合格雷达输入组帧但初始定位始终未建立，原有启动超时 -9 保留。
+
 接口依据：
 https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 及 https://rs2flu7c17.work.sany.com.cn/sheets/shtk5ejY5B0puSUC3dbBtmCE0ec?sheet=1dfnNH 。

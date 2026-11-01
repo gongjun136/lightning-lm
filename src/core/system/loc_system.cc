@@ -286,6 +286,15 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     try {
         required_radar_roles = functional_safety::RequiredSanyRadarRoles(root);
         dtc_monitor_ = std::make_unique<loc::dtc::Monitor>(dtc_config);
+        functional_safety::LidarFrameWatchdog::Config frame_config;
+        frame_config.warning_sec = value("radar_frame_warning_sec", frame_config.warning_sec);
+        frame_config.timeout_sec = value("radar_frame_timeout_sec", frame_config.timeout_sec);
+        frame_config.startup_grace_sec = dtc_config.startup_grace_sec;
+        const int recovery = dtc && dtc["radar_frame_recovery_frames"] ?
+            dtc["radar_frame_recovery_frames"].as<int>() : static_cast<int>(frame_config.recovery_frames);
+        if (recovery < 1) throw std::invalid_argument("radar frame recovery count must be positive");
+        frame_config.recovery_frames = static_cast<unsigned>(recovery);
+        lidar_frame_watchdog_ = std::make_unique<loc::RadarInputFrameMonitor>(loc_->GetMultiLidarConfig(), frame_config);
         safety_fault_reporting_enabled_ = dtc && dtc["safety_fault_reporting_enabled"]
                                               ? dtc["safety_fault_reporting_enabled"].as<bool>()
                                               : true;
@@ -335,6 +344,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << " output_timeout_sec=" << dtc_config.output_timeout_sec
               << " evaluation_timeout_sec=" << dtc_config.evaluation_timeout_sec
               << " startup_grace_sec=" << dtc_config.startup_grace_sec
+              << " radar_frame_observation_point=raw_input_grouping"
+              << " radar_frame_warning_sec=" << value("radar_frame_warning_sec", 0.2)
+              << " radar_frame_timeout_sec=" << value("radar_frame_timeout_sec", 0.3)
+              << " radar_frame_recovery_frames=" << (dtc && dtc["radar_frame_recovery_frames"] ?
+                    dtc["radar_frame_recovery_frames"].as<unsigned>() : 3)
               << " localization_output_max_lidar_age_sec=" << max_lidar_match_age_sec
               << " lost_frame_threshold=" << lost_frame_threshold
               << " degraded_continuous_output_sec=" << dtc_config.window_sec
@@ -446,6 +460,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 sensor.lidar_topic, lidar_qos,
                 [this, id = sensor.id, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    lidar_frame_watchdog_->ObserveInput(id, ToSec(cloud->header.stamp),
+                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar",
@@ -466,6 +482,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 cloud_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 cloud_topic_, lidar_qos, [this, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
+                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
@@ -478,6 +496,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 livox_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
                 livox_topic_, lidar_qos, [this, capture_id](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                    lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
+                        cloud->point_num > 0 && !cloud->points.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         sizeof(*cloud) + cloud->points.capacity() * sizeof(livox_ros_driver2::msg::CustomPoint), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
@@ -616,6 +636,7 @@ void LocSystem::SetInitPose(const SE3 &pose) {
     }
     // Do not hold the publication mutex while draining/resetting algorithm work.
     loc_->SetExternalPose(pose.unit_quaternion(), pose.translation());
+    if (lidar_frame_watchdog_) lidar_frame_watchdog_->Start();
     {
         std::lock_guard<std::mutex> publish_lock(pose_publish_mutex_);
         publication_gate_.CompleteRelocalizationRequest();
@@ -1397,6 +1418,7 @@ void LocSystem::PublishSafety() {
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
     const auto localization = EvaluateLocalizationDtc();
     const auto radar = radar_dtc_state_->Evaluate();
+    const auto frames = lidar_frame_watchdog_->Evaluate();
     geosun_msgs::msg::Safety msg;
     msg.header.stamp = node_->now();
     const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
@@ -1404,10 +1426,7 @@ void LocSystem::PublishSafety() {
         radar.bounded_fault, radar.bounded_all_pass);
     // 阶段 2：按配置发布 Safety。
     // [dtc-safety-output-switches]
-    const auto decision = loc::dtc::EvaluateSafetyDecision(localization, radar.all_failed,
-        radar_bounded_sync_warning_enabled_ ? radar.bounded_fault : radar.fault,
-        radar_bounded_sync_warning_enabled_ ? radar.bounded_all_pass : radar.all_pass,
-        safety_fault_reporting_enabled_, radar_fault_mask_enabled_);
+    const auto decision = loc::dtc::EvaluateFrameSafetyDecision(localization, frames, safety_fault_reporting_enabled_);
     msg.runstate = decision.published;
     if (incident_recorder_) {
         diagnostics::IncidentRecorder::Safety s;
@@ -1435,6 +1454,9 @@ void LocSystem::PublishSafety() {
         s.latest_match_valid = localization.latest_match_valid; s.output_continuous = localization.output_continuous;
         s.localization_healthy_for_degraded = loc::dtc::HealthyLocalizationForDegradedRadar(localization);
         s.partial_radar_suppressed = decision.partial_radar_suppressed;
+        s.lidar_frame_started = frames.started; s.lidar_frame_seen = frames.seen;
+        s.lidar_frame_warning = frames.warning; s.lidar_frame_fault = frames.fault;
+        s.lidar_frame_age_sec = frames.age_sec; s.lidar_frame_recovery_count = frames.recovery_count;
         incident_recorder_->ObserveSafety(s);
         incident_recorder_->Capture(incident_safety_, std::make_shared<geosun_msgs::msg::Safety>(msg), sizeof(msg) + 256);
     }
@@ -1443,7 +1465,7 @@ void LocSystem::PublishSafety() {
     // Always retain the pre-override decision, even with both reporting and
     // optional time-sync shadow logging disabled. Log every observed cause
     // transition and a one-second summary without high-rate file I/O.
-    const std::array<int, 25> diagnostic_state{{
+    const std::array<int, 27> diagnostic_state{{
         decision.raw, decision.selected, decision.published, strict,
         localization.observations[0].condition, localization.observations[1].condition,
         localization.confirmed_failure, localization.output_stale, localization.localization_lost,
@@ -1453,13 +1475,19 @@ void LocSystem::PublishSafety() {
         localization.covariance_valid, localization.pose_unobservable,
         localization.startup_pending, localization.startup_expired, localization.output_gate_open,
         localization.match_stale, localization.latest_match_valid, localization.output_continuous,
-        decision.partial_radar_suppressed}};
+        decision.partial_radar_suppressed, frames.warning, frames.fault}};
     const bool diagnostic_changed = !safety_diagnostic_seen_ || diagnostic_state != last_safety_diagnostic_state_;
     const bool diagnostic_periodic = ++safety_diagnostic_ticks_ % 50 == 0;
     if (diagnostic_changed || diagnostic_periodic) {
+        if (diagnostic_changed && frames.warning) {
+            LOG(WARNING) << "event=LOC_RADAR_FRAME_SUPPLY 雷达输入组帧连续不可用或正在确认恢复"
+                         << " age_sec=" << frames.age_sec << " fault=" << frames.fault
+                         << " recovery_count=" << frames.recovery_count;
+        }
         const double sensor_stamp = last_localization_stamp_.load();
         LOG(INFO) << "SAFETY_DIAGNOSTIC sequence=" << ++safety_diagnostic_sequence_
                   << " policy_version=" << loc::dtc::kSafetyPolicyVersion
+                  << " radar_frame_observation_point=raw_input_grouping"
                   << " startup_pending=" << localization.startup_pending
                   << " startup_expired=" << localization.startup_expired
                   << " startup_age_sec=" << localization.startup_age_sec
@@ -1471,6 +1499,14 @@ void LocSystem::PublishSafety() {
                   << " localization_healthy_for_degraded=" << loc::dtc::HealthyLocalizationForDegradedRadar(localization)
                   << " partial_radar_suppressed=" << decision.partial_radar_suppressed
                   << " partial_radar_suppression_reason=" << (decision.partial_radar_suppressed ? "healthy_localization" : "none")
+                  << " lidar_frame_started=" << frames.started
+                  << " lidar_frame_seen=" << frames.seen
+                  << " lidar_frame_warning=" << frames.warning
+                  << " lidar_frame_fault=" << frames.fault
+                  << " lidar_frame_age_sec=" << frames.age_sec
+                  << " lidar_frame_recovery_count=" << frames.recovery_count
+                  << " lidar_frame_accepted=" << frames.accepted
+                  << " lidar_frame_rejected=" << frames.rejected
                   << " event=" << (diagnostic_changed ? "transition" : "periodic")
                   << " reporting_enabled=" << safety_fault_reporting_enabled_
                   << " raw_runstate=" << int(decision.raw)

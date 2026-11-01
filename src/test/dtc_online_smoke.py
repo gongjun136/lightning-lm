@@ -37,9 +37,13 @@ def main():
     parser.add_argument('--startup-timeout-sec', type=float, default=15.0,
                         help='Process loading/discovery allowance; does not change DTC startup grace')
     parser.add_argument('--sany-lidars', type=int, choices=(3, 4), help='Test a resolved SANY deployment topology')
+    parser.add_argument('--continuous-radar-input', action='store_true',
+                        help='Keep raw radar groups available without enough IMU history for LIO output; radar 2 must stay clear')
     args = parser.parse_args()
     if args.startup_timeout_sec <= 0:
         parser.error('--startup-timeout-sec must be positive')
+    if args.continuous_radar_input and (not args.sany_lidars or args.incident_output):
+        parser.error('--continuous-radar-input requires --sany-lidars and is separate from the incident capture fixture')
     os.environ.setdefault('ROS_DOMAIN_ID', '172')
     os.environ['ROS_LOCALHOST_ONLY'] = '1'
     executable = args.executable.resolve()
@@ -115,7 +119,7 @@ def main():
                                  QoSProfile(depth=100, reliability=ReliabilityPolicy.BEST_EFFORT))
         input_publishers = []
         inputs_sent = False
-        if args.incident_output and args.sany_lidars:
+        if (args.incident_output or args.continuous_radar_input) and args.sany_lidars:
             topics = config['multi_lidar']['topics']
             primary = config['multi_lidar']['primary_lidar_id']
             imu_publisher = node.create_publisher(Imu, topics[f'imu_{primary}'], 10)
@@ -132,16 +136,18 @@ def main():
             try:
                 startup_deadline = steady_time() + args.startup_timeout_sec
                 end = None
+                next_cloud_time = 0
                 while end is None or steady_time() < end:
                     rclpy.spin_once(node, timeout_sec=0.01)
-                    if values and input_publishers and not inputs_sent and all(p.get_subscription_count() for p in input_publishers):
+                    if values and input_publishers and (not inputs_sent or
+                            (args.continuous_radar_input and steady_time() >= next_cloud_time)) and all(p.get_subscription_count() for p in input_publishers):
                         # One valid sample checks the real callback-to-MCAP path,
                         # without supplying enough IMU history to initialize LIO.
                         stamp = node.get_clock().now().to_msg()
                         imu = Imu()
                         imu.header.stamp = stamp
                         imu.linear_acceleration.z = 9.81
-                        imu_publisher.publish(imu)
+                        if not inputs_sent: imu_publisher.publish(imu)
                         cloud = PointCloud2()
                         cloud.header.stamp = stamp
                         cloud.header.frame_id = 'incident_smoke'
@@ -157,6 +163,7 @@ def main():
                         for publisher in cloud_publishers:
                             publisher.publish(cloud)
                         inputs_sent = True
+                        next_cloud_time = steady_time() + .1
                     if process.poll() is not None:
                         raise RuntimeError(log_path.read_text()[-5000:])
                     if end is None:
@@ -169,8 +176,9 @@ def main():
                     assert all(value == 0 for _, value in values), 'disabled fault reporting must always give zero'
                 else:
                     assert any(value == 4 for _, value in values), 'startup UNKNOWN must be 4'
-                    assert values[-1][1] == -9, 'no valid output after startup grace must be -9'
-                    assert all(value in (4, -9) for _, value in values), 'uninitialized localization must never give zero'
+                    expected_timeout = -9 if args.continuous_radar_input else 2
+                    assert values[-1][1] == expected_timeout, ('incorrect input-vs-localization startup fault', values[-1])
+                    assert all(value in (4, expected_timeout) for _, value in values), 'localization failure must not be confused with radar-input failure'
                 publishers = node.get_publishers_info_by_topic('/safety/throstle')
                 assert len(publishers) == 1, f'expected one safety publisher, found {len(publishers)}'
                 assert publishers[0].topic_type == 'geosun_msgs/msg/Safety'
@@ -222,7 +230,15 @@ def main():
                 audit = [dict(re.findall(r'(\w+)=([^\s]+)', line))
                          for line in log_text.splitlines() if 'SAFETY_DIAGNOSTIC ' in line]
                 assert audit, 'fault audit must be present independently of reporting and shadow switches'
-                assert {int(row['raw_runstate']) for row in audit} == {4, -9}, 'retain startup and timeout diagnoses'
+                assert {int(row['raw_runstate']) for row in audit} == {4, -9 if args.continuous_radar_input else 2}, 'retain distinct radar-input and localization-startup diagnoses'
+                assert all(row.get('policy_version') == 'localization-dtc-v6-radar-input' for row in audit)
+                assert all(row.get('radar_frame_observation_point') == 'raw_input_grouping' for row in audit)
+                if args.continuous_radar_input:
+                    assert inputs_sent and any(row.get('lidar_frame_seen') == '1' for row in audit)
+                    assert max(int(row['lidar_frame_accepted']) for row in audit) >= 30, 'continuous fixture did not reach the real input grouping check'
+                    assert all(row.get('lidar_frame_fault') == '0' for row in audit), 'missing algorithm output must never become radar 2 while raw groups remain available'
+                else:
+                    assert any(row.get('lidar_frame_fault') == '1' for row in audit), 'independent watchdog must record radar input silence'
                 assert len({row['sequence'] for row in audit}) == len(audit), 'audit sequence must advance'
                 assert all('steady_sec' in row and 'covariance_valid' in row and 'radar_all_failed' in row
                            for row in audit), 'audit must include timing and causal evidence'
@@ -236,7 +252,8 @@ def main():
                     assert 'SAFETY_TIME_SYNC_SHADOW ' not in log_text, 'optional shadow logging is off'
                 print(f'dtc_online_smoke passed: Safety {average_hz:.1f} Hz; '
                       f'safety_fault_reporting={args.safety_fault_reporting}; '
-                      f'shadow={args.radar_time_sync_shadow}; audit_rows={len(audit)}; heartbeat DTC only, startup UNKNOWN')
+                      f'shadow={args.radar_time_sync_shadow}; continuous_radar_input={args.continuous_radar_input}; '
+                      f'audit_rows={len(audit)}; heartbeat DTC only, startup UNKNOWN')
             finally:
                 process.terminate()
                 try:
@@ -255,6 +272,7 @@ def main():
             assert summaries, 'no incident exported by real localization process'
             reasons, recorded_topics, raw_values = set(), set(), set()
             messages = 0
+            frame_fault_recorded = False
             for path in summaries:
                 summary = json.loads(path.read_text())
                 assert summary['status'] in ('complete', 'partial'), summary
@@ -265,6 +283,16 @@ def main():
                 with (path.parent / 'timeline.csv').open() as timeline:
                     for row in csv.DictReader(timeline):
                         raw_values.add(int(row['raw']))
+                        # Pre-trigger history may precede the first Safety tick;
+                        # such an unobserved default row carries no policy yet.
+                        if int(row['raw']) in (2, 4):
+                            assert row['policy_version'] == 'localization-dtc-v6-radar-input', row
+                        else:
+                            assert row['policy_version'] in ('', 'localization-dtc-v6-radar-input'), row
+                        assert all(key in row for key in ('lidar_frame_started', 'lidar_frame_seen',
+                                   'lidar_frame_warning', 'lidar_frame_fault', 'lidar_frame_age_sec',
+                                   'lidar_frame_recovery_count')), row
+                        frame_fault_recorded |= int(row['raw']) == 2 and row['lidar_frame_fault'] == '1'
                         if args.safety_fault_reporting == 'false':
                             assert int(row['published']) == 0, row
                 for segment in summary['closed_segments']:
@@ -280,8 +308,9 @@ def main():
                                 assert bytes(deserialize_message(data, PointCloud2).data) == struct.pack('<ffffBB6xd', 5., 0., 0., 42., 0, 0, 0.)
                         recorded_topics.add(topic)
                         messages += 1
-            assert {'raw_4', 'raw_-9', 'startup_without_output'} <= reasons, reasons
-            assert {4, -9} <= raw_values, raw_values
+            assert {'raw_4', 'raw_2', 'startup_without_output'} <= reasons, reasons
+            assert {4, 2} <= raw_values and -9 not in raw_values, raw_values
+            assert frame_fault_recorded, 'timeline must retain the actual fused-input timeout evidence'
             assert {'/safety/throstle', '/diagnostics/heartbeat/lightning_slam',
                     '/localization/pipeline_diagnostics'} <= recorded_topics, recorded_topics
             if args.sany_lidars:

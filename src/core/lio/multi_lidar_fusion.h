@@ -201,15 +201,18 @@ CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& 
  */
 class MultiLidarFrameAssembler {
    public:
+    enum class Mode { kClouds, kInputStamps };
     /// 构造空组帧器；使用前须以已校验配置调用 Reset。
     MultiLidarFrameAssembler() = default;
     /// 使用已校验配置构造；本类不主动校验配置。
     explicit MultiLidarFrameAssembler(MultiLidarConfig config) { Reset(std::move(config)); }
 
     /// 用已校验配置重置缓存和统计；本方法不主动校验配置。
-    void Reset(MultiLidarConfig config);
+    void Reset(MultiLidarConfig config, Mode mode = Mode::kClouds);
     // 接纳一个雷达的点云；扫描开始时间以秒计，详细契约见定义。
     bool AddCloud(int lidar_id, double timestamp, CloudPtr cloud);
+    // Input-stamp mode uses identical bucket/source/time rules without touching points.
+    bool AddStamp(int lidar_id, double timestamp);
     /// 取出最早的就绪帧；队列为空时返回 false，frame 不变。
     bool PopReady(FusedLidarFrame& frame);
     /// 强制处理待排出的桶，仍按最低雷达数量丢弃不足的帧。
@@ -246,12 +249,15 @@ class MultiLidarFrameAssembler {
     bool IsComplete(const PartialFrame& frame) const;
     /// 按已见传感器时间判断桶是否过期。
     bool IsExpired(long long bucket) const;
+    bool AddInput(int lidar_id, double timestamp, CloudPtr cloud);
+    FusedLidarFrame DescribeInputFrame(const PartialFrame& frame) const;
     // 按时间顺序排出就绪或强制处理的桶。
     void PromoteReady(bool force);
     // 将桶内点云变换并合并到主雷达系。
     FusedLidarFrame Assemble(const PartialFrame& frame) const;
 
     MultiLidarConfig config_;  ///< 雷达组帧及自适应降载配置。
+    Mode mode_ = Mode::kClouds;
     std::set<int> expected_lidar_ids_;  ///< 组帧器期望接收的雷达 ID 集合。
     std::map<long long, PartialFrame> frames_;  ///< 按时间桶保存尚未排出的部分组帧。
     std::deque<FusedLidarFrame> ready_frames_;  ///< 已完成组帧、等待调用者取出的点云队列。

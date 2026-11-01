@@ -135,6 +135,27 @@ void MaskedFaultAndReadback() {
     r.Stop(); Check(r.GetStats().held_bytes == 0, "retained messages leaked on Stop");
     std::cout << "masked short fault: " << before << " pre + " << after << " post MCAP messages\n";
 }
+void FrameSupplyFaultReadback() {
+    Fixture f; const auto archive = f.root / "incidents";
+    Recorder r(Options(), archive.string(), (f.root / "config.yaml").string());
+    Check(r.Start(), "frame-supply fixture start failed");
+    Recorder::Safety fault;
+    fault.raw = fault.selected = 2;
+    fault.policy_version = "localization-dtc-v6-radar-input";
+    fault.lidar_frame_started = fault.lidar_frame_seen = true;
+    fault.lidar_frame_warning = fault.lidar_frame_fault = true;
+    fault.lidar_frame_age_sec = .05; fault.lidar_frame_recovery_count = 2;
+    r.ObserveSafety(fault);
+    const auto path = WaitComplete(archive);
+    const auto summary = YAML::LoadFile((path / "summary.json").string());
+    Check(summary["observed_first_stage"].as<std::string>() == "radar_input_grouping",
+          "v6 frame fault was mislabeled as a device DTC");
+    const auto csv = Read(path / "timeline.csv");
+    Check(csv.find("lidar_frame_started,lidar_frame_seen,lidar_frame_warning,lidar_frame_fault,lidar_frame_age_sec,lidar_frame_recovery_count") != std::string::npos &&
+          csv.find(",1,1,1,1,0.05,2\n") != std::string::npos,
+          "frame-supply recovery evidence missing or assigned to wrong CSV columns");
+    r.Stop();
+}
 void BoundedAdmissionAndSlowWriter() {
     Fixture f; auto o = Options(); o.memory_mb = 1; o.write_mb_per_second = .2;
     Recorder r(o, (f.root / "incidents").string(), (f.root / "config.yaml").string());
@@ -267,6 +288,7 @@ void SuppressedRadarEvidence() {
     const auto path = WaitComplete(archive);
     const auto summary = YAML::LoadFile((path / "summary.json").string());
     Check(summary["reasons"][0].as<std::string>() == "raw_2", "suppressed radar fault did not trigger capture");
+    Check(summary["observed_first_stage"].as<std::string>() == "radar_diagnostic", "legacy radar evidence changed meaning");
     const auto csv = Read(path / "timeline.csv");
     Check(csv.find(",2,0,0,2,") != std::string::npos &&
           csv.find(",1,1,healthy_localization") != std::string::npos,
@@ -298,7 +320,7 @@ int main(int argc, char** argv) {
         Check(IncidentAgeSeconds(1000000000, 0) == -1.0, "missing publication sentinel changed");
         Check(std::abs(IncidentAgeSeconds(1000000000, 800000000) - .2) < 1e-9, "stale observation age changed");
         if (argc == 3 && std::string(argv[1]) == "--crash-fixture") { CrashFixture(argv[2]); return 1; }
-        MaskedFaultAndReadback(); SuppressedRadarEvidence(); BoundedAdmissionAndSlowWriter(); IndependentTimeouts();
+        MaskedFaultAndReadback(); FrameSupplyFaultReadback(); SuppressedRadarEvidence(); BoundedAdmissionAndSlowWriter(); IndependentTimeouts();
         ExportBudgetAndMergedFaults(); RetentionAndFailureIsolation();
         std::cout << "incident_recorder_test passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

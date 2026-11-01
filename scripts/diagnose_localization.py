@@ -27,9 +27,12 @@ LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'distance_tolerance_ratio', 'angle_tolerance_ratio', 'max_input_gap_sec',
           'consistency_unknown_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
           'motion_window_sec', 'evaluation_timeout_sec', 'config_version',
-          'localization_output_max_lidar_age_sec', 'lost_frame_threshold', 'degraded_continuous_output_sec')
+          'localization_output_max_lidar_age_sec', 'lost_frame_threshold', 'degraded_continuous_output_sec',
+          'radar_frame_warning_sec', 'radar_frame_timeout_sec', 'radar_frame_recovery_frames')
 FAULT_CODES = (2, 4, -9)
 CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
+FRAME_SUPPLY_POLICY = 'localization-dtc-v6-radar-input'
+MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, FRAME_SUPPLY_POLICY)
 CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
 LAUNCH_LOGS = ('map_manifest.log', 'input_check.log', 'config_resolution.log',
                'launcher.log', 'launch.log', 'launch_compute_config.log')
@@ -672,17 +675,33 @@ def classify(row, limits):
         values = {k: row[k] for k in evidence if k in row}
         values.update({k: row[k] for k in ('policy_version', 'strict_runstate', 'selected_runstate',
                       'partial_radar_suppressed', 'partial_radar_suppression_reason', 'localization_healthy_for_degraded') if k in row})
-        if row.get('policy_version') == CONFIRMED_LOSS_POLICY:
+        if row.get('policy_version') in MODERN_POLICIES:
             values.update({k: limits[k] for k in ('output_timeout_sec', 'startup_grace_sec',
                           'localization_output_max_lidar_age_sec', 'lost_frame_threshold') if k in limits})
         causes.append(dict(code=int(code), key=key, title=title, evidence=values,
                            advice=advice, confidence=confidence, time=row.get('_time'),
                            source=row.get('_source'), scope=row.get('_scope'),
                            published=row.get('published_runstate')))
-    modern = row.get('policy_version') == CONFIRMED_LOSS_POLICY
-    if row.get('policy_version') not in (None, '', CONFIRMED_LOSS_POLICY) and code in FAULT_CODES:
+    modern = row.get('policy_version') in MODERN_POLICIES
+    frame_policy = row.get('policy_version') == FRAME_SUPPLY_POLICY
+    if row.get('policy_version') not in (None, '', *MODERN_POLICIES) and code in FAULT_CODES:
         add('unsupported_policy', '未知 Safety 策略版本，不能沿用旧版故障含义', ['policy_version', 'raw_runstate'],
             '核对运行合同并同步诊断脚本；原始码保留，但不猜测该版本的具体判据。', '规则缺失')
+        return causes
+    if frame_policy and code == 2:
+        evidence = ['lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
+                    'lidar_frame_age_sec', 'lidar_frame_recovery_count', 'lidar_frame_accepted', 'lidar_frame_rejected']
+        if row.get('lidar_frame_fault') == 1:
+            recovering = number(row.get('lidar_frame_recovery_count')) or 0
+            title = ('启动宽限结束仍未收到合格雷达输入组帧' if row.get('lidar_frame_seen') == 0 else
+                     '雷达输入组帧连续不可用') if not recovering else '雷达输入组帧已恢复，尚在连续合格帧确认阶段'
+            add('frame_supply', title, evidence,
+                '检查原始雷达输入的非空条件、主雷达、最低来源数、时间桶及同桶跨度；算法排队/处理/匹配耗时不参与 2，设备 DTC 仅作对照。')
+            causes[-1]['evidence'].update({k: limits[k] for k in
+                ('radar_frame_warning_sec', 'radar_frame_timeout_sec', 'radar_frame_recovery_frames', 'startup_grace_sec') if k in limits})
+        else:
+            add('policy_state_incomplete', '新版记录为 2，但缺少雷达输入组帧故障依据', evidence,
+                '核对看门狗状态及运行合同，不能按历史雷达 DTC 含义解释。', '证据不足')
         return causes
     if modern and code in (4, -9):
         state_fields = ['policy_version', 'startup_pending', 'startup_expired', 'startup_age_sec',
@@ -690,7 +709,7 @@ def classify(row, limits):
                         'output_stale', 'output_age_sec', 'match_stale', 'valid_match_age_sec',
                         'latest_match_valid', 'lost_frames', 'radar_all_failed']
         if code == -9:
-            if row.get('startup_expired') == 1:
+            if row.get('startup_expired') == 1 and (not frame_policy or row.get('lidar_frame_seen') == 1):
                 add('startup_expired', '初始定位仍未成功，已超过启动等待期限', state_fields,
                     '检查本轮初始位姿/全局重定位证据的阶段、候选缺失或拒绝原因；不是运行中输出超时的同义词。')
                 causes[-1]['phase'] = 'startup'
@@ -698,11 +717,12 @@ def classify(row, limits):
                 add('confirmed_tracking_lost', '运行中已确认定位失锁', state_fields,
                     '定位从跟踪转为确认失锁；检查最早连续匹配拒绝与全局重定位阶段，门控关闭本身不是确认失锁证据。')
                 causes[-1]['phase'] = 'runtime'
-            if row.get('radar_all_failed') == 1:
+            if not frame_policy and row.get('radar_all_failed') == 1:
                 add('radar_all_failed', '所有必需雷达均不可用', state_fields,
                     '检查各雷达原始诊断和输入，不将单台雷达异常等同全部不可用。')
             if not causes:
-                add('policy_state_incomplete', '新版记录为 -9，但缺少启动超时/确认失锁/全部雷达失败的依据', state_fields,
+                missing = '有效输入后的启动超时/确认失锁' if frame_policy else '启动超时/确认失锁/全部雷达失败'
+                add('policy_state_incomplete', f'新版记录为 -9，但缺少{missing}的依据', state_fields,
                     '核对运行合同及完整字段；新版运行输出超时或匹配陈旧单独应归为 4，不能沿用旧版 -9 解释。', '证据不足')
             return causes
         if row.get('startup_pending') == 1:
@@ -989,7 +1009,7 @@ def priority_summary(findings, matching):
             f'最近段 {last["first_time"]}，残差 {residual}（样例 {last["time"]}）；{recovery}。', last['source'])
     startup = next((f for f in findings if f.get('phase') == 'startup'), None)
     modern_states = [f for f in findings if f['key'] in ('output_stale_degraded', 'match_stale_degraded',
-                    'match_rejected_unconfirmed', 'confirmed_tracking_lost')]
+                    'match_rejected_unconfirmed', 'confirmed_tracking_lost', 'frame_supply')]
     for key in dict.fromkeys(f['key'] for f in modern_states):
         latest_state = max((f for f in modern_states if f['key'] == key), key=lambda f: f.get('start_ns') or 0)
         add(f'新版判据 [{latest_state["code"]}]: {latest_state["title"]}；最近段 {latest_state["first_time"]}。', latest_state['onset_source'])
@@ -1471,7 +1491,9 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
                 trigger_reasons=summary.get('reasons', []), thresholds=limits,
                 latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
-                       'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope')},
+                       'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope',
+                       'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
+                       'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
                 compute_profile=compute_profile,
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
@@ -1603,7 +1625,11 @@ def render(report, color=False, all_events=False):
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
-    if latest.get('policy_version') == CONFIRMED_LOSS_POLICY:
+    if latest.get('policy_version') == FRAME_SUPPLY_POLICY:
+        lines.append('雷达输入组帧策略: 2 依据原始输入组帧中断/恢复确认；算法处理滞后不参与，雷达 DTC 仅作对照。')
+        lines.append('  状态: ' + json.dumps({k: latest.get(k) for k in ('lidar_frame_started', 'lidar_frame_seen',
+                     'lidar_frame_warning', 'lidar_frame_fault', 'lidar_frame_age_sec', 'lidar_frame_recovery_count')}, ensure_ascii=False))
+    elif latest.get('policy_version') == CONFIRMED_LOSS_POLICY:
         lines.append(f'新版策略: 严格原始={latest.get("strict_runstate")} → 策略选择={latest.get("selected_runstate")} → 上报={latest.get("published_runstate")}')
     for suppressed in report.get('partial_radar_suppressions', []):
         lines.append(paint('部分雷达诊断曾由定位综合健康策略抑制（原始原因仍保留，不等于雷达故障已修复）', '33'))

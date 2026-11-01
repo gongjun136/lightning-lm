@@ -682,8 +682,9 @@ CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
     return selected;
 }
 
-void MultiLidarFrameAssembler::Reset(MultiLidarConfig config) {
+void MultiLidarFrameAssembler::Reset(MultiLidarConfig config, Mode mode) {
     config_ = std::move(config);
+    mode_ = mode;
     expected_lidar_ids_.clear();
     for (const auto& sensor : config_.lidars) expected_lidar_ids_.insert(sensor.id);
     frames_.clear();
@@ -737,8 +738,18 @@ bool MultiLidarFrameAssembler::IsExpired(long long bucket) const {
  * @return 合格输入已缓存时返回 true，否则计入对应丢弃统计并返回 false。
  */
 bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr cloud) {
+    if (mode_ != Mode::kClouds || !cloud) { ++invalid_drop_count_; return false; }
+    return AddInput(lidar_id, timestamp, std::move(cloud));
+}
+
+bool MultiLidarFrameAssembler::AddStamp(int lidar_id, double timestamp) {
+    if (mode_ != Mode::kInputStamps) { ++invalid_drop_count_; return false; }
+    return AddInput(lidar_id, timestamp, {});
+}
+
+bool MultiLidarFrameAssembler::AddInput(int lidar_id, double timestamp, CloudPtr cloud) {
     // 阶段 1：验证输入并确定时间桶。
-    if (!cloud || !std::isfinite(timestamp) || expected_lidar_ids_.count(lidar_id) == 0) {
+    if (!std::isfinite(timestamp) || expected_lidar_ids_.count(lidar_id) == 0) {
         ++invalid_drop_count_;
         return false;
     }
@@ -809,7 +820,7 @@ void MultiLidarFrameAssembler::PromoteReady(bool force) {
                                             ? config_.adaptive_load.tracking_min_lidars
                                             : config_.min_lidars;
         if (static_cast<int>(it->second.clouds.size()) >= assembly_min_lidars) {
-            ready_frames_.push_back(Assemble(it->second));
+            ready_frames_.push_back(mode_ == Mode::kInputStamps ? DescribeInputFrame(it->second) : Assemble(it->second));
             ++emitted_frame_count_;
         } else {
             ++insufficient_lidar_drop_count_;
@@ -829,6 +840,21 @@ bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
 }
 
 void MultiLidarFrameAssembler::Flush() { PromoteReady(true); }
+
+FusedLidarFrame MultiLidarFrameAssembler::DescribeInputFrame(const PartialFrame& frame) const {
+    FusedLidarFrame result;
+    auto& stats = result.stats;
+    stats.begin_time = std::numeric_limits<double>::infinity();
+    for (const auto& [id, stamp] : frame.timestamps) {
+        stats.begin_time = std::min(stats.begin_time, stamp);
+        stats.present_lidar_ids.push_back(id);
+    }
+    for (const auto id : expected_lidar_ids_)
+        if (frame.timestamps.count(id) == 0) stats.missing_lidar_ids.push_back(id);
+    stats.end_time = stats.begin_time;
+    stats.partial = !stats.missing_lidar_ids.empty();
+    return result;  // No point-cloud allocation, transform, filtering or LIO work.
+}
 
 /**
  * @brief 把一个时间桶的点云合并到主雷达坐标系及统一时间轴。

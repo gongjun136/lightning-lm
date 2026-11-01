@@ -54,6 +54,38 @@ void CheckConfirmedLossPolicy() {
     const auto healthy = running.Evaluate(tracking, At(1000));
     Require(healthy.output_continuous && HealthyLocalizationForDegradedRadar(healthy),
             "sustained fresh output and accepted map/quality evidence authorize degraded operation");
+    functional_safety::LidarFrameWatchdog::Snapshot frames;
+    frames.started = frames.seen = true;
+    Require(EvaluateFrameSafetyDecision(healthy, frames, true).published == 0,
+            "v6 healthy frame supply has no device-DTC stop input");
+    frames.fault = true;
+    Require(EvaluateFrameSafetyDecision(healthy, frames, true).published == 2,
+            "v6 frame timeout stops despite healthy static/extrapolated pose");
+    auto consequence = healthy;
+    consequence.output_stale = consequence.severe = consequence.startup_expired = true;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == 2,
+            "frame supply root cause precedes consequent output/startup timeout");
+    consequence.localization_lost = true;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == -9,
+            "explicit confirmed tracking loss keeps severe priority");
+    const auto disabled_frame_fault = EvaluateFrameSafetyDecision(healthy, frames, false);
+    Require(disabled_frame_fault.raw == 2 && disabled_frame_fault.published == 0,
+            "reporting override preserves frame fault evidence");
+    frames.fault = false;
+    consequence = healthy; consequence.confirmed_failure = true;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == 4,
+            "frame health does not hide localization quality failure");
+    consequence = healthy;
+    consequence.startup_pending = consequence.startup_expired = consequence.severe = true;
+    frames.seen = false;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == 4,
+            "an earlier monitor startup cannot bypass the frame watchdog's no-input grace");
+    frames.fault = true;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == 2,
+            "no first frame at the watchdog startup deadline is a supply fault");
+    frames.fault = false; frames.seen = true;
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == -9,
+            "startup expiry still applies when valid fused input cannot establish localization");
     const auto degraded = EvaluateSafetyDecision(healthy, false, true, false, true, false);
     Require(degraded.raw == 2 && degraded.selected == 0 && degraded.published == 0 && degraded.partial_radar_suppressed,
             "partial radar failure preserves raw 2 and suppresses only its stop decision with healthy localization");

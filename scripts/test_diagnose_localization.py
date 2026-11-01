@@ -18,6 +18,47 @@ import check_diagnostic_contract as contract
 
 
 class DiagnosisTest(unittest.TestCase):
+    def test_frame_supply_policy_replaces_device_dtc_stop(self):
+        limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
+        row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,
+                   lidar_frame_started=1, lidar_frame_seen=1, lidar_frame_fault=1,
+                   lidar_frame_age_sec=.31, lidar_frame_recovery_count=0, time_sync_fault_mask=0)
+        causes = d.classify(row, limits)
+        self.assertEqual([c['key'] for c in causes], ['frame_supply'])
+        self.assertEqual(causes[0]['evidence']['radar_frame_timeout_sec'], .3)
+        row['lidar_frame_recovery_count'] = 2
+        self.assertIn('确认', d.classify(row, limits)[0]['title'])
+        row.update(raw_runstate=0, published_runstate=0, lidar_frame_fault=0, time_sync_fault_mask=15)
+        self.assertEqual(d.classify(row, limits), [])
+        row.update(raw_runstate=2, published_runstate=2)
+        self.assertEqual(d.classify(row, limits)[0]['key'], 'policy_state_incomplete')
+
+    def test_frame_supply_does_not_classify_all_device_dtc_as_confirmed_loss(self):
+        row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=-9, radar_all_failed=1,
+                   startup_expired=0, confirmed_tracking_lost=0, localization_lost=0)
+        cause = d.classify(row, {})[0]
+        self.assertEqual(cause['key'], 'policy_state_incomplete')
+        self.assertNotIn('全部雷达失败', cause['title'])
+        row.update(startup_expired=1, lidar_frame_seen=0)
+        self.assertEqual(d.classify(row, {})[0]['key'], 'policy_state_incomplete')
+        row['lidar_frame_seen'] = 1
+        self.assertEqual(d.classify(row, {})[0]['key'], 'startup_expired')
+        row['startup_expired'] = 0
+        row['confirmed_tracking_lost'] = 1
+        self.assertEqual(d.classify(row, {})[0]['key'], 'confirmed_tracking_lost')
+
+    def test_frame_supply_render_keeps_warning_and_recovery_evidence(self):
+        self.log.write_text('I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=1 '
+            'policy_version=localization-dtc-v6-radar-input raw_runstate=2 selected_runstate=2 '
+            'published_runstate=2 lidar_frame_started=1 lidar_frame_seen=1 lidar_frame_warning=1 '
+            'lidar_frame_fault=1 lidar_frame_age_sec=0.05 lidar_frame_recovery_count=2\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['latest']['lidar_frame_recovery_count'], 2)
+        self.assertEqual(report['current_findings'][0]['key'], 'frame_supply')
+        self.assertIn('雷达输入组帧策略', d.render(report))
+        self.assertIn('算法处理滞后不参与', d.render(report))
+        self.assertIn('确认阶段', d.render(report))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()

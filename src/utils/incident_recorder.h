@@ -55,6 +55,10 @@ class IncidentRecorder {
         double startup_age_sec = -1, valid_match_age_sec = -1;
         bool output_gate_open = false, match_stale = false, latest_match_valid = false, output_continuous = false;
         bool localization_healthy_for_degraded = false, partial_radar_suppressed = false;
+        bool lidar_frame_started = false, lidar_frame_seen = false;
+        bool lidar_frame_warning = false, lidar_frame_fault = false;
+        double lidar_frame_age_sec = -1;
+        unsigned lidar_frame_recovery_count = 0;
     };
     struct Pipeline {
         std::uint64_t sensor_pending = 0, localization_pending = 0, high_frequency_pending = 0;

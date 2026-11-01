@@ -9,6 +9,12 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'scripts/diagnose_contract.json'
 SOURCES = (
+    'src/utils/lidar_frame_watchdog.h',
+    'src/core/localization/radar_input_frame_monitor.h',
+    'src/core/lio/multi_lidar_fusion.h',
+    'src/core/lio/multi_lidar_fusion.cc',
+    'src/core/lio/laser_mapping.h',
+    'src/core/localization/localization.h',
     'src/core/lio/laser_mapping.cc',
     'src/core/lio/imu_processing.hpp',
     'src/core/localization/lidar_loc/lidar_loc.cc',

@@ -307,6 +307,20 @@ bool HealthyLocalizationForDegradedRadar(const Snapshot& loc) {
         loc.yaw_condition == kPass &&
         (loc.observations[0].condition == kPass || loc.optional_can_unavailable);
 }
+SafetyDecision EvaluateFrameSafetyDecision(const Snapshot& localization,
+    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled) {
+    SafetyDecision decision;
+    // Confirmed loss keeps its severity. Missing eligible raw radar groups takes precedence
+    // over consequent stale outputs/startup expiry; device DTCs are not inputs.
+    // The localization monitor may start before the initial-pose request arms
+    // the frame watchdog. Let the latter own the finite no-input startup grace.
+    decision.raw = localization.localization_lost ? -9 : frames.fault ? 2 :
+        localization.startup_expired && !frames.seen ? 4 :
+        SafetyValue(localization, false, false, true, true);
+    decision.selected = decision.raw;
+    decision.published = reporting_enabled ? decision.selected : 0;
+    return decision;
+}
 SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_failed,
                                      bool radar_fault, bool radar_all_pass,
                                      bool reporting_enabled, bool mask_radar_fault) {

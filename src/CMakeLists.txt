@@ -110,6 +110,11 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(lidar_frame_watchdog_test test/lidar_frame_watchdog_test.cc)
+    add_test(NAME lidar_frame_watchdog_test COMMAND $<TARGET_FILE:lidar_frame_watchdog_test>)
+    add_executable(radar_input_frame_monitor_test test/radar_input_frame_monitor_test.cc)
+    target_link_libraries(radar_input_frame_monitor_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME radar_input_frame_monitor_test COMMAND $<TARGET_FILE:radar_input_frame_monitor_test>)
     add_executable(match_failure_recorder_test test/match_failure_recorder_test.cc utils/match_failure_recorder.cc)
     target_include_directories(match_failure_recorder_test PRIVATE ${PROJECT_BINARY_DIR}/generated)
     target_link_libraries(match_failure_recorder_test ${PCL_LIBRARIES} yaml-cpp glog OpenSSL::Crypto)
