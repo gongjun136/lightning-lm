@@ -223,7 +223,7 @@ class IncidentRecorder::Impl {
             started = Steady(); running = true;
             writer = std::thread([this] {
                 try { WriterLoop(); }
-                catch (const std::exception& e) { ++errors; stop_monitor = true; LOG(ERROR) << "INCIDENT_CAPTURE writer stopped: " << e.what(); }
+                catch (const std::exception& e) { ++errors; stop_monitor = true; LOG(ERROR) << "INCIDENT_CAPTURE event=INCIDENT_WRITER_STOPPED 事件写入线程已停止 detail=" << e.what(); }
             });
             monitor = std::thread([this] {
                 try { MonitorLoop(); }
@@ -232,15 +232,15 @@ class IncidentRecorder::Impl {
                     { std::lock_guard<std::mutex> lock(mutex);
                       if (active) { active->closed = true; active->shortened = true; } }
                     wake.notify_all();
-                    LOG(ERROR) << "INCIDENT_CAPTURE monitor stopped: " << e.what();
+                    LOG(ERROR) << "INCIDENT_CAPTURE event=INCIDENT_MONITOR_STOPPED 事件监测线程已停止 detail=" << e.what();
                 }
             });
-            LOG(INFO) << "INCIDENT_CAPTURE started directory=" << directory
+            LOG(INFO) << "INCIDENT_CAPTURE 事件采集已启动 directory=" << directory
                       << " memory_mb=" << options.memory_mb << " pre_seconds=" << options.pre_seconds
                       << " post_seconds=" << options.post_seconds << " extra_dds_subscriptions=0";
             return true;
         } catch (const std::exception& e) {
-            LOG(ERROR) << "INCIDENT_CAPTURE disabled: " << e.what();
+            LOG(ERROR) << "INCIDENT_CAPTURE event=INCIDENT_DISABLED 事件采集已禁用 detail=" << e.what();
             ++errors; Stop(); return false;
         }
     }
@@ -530,7 +530,7 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
                       << " omitted=" << event->omitted;
         } catch (const std::exception& e) {
             ++errors; event->error = e.what();
-            LOG(ERROR) << "INCIDENT_CAPTURE export failed: " << e.what();
+            LOG(ERROR) << "INCIDENT_CAPTURE event=INCIDENT_EXPORT_FAILED 事件导出失败 detail=" << e.what();
             try { close_segment(); if (!event->path.empty()) Report(*event, "error"); } catch (...) {}
         }
     }
@@ -552,7 +552,7 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
             }
             if (Age(Steady(), last_status) > 5 || !last_status) {
                 try { AtomicWrite(directory / "collector_status.json", StatsJson()); }
-                catch (const std::exception& e) { ++errors; LOG_EVERY_N(ERROR, 10) << "INCIDENT_CAPTURE status: " << e.what(); }
+                catch (const std::exception& e) { ++errors; LOG_EVERY_N(ERROR, 10) << "INCIDENT_CAPTURE event=INCIDENT_STATUS_FAILED 事件状态写入失败 detail=" << e.what(); }
                 last_status = Steady();
             }
         }

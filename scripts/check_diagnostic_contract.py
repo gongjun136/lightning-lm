@@ -9,7 +9,12 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'scripts/diagnose_contract.json'
 SOURCES = (
+    'src/core/lio/laser_mapping.cc',
+    'src/core/lio/imu_processing.hpp',
     'src/core/localization/lidar_loc/lidar_loc.cc',
+    'src/core/localization/solid_relocalizer.cc',
+    'src/core/localization/pose_graph/pgo.cc',
+    'src/core/localization/pose_graph/smoother.h',
     'src/core/localization/localization_dtc_monitor.cc',
     'src/core/localization/localization_dtc_monitor.h',
     'src/core/localization/localization_result.h',
@@ -27,6 +32,8 @@ SOURCES = (
     'src/utils/online_logging.h',
     'scripts/compute_profile_report.py',
     'scripts/diagnose_localization.py',
+    'scripts/localization_log_events.py',
+    'scripts/analyze_localization_health_log.py',
     'scripts/run_sany_lidar_loc.sh',
     'src/core/system/loc_system.cc',
     'src/core/system/loc_system.h',

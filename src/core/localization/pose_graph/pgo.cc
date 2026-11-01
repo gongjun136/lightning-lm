@@ -21,7 +21,7 @@ namespace lightning::loc {
 
 PGO::PGO() : impl_(new PGOImpl), pose_extrapolator_(new PoseExtrapolator) {
     smoother_ = std::make_shared<PoseSmoother>(pgo::pgo_smooth_factor);
-    LOG(INFO) << "smoother factor: " << pgo::pgo_smooth_factor;
+    LOG(INFO) << "event=PGO_SMOOTHER_CONFIG 平滑器系数 factor=" << pgo::pgo_smooth_factor;
 }
 
 PGO::~PGO() = default;
@@ -372,7 +372,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
                              "PGO relative-pose input recovered",
                              std::chrono::milliseconds(500));
     if (relative_pose_queue_empty) {
-        LOG(WARNING) << "PGO received LidarLoc, but is waiting for LO or DR ... ";
+        LOG(WARNING) << "event=PGO_WAIT_RELATIVE_POSE PGO 已收到激光定位，正在等待激光里程计或航位推算";
         return false;
     }
 
@@ -381,7 +381,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     }
 
     if (loc_result.timestamp_ <= static_hold_release_watermark_) {
-        LOG(WARNING) << "drop queued LidarLoc from the parked epoch: t="
+        LOG(WARNING) << "event=PGO_PARKED_EPOCH_DROPPED 丢弃静止保持时期的排队激光定位 t="
                      << std::setprecision(18) << loc_result.timestamp_
                      << ", hold release watermark="
                      << static_hold_release_watermark_;
@@ -395,7 +395,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
 
     // [pgo-reset-watermark-gate]
     if (loc_result.timestamp_ <= impl_->relative_pose_reset_watermark_) {
-        LOG(WARNING) << "drop queued LidarLoc from the pre-reset epoch: t=" << std::setprecision(18)
+        LOG(WARNING) << "event=PGO_OLD_EPOCH_DROPPED 丢弃重置前的排队激光定位 t=" << std::setprecision(18)
                      << loc_result.timestamp_ << ", reset relative-pose watermark="
                      << impl_->relative_pose_reset_watermark_;
         return false;
@@ -459,7 +459,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     }
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << std::setprecision(14) << std::fixed << "PGO received LidarLoc ["
+        LOG(INFO) << std::setprecision(14) << std::fixed << "event=PGO_LIDAR_RECEIVED PGO 收到激光定位 ["
                   << new_frame->lidar_loc_pose_.translation().transpose()
                   << "], t=" << new_frame->timestamp_;
     }
@@ -539,14 +539,14 @@ void PGO::LogWindowState() {
     int idx5 = (window.size() - 1) >= 0 ? (window.size() - 1) : -1;
     boost::format fmt("--- %c --- %c --- %c --- %c --- %c ---");
     std::string lidar_info = idx1 >= 0 ? "info" : "empty";
-    LOG(INFO) << "Show PGO window state: \n"
+    LOG(INFO) << "event=PGO_WINDOW PGO 窗口状态: \n"
               << " ************************************************** \n"
-              << " ** index    : --- 1st --- 2nd --- 3rd --- 4th --- 5th \n"
-              << " ** lidar loc:"
-              << " **   rtk loc:"
-              << " **   rel loc:"
+              << " ** 序号     : --- 第1 --- 第2 --- 第3 --- 第4 --- 第5 \n"
+              << " ** 激光定位:"
+              << " ** RTK 定位:"
+              << " ** 相对定位:"
               << " ** "
-              << " ** // + is valid/good, ? is invalid/bad, W is wrong, G is good \n"
+              << " ** // + 表示有效，? 表示无效，W 表示错误，G 表示正常 \n"
               << " ************************************************** ";
 
     // LOG(INFO) << "PGO received lidar loc ["

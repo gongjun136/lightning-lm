@@ -100,7 +100,7 @@ struct InsLocSystem::Impl {
         gate->Reject(); poses->Clear();
         if (reason != why) {
             events << std::setprecision(16) << node->now().seconds() << ',' << why << '\n';
-            LOG(WARNING) << "INS_ONLY unavailable: " << why;
+            LOG(WARNING) << "INS_ONLY event=INS_UNAVAILABLE 纯惯导定位不可用 detail=" << why;
         }
         reason = why;
         heartbeat->SetState(ever_good ? functional_safety::NodeState::kFault : functional_safety::NodeState::kNotReady);
@@ -256,7 +256,7 @@ struct InsLocSystem::Impl {
         // 阶段 2：预处理并检查点值。
         CloudPtr cloud(new PointCloudType);
         try { preprocessors.at(id)->Process(msg,cloud); }
-        catch (const std::exception& e) { ++cloud_drops; LOG(WARNING) << "INS cloud input: " << e.what(); return; }
+        catch (const std::exception& e) { ++cloud_drops; LOG(WARNING) << "event=INS_CLOUD_FAILED 惯导点云输入处理失败 detail=" << e.what(); return; }
         if (cloud->empty() || std::any_of(cloud->begin(),cloud->end(),[](const auto& p){
             return !p.getVector3fMap().allFinite() || !std::isfinite(p.time) || p.time<0;
         })) { ++cloud_drops; return; }
@@ -486,10 +486,10 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         x.InitClouds(config,yaml);
         // 阶段 7：启动健康检查。
         x.timer=x.node->create_wall_timer(std::chrono::milliseconds(50),[&x]{x.Health();});
-        LOG(INFO) << "INS_ONLY initialized, fixed ENU origin=" << origin[0] << ',' << origin[1]
+        LOG(INFO) << "INS_ONLY event=INS_INITIALIZED 纯惯导定位初始化完成，固定 ENU 原点 origin=" << origin[0] << ',' << origin[1]
                   << " audit=" << dir << " source=CGI_rear_axle no_LIO_no_map_matching";
         return true;
-    } catch (const std::exception& e) { LOG(ERROR) << "ins_only initialization: " << e.what(); return false; }
+    } catch (const std::exception& e) { LOG(ERROR) << "event=INS_INIT_FAILED 纯惯导定位初始化失败 detail=" << e.what(); return false; }
 }
 void InsLocSystem::Spin() { rclcpp::spin(impl_->node); }
 }  // namespace lightning

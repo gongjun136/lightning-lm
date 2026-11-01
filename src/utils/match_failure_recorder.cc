@@ -218,7 +218,7 @@ class MatchFailureRecorder::Impl {
         } catch (const std::exception& e) {
             running = false;
             if (lock_fd >= 0) { close(lock_fd); lock_fd = -1; }
-            ++errors; LOG(ERROR) << "MATCH_FAILURE_CAPTURE start failed: " << e.what(); return false;
+            ++errors; LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_START_FAILED 匹配失败采集启动失败 detail=" << e.what(); return false;
         }
     }
     void Observe(bool accepted) {
@@ -356,8 +356,8 @@ class MatchFailureRecorder::Impl {
         std::uint64_t map_points = 0;
         for (std::size_t i = 0; any_pose && i < map.size; ++i) if (inside(map.point(map.data, i))) ++map_points;
         const std::uint64_t needed = slot.points.size()*24 + map_points*12 + context.config_snapshot.size() + 65536;
-        if (needed > options.event_mb*MiB) { ++map_rejected; last_error = "local map exceeds complete event budget; evidence was not truncated"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE " << last_error; return; }
-        if (!Reserve(needed)) { ++disk_rejected; last_error = "protected evidence/disk budget or minimum free space prevents new capture"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE " << last_error; return; }
+        if (needed > options.event_mb*MiB) { ++map_rejected; last_error = "local map exceeds complete event budget; evidence was not truncated"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_MAP_BUDGET 地图超过完整事件预算，未采集且未截断证据 detail=" << last_error; return; }
+        if (!Reserve(needed)) { ++disk_rejected; last_error = "protected evidence/disk budget or minimum free space prevents new capture"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_DISK_BUDGET 证据保护或磁盘预算限制，无法新增采集 detail=" << last_error; return; }
         const fs::path root(context.directory);
         const std::string name = "match_failure_" + std::to_string(slot.wall) + "_" + std::to_string(getpid()) + "_" + std::to_string(slot.sequence);
         const fs::path temporary = root/("."+name+".partial"), final = root/name;
@@ -448,12 +448,12 @@ class MatchFailureRecorder::Impl {
                     else if (stopping) break;
                 }
                 if (slot) {
-                    try { Save(*slot); } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE writer: " << e.what(); }
+                    try { Save(*slot); } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_WRITE_FAILED 匹配失败证据写入失败 detail=" << e.what(); }
                     std::lock_guard<std::mutex> lock(mutex); slot->points.clear(); slot->state = Slot::kEmpty;
                 }
                 Status();
             }
-        } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE writer stopped: " << e.what(); }
+        } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_WRITER_STOPPED 匹配失败证据写入线程已停止 detail=" << e.what(); }
         running = false;
         try { Status(); } catch (...) { ++errors; }
     }

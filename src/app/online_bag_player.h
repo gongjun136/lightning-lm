@@ -38,7 +38,7 @@ class OnlineBagPlayer {
                 ? lidar_qos_config["depth"].as<size_t>()
                 : 1000;
         if (lidar_qos_depth == 0) {
-            LOG(ERROR) << "system.lidar_qos.depth must be positive";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID system.lidar_qos.depth 必须为正数";
             return false;
         }
         const std::string lidar_qos_reliability =
@@ -52,7 +52,7 @@ class OnlineBagPlayer {
         } else if (lidar_qos_reliability == "best_effort") {
             lidar_qos.best_effort();
         } else {
-            LOG(ERROR) << "system.lidar_qos.reliability must be reliable or best_effort";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID system.lidar_qos.reliability 必须为 reliable 或 best_effort";
             return false;
         }
 
@@ -75,7 +75,7 @@ class OnlineBagPlayer {
             } else if (value == "1") {
                 wheel_speed_observation_enabled = true;
             } else {
-                LOG(ERROR) << "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1";
+                LOG(ERROR) << "event=LOC_CONFIG_INVALID SANY_ENABLE_CAN_OBSERVATION 必须为 0 或 1";
                 return false;
             }
         }
@@ -106,7 +106,7 @@ class OnlineBagPlayer {
         if (multi_lidar) {
             const YAML::Node topics = root["multi_lidar"]["topics"];
             if (!topics || !topics.IsMap()) {
-                LOG(ERROR) << "multi_lidar.topics is required for embedded online playback";
+                LOG(ERROR) << "event=LOC_CONFIG_INVALID 内嵌在线回放需要配置 multi_lidar.topics";
                 return false;
             }
             for (const auto& entry : topics) {
@@ -121,7 +121,7 @@ class OnlineBagPlayer {
                 });
             }
             if (cloud_pubs_.empty()) {
-                LOG(ERROR) << "no multi-lidar PointCloud2 topics configured";
+                LOG(ERROR) << "event=LOC_CONFIG_INVALID 未配置多雷达 PointCloud2 话题";
                 return false;
             }
         } else {
@@ -143,7 +143,7 @@ class OnlineBagPlayer {
                                           });
             }
             if (!cloud_pub_ && !livox_pub_) {
-                LOG(ERROR) << "no single-lidar topic configured for embedded online playback";
+                LOG(ERROR) << "event=LOC_CONFIG_INVALID 未配置内嵌在线回放的单雷达话题";
                 return false;
             }
         }

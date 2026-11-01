@@ -51,13 +51,13 @@ void RosbagIO::Go(int sleep_usec) {
         }
 
         if (lightning::debug::flg_exit) {
-            LOG(INFO) << "bag " << bag_file_ << " exit.";
+            LOG(INFO) << "event=BAG_PLAYBACK 数据回放 bag=" << bag_file_ << " 已退出";
             return;
         }
     }
     // [bag-dispatch-stop]
 
-    LOG(INFO) << "bag " << bag_file_ << " finished.";
+    LOG(INFO) << "event=BAG_PLAYBACK 数据回放 bag=" << bag_file_ << " 已完成";
 }
 
 void RosbagIO::GoRealtime(double playback_rate) {
@@ -90,12 +90,12 @@ void RosbagIO::GoRealtime(double playback_rate) {
         const auto iter = process_func_.find(msg->topic_name);
         if (iter != process_func_.end()) iter->second(msg);
         if (lightning::debug::flg_exit) {
-            LOG(INFO) << "realtime bag " << bag_file_ << " exit.";
+            LOG(INFO) << "event=BAG_REALTIME_PLAYBACK 实时数据回放 bag=" << bag_file_ << " 已退出";
             return;
         }
         // [bag-realtime-clock]
     }
-    LOG(INFO) << "realtime bag " << bag_file_ << " finished.";
+    LOG(INFO) << "event=BAG_REALTIME_PLAYBACK 实时数据回放 bag=" << bag_file_ << " 已完成";
 }
 
 }  // namespace lightning

@@ -81,7 +81,12 @@ class AsyncLogWriter {
         LogRow row;
         row.size = std::min(static_cast<std::size_t>(length), row.text.size());
         row.truncated = row.size < static_cast<std::size_t>(length);
-        if (row.truncated) ++truncated_;
+        if (row.truncated) {
+            // Do not split a UTF-8 character at the bounded record's byte limit.
+            while (row.size && (static_cast<unsigned char>(message[row.size]) & 0xc0) == 0x80)
+                --row.size;
+            ++truncated_;
+        }
         std::memcpy(row.text.data(), message, row.size);
         const bool critical = message[0] == 'W' || message[0] == 'E' || message[0] == 'F';
         queue_.TryPush(std::move(row), critical);

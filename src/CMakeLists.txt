@@ -123,6 +123,8 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_match_failure_birdseye.py)
     add_test(NAME diagnose_localization_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_diagnose_localization.py)
+    add_test(NAME localization_log_language_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_localization_log_events.py)
     add_test(NAME diagnostic_contract_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/check_diagnostic_contract.py)
     add_test(NAME online_logging_slow_sink_test

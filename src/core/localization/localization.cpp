@@ -50,7 +50,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
     lio_ = std::make_shared<LaserMapping>(opt_lio);
     if (!lio_->Init(yaml_path)) {
-        LOG(ERROR) << "failed to init lio";
+        LOG(ERROR) << "event=LIO_INIT_FAILED LIO 初始化失败";
         return false;
     }
 
@@ -68,7 +68,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         if (ui_->Init()) {
             lidar_loc_->SetUI(ui_);
         } else {
-            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            LOG(ERROR) << "event=LOC_UI_INIT_FAILED 三维界面初始化失败，继续无界面运行";
             ui_.reset();
             options_.with_ui_ = false;
         }
@@ -77,7 +77,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     }
 
     if (!lidar_loc_->Init(yaml_path)) {
-        LOG(ERROR) << "failed to initialize lidar localization";
+        LOG(ERROR) << "event=LOC_INIT_FAILED 激光定位初始化失败";
         return false;
     }
 
@@ -98,7 +98,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         ? localization_pgo["covariance_angle_noise_deg_sqrt_sec"].as<double>(2.0) : 2.0;
     if (!std::isfinite(covariance_position_noise) || covariance_position_noise <= 0 ||
         !std::isfinite(covariance_angle_noise) || covariance_angle_noise <= 0) {
-        LOG(ERROR) << "invalid PGO covariance process noise"; return false;
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID PGO 协方差过程噪声无效"; return false;
     }
     pgo_->SetCovarianceProcessNoise(covariance_position_noise, covariance_angle_noise * M_PI / 180.0);
 
@@ -144,7 +144,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
             ? system["online_sensor_queue_size"].as<size_t>()
             : 10000;
     if (sensor_queue_size == 0) {
-        LOG(ERROR) << "system.online_sensor_queue_size must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.online_sensor_queue_size 必须为正数";
         return false;
     }
     sensor_proc_.SetMaxSize(sensor_queue_size);
@@ -159,11 +159,11 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
     if (online_sensor_max_lag_sec_ < 0.0 || online_sensor_resume_lag_sec_ < 0.0 ||
         (online_sensor_max_lag_sec_ > 0.0 &&
          online_sensor_resume_lag_sec_ >= online_sensor_max_lag_sec_)) {
-        LOG(ERROR) << "online sensor lag thresholds must satisfy 0 <= resume < max";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 在线传感器延迟阈值必须满足 0 <= resume < max";
         return false;
     }
     lidar_overload_throttled_ = false;
-    LOG(INFO) << "online sensor queue size=" << sensor_queue_size
+    LOG(INFO) << "event=LOC_SENSOR_QUEUE_CONFIG 在线传感器队列配置 size=" << sensor_queue_size
               << ", lidar overload max_lag_sec=" << online_sensor_max_lag_sec_
               << ", resume_lag_sec=" << online_sensor_resume_lag_sec_;
     // Online localization must operate on the freshest projected scan. A
@@ -176,7 +176,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
             ? system["online_lidar_loc_queue_size"].as<size_t>()
             : default_loc_queue_size;
     if (loc_queue_size == 0) {
-        LOG(ERROR) << "system.online_lidar_loc_queue_size must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.online_lidar_loc_queue_size 必须为正数";
         return false;
     }
     lidar_loc_proc_cloud_.SetMaxSize(loc_queue_size);
@@ -220,7 +220,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         const auto timestamp_decision = live_output_timestamp_gate_.Observe(res.timestamp_);
         if (!timestamp_decision.accepted) {
             std::ostringstream message;
-            message << "Dropped non-monotonic live localization output: timestamp="
+            message << "event=LOC_LIVE_TIMESTAMP_ROLLBACK 丢弃时间戳非递增的实时定位输出 timestamp="
                     << std::setprecision(16) << res.timestamp_
                     << ", last_accepted=" << timestamp_decision.reference_timestamp
                     << ", rollback_sec=" << timestamp_decision.lag_sec;
@@ -279,21 +279,21 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
 
     preprocess_->SetHeightROI(height_max, height_min);
 
-    LOG(INFO) << "lidar_type " << lidar_type;
+    LOG(INFO) << "event=LIDAR_TYPE 雷达类型 lidar_type=" << lidar_type;
     if (lidar_type == 1) {
         preprocess_->SetLidarType(LidarType::AVIA);
-        LOG(INFO) << "Using AVIA Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 AVIA 雷达";
     } else if (lidar_type == 2) {
         preprocess_->SetLidarType(LidarType::VELO32);
-        LOG(INFO) << "Using Velodyne 32 Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 Velodyne 32 线雷达";
     } else if (lidar_type == 3) {
         preprocess_->SetLidarType(LidarType::OUST64);
-        LOG(INFO) << "Using OUST 64 Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 OUST 64 线雷达";
     } else if (lidar_type == 4) {
         preprocess_->SetLidarType(LidarType::ROBOSENSE);
-        LOG(INFO) << "Using OUST 64 Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 OUST 64 线雷达";
     } else {
-        LOG(WARNING) << "unknown lidar_type";
+        LOG(WARNING) << "event=LIDAR_TYPE_UNKNOWN 未知的 lidar_type";
     }
 
     return true;
@@ -721,13 +721,13 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
     if (!throttled && lag_sec >= online_sensor_max_lag_sec_) {
         lidar_overload_throttled_ = true;
         throttled = true;
-        LOG(WARNING) << "sensor queue lag reached " << lag_sec
-                     << " sec; keeping fresh lidar admissible while the bounded queue evicts stale input";
+        LOG(WARNING) << "event=LOC_SENSOR_QUEUE_LAG 传感器队列处理落后 lag_sec=" << lag_sec
+                     << " sec；保留新鲜雷达输入，由有界队列淘汰过期输入";
     } else if (throttled && lag_sec <= online_sensor_resume_lag_sec_) {
         lidar_overload_throttled_ = false;
         throttled = false;
-        LOG(INFO) << "sensor queue lag recovered to " << lag_sec
-                  << " sec; resuming lidar input";
+        LOG(INFO) << "event=LOC_SENSOR_QUEUE_RECOVERED 传感器队列延迟已恢复 lag_sec=" << lag_sec
+                  << " sec；恢复雷达输入";
     }
     debug_event::ReportState("sensor_queue_overload", throttled,
                              "Sensor queue overloaded",
@@ -735,10 +735,10 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
                              std::chrono::seconds(2));
 
     if (throttled) {
-        LOG_EVERY_N(WARNING, 100) << "sensor overload at lidar " << std::setprecision(14)
+        LOG_EVERY_N(WARNING, 100) << "event=LOC_SENSOR_OVERLOAD 雷达输入处理过载 lidar_id=" << std::setprecision(14)
                                   << timestamp << "; lag_sec=" << lag_sec
                                   << ", queue_pending=" << sensor_proc_.PendingCount()
-                                  << ", lidar remains admitted";
+                                  << "，继续接收雷达输入";
     }
     // Never latch into a state that rejects every future lidar frame. The
     // bounded FIFO already removes the oldest stale input under overload.
@@ -894,14 +894,14 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     if (wheel_speed_observed_ && !fresh_wheel_speed &&
         !wheel_timestamp_mismatch_reported_) {
         wheel_timestamp_mismatch_reported_ = true;
-        LOG(WARNING) << "ignore CAN wheel speed: latest CAN-IMU Header delta="
+        LOG(WARNING) << "event=LOC_CAN_SPEED_IGNORED 忽略 CAN 轮速，最新 CAN 与 IMU 消息头时间差 delta="
                      << std::setprecision(14) << wheel_imu_timestamp_delta
                      << " sec, selected_history_age=" << wheel_age
-                     << " sec; no causal sample within " << kMaxWheelSpeedAgeSec
-                     << " sec; using IMU/LIO fallback";
+                     << " sec；在时间窗口内未找到可用历史样本 window=" << kMaxWheelSpeedAgeSec
+                     << " sec；回退至 IMU/LIO";
     } else if (fresh_wheel_speed && wheel_timestamp_mismatch_reported_) {
         wheel_timestamp_mismatch_reported_ = false;
-        LOG(INFO) << "CAN wheel-speed history recovered: selected_history_age="
+        LOG(INFO) << "event=LOC_CAN_SPEED_RECOVERED CAN 轮速历史数据已恢复 selected_history_age="
                   << std::setprecision(14) << wheel_age
                   << " sec, latest CAN-IMU delta=" << wheel_imu_timestamp_delta << " sec";
     }
@@ -948,7 +948,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
             imu_static_hold_active_ = true;
             static_exit_count_ = 0;
             trace_decision(true, fresh_wheel_speed ? "can_stationary" : "imu_stationary");
-            LOG(WARNING) << "enter conservative IMU static hold at " << std::setprecision(14)
+            LOG(WARNING) << "event=LOC_STATIC_HOLD_ENTER 进入保守 IMU 静止保持 timestamp=" << std::setprecision(14)
                          << sample.timestamp << ", lio_speed=" << last_static_lio_speed_
                          << ", wheel_speed="
                          << (fresh_wheel_speed ? wheel_speed_mps : 0.0)
@@ -984,7 +984,7 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
             (imu_motion ? 4u : 0u);
         static const char* reasons[] = {"none", "can", "lio", "can+lio", "imu", "can+imu", "lio+imu", "can+lio+imu"};
         trace_decision(false, reasons[flags]);
-        LOG(WARNING) << "exit conservative IMU static hold at " << std::setprecision(14)
+        LOG(WARNING) << "event=LOC_STATIC_HOLD_EXIT 退出保守 IMU 静止保持 timestamp=" << std::setprecision(14)
                      << sample.timestamp << ", gyro=" << sample.gyro_norm
                      << ", mean_angular_rate=" << mean_angular_rate
                      << ", motion_angular_rate=" << motion_angular_rate
@@ -1062,7 +1062,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
     // [localization-pgo-relocalization-reset]
     if (match_stats.relocalization_accepted) {
         pgo_->Reset();
-        LOG(WARNING) << "reset localization PGO after accepted global relocalization";
+        LOG(WARNING) << "event=LOC_PGO_RESET 重定位接受后重置定位 PGO";
     }
     // [localization-pgo-relocalization-reset]
     // [localization-pgo-stationary-conflict]
@@ -1135,7 +1135,7 @@ void Localization::LidarLocProcCloud(const LidarLocInput& input) {
         auto loc_state = std::make_shared<std_msgs::msg::Int32>();
         loc_state->data = static_cast<int>(res.status_);
         if (!profiling::ReduceNonessentialOverhead()) {
-            LOG(INFO) << "loc_state: " << loc_state->data;
+            LOG(INFO) << "event=LOC_STATE 定位状态 loc_state: " << loc_state->data;
         }
         loc_state_callback_(*loc_state);
     }

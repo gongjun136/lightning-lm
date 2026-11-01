@@ -112,18 +112,18 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
         map_frame::ExportOptions export_options;
         std::string map_frame_error;
         if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
-            LOG(ERROR) << map_frame_error;
+            LOG(ERROR) << "event=BTC_FRAME_INVALID BTC 地图坐标系无效 detail=" << map_frame_error;
             return false;
         }
         map_frame::Metadata package_metadata;
         if (export_options.normalize_start_ground_z &&
             !map_frame::LoadMetadata(map_path, package_metadata, map_frame_error)) {
-            LOG(ERROR) << map_frame_error;
+            LOG(ERROR) << "event=BTC_FRAME_INVALID BTC 地图坐标系无效 detail=" << map_frame_error;
             return false;
         }
         options_.enabled = ReadOr<bool>(config, "enabled", false);
         if (!options_.enabled) {
-            LOG(INFO) << "BTC relocalization is disabled";
+            LOG(INFO) << "event=BTC_DISABLED 已禁用 BTC 重定位";
             return true;
         }
         options_.database_subdirectory =
@@ -134,21 +134,21 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             std::filesystem::path(map_path) / options_.database_subdirectory;
         const std::filesystem::path manifest_path = database_directory / "database.yaml";
         if (!std::filesystem::exists(manifest_path)) {
-            LOG(ERROR) << "BTC relocalization database not found: " << manifest_path;
+            LOG(ERROR) << "event=BTC_DATABASE_MISSING 未找到 BTC 重定位数据库 path=" << manifest_path;
             return false;
         }
 
         const YAML::Node manifest = YAML::LoadFile(manifest_path.string());
         const int schema_version = ReadOr<int>(manifest, "schema_version", 0);
         if (schema_version != 1 && schema_version != 2 && schema_version != 3) {
-            LOG(ERROR) << "unsupported BTC relocalization database schema: " << manifest_path;
+            LOG(ERROR) << "event=BTC_SCHEMA_UNSUPPORTED 不支持的 BTC 重定位数据库版本 path=" << manifest_path;
             return false;
         }
         // 只有启用归一化时才强制核对数据库与地图包的变换引用。
         // [relocalization-btc-map-frame-gate]
         if (export_options.normalize_start_ground_z) {
             if (schema_version < 2) {
-                LOG(ERROR) << "normalized map requires a map-frame-aware BTC database: "
+                LOG(ERROR) << "event=BTC_FRAME_REQUIRED 归一化地图要求 BTC 数据库包含地图坐标系信息 path="
                            << manifest_path;
                 return false;
             }
@@ -156,8 +156,8 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             if (!map_frame::ReadTransformReference(
                     manifest["map_frame"], database_metadata, map_frame_error) ||
                 !map_frame::SameTransform(package_metadata, database_metadata)) {
-                LOG(ERROR) << "BTC database map frame does not match the global map: "
-                           << (map_frame_error.empty() ? "transform mismatch" : map_frame_error);
+                LOG(ERROR) << "event=BTC_FRAME_MISMATCH BTC 数据库与全局地图坐标系不匹配 detail="
+                           << (map_frame_error.empty() ? "坐标变换不匹配" : map_frame_error);
                 return false;
             }
         }
@@ -193,7 +193,7 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             options_.min_btc_score < 0.0 ||
             std::any_of(options_.query_submap_sizes.begin(), options_.query_submap_sizes.end(),
                         [](int size) { return size <= 0; })) {
-            LOG(ERROR) << "invalid BTC relocalization configuration";
+            LOG(ERROR) << "event=BTC_CONFIG_INVALID BTC 重定位配置无效";
             return false;
         }
 
@@ -215,14 +215,14 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             descriptor_config_.similarity_threshold_ < 0.0F ||
             descriptor_config_.similarity_threshold_ > 1.0F ||
             descriptor_config_.icp_threshold_ < 0.0F) {
-            LOG(ERROR) << "invalid BTC relocalization search configuration";
+            LOG(ERROR) << "event=BTC_CONFIG_INVALID BTC 重定位搜索配置无效";
             return false;
         }
         manager_ = STDescManager(descriptor_config_);
 
         const YAML::Node yaml_entries = manifest["entries"];
         if (!yaml_entries || !yaml_entries.IsSequence() || yaml_entries.size() == 0) {
-            LOG(ERROR) << "BTC relocalization database has no entries: " << manifest_path;
+            LOG(ERROR) << "event=BTC_DATABASE_EMPTY BTC 重定位数据库为空 path=" << manifest_path;
             return false;
         }
         entries_.reserve(yaml_entries.size());
@@ -230,19 +230,19 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
             const YAML::Node yaml_entry = yaml_entries[index];
             const int descriptor_id = ReadOr<int>(yaml_entry, "descriptor_id", -1);
             if (descriptor_id != static_cast<int>(index)) {
-                LOG(ERROR) << "BTC descriptor ids must be dense; entry=" << index
+                LOG(ERROR) << "event=BTC_IDS_INVALID BTC 描述子编号必须连续 entry=" << index
                            << ", id=" << descriptor_id;
                 return false;
             }
             if (!yaml_entry["cloud"]) {
-                LOG(ERROR) << "BTC database entry " << index << " is missing its cloud";
+                LOG(ERROR) << "event=BTC_CLOUD_MISSING BTC 数据库条目 entry=" << index << " 缺少点云";
                 return false;
             }
             const std::filesystem::path cloud_path =
                 database_directory / yaml_entry["cloud"].as<std::string>();
             pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
             if (pcl::io::loadPCDFile(cloud_path.string(), *cloud) != 0 || cloud->empty()) {
-                LOG(ERROR) << "failed to load BTC relocalization submap: " << cloud_path;
+                LOG(ERROR) << "event=BTC_SUBMAP_LOAD_FAILED BTC 重定位子图加载失败 path=" << cloud_path;
                 return false;
             }
             std::vector<STD> descriptors;
@@ -257,7 +257,7 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
         manager_.config_setting_.skip_near_num_ = -1;
 
         ready_ = !entries_.empty();
-        LOG(INFO) << "loaded BTC relocalization database: entries=" << entries_.size()
+        LOG(INFO) << "event=BTC_DATABASE_LOADED BTC 重定位数据库加载完成 entries=" << entries_.size()
                   << ", max_query_submap_size=" << options_.query_submap_size
                   << ", query_stride=" << options_.query_stride
                   << ", top_k=" << options_.top_k
@@ -270,7 +270,7 @@ bool BtcRelocalizer::Init(const std::string& config_path, const std::string& map
                   << ", path=" << database_directory;
         return ready_;
     } catch (const std::exception& error) {
-        LOG(ERROR) << "failed to initialize BTC relocalization: " << error.what();
+        LOG(ERROR) << "event=BTC_INIT_FAILED BTC 重定位初始化失败 detail=" << error.what();
         ready_ = false;
         entries_.clear();
         return false;

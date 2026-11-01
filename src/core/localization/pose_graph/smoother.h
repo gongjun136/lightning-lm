@@ -33,7 +33,7 @@ class PoseSmoother {
         UL lock(data_mutex_);
 
         if (!std::isfinite(timestamp) || timestamp <= 0.0 || !std::isfinite(speed_mps)) {
-            LOG(WARNING) << "smoother rejects invalid DR metadata: timestamp="
+            LOG(WARNING) << "event=SMOOTHER_DR_INVALID 平滑器拒绝无效的 DR 元数据 timestamp="
                          << timestamp << ", speed_mps=" << speed_mps;
             debug_event::EmitThrottled(
                 "smoother_invalid_dr_metadata",
@@ -57,7 +57,7 @@ class PoseSmoother {
                     while (dr_queue_.size() > max_size_) dr_queue_.pop_front();
                     return true;
                 }
-                LOG(WARNING) << "smoother rejects non-increasing DR timestamp: "
+                LOG(WARNING) << "event=SMOOTHER_DR_TIMESTAMP 平滑器拒绝非递增的 DR 时间戳 timestamp="
                              << timestamp << " <= " << dr_queue_.back().timestamp;
                 debug_event::EmitThrottled(
                     "smoother_dr_timestamp_rollback",
@@ -76,7 +76,7 @@ class PoseSmoother {
                              smoother_dr_distance_margin_);
             if (distance >= allowed_distance) {
                 /// 无效
-                LOG(WARNING) << "smoother motion is too large: distance=" << distance
+                LOG(WARNING) << "event=SMOOTHER_MOTION_EXCESSIVE 平滑器运动增量过大 distance=" << distance
                              << ", dt=" << dt << ", speed_mps=" << reference_speed
                              << ", allowed_distance=" << allowed_distance;
                 std::ostringstream message;
@@ -135,7 +135,7 @@ class PoseSmoother {
         double dn = (output_pose_.translation() - pose.translation()).head<2>().norm();
         if (dn > smoother_trans_limit_) {
             // 平滑器差别太大，直接跳过去并重置
-            LOG(WARNING) << "smoother is too large, jump to target: "
+            LOG(WARNING) << "event=SMOOTHER_JUMP 平滑增量过大，直接跳至目标 target="
                          << (output_pose_.translation() - pose.translation()).transpose()
                          << ", given: " << pose.translation().transpose()
                          << ", output:" << output_pose_.translation().transpose();
@@ -148,7 +148,7 @@ class PoseSmoother {
             return;
         } else if (dn > smoother_trans_limit2_) {
             // 快速收敛到正确位姿
-            LOG(INFO) << "smoother factor set to 0.2";
+            LOG(INFO) << "event=SMOOTHER_FACTOR 平滑器系数已设为 0.2";
             smooth_factor_ = 0.2;
         } else {
             // 回到默认值

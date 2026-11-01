@@ -17,6 +17,14 @@ int main(int argc, char** argv) {
     const bool flood = argc > 1;
     const auto start = std::chrono::steady_clock::now();
     const std::string mode = argc > 1 ? argv[1] : "";
+    if (mode == "utf8") {
+        LOG(INFO) << "event=LOC_MATCH_FAILED 激光定位匹配失败 map_checked=1 map_overlap=0.72";
+        std::string message;
+        for (int i = 0; i < 3000; ++i) message += "中";
+        for (int i = 0; i < 3; ++i)
+            LOG(WARNING) << "event=TEST_UTF8_LONG 中文长日志 " << std::string(i, 'x') << message;
+        return 0;
+    }
     if (mode.rfind("profile", 0) == 0) {
         const bool many = mode == "profile_flood";
         for (int i = 0; i < (many ? 10000 : 25); ++i) {

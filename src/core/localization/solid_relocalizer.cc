@@ -191,7 +191,7 @@ bool SolidRelocalizer::BuildDatabase(const std::string& config_path,
         const YAML::Node source_manifest = YAML::LoadFile(source_manifest_path.string());
         const YAML::Node source_entries = source_manifest["entries"];
         if (!source_entries || !source_entries.IsSequence() || source_entries.size() == 0) {
-            LOG(ERROR) << "BTC source database has no entries: " << source_manifest_path;
+            LOG(ERROR) << "event=SOLID_SOURCE_EMPTY BTC 源数据库为空 path=" << source_manifest_path;
             return false;
         }
 
@@ -205,19 +205,19 @@ bool SolidRelocalizer::BuildDatabase(const std::string& config_path,
         for (std::size_t index = 0; index < source_entries.size(); ++index) {
             const YAML::Node source_entry = source_entries[index];
             if (!source_entry["cloud"] || !source_entry["pose_xyzw"]) {
-                LOG(ERROR) << "invalid BTC source entry " << index;
+                LOG(ERROR) << "event=SOLID_SOURCE_INVALID BTC 源数据库条目无效 entry=" << index;
                 return false;
             }
             const fs::path cloud_path =
                 source_directory / source_entry["cloud"].as<std::string>();
             pcl::PointCloud<pcl::PointXYZI> cloud;
             if (pcl::io::loadPCDFile(cloud_path.string(), cloud) != 0 || cloud.empty()) {
-                LOG(ERROR) << "failed to load SOLiD source cloud: " << cloud_path;
+                LOG(ERROR) << "event=SOLID_SOURCE_CLOUD_FAILED SOLiD 源点云加载失败 path=" << cloud_path;
                 return false;
             }
             const auto descriptor = engine.Compute(ConvertCloud(cloud));
             if (!descriptor) {
-                LOG(ERROR) << "failed to compute SOLiD descriptor for " << cloud_path;
+                LOG(ERROR) << "event=SOLID_DESCRIPTOR_FAILED SOLiD 描述子计算失败 path=" << cloud_path;
                 return false;
             }
             YAML::Node entry;
@@ -239,32 +239,32 @@ bool SolidRelocalizer::BuildDatabase(const std::string& config_path,
         std::error_code error;
         fs::create_directories(output_directory, error);
         if (error) {
-            LOG(ERROR) << "failed to create SOLiD database directory: " << error.message();
+            LOG(ERROR) << "event=SOLID_DATABASE_DIR_FAILED SOLiD 数据库目录创建失败 detail=" << error.message();
             return false;
         }
         const fs::path manifest_path = output_directory / "database.yaml";
         const fs::path temporary_path = output_directory / "database.yaml.tmp";
         std::ofstream stream(temporary_path);
         if (!stream) {
-            LOG(ERROR) << "failed to open SOLiD manifest: " << temporary_path;
+            LOG(ERROR) << "event=SOLID_MANIFEST_OPEN_FAILED SOLiD 清单打开失败 path=" << temporary_path;
             return false;
         }
         stream << std::setprecision(17) << manifest;
         stream.close();
         if (!stream) {
-            LOG(ERROR) << "failed to write SOLiD manifest: " << temporary_path;
+            LOG(ERROR) << "event=SOLID_MANIFEST_WRITE_FAILED SOLiD 清单写入失败 path=" << temporary_path;
             return false;
         }
         fs::rename(temporary_path, manifest_path, error);
         if (error) {
-            LOG(ERROR) << "failed to publish SOLiD manifest: " << error.message();
+            LOG(ERROR) << "event=SOLID_MANIFEST_PUBLISH_FAILED SOLiD 清单发布失败 detail=" << error.message();
             return false;
         }
-        LOG(INFO) << "saved SOLiD relocalization database: entries=" << entries.size()
+        LOG(INFO) << "event=SOLID_DATABASE_SAVED SOLiD 重定位数据库已保存 entries=" << entries.size()
                   << ", path=" << manifest_path;
         return true;
     } catch (const std::exception& error) {
-        LOG(ERROR) << "failed to build SOLiD database: " << error.what();
+        LOG(ERROR) << "event=SOLID_DATABASE_BUILD_FAILED SOLiD 数据库构建失败 detail=" << error.what();
         return false;
     }
 }
@@ -292,8 +292,8 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         options_.compute_backend =
             ReadOr<std::string>(solid, "compute_backend", options_.compute_backend);
         if (options_.compute_backend != "cpu" && options_.compute_backend != "auto") {
-            LOG(ERROR) << "SOLiD compute_backend=" << options_.compute_backend
-                       << " is unavailable in this build";
+            LOG(ERROR) << "event=SOLID_BACKEND_UNAVAILABLE SOLiD 计算后端 compute_backend=" << options_.compute_backend
+                       << " 在本次构建中不可用";
             return false;
         }
         if (solid && solid["query_submap_sizes"]) {
@@ -352,7 +352,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         compute_budget.solid_icp_workers = options_.icp_workers;
         std::string compute_budget_error;
         if (!compute::LoadComputeBudget(root, compute_budget, &compute_budget_error)) {
-            LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+            LOG(ERROR) << "event=LOC_COMPUTE_CONFIG_INVALID 算力预算配置无效 detail=" << compute_budget_error;
             return false;
         }
         options_.icp_workers = compute_budget.solid_icp_workers;
@@ -361,7 +361,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         if (!threading::ParseCpuList(compute_budget.solid_cpu_affinity,
                                      options_.icp_cpu_affinity,
                                      &affinity_error)) {
-            LOG(ERROR) << "invalid SOLiD worker CPU affinity: " << affinity_error;
+            LOG(ERROR) << "event=SOLID_AFFINITY_INVALID SOLiD 工作线程 CPU 亲和性无效 detail=" << affinity_error;
             return false;
         }
         if (solid && solid["icp_yaw_hypothesis_offsets_deg"]) {
@@ -392,14 +392,14 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             std::any_of(options_.query_submap_sizes.begin(),
                         options_.query_submap_sizes.end(),
                         [](int size) { return size <= 0; })) {
-            LOG(ERROR) << "invalid SOLiD relocalization configuration";
+            LOG(ERROR) << "event=SOLID_CONFIG_INVALID SOLiD 重定位配置无效";
             return false;
         }
         std::string kiss_options_error;
         if (options_.coarse_registration_backend == "kiss_matcher" &&
             !KissMatcherRegistration::ValidateOptions(
                 options_.kiss_registration, &kiss_options_error)) {
-            LOG(ERROR) << "invalid SOLiD+KISS registration configuration: "
+            LOG(ERROR) << "event=SOLID_CONFIG_INVALID SOLiD+KISS 配准配置无效 detail="
                        << kiss_options_error;
             return false;
         }
@@ -409,13 +409,13 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         const std::filesystem::path manifest_path = database_directory / "database.yaml";
         const YAML::Node manifest = YAML::LoadFile(manifest_path.string());
         if (ReadOr<int>(manifest, "schema_version", 0) != 1) {
-            LOG(ERROR) << "unsupported SOLiD database schema: " << manifest_path;
+            LOG(ERROR) << "event=SOLID_SCHEMA_UNSUPPORTED 不支持的 SOLiD 数据库版本 path=" << manifest_path;
             return false;
         }
         map_frame::ExportOptions export_options;
         std::string map_frame_error;
         if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
-            LOG(ERROR) << map_frame_error;
+            LOG(ERROR) << "event=SOLID_FRAME_INVALID SOLiD 地图坐标系无效 detail=" << map_frame_error;
             return false;
         }
         if (export_options.normalize_start_ground_z) {
@@ -425,7 +425,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                 !map_frame::ReadTransformReference(
                     manifest["map_frame"], database_metadata, map_frame_error) ||
                 !map_frame::SameTransform(package_metadata, database_metadata)) {
-                LOG(ERROR) << "SOLiD database map frame mismatch: " << map_frame_error;
+                LOG(ERROR) << "event=SOLID_FRAME_MISMATCH SOLiD 数据库地图坐标系不匹配 detail=" << map_frame_error;
                 return false;
             }
         }
@@ -433,7 +433,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
         descriptor_engine_ = SolidDescriptorEngine(descriptor_options_);
         const YAML::Node yaml_entries = manifest["entries"];
         if (!yaml_entries || !yaml_entries.IsSequence() || yaml_entries.size() == 0) {
-            LOG(ERROR) << "SOLiD database has no entries: " << manifest_path;
+            LOG(ERROR) << "event=SOLID_DATABASE_EMPTY SOLiD 数据库为空 path=" << manifest_path;
             return false;
         }
         entries_.reserve(yaml_entries.size());
@@ -441,7 +441,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
             const YAML::Node yaml_entry = yaml_entries[index];
             if (ReadOr<int>(yaml_entry, "descriptor_id", -1) !=
                 static_cast<int>(index)) {
-                LOG(ERROR) << "SOLiD descriptor ids must be dense";
+                LOG(ERROR) << "event=SOLID_IDS_INVALID SOLiD 描述子编号必须连续";
                 return false;
             }
             SolidDescriptor descriptor;
@@ -464,7 +464,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                 nullptr, nullptr});
         }
         ready_ = !entries_.empty();
-        LOG(INFO) << "loaded SOLiD relocalization database: entries=" << entries_.size()
+        LOG(INFO) << "event=SOLID_DATABASE_LOADED SOLiD 重定位数据库加载完成 entries=" << entries_.size()
                   << ", query_sizes=" << options_.query_submap_sizes.front() << ".."
                   << options_.query_submap_sizes.back()
                   << ", retrieval_pool_size=" << options_.retrieval_pool_size
@@ -483,7 +483,7 @@ bool SolidRelocalizer::Init(const std::string& config_path,
                   << ", compute_backend=cpu, path=" << manifest_path;
         return ready_;
     } catch (const std::exception& error) {
-        LOG(ERROR) << "failed to initialize SOLiD relocalization: " << error.what();
+        LOG(ERROR) << "event=SOLID_INIT_FAILED SOLiD 重定位初始化失败 detail=" << error.what();
         entries_.clear();
         ready_ = false;
         return false;
@@ -555,7 +555,7 @@ bool SolidRelocalizer::RefineCandidateWithIcp(
         entry.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>);
         if (pcl::io::loadPCDFile(entry.cloud_path, *entry.cloud) != 0 ||
             entry.cloud->empty()) {
-            LOG(ERROR) << "failed to load SOLiD ICP cloud: " << entry.cloud_path;
+            LOG(ERROR) << "event=SOLID_CLOUD_LOAD_FAILED SOLiD ICP 点云加载失败 path=" << entry.cloud_path;
             entry.cloud.reset();
             return false;
         }
@@ -811,7 +811,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             entry.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>);
             if (pcl::io::loadPCDFile(entry.cloud_path, *entry.cloud) != 0 ||
                 entry.cloud->empty()) {
-                LOG(ERROR) << "failed to load SOLiD ICP cloud: " << entry.cloud_path;
+                LOG(ERROR) << "event=SOLID_CLOUD_LOAD_FAILED SOLiD ICP 点云加载失败 path=" << entry.cloud_path;
                 entry.cloud.reset();
             }
             if (options_.coarse_registration_backend != "kiss_matcher" ||
@@ -823,7 +823,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
             const CloudPtr target(new PointCloudType(ConvertCloud(*entry.cloud)));
             std::string target_error;
             if (!entry.kiss_registration->SetTarget(target, &target_error)) {
-                LOG(ERROR) << "failed to build SOLiD+KISS target: candidate="
+                LOG(ERROR) << "event=SOLID_TARGET_BUILD_FAILED SOLiD+KISS 目标构建失败 candidate="
                            << candidate.candidate_id
                            << ", error=" << target_error;
                 entry.kiss_registration.reset();
@@ -858,7 +858,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
                         new PointCloudType(ConvertCloud(*query.second)));
                     if (!preparer->PrepareSource(
                             converted_query, prepared, &prepare_error)) {
-                        LOG(WARNING) << "failed to prepare SOLiD+KISS query: "
+                        LOG(WARNING) << "event=SOLID_QUERY_PREPARE_FAILED SOLiD+KISS 查询准备失败 "
                                      << "query_frames=" << query.first
                                      << ", error=" << prepare_error;
                         continue;
@@ -921,7 +921,7 @@ std::optional<RelocalizationResult> SolidRelocalizer::AddFrame(
                         options_.icp_worker_nice, options_.icp_cpu_affinity,
                         &scheduling_error) &&
                     !scheduling_warning_logged.exchange(true)) {
-                    LOG(WARNING) << "failed to apply SOLiD worker scheduling policy: "
+                    LOG(WARNING) << "event=SOLID_SCHEDULING_FAILED SOLiD 工作线程调度策略应用失败 detail="
                                  << scheduling_error;
                 }
                 for (std::size_t index = worker; index < icp_tasks.size();

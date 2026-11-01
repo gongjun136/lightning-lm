@@ -13,26 +13,26 @@ namespace lightning {
 std::map<std::string, Timer::TimerRecord> Timer::records_;
 
 void Timer::PrintAll() {
-    LOG(INFO) << (">>> ===== Printing run time =====");
+    LOG(INFO) << (">>> ===== 运行耗时统计 =====");
     for (auto& r : records_) {
         auto& rec = r.second.time_usage_in_ms_;
         std::sort(rec.begin(), rec.end());
 
-        LOG(INFO) << "> [" << r.first
+        LOG(INFO) << "耗时统计 > [" << r.first
                   << "] average time usage: " << std::accumulate(rec.begin(), rec.end(), 0.0) / double(rec.size())
                   << " ms, med: " << rec[rec.size() * 0.5] << " 95%: " << rec[rec.size() * 0.95]
                   << ", called times : " << r.second.time_usage_in_ms_.size();
     }
-    LOG(INFO) << ">>> ===== Printing run time end =====";
+    LOG(INFO) << ">>> ===== 运行耗时统计结束 =====";
 }
 
 void Timer::DumpIntoFile(const std::string& file_name) {
     std::ofstream ofs(file_name, std::ios::out);
     if (!ofs.is_open()) {
-        LOG(ERROR) << "Failed to open file: " << file_name;
+        LOG(ERROR) << "event=TIMER_FILE_OPEN_FAILED 无法打开计时文件 path=" << file_name;
         return;
     } else {
-        LOG(INFO) << "Dump Time Records into file: " << file_name;
+        LOG(INFO) << "event=TIMER_RECORDS_SAVED 计时记录已写入 path=" << file_name;
     }
 
     size_t max_length = 0;

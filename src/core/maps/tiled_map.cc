@@ -49,7 +49,7 @@ bool TiledMap::ConvertFromFullPCD(CloudPtr map, const SE3& start_pose, const std
 }
 
 void TiledMap::SaveToBin(bool only_dynamic) {
-    LOG(INFO) << "map is saved to " << options_.map_path_ << ", sz: " << static_chunks_.size();
+    LOG(INFO) << "event=MAP_SAVED 地图已保存 path=" << options_.map_path_ << ", sz: " << static_chunks_.size();
 
     // 阶段 1：静态保存分支。
     if (!only_dynamic) {
@@ -97,11 +97,11 @@ bool TiledMap::LoadMapIndex() {
     // 阶段 1：打开索引并准备容器。
     std::ifstream fin(options_.map_path_ + "/index.txt");
     if (!fin) {
-        LOG(ERROR) << "cannot load map index from: " << options_.map_path_;
+        LOG(ERROR) << "event=MAP_INDEX_LOAD_FAILED 地图索引加载失败 path=" << options_.map_path_;
         return false;
     }
 
-    LOG(INFO) << "loading maps";
+    LOG(INFO) << "event=MAP_LOADING 正在加载地图";
     ClearMap();
 
     bool first_line = true;
@@ -172,7 +172,7 @@ bool TiledMap::LoadMapIndex() {
                 // 看是否有该栅格的动态图层
                 std::string dyn_filename = options_.map_path_ + "/" + std::to_string(id) + "_dyn.pcd";
                 if (PathExists(dyn_filename)) {
-                    LOG(INFO) << "load dynamic chunk: " << dyn_filename;
+                    LOG(INFO) << "event=MAP_DYNAMIC_CHUNK_LOAD 加载动态地图块 chunk=" << dyn_filename;
                     auto dyn_chunk = std::make_shared<MapChunk>(id, grid, dyn_filename);
                     dynamic_chunks_.emplace(grid, dyn_chunk);
 
@@ -185,7 +185,7 @@ bool TiledMap::LoadMapIndex() {
         }
     }
 
-    LOG(INFO) << "loaded chunks: " << static_chunks_.size() << ", fps: " << func_points_.size();
+    LOG(INFO) << "event=MAP_CHUNKS_LOADED 地图块加载完成 count=" << static_chunks_.size() << ", fps: " << func_points_.size();
 
     fin.close();
 
@@ -229,7 +229,7 @@ bool TiledMap::LoadMapIndex() {
             iter->second.polygon_.emplace_back(cv::Point2f(pos[0], pos[1]));
         }
     }
-    LOG(INFO) << "dynamic polygons: " << dynamic_polygon_.size();
+    LOG(INFO) << "event=MAP_DYNAMIC_POLYGONS 动态区域多边形 count=" << dynamic_polygon_.size();
 
     chunk_id_++;
 
@@ -497,7 +497,7 @@ void TiledMap::ResetDynamicCloud() {
             Vec2i grid = it->second;
             std::string dyn_filename = options_.map_path_ + "/" + std::to_string(id) + "_dyn.pcd";
             if (PathExists(dyn_filename)) {
-                LOG(INFO) << "reset dynamic chunk: " << dyn_filename;
+                LOG(INFO) << "event=MAP_DYNAMIC_CHUNK_RESET 重置动态地图块 chunk=" << dyn_filename;
                 auto dyn_chunk = std::make_shared<MapChunk>(id, grid, dyn_filename);
                 dynamic_chunks_.emplace(grid, dyn_chunk);
 
@@ -510,7 +510,7 @@ void TiledMap::ResetDynamicCloud() {
         }
 
         if (init_dy_size > 0) {
-            LOG(INFO) << "reset dynamic map success, load size: " << init_dy_size;
+            LOG(INFO) << "event=MAP_DYNAMIC_RESET 动态地图重置成功 size=" << init_dy_size;
         }
     }
 

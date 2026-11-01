@@ -76,7 +76,7 @@ bool PGOImpl::Reset() {
                  << " active_vertices=" << optimizer_->ActiveVertices().size()
                  << " active_edges=" << optimizer_->ActiveEdges().size()
                  << " accumulated_frame_id=" << accumulated_frame_id_;
-    LOG(WARNING) << "PGO is reset";
+    LOG(WARNING) << "event=PGO_RESET PGO 已重置";
     // [pgo-reset-watermark]
     relative_pose_reset_watermark_ = -1.0;
     if (!dr_pose_queue_.empty()) {
@@ -128,7 +128,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     if (last_frame_ != nullptr) {
         const double adjacent_dalta_t = pgo_frame->timestamp_ - last_frame_->timestamp_;
         if (adjacent_dalta_t < 0.) {
-            LOG(WARNING) << "PGO received pgoframe, however timestamp rollback for " << adjacent_dalta_t << "senonds!";
+            LOG(WARNING) << "event=PGO_TIMESTAMP_ROLLBACK PGO 帧时间戳回退 duration=" << adjacent_dalta_t << " 秒";
             return false;
         }
         pgo_frame->lidar_loc_delta_t_ = adjacent_dalta_t;
@@ -136,7 +136,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     // [pgo-frame-time-check]
 
     if (debug_) {
-        LOG(INFO) << "inserting pgo frame, it's timestamp is " << std::setprecision(18) << pgo_frame->timestamp_;
+        LOG(INFO) << "event=PGO_FRAME_INSERT 插入 PGO 帧 timestamp=" << std::setprecision(18) << pgo_frame->timestamp_;
     }
 
     // 阶段 2：补齐并验证观测。
@@ -148,7 +148,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     bool interp_dr_success = AssignDRPoseIfNeeded(pgo_frame);
     const profiling::TimingSample assign_timing = assign_profile_timer.Stop();
     if (!interp_lio_success && !interp_dr_success) {
-        LOG(ERROR) << "PGO received pgo frame, but assign relative pose failed!";
+        LOG(ERROR) << "event=PGO_RELATIVE_POSE_FAILED PGO 无法为收到的帧获取相对位姿";
         debug_event::EmitThrottled(
             "pgo_relative_pose_assignment_failed",
             "PGO could not assign a relative pose to an optimization frame",
@@ -159,8 +159,8 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
     is_in_map_ = pgo_frame->lidar_loc_set_ && pgo_frame->lidar_loc_valid_;
     if (!is_in_map_) {
         //
-        LOG(ERROR) << "PGO received PGOFrame with lidar_loc_set_(" << pgo_frame->lidar_loc_set_
-                   << "), lidar_loc_valid_(" << pgo_frame->lidar_loc_valid_ << "); Reject It!";
+        LOG(ERROR) << "event=PGO_FRAME_REJECTED 拒绝无有效激光定位的 PGO 帧 lidar_loc_set_(" << pgo_frame->lidar_loc_set_
+                   << "), lidar_loc_valid_(" << pgo_frame->lidar_loc_valid_ << ")";
         return false;
     }
     // [pgo-frame-observation-check]
@@ -273,10 +273,10 @@ bool PGOImpl::AssignLidarOdomPoseIfNeeded(std::shared_ptr<PGOFrame> frame) {
 
         } else {
             // lidarodom 不见得一定比 lidarloc 快。
-            LOG(WARNING) << "PGOFrame (frame_id " << frame->frame_id_ << ") Interpolate on lidarOdom Failed!";
-            LOG(WARNING) << "PGOFrame time: " << std::fixed << std::setprecision(18) << frame->timestamp_;
+            LOG(WARNING) << "event=PGO_INTERPOLATION_FAILED PGO 帧插值失败 frame_id=" << frame->frame_id_ << " 激光里程计插值失败";
+            LOG(WARNING) << "event=PGO_FRAME_TIME PGO 帧时间 timestamp=" << std::fixed << std::setprecision(18) << frame->timestamp_;
             if (!lidar_odom_pose_queue_.empty()) {
-                LOG(WARNING) << "latest lidarOdom time: " << lidar_odom_pose_queue_.back().timestamp_;
+                LOG(WARNING) << "event=PGO_LO_TIME 最新激光里程计时间 timestamp=" << lidar_odom_pose_queue_.back().timestamp_;
             }
             return false;
         }
@@ -313,7 +313,7 @@ bool PGOImpl::AssignDRPoseIfNeeded(std::shared_ptr<PGOFrame> frame) {
             return true;
         } else {
             // DR理论上应该比 lidarloc 快。
-            LOG(WARNING) << "PGOFrame (frame_id" << frame->frame_id_ << ") Interpolate on DR Failed!";
+            LOG(WARNING) << "event=PGO_INTERPOLATION_FAILED PGO 帧插值失败 frame_id=" << frame->frame_id_ << " 航位推算插值失败";
             return false;
         }
     } else {
@@ -346,7 +346,7 @@ bool PGOImpl::RunOptimization() {
     // }
 
     if (debug_) {
-        LOG(INFO) << "Run pose graph optimization: ";
+        LOG(INFO) << "event=PGO_OPTIMIZING 执行位姿图优化 ";
     }
 
     // 构建当前优化器使用的位姿图。
@@ -615,13 +615,13 @@ void PGOImpl::RemoveOutliers() {
             auto frame = frames_by_id_.find(e->GetVertex(0)->GetId())->second;
 
             if (debug_) {
-                LOG(INFO) << "frame " << frame->frame_id_ << " has outlier gps, chi2 = " << e->Chi2() << " > "
+                LOG(INFO) << "event=PGO_GPS_CHECK 帧 id=" << frame->frame_id_ << " 的 GPS 为外点 chi2 = " << e->Chi2() << " > "
                           << e->GetRobustKernel()->Delta();
             }
         } else {
             auto frame = frames_by_id_.find(e->GetVertex(0)->GetId())->second;
             if (debug_) {
-                LOG(INFO) << "frame " << frame->frame_id_ << " has inlier gps, chi2 = " << e->Chi2() << " < "
+                LOG(INFO) << "event=PGO_GPS_CHECK 帧 id=" << frame->frame_id_ << " 的 GPS 为内点 chi2 = " << e->Chi2() << " < "
                           << e->GetRobustKernel()->Delta();
             }
             e->SetRobustKernel(nullptr);
@@ -634,10 +634,10 @@ void PGOImpl::UpdatePoseGraphState() {}
 void PGOImpl::CollectOptimizationStatistics() {
     /// 打印必要信息
     if (debug_) {
-        LOG(INFO) << std::string("LidarLoc       -- ") + print_info(lidar_loc_edges_, options_.lidar_loc_outlier_th);
-        LOG(INFO) << std::string("LidarOdom      -- ") + print_info(lidar_odom_edges_);
-        LOG(INFO) << std::string("DR             -- ") + print_info(dr_edges_);
-        LOG(INFO) << std::string("Marginal Prior -- ") + print_info(prior_edges_);
+        LOG(INFO) << std::string("激光定位约束 -- ") + print_info(lidar_loc_edges_, options_.lidar_loc_outlier_th);
+        LOG(INFO) << std::string("激光里程计约束 -- ") + print_info(lidar_odom_edges_);
+        LOG(INFO) << std::string("航位推算约束 -- ") + print_info(dr_edges_);
+        LOG(INFO) << std::string("边缘化先验约束 -- ") + print_info(prior_edges_);
     }
 
     // 把滑窗中最新帧的信息更新到result中，在需要时输出到外部

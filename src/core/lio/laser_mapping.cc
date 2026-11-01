@@ -47,7 +47,7 @@ namespace lightning {
  */
 bool LaserMapping::Init(const std::string &config_yaml) {
     // 阶段 1：读取并验证运行配置。
-    LOG(INFO) << "init laser mapping from " << config_yaml;
+    LOG(INFO) << "event=LIO_INIT 开始初始化激光惯性前端 config=" << config_yaml;
     if (!LoadParamsFromYAML(config_yaml)) {
         return false;
     }
@@ -80,10 +80,10 @@ bool LaserMapping::Init(const std::string &config_yaml) {
                                    last_lidar_filter_wheel_timestamp_, false, "lio_predict");
     });
 
-    LOG(INFO) << "ESKF lidar velocity gate=" << max_update_velocity_step_
+    LOG(INFO) << "event=LIO_ESKF_CONFIG ESKF 激光速度门限 gate=" << max_update_velocity_step_
               << " m/s, adaptive velocity propagation=" << adaptive_velocity_propagation_
               << ", point covariance model=" << (point_noise_enabled_ ? "enabled" : "disabled");
-    LOG(INFO) << "wheel-speed DR soft observation="
+    LOG(INFO) << "event=LIO_WHEEL_OBSERVATION 轮速 DR 软观测 observation="
               << (wheel_speed_dr_config_.enabled ? "enabled" : "disabled")
               << ", base_std=" << wheel_speed_dr_config_.base_std_mps
               << " m/s, max_age=" << wheel_speed_dr_config_.max_age_sec << " sec";
@@ -104,7 +104,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         std::min<unsigned int>(hardware_threads == 0 ? 1 : hardware_threads, 128));
     std::string compute_budget_error;
     if (!compute::LoadComputeBudget(yaml, compute_budget, &compute_budget_error)) {
-        LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+        LOG(ERROR) << "event=LOC_COMPUTE_CONFIG_INVALID 算力预算配置无效 detail=" << compute_budget_error;
         return false;
     }
     lio_parallel_threads_ = compute_budget.lio_threads;
@@ -128,7 +128,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         }
         if (!std::isfinite(preprocess_->LivoxPointTimeScale()) ||
             preprocess_->LivoxPointTimeScale() <= 0.0) {
-            LOG(ERROR) << "invalid livox_point_time_scale";
+            LOG(ERROR) << "event=LIO_CONFIG_INVALID livox_point_time_scale 无效";
             return false;
         }
         lidar_type = yaml["fasterlio"]["lidar_type"].as<int>();
@@ -191,7 +191,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             velocity_innovation_enable_threshold_ <= velocity_innovation_disable_threshold_ ||
             velocity_propagation_max_active_updates_ < 0 ||
             velocity_propagation_cooldown_updates_ < 0) {
-            LOG(ERROR) << "invalid adaptive velocity propagation thresholds";
+            LOG(ERROR) << "event=LIO_CONFIG_INVALID 自适应速度递推阈值无效";
             return false;
         }
         skip_lidar_num_ = yaml["fasterlio"]["skip_lidar_num"].as<int>();
@@ -235,7 +235,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
                 init_options.min_mean_acc_norm < 0.0 ||
                 init_options.max_mean_acc_norm < init_options.min_mean_acc_norm ||
                 !std::isfinite(init_options.initial_yaw_deg)) {
-                LOG(ERROR) << "invalid imu_initialization configuration";
+                LOG(ERROR) << "event=LIO_CONFIG_INVALID imu_initialization 配置无效";
                 return false;
             }
             p_imu_->SetInitializationOptions(init_options);
@@ -300,31 +300,31 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
             wheel_speed_dr_config_.torque_reference_nm <= 0.0 ||
             wheel_speed_dr_config_.torque_std_scale < 0.0 ||
             wheel_speed_dr_config_.max_velocity_step_mps <= 0.0) {
-            LOG(ERROR) << "invalid wheel-speed DR observation configuration";
+            LOG(ERROR) << "event=LIO_CONFIG_INVALID 轮速 DR 观测配置无效";
             return false;
         }
 
     } catch (...) {
-        LOG(ERROR) << "bad conversion";
+        LOG(ERROR) << "event=LIO_CONFIG_INVALID 配置值类型转换失败";
         return false;
     }
 
-    LOG(INFO) << "lidar_type " << lidar_type;
+    LOG(INFO) << "event=LIDAR_TYPE 雷达类型 lidar_type=" << lidar_type;
     if (lidar_type == 1) {
         preprocess_->SetLidarType(LidarType::AVIA);
-        LOG(INFO) << "Using AVIA Lidar, point timestamp scale "
+        LOG(INFO) << "event=LIDAR_TYPE 使用 AVIA 雷达，点时间戳比例 scale="
                   << preprocess_->LivoxPointTimeScale();
     } else if (lidar_type == 2) {
         preprocess_->SetLidarType(LidarType::VELO32);
-        LOG(INFO) << "Using Velodyne 32 Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 Velodyne 32 线雷达";
     } else if (lidar_type == 3) {
         preprocess_->SetLidarType(LidarType::OUST64);
-        LOG(INFO) << "Using OUST 64 Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 OUST 64 线雷达";
     } else if (lidar_type == 4) {
         preprocess_->SetLidarType(LidarType::ROBOSENSE);
-        LOG(INFO) << "Using RoboSense Lidar";
+        LOG(INFO) << "event=LIDAR_TYPE 使用 RoboSense 雷达";
     } else {
-        LOG(WARNING) << "unknown lidar_type";
+        LOG(WARNING) << "event=LIDAR_TYPE_UNKNOWN 未知的 lidar_type";
         return false;
     }
 
@@ -337,7 +337,7 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     } else if (ivox_nearby_type == 26) {
         ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY26;
     } else {
-        LOG(WARNING) << "unknown ivox_nearby_type, use NEARBY18";
+        LOG(WARNING) << "event=LIO_NEIGHBORHOOD_FALLBACK 未知的 ivox_nearby_type，使用 NEARBY18";
         ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY18;
     }
 
@@ -355,31 +355,31 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
 
     std::string multi_lidar_error;
     if (!LoadMultiLidarConfig(yaml, multi_lidar_config_, &multi_lidar_error)) {
-        LOG(ERROR) << "invalid multi-lidar configuration: " << multi_lidar_error;
+        LOG(ERROR) << "event=LIO_CONFIG_INVALID 多雷达配置无效 detail=" << multi_lidar_error;
         return false;
     }
     if (multi_lidar_config_.enabled) {
         multi_lidar_assembler_.Reset(multi_lidar_config_);
-        LOG(INFO) << "multi-lidar frontend enabled with " << multi_lidar_config_.lidars.size()
-                  << " sensors, primary id=" << multi_lidar_config_.primary_lidar_id
+        LOG(INFO) << "event=LIO_MULTI_LIDAR 已启用多雷达前端，雷达数量=" << multi_lidar_config_.lidars.size()
+                  << ", primary id=" << multi_lidar_config_.primary_lidar_id
                   << ", reorder_window=" << multi_lidar_config_.reorder_window;
     }
     adaptive_lidar_load_controller_.Reset(multi_lidar_config_);
     if (multi_lidar_config_.adaptive_load.enabled && enable_skip_lidar_) {
-        LOG(WARNING) << "ignore fasterlio.skip_lidar_num=" << skip_lidar_num_
-                     << " because adaptive multi-lidar load control is enabled; fixed skipping "
-                        "would lengthen dead reckoning before exhausting point/lidar degradation";
+        LOG(WARNING) << "event=LIO_FIXED_SKIP_IGNORED 已忽略 fasterlio.skip_lidar_num=" << skip_lidar_num_
+                     << "；已启用多雷达自适应负载控制，固定跳帧"
+                        "会在点数和雷达降载之前延长航位推算时间";
         enable_skip_lidar_ = false;
         skip_lidar_cnt_ = 0;
     }
 
     std::string self_filter_error;
     if (!LoadSelfPointFilterConfig(yaml, self_point_filter_config_, &self_filter_error)) {
-        LOG(ERROR) << "invalid self-point filter configuration: " << self_filter_error;
+        LOG(ERROR) << "event=LIO_CONFIG_INVALID 车身点过滤配置无效 detail=" << self_filter_error;
         return false;
     }
     if (self_point_filter_config_.enabled) {
-        LOG(INFO) << "body-aligned self-point box enabled, min="
+        LOG(INFO) << "event=LIO_SELF_FILTER 已启用车体系车身点过滤框 min="
                   << self_point_filter_config_.min_body.transpose() << ", max="
                   << self_point_filter_config_.max_body.transpose();
     }
@@ -389,12 +389,12 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     if (map_export && !LoadSelfPointFilterConfig(
                           map_export, map_export_self_point_filter_config_,
                           &map_export_filter_error)) {
-        LOG(ERROR) << "invalid map-export self-point filter configuration: "
+        LOG(ERROR) << "event=LIO_CONFIG_INVALID 地图导出车身点过滤配置无效 detail="
                    << map_export_filter_error;
         return false;
     }
     if (map_export_self_point_filter_config_.enabled) {
-        LOG(INFO) << "map-export self-point box enabled, min="
+        LOG(INFO) << "event=LIO_MAP_SELF_FILTER 已启用地图导出车身点过滤框 min="
                   << map_export_self_point_filter_config_.min_body.transpose()
                   << ", max="
                   << map_export_self_point_filter_config_.max_body.transpose();
@@ -417,11 +417,11 @@ bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
         if (point_noise_enabled_ &&
             (range_noise_sigma_ <= 0.0 || angular_noise_sigma_rad_ <= 0.0 || noise_reference_sigma_ <= 0.0 ||
              min_information_scale_ <= 0.0 || max_information_scale_ < min_information_scale_)) {
-            LOG(ERROR) << "invalid lidar_noise_model parameters";
+            LOG(ERROR) << "event=LIO_CONFIG_INVALID lidar_noise_model 参数无效";
             return false;
         }
     }
-    LOG(INFO) << "LIO compute budget: parallel_threads=" << lio_parallel_threads_;
+    LOG(INFO) << "event=LIO_COMPUTE_CONFIG LIO 算力预算 parallel_threads=" << lio_parallel_threads_;
     return true;
 }
 
@@ -613,7 +613,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
 
     UL lock(mtx_buffer_);
     if (timestamp <= last_timestamp_imu_) {
-        if (timestamp < last_timestamp_imu_) LOG(WARNING) << "reject IMU timestamp rollback";
+        if (timestamp < last_timestamp_imu_) LOG(WARNING) << "event=IMU_TIMESTAMP_ROLLBACK 拒绝时间戳回退的 IMU 数据";
         return;
     }
 
@@ -725,7 +725,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         last_lidar_time_ > 0.0 ? measures_.lidar_begin_time_ - last_lidar_time_ : 0.0;
     if (lidar_gap > 0.5) {
         LOG(ERROR) << "检测到雷达断流，时长：" << lidar_gap
-                   << "; skip discontinuous frame and reset IMU integration bridge";
+                   << "；跳过不连续帧并重置 IMU 积分衔接";
         std::ostringstream message;
         message << "Lidar stream interrupted for " << lidar_gap
                 << " sec; skipped frame and reset IMU integration";
@@ -847,7 +847,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     self_filter_timing = self_filter_profile_timer.Stop();
 
     if (!scan_undistort_full_ || scan_undistort_full_->empty()) {
-        LOG(WARNING) << "No point, skip this scan!";
+        LOG(WARNING) << "event=LIO_EMPTY_SCAN 点云为空，跳过当前帧";
         last_tracking_healthy_ = false;
         if (!flg_first_scan_) {
             debug_event::ReportState("lio_empty_scan", true,
@@ -869,7 +869,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         ++adaptive_stale_drop_count_;
         last_frame_processing_ms_ = current_preprocess_ms_ + imu_undistort_ms;
         last_tracking_healthy_ = false;
-        LOG(WARNING) << "drop stale lidar correction before matching: age="
+        LOG(WARNING) << "event=LIO_STALE_CORRECTION_DROPPED 匹配前丢弃过期激光校正 age="
                      << last_lidar_latency_sec_ << " sec, hard_deadline="
                      << multi_lidar_config_.adaptive_load.hard_latency_sec;
         std::ostringstream message;
@@ -896,7 +896,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         if (!scan_undistort_ || scan_undistort_->empty()) {
             last_tracking_healthy_ = false;
             LOG_EVERY_N(WARNING, 20)
-                << "skip lidar frame: available sources do not satisfy current localization minimum";
+                << "event=LIO_SOURCES_INSUFFICIENT 可用雷达未达到当前定位最低要求，跳过当前帧";
             debug_event::ReportState(
                 "insufficient_lidar_sources", true,
                 "Available lidar sources do not satisfy the localization minimum",
@@ -925,7 +925,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     if (flg_first_scan_) {
         profiling::Stopwatch initial_map_profile_timer(profiling_enabled);
         const auto initial_map_start = BenchClock::now();
-        LOG(INFO) << "first scan pts: " << scan_undistort_->size();
+        LOG(INFO) << "event=LIO_FIRST_SCAN 首帧点云 points=" << scan_undistort_->size();
 
         state_point_ = kf_.GetX();
         scan_down_world_->resize(scan_undistort_->size());
@@ -967,7 +967,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
 
     if (!profiling::ReduceNonessentialOverhead()) {
         LOG(INFO) << "=============================";
-        LOG(INFO) << "LIO get cloud at beg: " << std::setprecision(14)
+        LOG(INFO) << "event=LIO_SCAN_TIME LIO 点云时间 beg: " << std::setprecision(14)
                   << measures_.lidar_begin_time_ << ", end: " << measures_.lidar_end_time_;
     }
 
@@ -1017,7 +1017,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
 
     // 极端情况下仍然点数不足，继续匹配会让最近邻和平面拟合没有意义，直接跳过。
     if (cur_pts < 5) {
-        LOG(WARNING) << "Too few points, skip this scan!" << scan_undistort_->size() << ", "
+        LOG(WARNING) << "event=LIO_SPARSE_SCAN 点数过少，跳过当前帧 points=" << scan_undistort_->size() << ", "
                      << scan_down_lidar_->size();
         last_tracking_healthy_ = false;
         emit_pipeline_benchmark("too_few_downsampled", scan_down_lidar_->size());
@@ -1118,7 +1118,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         if (requested != velocity_propagation_active_) {
             velocity_propagation_active_ = requested;
             kf_.SetPropagateVelocity(requested);
-            LOG(WARNING) << "Adaptive velocity propagation " << (requested ? "enabled" : "disabled")
+            LOG(WARNING) << "event=LIO_VELOCITY_PROPAGATION 自适应速度递推 enabled=" << (requested ? "enabled" : "disabled")
                          << ", reason: " << transition_reason
                          << ", lidar innovation EMA: " << velocity_innovation_ema_;
         }
@@ -1128,10 +1128,10 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     scan_match_timing = scan_match_profile_timer.Stop();
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "[ mapping ]: In num: " << scan_undistort_->points.size()
+        LOG(INFO) << "event=LIO_MATCH_STATS 激光惯性匹配统计 In num: " << scan_undistort_->points.size()
                   << " down " << cur_pts << " Map grid num: " << ivox_->NumValidGrids()
                   << " effect num : " << effect_feat_surf_ << ", " << effect_feat_icp_;
-        LOG(INFO) << "delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
+        LOG(INFO) << "event=LIO_POSE_INCREMENT 位姿增量 delta trans: " << (pred_state.pos_ - state_point_.pos_).transpose()
                   << ", ang: " << delta_rotation_deg;
     }
     // LOG(INFO) << "P diag: " << kf_.GetP().diagonal().transpose();
@@ -1178,7 +1178,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         last_frame_processing_ms_ * 1e-3, last_lidar_latency_sec_, last_tracking_healthy_);
     const int new_adaptive_step = adaptive_lidar_load_controller_.DegradationStep();
     if (new_adaptive_step != old_adaptive_step) {
-        LOG(WARNING) << "adaptive lidar load step " << old_adaptive_step << " -> "
+        LOG(WARNING) << "event=LIO_ADAPTIVE_LOAD_CHANGED 自适应雷达负载级别变化 from_step=" << old_adaptive_step << " to_step="
                      << new_adaptive_step << ", processing_ms=" << last_frame_processing_ms_
                      << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
                      << ", tracking_healthy=" << last_tracking_healthy_;
@@ -1206,7 +1206,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     }
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "LIO state: " << state_point_.pos_.transpose() << ", yaw "
+        LOG(INFO) << "event=LIO_STATE LIO 状态 position=" << state_point_.pos_.transpose() << ", yaw "
                   << state_point_.rot_.angleZ<double>() * 180 / M_PI
                   << ", vel: " << state_point_.vel_.transpose()
                   << ", bg: " << state_point_.bg_.transpose()
@@ -1365,7 +1365,7 @@ void LaserMapping::MakeKF() {
 
     // 记录关键帧创建信息
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "LIO: create kf " << kf->GetID()
+        LOG(INFO) << "event=LIO_KEYFRAME 创建 LIO 关键帧 id=" << kf->GetID()
                   << ", state: " << state_point_.pos_.transpose()
                   << ", kf opt pose: " << kf->GetOptPose().translation().transpose()
                   << ", lio pose: " << kf->GetLIOPose().translation().transpose()
@@ -1415,7 +1415,7 @@ bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLid
         return false;
     }
     if (timestamp < last_timestamp_lidar_) {
-        LOG(ERROR) << "fused lidar timestamp loop back, drop frame: " << std::setprecision(14) << timestamp
+        LOG(ERROR) << "event=LIO_TIMESTAMP_ROLLBACK 融合雷达时间戳回退，丢弃当前帧 timestamp=" << std::setprecision(14) << timestamp
                    << " < " << last_timestamp_lidar_;
         std::ostringstream message;
         message << "Dropped fused lidar frame with timestamp rollback: timestamp="
@@ -1573,7 +1573,7 @@ bool LaserMapping::SyncPackages() {
         current_lidar_stats_ = lidar_stats_buffer_.empty() ? MultiLidarFrameStats() : lidar_stats_buffer_.front();
 
         if (measures_.scan_->points.size() <= 1) {
-            LOG(WARNING) << "Too few input point cloud!";
+            LOG(WARNING) << "event=LIO_INPUT_SPARSE 输入点云过少";
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
         } else if (measures_.scan_->points.back().time / double(1000) < 0.5 * lidar_mean_scantime_) {
             lidar_end_time_ = measures_.lidar_begin_time_ + lidar_mean_scantime_;
@@ -1871,7 +1871,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     // [lio-plane-count-gate]
     if (effect_feat_surf_ < 20) {
         obs.valid_ = false;
-        LOG(WARNING) << "No enough effective surface points: " << effect_feat_surf_ << ", icp: " << effect_feat_icp_
+        LOG(WARNING) << "event=LIO_FEATURES_INSUFFICIENT 有效平面特征点不足 surface_points=" << effect_feat_surf_ << ", icp: " << effect_feat_icp_
                      << ", required: " << 20;
         return;
     }
@@ -2094,7 +2094,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
         /// 将当前关键帧点云累加到世界坐标系下的全局点云。
         *global_map += *cloud_trans;
 
-        LOG(INFO) << "kf " << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
+        LOG(INFO) << "event=LIO_KEYFRAME_POSE 关键帧 id=" << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
     }
 
     CloudPtr global_map_filtered(new PointCloudType);
@@ -2115,10 +2115,10 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
     global_map_filtered->height = 1;
     global_map_filtered->width = global_map_filtered->size();
 
-    LOG(INFO) << "global map: " << global_map_filtered->size();
+    LOG(INFO) << "event=LIO_GLOBAL_MAP 全局地图 points=" << global_map_filtered->size();
     if (apply_map_export_filter && map_export_self_point_filter_config_.enabled) {
-        LOG(INFO) << "map-export self-point filter removed "
-                  << map_export_removed << " keyframe points";
+        LOG(INFO) << "event=LIO_MAP_FILTERED 地图导出已移除车身点 points="
+                  << map_export_removed << " 个关键帧点";
     }
 
     return global_map_filtered;
@@ -2130,7 +2130,7 @@ void LaserMapping::SaveMap() {
 
     pcd_io::SaveWorldCloudBinaryCompressed("./data/lio.pcd", *global_map);
 
-    LOG(INFO) << "lio map is saved to ./data/lio.pcd";
+    LOG(INFO) << "event=LIO_MAP_SAVED LIO 地图已保存 path=./data/lio.pcd";
 }
 
 CloudPtr LaserMapping::GetRecentCloud() {

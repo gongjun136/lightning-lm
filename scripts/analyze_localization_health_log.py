@@ -9,6 +9,8 @@ import math
 import pathlib
 import re
 
+from localization_log_events import any_event, has_event
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 HEADER = re.compile(r"[IWEF](\d{4}) (\d{2}:\d{2}:\d{2}\.\d+) .*? ([\w.]+:\d+)\] (.*)")
 SCALAR = re.compile(r"(\w+)=([^\s\[]+)")
@@ -33,11 +35,10 @@ def analyze(run):
         last = clock
         sources[source] += 1
         entry = {"line": number, "time": clock, "message": message}
-        if any(term in message for term in (
-            "accepted:", "tracking lost after", "outputs disabled", "localization failed!",
-        )):
+        if any_event(message, ('LOC_RELOCALIZATION_ACCEPTED', 'LOC_TRACKING_LOST',
+                               'LOC_OUTPUT_DISABLED', 'LOC_MATCH_FAILED')):
             events.append(entry)
-        if "smoother motion is too large:" in message:
+        if has_event(message, 'SMOOTHER_MOTION_EXCESSIVE'):
             warnings.append(entry)
         if "LIDAR_LOC_AUDIT" in message:
             values = dict(SCALAR.findall(message))

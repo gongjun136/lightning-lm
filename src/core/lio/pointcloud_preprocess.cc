@@ -33,7 +33,7 @@ void PointCloudPreprocess::Process(const sensor_msgs::msg::PointCloud2 ::SharedP
             break;
 
         default:
-            LOG(ERROR) << "Error LiDAR Type";
+            LOG(ERROR) << "event=LIDAR_TYPE_INVALID 雷达类型无效";
             break;
     }
     *pcl_out = cloud_out_;

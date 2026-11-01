@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
 
     std::string scheduling_error;
     if (!threading::InitializeOnlineThreadPolicy(&scheduling_error)) {
-        LOG(ERROR) << scheduling_error;
+        LOG(ERROR) << "event=LOC_SCHEDULING_FAILED 定位线程调度配置失败 detail=" << scheduling_error;
         return 2;
     }
     OnlineLogging online_logging;
@@ -132,8 +132,8 @@ int main(int argc, char** argv) {
             ? config["system"]["localization_mode"].as<std::string>() : "lidar";
         if (mode == "ins_only") {
             if (!FLAGS_map.empty() || !FLAGS_bag.empty() || !FLAGS_output_tum.empty() || !FLAGS_output_high_frequency_tum.empty()) {
-                LOG(ERROR) << "ins_only: use scripts/replay_ins_only.sh for clocked input-only bag playback; "
-                           << "--output_published_tum is supported, map/PGO/LIO flags are not";
+                LOG(ERROR) << "event=INS_REPLAY_USAGE ins_only 模式请使用 scripts/replay_ins_only.sh 按时钟回放输入数据；"
+                           << "支持 --output_published_tum，不能使用 map/PGO/LIO 参数";
                 rclcpp::shutdown();
                 return 2;
             }
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
         }
         if (mode != "lidar") throw std::invalid_argument("system.localization_mode must be lidar or ins_only");
     } catch (const std::exception& error) {
-        LOG(ERROR) << error.what(); rclcpp::shutdown(); return 2;
+        LOG(ERROR) << "event=LOC_INITIALIZATION_EXCEPTION 定位初始化异常 detail=" << error.what(); rclcpp::shutdown(); return 2;
     }
 
     // 阶段 3：初始化 LiDAR 系统。
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     if (!match_failure_dir.empty()) {
         match_failure_dir = std::filesystem::absolute(match_failure_dir).string();
         if (setenv("SANY_MATCH_FAILURE_DIR", match_failure_dir.c_str(), 1) != 0) {
-            LOG(ERROR) << "could not configure matching evidence directory";
+            LOG(ERROR) << "event=LOC_EVIDENCE_DIR_FAILED 无法配置匹配证据目录";
             return 2;
         }
     }
@@ -170,13 +170,13 @@ int main(int argc, char** argv) {
     LocSystem loc(opt);
 
     if (!loc.Init(FLAGS_config, FLAGS_map)) {
-        LOG(ERROR) << "failed to init loc";
+        LOG(ERROR) << "event=LOC_INIT_FAILED 定位初始化失败";
         return -1;
     }
     // [online-loc-create-system]
     if (!FLAGS_output_published_tum.empty() &&
         !loc.StartPublishedTrajectoryTum(FLAGS_output_published_tum)) {
-        LOG(ERROR) << "failed to start published rear-axle TUM recorder";
+        LOG(ERROR) << "event=LOC_TUM_START_FAILED 后轴发布轨迹 TUM 记录器启动失败";
         return -1;
     }
 
@@ -186,12 +186,12 @@ int main(int argc, char** argv) {
     SE3 initial_pose;
     try {
         if (FLAGS_use_config_initial_pose && ReadInitialPose(FLAGS_config, initial_pose)) {
-            LOG(INFO) << "online localization initial pose: " << initial_pose.translation().transpose();
+            LOG(INFO) << "event=LOC_INITIAL_POSE 在线定位初始位姿 pose=" << initial_pose.translation().transpose();
         } else {
-            LOG(WARNING) << "online localization initial pose is not configured; using identity";
+            LOG(WARNING) << "event=LOC_INITIAL_POSE_UNSET 未配置在线定位初始位姿，使用单位变换";
         }
     } catch (const std::exception& e) {
-        LOG(ERROR) << "invalid online localization initial pose: " << e.what();
+        LOG(ERROR) << "event=LOC_INITIAL_POSE_INVALID 在线定位初始位姿无效 detail=" << e.what();
         return -1;
     }
     loc.SetInitPose(initial_pose);
@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
     if (!FLAGS_bag.empty()) {
         bag_player = std::make_shared<OnlineBagPlayer>();
         if (!bag_player->Init(FLAGS_config, FLAGS_bag, FLAGS_playback_rate)) {
-            LOG(ERROR) << "failed to initialize embedded online bag player";
+            LOG(ERROR) << "event=LOC_BAG_PLAYER_INIT_FAILED 内嵌在线数据回放器初始化失败";
             return -1;
         }
         bag_thread = std::thread([bag_player]() {

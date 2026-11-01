@@ -54,6 +54,14 @@ class OnlineLoggingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.check_records(result.stderr)
 
+    def test_chinese_fields_and_truncation_preserve_valid_utf8(self):
+        result = subprocess.run([str(self.binary), 'utf8'], capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0)
+        text = result.stderr.decode('utf-8')  # Strict: a split Chinese character fails.
+        self.assertIn('event=LOC_MATCH_FAILED 激光定位匹配失败 map_checked=1 map_overlap=0.72', text)
+        self.assertIn('async_truncated=1', text)
+        self.assertRegex(text, r'ASYNC_LOG_SUMMARY received=5 written=5 dropped=0 critical_dropped=0 io_errors=0 truncated=3')
+
     def test_blocked_output_does_not_block_producers_or_flush(self):
         proc = subprocess.Popen([str(self.binary), 'flood'], stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)

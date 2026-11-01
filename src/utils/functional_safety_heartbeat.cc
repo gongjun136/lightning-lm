@@ -67,7 +67,7 @@ void HeartbeatPublisher::PublishNow() {
     publisher_->publish(message);
     if (observer_) {
         try { observer_(message); }
-        catch (...) { RCLCPP_ERROR(rclcpp::get_logger("heartbeat"), "local heartbeat observer failed"); }
+        catch (...) { RCLCPP_ERROR(rclcpp::get_logger("heartbeat"), "event=HEARTBEAT_OBSERVER_FAILED 本地心跳观察器执行失败"); }
     }
 }
 // [dtc-heartbeat-publish]

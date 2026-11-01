@@ -50,7 +50,7 @@ class Timer {
         }
 
         if (print) {
-            LOG(INFO) << "func <" << func_name << "> timer: " << time_used << " ms";
+            LOG(INFO) << "函数 <" << func_name << "> 耗时: " << time_used << " ms";
         }
     }
 

@@ -105,7 +105,7 @@ class OfflineLocalizationPublisher {
         if (!output_bag.empty()) {
             bag_writer_ = std::make_unique<rosbag2_cpp::Writer>();
             bag_writer_->open(output_bag);
-            LOG(INFO) << "writing localization output topics directly to " << output_bag;
+            LOG(INFO) << "event=LOC_OFFLINE_BAG_OUTPUT 将定位输出话题直接写入 path=" << output_bag;
         }
     }
 
@@ -253,7 +253,7 @@ std::map<std::string, std::string> ReadBagTopicTypes(const std::string& bag_path
             types[metadata["name"].as<std::string>()] = metadata["type"].as<std::string>();
         }
     } catch (const YAML::Exception& e) {
-        LOG(WARNING) << "failed to parse rosbag metadata: " << e.what();
+        LOG(WARNING) << "event=LOC_BAG_METADATA_FAILED 解析 rosbag 元数据失败 detail=" << e.what();
     }
     return types;
 }
@@ -427,19 +427,19 @@ int main(int argc, char** argv) {
     google::ParseCommandLineFlags(&argc, &argv, true);
 
     if (FLAGS_input_bag.empty()) {
-        LOG(ERROR) << "input_bag is required";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 必须设置 input_bag";
         return 2;
     }
     if (FLAGS_map_path.empty()) {
-        LOG(ERROR) << "map_path is required";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 必须设置 map_path";
         return 2;
     }
     if (FLAGS_playback_rate < 0.0) {
-        LOG(ERROR) << "playback_rate must be non-negative";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID playback_rate 必须为非负数";
         return 2;
     }
     if (!std::filesystem::exists(std::filesystem::path(FLAGS_map_path) / "index.txt")) {
-        LOG(ERROR) << "tiled map index not found: " << (std::filesystem::path(FLAGS_map_path) / "index.txt");
+        LOG(ERROR) << "event=LOC_MAP_INDEX_MISSING 未找到分块地图索引 path=" << (std::filesystem::path(FLAGS_map_path) / "index.txt");
         return 2;
     }
 
@@ -458,7 +458,7 @@ int main(int argc, char** argv) {
     bool lio_initialized = false;
     Timer::Evaluate([&]() { lio_initialized = lio.Init(FLAGS_config); }, "Offline Loc LIO Initialization");
     if (!lio_initialized) {
-        LOG(ERROR) << "failed to init localization LIO frontend";
+        LOG(ERROR) << "event=LIO_INIT_FAILED 定位 LIO 前端初始化失败";
         return 2;
     }
 
@@ -470,7 +470,7 @@ int main(int argc, char** argv) {
     if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
         const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
         if (values.size() != 3) {
-            LOG(ERROR) << "output.primary_lidar_position_in_body must have 3 values";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID output.primary_lidar_position_in_body 必须包含 3 个值";
             return 2;
         }
         primary_lidar_position_in_body = Vec3d(values[0], values[1], values[2]);
@@ -480,7 +480,7 @@ int main(int argc, char** argv) {
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
             : 5;
     if (lost_frame_threshold <= 0) {
-        LOG(ERROR) << "relocalization.lost_frame_threshold must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID relocalization.lost_frame_threshold 必须为正数";
         return 2;
     }
     if (ros_context) {
@@ -496,7 +496,7 @@ int main(int argc, char** argv) {
     if (lio.IsMultiLidarEnabled()) {
         const auto* primary = lio.GetMultiLidarConfig().PrimaryLidar();
         if (!primary) {
-            LOG(ERROR) << "multi-lidar primary sensor is missing";
+            LOG(ERROR) << "event=LOC_PRIMARY_LIDAR_MISSING 多雷达配置缺少主雷达";
             return 2;
         }
         imu_topic = primary->imu_topic;
@@ -522,12 +522,12 @@ int main(int argc, char** argv) {
             lidar_loc->SetUI(ui);
             lio.SetUI(ui);
         } else {
-            LOG(ERROR) << "failed to init 3D UI, continue without Pangolin";
+            LOG(ERROR) << "event=LOC_UI_INIT_FAILED 三维界面初始化失败，继续无界面运行";
             ui.reset();
         }
     }
     if (!lidar_loc->Init(FLAGS_config)) {
-        LOG(ERROR) << "failed to init lidar localization";
+        LOG(ERROR) << "event=LOC_INIT_FAILED 激光定位初始化失败";
         return 2;
     }
 
@@ -536,15 +536,15 @@ int main(int argc, char** argv) {
             SE3 initial_pose;
             if (ReadInitialPose(FLAGS_config, FLAGS_map_path, initial_pose)) {
                 lidar_loc->SetInitialPose(initial_pose);
-                LOG(INFO) << "offline localization initial pose: " << initial_pose.translation().transpose();
+                LOG(INFO) << "event=LOC_INITIAL_POSE 离线定位初始位姿 pose=" << initial_pose.translation().transpose();
             } else {
-                LOG(WARNING) << "offline localization initial pose is not configured; global initialization required";
+                LOG(WARNING) << "event=LOC_INITIAL_POSE_UNSET 未配置离线定位初始位姿，需要全局初始化";
             }
         } else {
-            LOG(INFO) << "configured initial pose disabled; global BTC initialization required";
+            LOG(INFO) << "event=LOC_INITIAL_POSE_DISABLED 已禁用配置中的初始位姿，需要全局 BTC 初始化";
         }
     } catch (const std::exception& e) {
-        LOG(ERROR) << "invalid offline localization initial pose: " << e.what();
+        LOG(ERROR) << "event=LOC_INITIAL_POSE_INVALID 离线定位初始位姿无效 detail=" << e.what();
         return 2;
     }
 
@@ -557,8 +557,8 @@ int main(int argc, char** argv) {
         localization_pgo ? localization_pgo["enable_dr_extrapolation"].as<bool>(true) : true;
     pgo.SetDrSmoothingEnabled(enable_dr_smoothing);
     pgo.SetDrExtrapolationEnabled(enable_dr_extrapolation);
-    LOG(INFO) << "localization PGO DR smoothing: " << (enable_dr_smoothing ? "enabled" : "disabled");
-    LOG(INFO) << "localization PGO DR extrapolation: "
+    LOG(INFO) << "event=LOC_DR_SMOOTHING 定位 PGO 的 DR 平滑 enabled=" << (enable_dr_smoothing ? "enabled" : "disabled");
+    LOG(INFO) << "event=LOC_DR_EXTRAPOLATION 定位 PGO 的 DR 外推 enabled="
               << (enable_dr_extrapolation ? "enabled" : "disabled");
     // [offline-loc-capture-pgo]
     loc::LocalizationResult latest_final_result;
@@ -583,7 +583,7 @@ int main(int argc, char** argv) {
         OpenOutput(csv, FLAGS_output_csv, "output_csv");
         OpenOutput(frame_stats_csv, FLAGS_output_frame_stats_csv, "output_frame_stats_csv");
     } catch (const std::exception& e) {
-        LOG(ERROR) << e.what();
+        LOG(ERROR) << "event=LOC_OFFLINE_EXCEPTION 离线定位运行异常 detail=" << e.what();
         return 2;
     }
     WriteLocalizationCsvHeader(csv);
@@ -648,7 +648,7 @@ int main(int argc, char** argv) {
                 const auto scan = lio.GetProjCloud();
                 if (FLAGS_force_relocalization_frame > 0 &&
                     loc_frames + 1 == FLAGS_force_relocalization_frame) {
-                    LOG(WARNING) << "offline fault injection: forcing global relocalization before frame "
+                    LOG(WARNING) << "event=LOC_OFFLINE_FAULT_INJECTION 离线故障注入，在指定帧前强制全局重定位 frame="
                                  << FLAGS_force_relocalization_frame;
                     lidar_loc->RequestGlobalRelocalization();
                 }
@@ -666,7 +666,7 @@ int main(int argc, char** argv) {
                 if (match_stats.relocalization_accepted) {
                     pgo.Reset();
                     latest_final_result_set = false;
-                    LOG(WARNING) << "reset localization PGO after accepted global relocalization";
+                    LOG(WARNING) << "event=LOC_PGO_RESET 重定位接受后重置定位 PGO";
                 }
                 // 本文件的 fused 轨迹允许回退到原始地图结果；需同时读时间选择条件。
                 // [offline-loc-fused-selection]
@@ -845,16 +845,16 @@ int main(int argc, char** argv) {
     }
     if (ui) ui->Quit();
 
-    LOG(INFO) << "done, consumed fused frames=" << consumed_frames << ", lio output frames=" << output_frames
+    LOG(INFO) << "event=LOC_OFFLINE_DONE 离线定位完成 consumed fused frames=" << consumed_frames << ", lio output frames=" << output_frames
               << ", loc frames=" << loc_frames << ", valid loc frames=" << loc_valid_frames;
     if (lio.IsMultiLidarEnabled()) {
-        LOG(INFO) << "multi-lidar localization synchronization: complete=" << complete_frames
+        LOG(INFO) << "event=LOC_OFFLINE_SYNC 多雷达定位同步统计 complete=" << complete_frames
                   << ", partial=" << partial_frames << ", late_drops=" << lio.GetMultiLidarLateDropCount()
                   << ", duplicate_drops=" << lio.GetMultiLidarDuplicateDropCount()
                   << ", tolerance_drops=" << lio.GetMultiLidarToleranceDropCount()
                   << ", invalid_drops=" << lio.GetMultiLidarInvalidDropCount();
         for (const auto& sensor : lio.GetMultiLidarConfig().lidars) {
-            LOG(INFO) << "lidar " << sensor.id << ": present_frames=" << frames_by_lidar[sensor.id]
+            LOG(INFO) << "event=LOC_OFFLINE_LIDAR 雷达 id=" << sensor.id << ": present_frames=" << frames_by_lidar[sensor.id]
                       << ", input_points=" << points_by_lidar[sensor.id];
         }
     }

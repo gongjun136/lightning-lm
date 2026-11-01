@@ -38,7 +38,7 @@ void LogCovarianceStats(const CovType& P, const char* stage) {
     const CovType sym = 0.5 * (P + P.transpose()).eval();
     Eigen::SelfAdjointEigenSolver<CovType> solver(sym, Eigen::EigenvaluesOnly);
     if (solver.info() != Eigen::Success) {
-        LOG(WARNING) << "ESKF covariance eigensolver failed at " << stage;
+        LOG(WARNING) << "event=ESKF_EIGENSOLVER_FAILED ESKF 协方差特征值求解失败 stage=" << stage;
         lightning::debug_event::EmitThrottled(
             "eskf_covariance_eigensolver_failed",
             "ESKF covariance eigensolver failed",
@@ -66,13 +66,13 @@ void LogCovarianceStats(const CovType& P, const char* stage) {
     const double eig_tol = std::max(1e-8, std::abs(max_eig) * 1e-12);
     const bool suspicious = min_eig < -eig_tol || max_abs_corr > 1.0 + 1e-6 || !std::isfinite(max_abs_corr);
     if (suspicious) {
-        LOG(WARNING) << "ESKF covariance suspicious at " << stage << ", min_eig: " << min_eig
+        LOG(WARNING) << "event=ESKF_COVARIANCE_SUSPICIOUS ESKF 协方差异常 stage=" << stage << ", min_eig: " << min_eig
                      << ", max_eig: " << max_eig << ", max_diag: " << sym.diagonal().maxCoeff()
-                     << ", max_abs_corr: " << max_abs_corr << " at (" << corr_i << "," << corr_j << ")";
+                     << ", max_abs_corr: " << max_abs_corr << " 位置=(" << corr_i << "," << corr_j << ")";
     } else {
-        LOG_EVERY_N(INFO, 200) << "ESKF covariance at " << stage << ", min_eig: " << min_eig
+        LOG_EVERY_N(INFO, 200) << "event=ESKF_COVARIANCE ESKF 协方差统计 stage=" << stage << ", min_eig: " << min_eig
                                << ", max_eig: " << max_eig << ", max_diag: " << sym.diagonal().maxCoeff()
-                               << ", max_abs_corr: " << max_abs_corr << " at (" << corr_i << "," << corr_j << ")";
+                               << ", max_abs_corr: " << max_abs_corr << " 位置=(" << corr_i << "," << corr_j << ")";
     }
 }
 
@@ -89,7 +89,7 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
 
         for (int j = 0; j < P.cols(); ++j) {
             if (std::isnan(P(i, j)) || std::isinf(P(i, j))) {
-                LOG(WARNING) << "find nan or inf in P: " << P(i, j);
+                LOG(WARNING) << "event=ESKF_COVARIANCE_NONFINITE 协方差矩阵 P 存在非有限值 value=" << P(i, j);
                 lightning::debug_event::EmitThrottled(
                     "eskf_covariance_non_finite",
                     "ESKF covariance contained a non-finite value and was repaired",
@@ -106,7 +106,7 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
 
     Eigen::SelfAdjointEigenSolver<CovType> solver(P);
     if (solver.info() != Eigen::Success) {
-        LOG(WARNING) << "Failed to project ESKF covariance to PSD; reset to diagonal floor.";
+        LOG(WARNING) << "event=ESKF_PSD_RESET ESKF 协方差半正定投影失败，已重置为对角下限";
         lightning::debug_event::EmitThrottled(
             "eskf_covariance_reset",
             "ESKF covariance could not be projected to PSD and was reset",
@@ -503,7 +503,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         // 例如长直走廊中，某些平移/旋转方向可能缺乏几何约束，直接更新会过度相信不可靠残差。
         Eigen::SelfAdjointEigenSolver<Mat6d> eigen_solver(HTH_sym);
         if (eigen_solver.info() != Eigen::Success) {
-            LOG(WARNING) << "Failed to decompose ESKF observation information matrix.";
+            LOG(WARNING) << "event=ESKF_DECOMPOSITION_FAILED ESKF 观测信息矩阵分解失败";
             debug_event::EmitThrottled(
                 "eskf_observation_decomposition_failed",
                 "ESKF rejected an observation because information decomposition failed",
@@ -538,7 +538,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         // Explicit matrix inverses amplify round-off and produced architecture-dependent
         // results once the covariance became ill-conditioned on ARM.
         if (!std::isfinite(R) || R <= 0.0) {
-            LOG(ERROR) << "Reject ESKF update with invalid observation variance: " << R;
+            LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 观测方差无效，拒绝 ESKF 更新 variance=" << R;
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
                 "ESKF rejected an update because observation variance was invalid",
@@ -555,7 +555,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         const CovType P_sym = P_;
         Eigen::LDLT<CovType> prior_solver(P_sym);
         if (prior_solver.info() != Eigen::Success || !prior_solver.isPositive()) {
-            LOG(ERROR) << "Reject ESKF update because prior covariance is not positive definite.";
+            LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 先验协方差非正定，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
                 "ESKF rejected an update because prior covariance was not positive definite",
@@ -569,7 +569,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         information.template block<pose_obs_dim_, pose_obs_dim_>(0, 0) += HTH_eff;
         information = 0.5 * (information + information.transpose()).eval();
         if (!information.allFinite()) {
-            LOG(ERROR) << "Reject ESKF update because information matrix is non-finite.";
+            LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 信息矩阵包含非有限值，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
                 "ESKF rejected an update because the information matrix was non-finite",
@@ -581,7 +581,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
 
         Eigen::LDLT<CovType> posterior_solver(information);
         if (posterior_solver.info() != Eigen::Success || !posterior_solver.isPositive()) {
-            LOG(ERROR) << "Reject ESKF update because posterior information is not positive definite.";
+            LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 后验信息矩阵非正定，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
                 "ESKF rejected an update because posterior information was not positive definite",
@@ -601,7 +601,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         K_H.setZero();
         K_H.template leftCols<pose_obs_dim_>() = posterior_solver.solve(information_jacobian);
         if (!K_r.allFinite() || !K_H.allFinite()) {
-            LOG(ERROR) << "Reject ESKF update because solved increment is non-finite.";
+            LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 求解增量包含非有限值，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
                 "ESKF rejected an update because the solved increment was non-finite",
@@ -635,7 +635,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             const bool ba_too_large = options_.max_update_acc_bias_step_ > 0.0 && dba > options_.max_update_acc_bias_step_;
             const bool grav_too_large = options_.max_update_gravity_step_ > 0.0 && dgrav > options_.max_update_gravity_step_;
             if (bg_too_large || ba_too_large || grav_too_large) {
-                LOG(WARNING) << "Fallback lidar ESKF iter update to preserve inertial states, dbg: " << dbg
+                LOG(WARNING) << "event=ESKF_UPDATE_FALLBACK 激光迭代更新回退，保留惯性状态 dbg: " << dbg
                              << ", dba: " << dba << ", dgrav: " << dgrav;
                 debug_event::EmitThrottled(
                     "eskf_update_degraded",
@@ -688,7 +688,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             const double full_dx_velocity =
                 dx_current.segment<NavState::kBlockDim>(NavState::kVelIdx).norm();
             if (allow_lidar_pose_only_fallback && full_dx_velocity > options_.max_update_velocity_step_) {
-                LOG(WARNING) << "Fallback lidar ESKF iter update to pose-only, dvel: " << full_dx_velocity
+                LOG(WARNING) << "event=ESKF_POSE_ONLY_FALLBACK 激光迭代更新回退为仅更新位姿 dvel: " << full_dx_velocity
                              << ", limit: " << options_.max_update_velocity_step_;
                 debug_event::EmitThrottled(
                     "eskf_update_degraded",
@@ -724,7 +724,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
         if (dx_translation > options_.max_update_translation_step_ ||
             dx_rotation_deg > options_.max_update_rotation_step_deg_ ||
             (check_velocity_step && dx_velocity > options_.max_update_velocity_step_)) {
-            LOG(ERROR) << "Reject ESKF iter update, dtrans: " << dx_translation << ", drot_deg: " << dx_rotation_deg
+            LOG(ERROR) << "event=ESKF_ITERATION_REJECTED 拒绝 ESKF 迭代更新 dtrans: " << dx_translation << ", drot_deg: " << dx_rotation_deg
                        << ", dvel: " << dx_velocity;
             debug_event::EmitThrottled(
                 "eskf_update_rejected",

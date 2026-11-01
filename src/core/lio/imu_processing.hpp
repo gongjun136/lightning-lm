@@ -401,7 +401,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
 
         const double warn_dt = std::max(0.1, 1.5 * static_cast<double>(lo::lidar_time_interval));
         if (dt > warn_dt) {
-            LOG(WARNING) << "propagate over long imu interval: " << dt << ", lidar: " << pcl_beg_time << " -> "
+            LOG(WARNING) << "event=IMU_LONG_INTERVAL IMU 递推间隔过长 dt_sec=" << dt << ", lidar: " << pcl_beg_time << " -> "
                          << pcl_end_time;
             std::ostringstream message;
             message << "IMU propagation interval is too long: interval_sec=" << dt
@@ -591,11 +591,11 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
                 acc_scale_factor_ = 1.0;
             } else {
                 acc_scale_factor_ = 1.0;
-                LOG(WARNING) << "imu init mean acc norm is abnormal for unit inference: " << mean_acc_norm
-                             << ", keep accelerometer scale unchanged";
+                LOG(WARNING) << "event=IMU_ACCEL_SCALE_INVALID IMU 初始化加速度均值模长异常 value=" << mean_acc_norm
+                             << "，保持加速度计比例不变";
             }
 
-            LOG(INFO) << "imu init done, bg: " << imu_state.bg_.transpose() << ", grav: " << imu_state.grav_.transpose()
+            LOG(INFO) << "event=IMU_INIT_DONE IMU 初始化完成 bg: " << imu_state.bg_.transpose() << ", grav: " << imu_state.grav_.transpose()
                       << ", acc scale: " << acc_scale_factor_ << ", cov_acc: " << cov_acc_.transpose()
                       << ", cov_gyr: " << cov_gyr_.transpose() << ", mean: " << mean_acc_.transpose() << ", "
                       << mean_gyr_.transpose();
@@ -604,7 +604,7 @@ inline void ImuProcess::Process(const MeasureGroup &meas, ESKF &kf_state, CloudP
             const double duration = init_samples_.empty()
                                         ? 0.0
                                         : init_samples_.back()->timestamp - init_samples_.front()->timestamp;
-            LOG(INFO) << "waiting for stationary imu init, samples=" << init_samples_.size()
+            LOG(INFO) << "event=IMU_INIT_WAIT 等待静止条件完成 IMU 初始化 samples=" << init_samples_.size()
                       << ", duration=" << duration << ", gyro_std="
                       << std::sqrt(std::max(0.0, cov_gyr_.maxCoeff())) << ", acc_std="
                       << std::sqrt(std::max(0.0, cov_acc_.maxCoeff()));

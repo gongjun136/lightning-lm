@@ -117,7 +117,7 @@ LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
     pcl_icp_->setMaximumIterations(4);
     pcl_icp_->setTransformationEpsilon(0.01);
 
-    LOG(INFO) << "match name is NDT_OMP"
+    LOG(INFO) << "event=LOC_MATCHER 使用 NDT_OMP 匹配器"
               << ", MaximumIterations is: " << pcl_ndt_->getMaximumIterations();
 }
 
@@ -140,25 +140,25 @@ bool LidarLoc::Init(const std::string& config_path) {
     compute_budget.ndt_threads = ndt_threads_;
     std::string compute_budget_error;
     if (!compute::LoadComputeBudget(root, compute_budget, &compute_budget_error)) {
-        LOG(ERROR) << "invalid compute budget: " << compute_budget_error;
+        LOG(ERROR) << "event=LOC_COMPUTE_CONFIG_INVALID 算力预算配置无效 detail=" << compute_budget_error;
         return false;
     }
     ndt_threads_ = compute_budget.ndt_threads;
     ndt_max_points_ = compute_budget.ndt_max_points;
     pcl_ndt_->setNumThreads(ndt_threads_);
     pcl_ndt_rough_->setNumThreads(ndt_threads_);
-    LOG(INFO) << "lidar localization compute budget: ndt_threads=" << ndt_threads_;
+    LOG(INFO) << "event=LOC_COMPUTE_CONFIG 激光定位算力预算 ndt_threads=" << ndt_threads_;
     map_frame::ExportOptions export_options;
     std::string map_frame_error;
     if (!map_frame::ReadExportOptions(root, export_options, map_frame_error)) {
-        LOG(ERROR) << map_frame_error;
+        LOG(ERROR) << "event=LOC_MAP_FRAME_INVALID 定位地图坐标系无效 detail=" << map_frame_error;
         return false;
     }
     if (export_options.normalize_start_ground_z) {
         map_frame::Metadata metadata;
         if (!map_frame::LoadMetadata(
                 options_.map_option_.map_path_, metadata, map_frame_error)) {
-            LOG(ERROR) << map_frame_error;
+            LOG(ERROR) << "event=LOC_MAP_FRAME_INVALID 定位地图坐标系无效 detail=" << map_frame_error;
             return false;
         }
     }
@@ -273,7 +273,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     }
     if (options_.relocalization_refinement_backend_ != "ndt" &&
         options_.relocalization_refinement_backend_ != "plane_icp") {
-        LOG(ERROR) << "unsupported relocalization refinement backend: "
+        LOG(ERROR) << "event=LOC_REFINER_UNSUPPORTED 不支持的重定位精配准后端 backend="
                    << options_.relocalization_refinement_backend_;
         return false;
     }
@@ -379,7 +379,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     std::string plane_options_error;
     if (!PointToPlaneRegistration::ValidateOptions(
             plane_options, &plane_options_error)) {
-        LOG(ERROR) << plane_options_error;
+        LOG(ERROR) << "event=LOC_PLANE_ICP_CONFIG_INVALID 平面 ICP 配置无效 detail=" << plane_options_error;
         return false;
     }
     if (options_.relocalization_bounds_margin_ < 0.0 ||
@@ -404,7 +404,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_confirmation_max_translation_ < 0.0 ||
         options_.relocalization_confirmation_max_rotation_deg_ < 0.0 ||
         options_.relocalization_confirmation_max_interval_ <= 0.0) {
-        LOG(ERROR) << "invalid relocalization map-consistency configuration";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 重定位地图一致性配置无效";
         return false;
     }
 
@@ -423,7 +423,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     lidar_loc::grid_search_angle_step = yaml.GetValue<double>("lidar_loc", "grid_search_angle_step");
     lidar_loc::grid_search_angle_range = yaml.GetValue<double>("lidar_loc", "grid_search_angle_range");
 
-    LOG(INFO) << "min init confidence: " << options_.min_init_confidence_
+    LOG(INFO) << "event=LOC_MATCH_THRESHOLDS 匹配置信度阈值 min init confidence: " << options_.min_init_confidence_
               << ", min tracking confidence: " << options_.min_tracking_confidence_;
 
     // 阶段 5：加载地图并准备匹配目标。
@@ -462,19 +462,19 @@ bool LidarLoc::Init(const std::string& config_path) {
     } else if (relocalization_backend_name_ == "solid_kiss") {
         global_relocalizer_ = std::make_unique<SolidRelocalizer>();
     } else {
-        LOG(ERROR) << "unsupported global relocalization backend: "
+        LOG(ERROR) << "event=LOC_RELOCALIZER_UNSUPPORTED 不支持的全局重定位后端 backend="
                    << relocalization_backend_name_;
         return false;
     }
     if (!global_relocalizer_->Init(
             config_path, options_.map_option_.map_path_, ReadLidarToImu(root))) {
         if (export_options.normalize_start_ground_z) {
-            LOG(ERROR) << "normalized map requires a consistent "
-                       << relocalization_backend_name_ << " relocalization database";
+            LOG(ERROR) << "event=LOC_DATABASE_FRAME_INVALID 归一化地图要求坐标系一致的 "
+                       << relocalization_backend_name_ << " 重定位数据库";
             return false;
         }
         LOG(WARNING) << relocalization_backend_name_
-                     << " relocalization is unavailable; NDT localization remains enabled";
+                     << " 重定位不可用，继续启用 NDT 定位";
     }
 
     // 阶段 7：加入恢复位姿并启动地图线程。
@@ -516,12 +516,12 @@ bool LidarLoc::Init(const std::string& config_path) {
             match_failure_recorder_ = std::make_unique<diagnostics::MatchFailureRecorder>(
                 capture_options, std::move(context), EvidenceCloud(relocalization_static_map_));
             if (!match_failure_recorder_->Start())
-                LOG(WARNING) << "MATCH_FAILURE_CAPTURE unavailable; localization continues unchanged";
+                LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_UNAVAILABLE 匹配失败采集不可用，继续定位";
         } else if (capture_options.enabled) {
-            LOG(WARNING) << "MATCH_FAILURE_CAPTURE disabled: explicit archive root or validation map unavailable";
+            LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_DISABLED 未指定归档根目录或验证地图不可用，采集已禁用";
         }
     } catch (const std::exception& error) {
-        LOG(ERROR) << "MATCH_FAILURE_CAPTURE initialization failed: " << error.what();
+        LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_INIT_FAILED 匹配失败采集初始化失败 detail=" << error.what();
     }
 
     update_map_thread_ = std::thread([this]() { LidarLoc::UpdateMapThread(); });
@@ -537,7 +537,7 @@ bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
 
     if (cloud_input->empty() || cloud_input->size() < 50) {
         if (match_failure_recorder_) match_failure_recorder_->ObserveTracking(false);
-        LOG(WARNING) << "loc input is empty or invalid, sz: " << cloud_input->size();
+        LOG(WARNING) << "event=LOC_INPUT_INVALID 定位输入点云为空或无效 size=" << cloud_input->size();
         return false;
     }
 
@@ -693,8 +693,8 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
         index.emplace_back(i);
     }
 
-    LOG(INFO) << "init yaw: " << init_yaw << ", p: " << RPYXYZ.pitch << ", ro: " << RPYXYZ.roll << ", search from "
-              << searched_yaw.front() << " to " << searched_yaw.back();
+    LOG(INFO) << "event=LOC_INIT_SEARCH 初始化搜索 init yaw: " << init_yaw << ", p: " << RPYXYZ.pitch << ", ro: " << RPYXYZ.roll << ", 搜索范围从 "
+              << searched_yaw.front() << " 到 " << searched_yaw.back();
 
     // 粗分辨率
     std::for_each(index.begin(), index.end(), [&](int i) {
@@ -719,13 +719,13 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
     }
 
     if (confidence > options_.min_init_confidence_) {
-        LOG(INFO) << "init success, score: " << confidence << ", th=" << options_.min_init_confidence_;
+        LOG(INFO) << "event=LOC_INIT_MATCH_ACCEPTED 初始化匹配成功 score: " << confidence << ", th=" << options_.min_init_confidence_;
         Eigen::Vector3d suc_translation = pose.translation();
         Eigen::Matrix3d suc_rotation_matrix = pose.rotationMatrix();
         double suc_x = suc_translation.x();
         double suc_y = suc_translation.y();
         double suc_yaw = atan2(suc_rotation_matrix(1, 0), suc_rotation_matrix(0, 0));
-        LOG(INFO) << "localization init success, pose: " << suc_x << ", " << suc_y << ", " << suc_yaw
+        LOG(INFO) << "event=LOC_INIT_SUCCESS 定位初始化成功 pose: " << suc_x << ", " << suc_y << ", " << suc_yaw
                   << ", conf: " << confidence;
         yaw_search_success = true;
     }
@@ -764,8 +764,8 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
         last_abs_pose_ = pose_esti;
 
         current_score_ = fitness_score;
-        LOG(INFO) << "fitness_score is: " << fitness_score << ", global_pose is: " << fp_pose.translation().transpose();
-        LOG(INFO) << " [Loc init pose]: " << last_abs_pose_.translation().transpose();
+        LOG(INFO) << "event=LOC_INIT_SCORE 初始化匹配评分 fitness_score: " << fitness_score << ", global_pose: " << fp_pose.translation().transpose();
+        LOG(INFO) << "event=LOC_INIT_POSE 定位初始位姿 pose: " << last_abs_pose_.translation().transpose();
         map_height_ = fp_pose.translation()[2];
 
         if (current_lo_pose_set_) {
@@ -791,7 +791,7 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
         evidence.ndt = evidence.check = EvidencePose(pose_esti);
         RecordFailureEvidence(input,evidence);
         // 添加失败历史记录
-        LOG(INFO) << "init failed, score: " << fitness_score;
+        LOG(INFO) << "event=LOC_INIT_MATCH_FAILED 初始化匹配失败 score: " << fitness_score;
         fp_init_fail_pose_vec_.emplace_back(fp_pose);
         fp_last_tried_time_ = 1e-6 * static_cast<double>(input->header.stamp);
     }
@@ -851,7 +851,7 @@ bool LidarLoc::BuildRelocalizationMapCache() {
     CloudPtr static_map(new PointCloudType);
     if (pcl::io::loadPCDFile(global_map_path.string(), *static_map) != 0 ||
         static_map->empty()) {
-        LOG(ERROR) << "failed to load relocalization validation map: " << global_map_path;
+        LOG(ERROR) << "event=LOC_VALIDATION_MAP_FAILED 重定位验证地图加载失败 path=" << global_map_path;
         return false;
     }
 
@@ -864,7 +864,7 @@ bool LidarLoc::BuildRelocalizationMapCache() {
         maximum = maximum.cwiseMax(position);
     }
     if (!minimum.allFinite() || !maximum.allFinite()) {
-        LOG(ERROR) << "relocalization validation map has no finite points: " << global_map_path;
+        LOG(ERROR) << "event=LOC_VALIDATION_MAP_EMPTY 重定位验证地图没有有限点 path=" << global_map_path;
         return false;
     }
 
@@ -883,7 +883,7 @@ bool LidarLoc::BuildRelocalizationMapCache() {
     const double elapsed_ms = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - begin)
                                   .count();
-    LOG(INFO) << "cached relocalization validation map: points="
+    LOG(INFO) << "event=LOC_VALIDATION_MAP_CACHED 重定位验证地图缓存完成 points="
               << relocalization_static_map_->size()
               << ", workers=" << relocalization_kdtrees_.size()
               << ", build_ms=" << elapsed_ms
@@ -966,7 +966,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         // candidate. Never serialize default identity as a map alignment.
         RecordFailureEvidence(input,evidence);
         LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                     << "] rejected: reason=" << result->reason
+                     << "] event=LOC_RELOCALIZATION_REJECTED 全局重定位搜索被拒绝 reason=" << result->reason
                      << ", candidate=" << result->candidate_id << ", score=" << result->score
                      << ", points=" << result->point_count
                      << ", descriptors=" << result->descriptor_count
@@ -1056,7 +1056,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             evidence.min_confidence = std::numeric_limits<double>::quiet_NaN();
             remember_failure(evidence,1);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] candidate rejected by map precheck: candidate="
+                         << "] event=LOC_RELOCALIZATION_PRECHECK_REJECTED 候选未通过地图预检查 candidate="
                          << candidate.candidate_id << ", query_frames="
                          << candidate.query_submap_size << ", retrieval score=" << candidate.score
                          << ", pose=" << candidate.T_world_imu.translation().transpose()
@@ -1090,7 +1090,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             static_cast<std::size_t>(refinement_limit)) {
             LOG(INFO) << "GLOBAL_RELOCALIZATION["
                       << relocalization_backend_name_
-                      << "] limiting expensive refinements: map_precheck_passed="
+                      << "] event=LOC_RELOCALIZATION_REFINEMENT_LIMIT 限制高开销精配准数量 map_precheck_passed="
                       << refinement_indices.size()
                       << ", limit=" << refinement_limit;
             refinement_indices.resize(
@@ -1106,7 +1106,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             remember_failure(candidate_evidence(candidate,MatchStats{},EvidenceRecorder::Stage::kRefinement,
                 "refinement_target_unavailable",1,options_.relocalization_min_overlap_ratio_),2);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] candidate refinement target unavailable: candidate="
+                         << "] event=LOC_RELOCALIZATION_TARGET_UNAVAILABLE 候选精配准目标不可用 candidate="
                          << candidate.candidate_id << ", refinement_backend="
                          << options_.relocalization_refinement_backend_;
             continue;
@@ -1139,7 +1139,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             last_match_stats_.iterations = plane_result.iterations;
             last_match_stats_.success = refinement_accepted;
             LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                      << "] plane-ICP refinement: candidate="
+                      << "] event=LOC_RELOCALIZATION_PLANE_ICP 平面 ICP 精配准结果 candidate="
                       << candidate.candidate_id
                       << ", iterations=" << plane_result.iterations
                       << ", matches=" << plane_result.matches
@@ -1163,7 +1163,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                         input, plane_result.attempted_pose);
                 LOG(INFO) << "GLOBAL_RELOCALIZATION["
                           << relocalization_backend_name_
-                          << "] rejected plane-ICP attempted-pose diagnostic: candidate="
+                          << "] event=LOC_RELOCALIZATION_PLANE_ICP_REJECTED 平面 ICP 尝试位姿被拒绝 candidate="
                           << candidate.candidate_id << ", pose="
                           << plane_result.attempted_pose.translation().transpose()
                           << ", overlap="
@@ -1192,7 +1192,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             }
             remember_failure(evidence,2);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] candidate rejected by refinement/map: candidate="
+                         << "] event=LOC_RELOCALIZATION_CANDIDATE_REJECTED 候选未通过精配准或地图验证 candidate="
                          << candidate.candidate_id << ", retrieval score=" << candidate.score
                          << ", refinement_backend="
                          << options_.relocalization_refinement_backend_
@@ -1209,7 +1209,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             evidence.pose_available = {{true,true,last_match_stats_.map_consistency_evaluated}};
             remember_failure(evidence,3);
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] candidate rejected by refinement/map: candidate="
+                         << "] event=LOC_RELOCALIZATION_CANDIDATE_REJECTED 候选未通过精配准或地图验证 candidate="
                          << candidate.candidate_id << ", retrieval score=" << candidate.score
                          << ", refinement_backend="
                          << options_.relocalization_refinement_backend_
@@ -1280,7 +1280,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             evidence.pose_available = {{true,true,candidate_stats.map_consistency_evaluated}};
             RecordFailureEvidence(input,evidence);
             LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                      << "] awaiting confirmation: candidate="
+                      << "] event=LOC_RELOCALIZATION_CONFIRMING 等待重定位确认 candidate="
                       << candidate.candidate_id << ", count=" << confirmation_count
                       << "/" << options_.relocalization_confirmation_count_
                       << ", retrieval score=" << candidate.score
@@ -1331,7 +1331,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         pending_relocalization_ = PendingRelocalization{};
         global_relocalizer_->ResetQuery();
         LOG(INFO) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                  << "] accepted: candidate=" << candidate.candidate_id
+                  << "] event=LOC_RELOCALIZATION_ACCEPTED 全局重定位已接受 candidate=" << candidate.candidate_id
                   << ", query_frames=" << candidate.query_submap_size
                   << ", confirmations=" << accepted_confirmation_count
                   << ", retrieval score=" << candidate.score
@@ -1361,7 +1361,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     if (best_failed_candidate) RecordFailureEvidence(input,*best_failed_candidate);
     if (reuse_pending) pending_relocalization_ = PendingRelocalization{};
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                 << "] all Top-K candidates rejected: count="
+                 << "] event=LOC_RELOCALIZATION_ALL_REJECTED 所有 Top-K 候选均被拒绝 count="
                  << result->candidates.size() << ", search_ms=" << result->search_time_ms;
     std::ostringstream message;
     message << "Global relocalization failed: all candidates were rejected; count="
@@ -1585,7 +1585,7 @@ void LidarLoc::SaveRelocalizationBirdseye(const CloudPtr& static_map, const Clou
                     cv::LINE_AA);
         cv::imwrite((directory / (stem.str() + "_birdseye.png")).string(), image);
     } catch (const std::exception& error) {
-        LOG(WARNING) << "failed to save relocalization birdseye debug output: " << error.what();
+        LOG(WARNING) << "event=LOC_BIRDSEYE_SAVE_FAILED 重定位俯视调试图保存失败 detail=" << error.what();
     }
 }
 
@@ -1609,12 +1609,12 @@ bool LidarLoc::TryOtherSolution(CloudPtr input, SE3& pose) {
         float score_th = std::min(1.5 * current_score_, current_score_ + 0.3);
         if (fitness_score > score_th && fitness_score > 1.0) {
             // 显著好于现在的估计
-            LOG(WARNING) << "rtk solution is significantly better: " << fitness_score << " " << current_score_;
+            LOG(WARNING) << "event=LOC_RTK_ACCEPTED RTK 解明显更优 score=" << fitness_score << " " << current_score_;
             pose = pose_esti;
             localization_result_.lidar_loc_smooth_flag_ = false;
             return true;
         } else {
-            LOG(INFO) << "not using rtk solution: " << fitness_score << " " << current_score_;
+            LOG(INFO) << "event=LOC_RTK_REJECTED 未采用 RTK 解 score=" << fitness_score << " " << current_score_;
             return false;
         }
     }
@@ -1631,7 +1631,7 @@ bool LidarLoc::UpdateGlobalMap() {
             options_.relocalization_plane_icp_options_);
         plane_target_ready = plane_registration->SetTarget(map_->GetAllMap());
         if (!plane_target_ready) {
-            LOG(ERROR) << "failed to build plane-ICP target from the loaded local map";
+            LOG(ERROR) << "event=LOC_PLANE_ICP_TARGET_FAILED 无法从已加载的局部地图构建平面 ICP 目标";
         }
     }
 
@@ -1694,7 +1694,7 @@ bool LidarLoc::UpdateGlobalMap() {
 }
 
 void LidarLoc::UpdateMapThread() {
-    LOG(INFO) << "UpdateMapThread thread is running";
+    LOG(INFO) << "event=LOC_MAP_THREAD_STARTED 地图更新线程已启动";
     while (!update_map_quit_) {
         if (map_->MapUpdated() || map_->DynamicMapUpdated()) {
             UpdateGlobalMap();
@@ -1718,7 +1718,7 @@ void LidarLoc::SetInitialPose(SE3 init_pose) {
 
     initial_pose_set_ = true;
     initial_pose_ = init_pose;
-    LOG(INFO) << "Set initial pose is: " << initial_pose_.translation().transpose();
+    LOG(INFO) << "event=LOC_INITIAL_POSE 已设置初始位姿 pose=" << initial_pose_.translation().transpose();
 }
 
 void LidarLoc::RequestGlobalRelocalization() {
@@ -1732,7 +1732,7 @@ void LidarLoc::RequestGlobalRelocalization() {
     relocalization_event_active_ = true;
     if (global_relocalizer_) global_relocalizer_->ResetQuery();
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                 << "] requested";
+                 << "] event=LOC_RELOCALIZATION_REQUESTED 已请求全局重定位";
     debug_event::Emit("Global relocalization started");
 }
 
@@ -1746,7 +1746,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     current_timestamp_ = current_time;
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "current time: " << std::fixed << std::setprecision(12)
+        LOG(INFO) << "event=LOC_TIMESTAMP 当前定位时间 timestamp=" << std::fixed << std::setprecision(12)
                   << current_timestamp_;
     }
 
@@ -1754,7 +1754,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     profiling::Stopwatch assign_pose_profile_timer(profiling::ComputeProfilingEnabled());
     const bool lo_pose_assigned = AssignLOPose(current_time);
     if (!lo_pose_assigned) {
-        LOG(WARNING) << "assign LO pose failed";
+        LOG(WARNING) << "event=LOC_LO_POSE_UNAVAILABLE 无法获取激光里程计位姿";
     }
     debug_event::ReportState("lidar_loc_lo_pose_assignment", !lo_pose_assigned,
                              "Lidar localization could not assign an LO pose",
@@ -1763,7 +1763,7 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     const bool dr_pose_assigned = AssignDRPose(current_time);
     if (!dr_pose_assigned) {
-        LOG(WARNING) << "assign DR pose failed";
+        LOG(WARNING) << "event=LOC_DR_POSE_UNAVAILABLE 无法获取航位推算位姿";
     }
     debug_event::ReportState("lidar_loc_dr_pose_assignment", !dr_pose_assigned,
                              "Lidar localization could not assign a DR pose",
@@ -1799,14 +1799,14 @@ void LidarLoc::Align(const CloudPtr& input) {
     // 阶段 3：执行首次定位或重定位。
     if (!loc_inited_) {
         UL lock_init(initial_pose_mutex_);
-        if (!profiling::ReduceNonessentialOverhead()) LOG(INFO) << "initing lidarloc";
+        if (!profiling::ReduceNonessentialOverhead()) LOG(INFO) << "event=LOC_INITIALIZING 正在初始化激光定位";
         SetInitRltState();
         last_match_stats_ = MatchStats{};
 
         if (initial_pose_set_) {
             // 尝试在给定点初始化
             if (InitWithFP(input, initial_pose_)) {
-                LOG(INFO) << "init with external pose: " << initial_pose_.translation().transpose();
+                LOG(INFO) << "event=LOC_EXTERNAL_INITIAL_POSE 使用外部位姿初始化 pose=" << initial_pose_.translation().transpose();
                 initial_pose_set_ = false;
                 return;
             }
@@ -1823,13 +1823,13 @@ void LidarLoc::Align(const CloudPtr& input) {
                     (current_dr_pose_.so3().inverse() * last_tried_pose.so3()).log().norm() > 10 * M_PI / 180.0;
                 if (!should_try) {
                     if (!profiling::ReduceNonessentialOverhead()) {
-                        LOG(INFO) << "skip trying init, please move to another place.";
+                        LOG(INFO) << "event=LOC_INIT_RETRY_SKIPPED 跳过当前初始化尝试，请移至其他位置";
                     }
                     return;
                 }
             } else {
                 if (!profiling::ReduceNonessentialOverhead()) {
-                    LOG(INFO) << "fp tried pose: " << fp_init_fail_pose_vec_.size()
+                    LOG(INFO) << "event=LOC_FP_ATTEMPTS 固定点初始化尝试次数 count=" << fp_init_fail_pose_vec_.size()
                               << ", dr pose set: " << current_dr_pose_set_;
                 }
             }
@@ -1843,7 +1843,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                 AccumulateTiming(frame_profiling_.map_load,
                                  fp_map_load_profile_timer.Stop());
                 if (InitWithFP(input, fp.pose_)) {
-                    LOG(INFO) << "init with fp: " << fp.name_;
+                    LOG(INFO) << "event=LOC_FP_INITIALIZING 使用固定点初始化 name=" << fp.name_;
                     fp_init_success = true;
                     break;
                 }
@@ -1851,11 +1851,11 @@ void LidarLoc::Align(const CloudPtr& input) {
 
             if (!fp_init_success) {
                 if (!profiling::ReduceNonessentialOverhead()) {
-                    LOG(INFO) << "FP init failed.";
+                    LOG(INFO) << "event=LOC_FP_INIT_FAILED 固定点初始化失败";
                 }
                 if (current_dr_pose_set_) {
                     if (!profiling::ReduceNonessentialOverhead()) {
-                        LOG(INFO) << "record fp failed time: " << std::setprecision(12)
+                        LOG(INFO) << "event=LOC_FP_FAILURE_RECORDED 已记录固定点初始化失败 timestamp=" << std::setprecision(12)
                                   << current_time << ", pose: "
                                   << current_dr_pose_.translation().transpose();
                     }
@@ -1889,12 +1889,12 @@ void LidarLoc::Align(const CloudPtr& input) {
         guess_from_lo = last_abs_pose_ * delta;
 
         if (!profiling::ReduceNonessentialOverhead()) {
-            LOG(INFO) << "current lo pose: " << current_lo_pose_.translation().transpose();
-            LOG(INFO) << "last lo pose: " << last_lo_pose_.translation().transpose();
-            LOG(INFO) << "lo motion: " << delta.translation().transpose();
-            LOG(INFO) << "last abs pose: " << last_abs_pose_.translation().transpose();
+            LOG(INFO) << "event=LOC_LO_POSE 当前激光里程计位姿 pose=" << current_lo_pose_.translation().transpose();
+            LOG(INFO) << "event=LOC_LAST_LO_POSE 上次激光里程计位姿 pose=" << last_lo_pose_.translation().transpose();
+            LOG(INFO) << "event=LOC_LO_MOTION 激光里程计相对运动 delta=" << delta.translation().transpose();
+            LOG(INFO) << "event=LOC_LAST_ABS_POSE 上次绝对定位位姿 pose=" << last_abs_pose_.translation().transpose();
             // guess_from_lo.translation()[2] = 0;
-            LOG(INFO) << "loc using lo guess: " << guess_from_lo.translation().transpose();
+            LOG(INFO) << "event=LOC_LO_GUESS 使用激光里程计预测匹配初值 pose=" << guess_from_lo.translation().transpose();
         }
     }
     // [loc-lo-prior]
@@ -2025,7 +2025,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         loc_success = true;
     } else {
         if (!profiling::ReduceNonessentialOverhead()) {
-            LOG(INFO) << "loc success is false.";
+            LOG(INFO) << "event=LOC_MATCH_UNSUCCESSFUL 当前定位匹配未成功";
         }
     }
 
@@ -2092,7 +2092,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         last_timestamp_ = current_timestamp_;  // 成功时，更新上一时刻激光定位时间
     } else {
         current_score_ = fitness_score;
-        LOG(WARNING) << "localization failed! score: " << current_score_
+        LOG(WARNING) << "event=LOC_MATCH_FAILED 激光定位匹配失败 score: " << current_score_
                      << ", iterations=" << last_match_stats_.iterations
                      << ", raw_odom_valid=" << lidar_loc_odom_valid
                      << ", raw_odom_delta=" << delta_rel_abs_pose
@@ -2115,8 +2115,8 @@ void LidarLoc::Align(const CloudPtr& input) {
             global_relocalizer_->ResetQuery();
             pending_relocalization_ = PendingRelocalization{};
             LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
-                         << "] tracking lost after " << match_fail_count_
-                         << " consecutive rejected tracking matches";
+                         << "] event=LOC_TRACKING_LOST 激光定位跟踪丢失 consecutive_rejected_matches=" << match_fail_count_
+                         << "，已达到连续匹配拒绝阈值";
             std::ostringstream message;
             message << "Localization tracking lost after " << match_fail_count_
                     << " consecutive rejected tracking matches; global relocalization started";
@@ -2266,11 +2266,11 @@ bool LidarLoc::CheckLidarOdomValid(const SE3& current_pose_esti, double& delta_p
     bool valid = true;
 
     if (delta_posi > options_.lidar_loc_odom_th_ && last_lo_pose_set_) {
-        LOG(INFO) << "delta_rel_abs_pose is: " << delta_posi;
-        LOG(INFO) << "LO相对pose: " << last_lo_pose_.translation().transpose() << " "
+        LOG(INFO) << "event=LOC_REL_ABS_DELTA 相对与绝对定位位移差 delta=" << delta_posi;
+        LOG(INFO) << "激光里程计相对位姿 pose: " << last_lo_pose_.translation().transpose() << " "
                   << current_lo_pose_.translation().transpose() << " "
                   << (last_lo_pose_.inverse() * current_lo_pose_).translation().transpose();
-        LOG(INFO) << "Lidar Loc计算相对pose: " << last_abs_pose_.translation().transpose() << " "
+        LOG(INFO) << "激光定位计算相对位姿 pose: " << last_abs_pose_.translation().transpose() << " "
                   << current_pose_esti.translation().transpose() << " "
                   << (last_abs_pose_.inverse() * current_pose_esti).translation().transpose();
         lo_reliable_ = false;
@@ -2291,12 +2291,12 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     last_match_stats_.active_map_chunks = map_ ? map_->NumActiveChunks() : 0;
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "loc from: " << pose.translation().transpose();
+        LOG(INFO) << "event=LOC_MATCH_GUESS 定位匹配初值 pose=" << pose.translation().transpose();
     }
 
     if (pcl_ndt_->getInputTarget() == nullptr) {
         last_match_stats_.registration_reason = "ndt_target_unavailable";
-        LOG(INFO) << "lidar loc target is null, skip";
+        LOG(INFO) << "event=LOC_TARGET_EMPTY 定位目标点云为空，跳过匹配";
         return false;
     }
 
@@ -2355,12 +2355,12 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
         float a = angle_axis.angle();
         float d = (trans.block<3, 1>(0, 3) - adjust_trans.block<3, 1>(0, 3)).norm();
         if (!profiling::ReduceNonessentialOverhead()) {
-            LOG(INFO) << "icp adjust d: " << d << ", a: " << a;
+            LOG(INFO) << "event=LOC_ICP_CORRECTION ICP 校正量 d: " << d << ", a: " << a;
         }
 
         if (pcl_icp_->hasConverged() && std::fabs(d) <= 0.05 && std::fabs(a) <= 0.05) {
             if (!profiling::ReduceNonessentialOverhead()) {
-                LOG(INFO) << "icp ajust trans set success";
+                LOG(INFO) << "event=LOC_ICP_APPLIED 已应用 ICP 校正变换";
             }
             trans = adjust_trans;
         }
@@ -2385,7 +2385,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     }
 
     if (!profiling::ReduceNonessentialOverhead()) {
-        LOG(INFO) << "confidence: " << confidence << ", t: " << t_3d.transpose()
+        LOG(INFO) << "event=LOC_CONFIDENCE 定位匹配结果 confidence: " << confidence << ", t: " << t_3d.transpose()
                   << ", succ: " << loc_success;
     }
     last_match_stats_.success = loc_success;
@@ -2484,7 +2484,7 @@ bool LidarLoc::AssignDRPose(double timestamp) {
 
 void LidarLoc::Finish() {
     if (map_) {
-        LOG(INFO) << "saving maps";
+        LOG(INFO) << "event=LOC_MAP_SAVING 正在保存地图";
         update_map_quit_ = true;
         update_map_thread_.join();
 
@@ -2493,7 +2493,7 @@ void LidarLoc::Finish() {
         if (options_.map_option_.policy_ == TiledMap::DynamicCloudPolicy::PERSISTENT &&
             options_.map_option_.save_dyn_when_quit_ && !has_set_pose_) {
             map_->SaveToBin(true);
-            LOG(INFO) << "dynamic maps saved";
+            LOG(INFO) << "event=LOC_DYNAMIC_MAP_SAVED 动态地图已保存";
         }
         // [online-loc-map-save]
     }

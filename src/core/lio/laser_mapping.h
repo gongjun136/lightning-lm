@@ -123,7 +123,7 @@ class LaserMapping {
         scan_undistort_full_ = nullptr;
         scan_undistort_ = nullptr;
         scan_down_world_ = nullptr;
-        LOG(INFO) << "laser mapping deconstruct";
+        LOG(INFO) << "event=LIO_SHUTDOWN 激光惯性前端已退出";
     }
 
     /// 从yaml加载参数并初始化预处理器、IMU处理器、IVox局部地图和ESKF观测函数。

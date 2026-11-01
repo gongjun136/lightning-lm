@@ -14,6 +14,7 @@ import sys
 import time
 
 import compute_profile_report
+from localization_log_events import any_event, has_event, BOUNDARY_EVENTS, CONTEXT_EVENTS
 
 MIB = 1024 * 1024
 PROC = Path('/proc')
@@ -491,9 +492,13 @@ def record_runtime_protection(protections, key, line, row):
     else:
         title = '自适应雷达负载级别变化'
         evidence = {k: row[k] for k in ('processing_ms', 'latency_ms', 'tracking_healthy') if k in row}
-        transition = re.search(r'adaptive lidar load step (\d+)\s*->\s*(\d+)', line)
-        if transition:
-            evidence.update(from_step=int(transition[1]), to_step=int(transition[2]))
+        steps = [number(row.get(k)) for k in ('from_step', 'to_step')]
+        if all(step is not None and step >= 0 and step.is_integer() for step in steps):
+            evidence.update(from_step=int(steps[0]), to_step=int(steps[1]))
+        else:
+            transition = re.search(r'adaptive lidar load step (\d+)\s*->\s*(\d+)', line)
+            if transition:
+                evidence.update(from_step=int(transition[1]), to_step=int(transition[2]))
     entry = protections.setdefault(key, dict(key=key, title=title, count=0,
         first_time=row['_time'], first_ns=row_ns(row), first_source=row['_source']))
     entry['count'] += 1
@@ -502,11 +507,7 @@ def record_runtime_protection(protections, key, line, row):
 
 
 def is_boundary_context(text):
-    return any(marker in text for marker in (
-        'localization failed!', 'localization pose and map outputs disabled',
-        'localization pose and map outputs recovered', 'initial pose is not configured',
-        'sensor queue lag reached')) or (
-        'GLOBAL_RELOCALIZATION[' in text and '] accepted' in text)
+    return any_event(text, BOUNDARY_EVENTS)
 
 
 def log_rows(path, budget, warnings, reference=None, context=None,
@@ -542,19 +543,13 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                 modern = 'SAFETY_DIAGNOSTIC' in line
                 protection_key = None
                 if protections is not None:
-                    if 'drop stale lidar correction before matching:' in line:
+                    if has_event(line, 'LIO_STALE_CORRECTION_DROPPED'):
                         protection_key = 'stale_lidar_correction'
-                    elif 'adaptive lidar load step ' in line:
+                    elif has_event(line, 'LIO_ADAPTIVE_LOAD_CHANGED'):
                         protection_key = 'adaptive_lidar_load_step'
-                contextual = context is not None and any(marker in line for marker in (
-                    'initial pose is not configured', 'GLOBAL_RELOCALIZATION[',
-                    'SOLID_KISS_REJECT', 'failed to load SOLiD ICP cloud',
-                    'failed to build SOLiD+KISS target', 'failed to prepare SOLiD+KISS query',
-                    'ignore CAN wheel speed:', 'propagate over long imu interval:',
-                    'sensor queue lag ', 'drop stale lidar correction before matching:',
-                    'localization failed!', 'localization pose and map outputs disabled',
-                    'localization pose and map outputs stopped',
-                    'localization pose and map outputs recovered'))
+                contextual = context is not None and (
+                    any_event(line, CONTEXT_EVENTS) or
+                    any(marker in line for marker in ('GLOBAL_RELOCALIZATION[', 'SOLID_KISS_REJECT')))
                 if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual and not protection_key:
                     continue
                 row = fields(line)
@@ -998,7 +993,7 @@ def priority_summary(findings, matching):
     for key in dict.fromkeys(f['key'] for f in modern_states):
         latest_state = max((f for f in modern_states if f['key'] == key), key=lambda f: f.get('start_ns') or 0)
         add(f'新版判据 [{latest_state["code"]}]: {latest_state["title"]}；最近段 {latest_state["first_time"]}。', latest_state['onset_source'])
-        clue = next((c for c in latest_state.get('onset_context', []) if 'localization failed!' in c['text']), None)
+        clue = next((c for c in latest_state.get('onset_context', []) if has_event(c['text'], 'LOC_MATCH_FAILED')), None)
         if clue:
             text, config_used = matching_summary(clue, matching, '该判据起点附近匹配记录')
             add(text, clue['source'] + ('；配置: ' + matching['source'] if config_used else ''))
@@ -1009,18 +1004,20 @@ def priority_summary(findings, matching):
         add(f'首次已观测 -9: {first_severe["first_time"]}；当时判据: {"、".join(initial)}。', first_severe['onset_source'])
         seen_queue = set()
         for finding in sorted(severe, key=lambda f: f['start_ns']):
-            queue = next((c for c in finding.get('onset_context', []) if 'sensor queue lag reached' in c['text']), None)
+            queue = next((c for c in finding.get('onset_context', []) if has_event(c['text'], 'LOC_SENSOR_QUEUE_LAG')), None)
             if queue is None or queue['source'] in seen_queue:
                 continue
             lag = re.search(r'sensor queue lag reached\s+([\d.eE+-]+)\s+sec', queue['text'])
-            lag_sec = number(lag[1]) if lag else None
+            lag_sec = number(fields(queue['text']).get('lag_sec'))
+            if lag_sec is None and lag:
+                lag_sec = number(lag[1])
             if lag_sec is None:
                 continue
             seen_queue.add(queue['source'])
             text = (f'与 -9 起点 {finding["first_time"]} 相近的处理链线索: {queue["time"]} '
                     f'处理进度落后 {lag_sec:g}s（最新入队与最新处理的传感器时间差）。')
             source = queue['source']
-            stale = next((c for c in finding.get('onset_context', []) if 'drop stale lidar correction before matching:' in c['text']), None)
+            stale = next((c for c in finding.get('onset_context', []) if has_event(c['text'], 'LIO_STALE_CORRECTION_DROPPED')), None)
             if stale:
                 values = fields(stale['text'])
                 text += (f' {stale["time"]} 过期 LIO 校正被丢弃，age={values.get("age", "未知")}s，'
@@ -1033,7 +1030,7 @@ def priority_summary(findings, matching):
         first = min(losses, key=lambda f: f['start_ns'])
         add(f'首次已观测门控关闭: {first["first_time"]}，localization_lost=1；'
             f'output_age_sec={first["onset_evidence"].get("output_age_sec", "未知")}。', first['onset_source'])
-        clue = next((c for c in first.get('onset_context', []) if 'localization failed!' in c['text']), None)
+        clue = next((c for c in first.get('onset_context', []) if has_event(c['text'], 'LOC_MATCH_FAILED')), None)
         if clue:
             text, config_used = matching_summary(clue, matching)
             add(text, clue['source'] + ('；配置: ' + matching['source'] if config_used else ''))
@@ -1055,8 +1052,8 @@ def priority_summary(findings, matching):
             if longest.get('state') != 'recovered' and recovery:
                 state += '；后续已观测到原始码 0: ' + min(recovery, key=lambda f: f['end_ns'])['end_time']
             add(f'最长已观测门控关闭段: {longest["first_time"]} → {longest.get("end_time") or longest.get("last_time")}；{state}。', longest['onset_source'])
-        for marker, title in (('SOLID_KISS_REJECT', '该段最近保留的重定位拒绝'), ('] accepted', '该段重定位接受')):
-            clue = next((c for c in reversed(longest.get('context', [])) if marker in c['text']), None)
+        for marker, title in (('SOLID_KISS_REJECT', '该段最近保留的重定位拒绝'), ('LOC_RELOCALIZATION_ACCEPTED', '该段重定位接受')):
+            clue = next((c for c in reversed(longest.get('context', [])) if has_event(c['text'], marker)), None)
             if clue:
                 values = fields(clue['text'])
                 detail = ', '.join(f'{k}={values[k]}' for k in ('candidate', 'inliers', 'reason', 'overlap') if k in values)
@@ -1407,16 +1404,16 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         nearby_context = [c for c in context if start is not None and c['wall_ns'] is not None
                           and lower <= c['wall_ns'] <= upper]
         onset_context = []
-        for marker in ('localization failed!', 'localization pose and map outputs disabled'):
-            candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and marker in c['text']]
+        for marker in ('LOC_MATCH_FAILED', 'LOC_OUTPUT_DISABLED'):
+            candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and has_event(c['text'], marker)]
             before = [c for c in candidates if c['wall_ns'] <= start]
             after = [c for c in candidates if c['wall_ns'] > start]
-            clue = (before[-1] if before else None) if marker == 'localization failed!' else (after[0] if after else before[-1] if before else None)
+            clue = (before[-1] if before else None) if marker == 'LOC_MATCH_FAILED' else (after[0] if after else before[-1] if before else None)
             if clue is not None:
                 onset_context.append(clue)
         if finding['code'] == -9:
-            for marker in ('sensor queue lag reached', 'drop stale lidar correction before matching:'):
-                candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and marker in c['text']]
+            for marker in ('LOC_SENSOR_QUEUE_LAG', 'LIO_STALE_CORRECTION_DROPPED'):
+                candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and has_event(c['text'], marker)]
                 if candidates:
                     onset_context.append(min(candidates, key=lambda c: c['wall_ns']))
         finding['onset_context'] = [c for c in nearby_context if c in onset_context]

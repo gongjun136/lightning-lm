@@ -42,7 +42,7 @@ install(DIRECTORY config
 install(PROGRAMS scripts/diagnose_localization.sh scripts/diagnose_localization.py scripts/match_failure_birdseye.py
         scripts/compute_profile_report.py
         DESTINATION lib/${PROJECT_NAME})
-install(FILES scripts/diagnose_contract.json DESTINATION lib/${PROJECT_NAME})
+install(FILES scripts/diagnose_contract.json scripts/localization_log_events.py DESTINATION lib/${PROJECT_NAME})
 
 # Keep the offline analyzer synchronized with the actual Safety producer. This
 # check also runs in builds with BUILD_TESTING disabled; updating the manifest

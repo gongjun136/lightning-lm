@@ -163,7 +163,7 @@ class IMUFilter {
 
         // 判断为毛刺时用局部中位数替换，避免单点跳变进入后续积分。
         if (diff > threshold) {
-            LOG(INFO) << "find imu spike: " << diff << ", " << threshold;
+            LOG(INFO) << "event=IMU_SPIKE 检测到 IMU 尖峰 diff=" << diff << ", " << threshold;
             return median;
         }
 

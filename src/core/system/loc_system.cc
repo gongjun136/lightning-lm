@@ -120,7 +120,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     if (map_path.empty()) {
         const YAML::Node configured_map = root["system"] ? root["system"]["map_path"] : YAML::Node();
         if (!configured_map || configured_map.IsNull()) {
-            LOG(ERROR) << "online localization requires --map or system.map_path";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID 在线定位必须设置 --map 或 system.map_path";
             return false;
         }
         map_path = configured_map.as<std::string>();
@@ -129,18 +129,18 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     YAML::Node map_output;
     // 输出坐标与固定变换以地图包清单为依据，避免与当前地图使用不同的坐标约定。
     if (!map_manifest::LoadOutputConfig(map_path, map_output, fixed_transform_error)) {
-        LOG(ERROR) << "map output configuration rejected: " << fixed_transform_error;
+        LOG(ERROR) << "event=LOC_MAP_CONFIG_REJECTED 地图输出配置被拒绝 detail=" << fixed_transform_error;
         return false;
     }
     YAML::Node output_root;
     output_root["output"] = map_output;
     map_frame_ = map_output["map_frame"].as<std::string>();
     if (!sany_output::LoadFixedMapTransform(output_root, fixed_map_transform_, fixed_transform_error)) {
-        LOG(ERROR) << fixed_transform_error;
+        LOG(ERROR) << "event=LOC_MAP_FRAME_INVALID 地图坐标变换无效 detail=" << fixed_transform_error;
         return false;
     }
     if (fixed_map_transform_.enabled && fixed_map_transform_.target_frame != map_frame_) {
-        LOG(ERROR) << "output.fixed_map_transform.target_frame must match output.map_frame ("
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID output.fixed_map_transform.target_frame 必须与 output.map_frame 一致 ("
                    << map_frame_ << ")";
         return false;
     }
@@ -150,7 +150,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     if (root["output"] && root["output"]["primary_lidar_position_in_body"]) {
         const auto values = root["output"]["primary_lidar_position_in_body"].as<std::vector<double>>();
         if (values.size() != 3) {
-            LOG(ERROR) << "output.primary_lidar_position_in_body must have 3 values";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID output.primary_lidar_position_in_body 必须包含 3 个值";
             return false;
         }
         primary_lidar_position_in_body_ = Vec3d(values[0], values[1], values[2]);
@@ -161,7 +161,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             ? root["relocalization"]["lost_frame_threshold"].as<int>()
             : 5;
     if (lost_frame_threshold <= 0) {
-        LOG(ERROR) << "relocalization.lost_frame_threshold must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID relocalization.lost_frame_threshold 必须为正数";
         return false;
     }
     publication_gate_.SetLostFrameThreshold(static_cast<std::size_t>(lost_frame_threshold));
@@ -170,7 +170,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             ? root["system"]["localization_output_max_lidar_age_sec"].as<double>()
             : 0.5;
     if (!std::isfinite(max_lidar_match_age_sec) || max_lidar_match_age_sec <= 0.0) {
-        LOG(ERROR) << "system.localization_output_max_lidar_age_sec must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.localization_output_max_lidar_age_sec 必须为正数";
         return false;
     }
     publication_gate_.SetMaxLidarMatchAge(max_lidar_match_age_sec);
@@ -180,7 +180,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             : 0.0;
     if (!std::isfinite(online_lidar_input_max_timestamp_lag_sec_) ||
         online_lidar_input_max_timestamp_lag_sec_ < 0.0) {
-        LOG(ERROR) << "system.online_lidar_input_max_timestamp_lag_sec must be finite and non-negative";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.online_lidar_input_max_timestamp_lag_sec 必须为非负有限数";
         return false;
     }
     lidar_input_timestamp_gate_.SetMaximumLag(
@@ -197,7 +197,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         } else if (value == "1") {
             wheel_speed_observation_enabled_ = true;
         } else {
-            LOG(ERROR) << "SANY_ENABLE_CAN_OBSERVATION must be 0 or 1";
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID SANY_ENABLE_CAN_OBSERVATION 必须为 0 或 1";
             return false;
         }
     }
@@ -215,7 +215,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     if (wheel_speed_topic_.empty() || wheel_speed_topic_.front() != '/' ||
         !std::isfinite(wheel_speed_scale_mps_per_rpm_) ||
         wheel_speed_scale_mps_per_rpm_ <= 0.0) {
-        LOG(ERROR) << "invalid system wheel-speed topic or rpm conversion scale";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 轮速话题或转速换算比例无效";
         return false;
     }
     telemetry_ = std::make_unique<sany_output::LocalizationTelemetryState>(
@@ -223,18 +223,18 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
 
     // 阶段 3：创建节点并初始化算法。
     // 心跳与算法后台线程在此启动；ROS 订阅和定时器回调由后续 Spin() 调度。
-    LOG(INFO) << "online mode, creating ros2 node ... ";
+    LOG(INFO) << "event=LOC_NODE_CREATING 在线模式，正在创建 ROS 2 节点";
     node_ = std::make_shared<rclcpp::Node>("lightning_slam");
     try {
         heartbeat_ = std::make_unique<functional_safety::HeartbeatPublisher>(
             *node_, LoadHeartbeatConfig(*node_));
     } catch (const std::exception& error) {
-        LOG(ERROR) << "invalid functional safety heartbeat configuration: " << error.what();
+        LOG(ERROR) << "event=LOC_HEARTBEAT_CONFIG_INVALID 功能安全心跳配置无效 detail=" << error.what();
         return false;
     }
 
     if (!loc_->Init(yaml_path, map_path)) {
-        LOG(ERROR) << "failed to initialize online localization";
+        LOG(ERROR) << "event=LOC_INIT_FAILED 在线定位初始化失败";
         heartbeat_->SetState(functional_safety::NodeState::kFault);
         heartbeat_->PublishNow();
         return false;
@@ -255,7 +255,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 node_->get_parameter("functional_safety.heartbeat_topic").as_string(), Kind::kDiagnostic);
         }
     } catch (const std::exception& e) {
-        LOG(ERROR) << "INCIDENT_CAPTURE disabled: " << e.what();
+        LOG(ERROR) << "INCIDENT_CAPTURE event=INCIDENT_DISABLED 事件采集已禁用 detail=" << e.what();
         incident_recorder_.reset();
     }
     loc::dtc::Config dtc_config;
@@ -319,7 +319,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         if (dtc && dtc["config_version"]) dtc_config_version_ = dtc["config_version"].as<std::string>();
         if (dtc_config_version_.empty()) throw std::invalid_argument("empty DTC config version");
     } catch (const std::exception& error) {
-        LOG(ERROR) << "invalid DTC configuration: " << error.what(); return false;
+        LOG(ERROR) << "event=LOC_DTC_CONFIG_INVALID DTC 配置无效 detail=" << error.what(); return false;
     }
     LOG(INFO) << "LOCALIZATION_DIAGNOSTIC_BUILD schema=2 contract_id=" << diagnostics::kDiagnosticContract
               << " source_revision=" << diagnostics::kDiagnosticRevision
@@ -390,7 +390,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             ? lidar_qos_config["depth"].as<size_t>()
             : 5;
     if (lidar_qos_depth == 0) {
-        LOG(ERROR) << "system.lidar_qos.depth must be positive";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.lidar_qos.depth 必须为正数";
         return false;
     }
     const std::string lidar_qos_reliability =
@@ -404,10 +404,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     } else if (lidar_qos_reliability == "best_effort") {
         lidar_qos.best_effort();
     } else {
-        LOG(ERROR) << "system.lidar_qos.reliability must be reliable or best_effort";
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID system.lidar_qos.reliability 必须为 reliable 或 best_effort";
         return false;
     }
-    LOG(INFO) << "lidar input QoS: reliability=" << lidar_qos_reliability
+    LOG(INFO) << "event=LOC_LIDAR_QOS 雷达输入 QoS reliability=" << lidar_qos_reliability
               << ", depth=" << lidar_qos_depth;
 
     auto subscribe_imu = [this, &imu_qos](const std::string& topic) {
@@ -435,7 +435,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     if (loc_->IsMultiLidarEnabled()) {
         const auto* primary = loc_->GetMultiLidarConfig().PrimaryLidar();
         if (!primary) {
-            LOG(ERROR) << "multi-lidar primary sensor is missing";
+            LOG(ERROR) << "event=LOC_PRIMARY_LIDAR_MISSING 多雷达配置缺少主雷达";
             return false;
         }
         subscribe_imu(primary->imu_topic);
@@ -452,11 +452,11 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                                     !profiling::ReduceNonessentialOverhead());
                 }));
         }
-        LOG(INFO) << "online localization subscribed to " << cloud_subs_.size()
-                  << " lidar topics and primary IMU " << primary->imu_topic;
+        LOG(INFO) << "event=LOC_INPUT_SUBSCRIBED 在线定位已订阅，雷达话题数量=" << cloud_subs_.size()
+                  << "，主 IMU 话题=" << primary->imu_topic;
     } else {
         if (imu_topic_.empty() || (cloud_topic_.empty() && livox_topic_.empty())) {
-            LOG(ERROR) << "single-lidar online topics are incomplete";
+            LOG(ERROR) << "event=LOC_INPUT_TOPICS_INCOMPLETE 单雷达在线输入话题不完整";
             return false;
         }
         subscribe_imu(imu_topic_);
@@ -504,20 +504,20 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                     sizeof(*message) + bytes.buffer_capacity);
                 SanyWheelSpeedWire sample;
                 if (!DecodeSanyWheelSpeed(bytes.buffer, bytes.buffer_length, sample)) {
-                    LOG_EVERY_N(ERROR, 200) << "Rejected malformed/unsupported SpeThrCAN4 wire layout; bytes="
+                    LOG_EVERY_N(ERROR, 200) << "event=LOC_CAN_LAYOUT_REJECTED 拒绝格式错误或不支持的 SpeThrCAN4 消息布局 bytes="
                                             << bytes.buffer_length;
                     return;
                 }
-                LOG_FIRST_N(INFO, 1) << "CAN wire layout="
+                LOG_FIRST_N(INFO, 1) << "event=LOC_CAN_LAYOUT CAN 消息布局 layout="
                                     << (sample.has_comm_header ? "comm_header+Header+x+y" : "Header+x+y")
                                     << ", stamp=" << std::setprecision(16) << sample.stamp;
                 ObserveWheelSpeedInput(sample.stamp, sample.rpm, sample.torque);
             });
-        LOG(INFO) << "wheel-speed observation enabled: topic=" << wheel_speed_topic_
+        LOG(INFO) << "event=LOC_CAN_ENABLED 已启用轮速观测 topic=" << wheel_speed_topic_
                   << ", scale=" << std::setprecision(16)
                   << wheel_speed_scale_mps_per_rpm_ << " m/s/rpm";
     } else {
-        LOG(WARNING) << "wheel-speed observation disabled; using lidar/IMU-only fallback";
+        LOG(WARNING) << "event=LOC_CAN_DISABLED 已禁用轮速观测，使用激光与 IMU 定位";
     }
 
     // 阶段 6：建立业务输出并注册算法回调。
@@ -593,14 +593,14 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             std::make_shared<diagnostic_monitor_interfaces::msg::NodeHeartbeat>(msg),
             sizeof(msg) + msg.active_fault.capacity() * sizeof(std::uint32_t));
     });
-    LOG(INFO) << "online loc node has been created.";
+    LOG(INFO) << "event=LOC_NODE_READY 在线定位节点已创建";
     debug_event::Emit("Online localization node is ready");
     return true;
 }
 
 void LocSystem::SetInitPose(const SE3 &pose) {
     std::lock_guard<std::mutex> request_lock(initial_pose_request_mutex_);
-    LOG(INFO) << "set init pose: " << pose.translation().transpose() << ", "
+    LOG(INFO) << "event=LOC_INITIAL_POSE 设置初始位姿 pose=" << pose.translation().transpose() << ", "
               << pose.unit_quaternion().coeffs().transpose();
 
     // [online-loc-start-input]
@@ -683,12 +683,12 @@ void LocSystem::Finish() {
 
 bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
     if (path.empty()) {
-        LOG(ERROR) << "published TUM path must not be empty";
+        LOG(ERROR) << "event=LOC_TUM_PATH_INVALID 发布轨迹 TUM 路径不能为空";
         return false;
     }
     std::lock_guard<std::mutex> lock(published_tum_mutex_);
     if (published_tum_stream_.is_open()) {
-        LOG(ERROR) << "published TUM recorder is already open: " << published_tum_path_;
+        LOG(ERROR) << "event=LOC_TUM_ALREADY_OPEN 发布轨迹 TUM 记录器已经打开 path=" << published_tum_path_;
         return false;
     }
 
@@ -698,14 +698,14 @@ bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
         std::filesystem::create_directories(output_path.parent_path(), directory_error);
     }
     if (directory_error) {
-        LOG(ERROR) << "failed to create published TUM directory for " << path
+        LOG(ERROR) << "event=LOC_TUM_DIR_FAILED 发布轨迹 TUM 目录创建失败 path=" << path
                    << ": " << directory_error.message();
         return false;
     }
 
     published_tum_stream_.open(output_path, std::ios::out | std::ios::trunc);
     if (!published_tum_stream_) {
-        LOG(ERROR) << "failed to open published rear-axle TUM trajectory: " << path;
+        LOG(ERROR) << "event=LOC_TUM_OPEN_FAILED 后轴发布轨迹 TUM 文件打开失败 path=" << path;
         return false;
     }
     published_tum_path_ = path;
@@ -715,11 +715,11 @@ bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
     published_tum_stream_ << "# timestamp tx ty tz qx qy qz qw\n";
     published_tum_stream_.flush();
     if (!published_tum_stream_) {
-        LOG(ERROR) << "failed to initialize published rear-axle TUM trajectory: " << path;
+        LOG(ERROR) << "event=LOC_TUM_INIT_FAILED 后轴发布轨迹 TUM 文件初始化失败 path=" << path;
         published_tum_stream_.close();
         return false;
     }
-    LOG(INFO) << "recording published rear-axle poses to " << path;
+    LOG(INFO) << "event=LOC_TUM_RECORDING 正在记录后轴发布位姿 path=" << path;
     return true;
 }
 
@@ -730,7 +730,7 @@ void LocSystem::RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& po
             published_tum_stream_, pose, last_published_tum_timestamp_)) {
         ++published_tum_write_error_count_;
         LOG_EVERY_N(ERROR, 100)
-            << "failed to append published rear-axle TUM pose: stamp="
+            << "event=LOC_TUM_WRITE_FAILED 后轴发布轨迹 TUM 位姿追加失败 stamp="
             << std::setprecision(16) << ToSec(pose.header.stamp);
         return;
     }
@@ -738,7 +738,7 @@ void LocSystem::RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& po
     published_tum_stream_.flush();
     if (!published_tum_stream_) {
         ++published_tum_write_error_count_;
-        LOG(ERROR) << "failed to flush published rear-axle TUM trajectory: "
+        LOG(ERROR) << "event=LOC_TUM_FLUSH_FAILED 后轴发布轨迹 TUM 刷新失败 path="
                    << published_tum_path_;
         return;
     }
@@ -750,8 +750,8 @@ void LocSystem::ClosePublishedTrajectoryTum() {
     if (!published_tum_stream_.is_open()) return;
     published_tum_stream_.flush();
     published_tum_stream_.close();
-    LOG(INFO) << "wrote " << published_tum_pose_count_
-              << " published rear-axle poses to " << published_tum_path_
+    LOG(INFO) << "event=LOC_TRAJECTORY_SAVED 轨迹已保存 count=" << published_tum_pose_count_
+              << " 条后轴发布位姿 path=" << published_tum_path_
               << ", write_errors=" << published_tum_write_error_count_;
 }
 
@@ -769,7 +769,7 @@ bool LocSystem::WriteTrajectoryTum(const std::string& path, const std::vector<Na
                                    const char* description) const {
     std::ofstream tum(path);
     if (!tum.is_open()) {
-        LOG(ERROR) << "failed to open online localization trajectory: " << path;
+        LOG(ERROR) << "event=LOC_TRAJECTORY_OPEN_FAILED 在线定位轨迹文件打开失败 path=" << path;
         return false;
     }
     double last_timestamp = 0.0;
@@ -788,7 +788,7 @@ bool LocSystem::WriteTrajectoryTum(const std::string& path, const std::vector<Na
         last_timestamp = state.timestamp_;
         ++count;
     }
-    LOG(INFO) << "wrote " << count << " " << description << " poses to " << path;
+    LOG(INFO) << "event=LOC_TRAJECTORY_SAVED 轨迹已保存 count=" << count << " " << description << " 条位姿 path=" << path;
     return count > 0;
 }
 
@@ -813,7 +813,7 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto timestamp_decision = pose_timestamp_gate_.Observe(result.timestamp_);
     if (!timestamp_decision.accepted) {
         std::ostringstream message;
-        message << "Dropped non-monotonic pose_vel output: timestamp="
+        message << "event=LOC_POSE_TIMESTAMP_ROLLBACK 丢弃时间戳非递增的 pose_vel 输出 timestamp="
                 << std::setprecision(16) << result.timestamp_
                 << ", last_accepted=" << timestamp_decision.reference_timestamp
                 << ", rollback_sec=" << timestamp_decision.lag_sec;
@@ -1002,7 +1002,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     if (!eligible) {
         ++cloud_publish_suppressed_count_;
         LOG_EVERY_N(WARNING, 10)
-            << "suppress fused cloud publication: present_lidars="
+            << "event=LOC_CLOUD_SUPPRESSED 抑制融合点云发布 present_lidars="
             << stats.present_lidar_ids.size() << ", missing_lidars="
             << stats.missing_lidar_ids.size();
         return;
@@ -1187,17 +1187,17 @@ void LocSystem::PublishHealthStatus() {
     if (map_outputs_enabled) {
         const bool had_enabled_output = map_outputs_ever_enabled_.exchange(true);
         if (had_enabled_output && !map_outputs_were_enabled) {
-            LOG(WARNING) << "localization pose and map outputs recovered after a fresh valid lidar match";
+            LOG(WARNING) << "event=LOC_OUTPUT_RECOVERED 新鲜有效的激光匹配已到达，恢复定位位姿和地图输出";
         }
     } else if (map_outputs_were_enabled) {
         if (lidar_match_stale) {
-            LOG(WARNING) << "localization pose and map outputs stopped after lidar timeout: "
+            LOG(WARNING) << "event=LOC_OUTPUT_STOPPED 激光匹配超时，停止定位位姿和地图输出 "
                          << "lidar_match_age_sec="
                          << publication_gate_.LidarMatchAgeSec(latest_input_sensor_stamp)
                          << ", consecutive_lost_frames="
                          << publication_gate_.ConsecutiveLostFrames();
         } else {
-            LOG(ERROR) << "localization pose and map outputs disabled after rejected localization: "
+            LOG(ERROR) << "event=LOC_OUTPUT_DISABLED 定位结果被拒绝，禁用定位位姿和地图输出 "
                        << "consecutive_lost_frames="
                        << publication_gate_.ConsecutiveLostFrames();
         }
@@ -1307,7 +1307,7 @@ bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
     }
     if (!timestamp_decision.accepted) {
         std::ostringstream message;
-        message << "Dropped stale or invalid lidar input: lidar_id="
+        message << "event=LOC_LIDAR_INPUT_DROPPED 丢弃过期或无效的雷达输入 lidar_id="
                 << lidar_id << ", timestamp=" << std::setprecision(16) << sensor_stamp
                 << ", newest_timestamp=" << timestamp_decision.reference_timestamp
                 << ", lag_sec=" << timestamp_decision.lag_sec

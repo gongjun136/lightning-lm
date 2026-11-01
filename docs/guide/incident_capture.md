@@ -49,6 +49,20 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
+## 定位日志与事件码
+
+定位程序自身输出的自然语言日志正文使用中文，诊断使用稳定的 `event=` 大写事件码识别事件。机器字段、单位和枚举值，以及 ROS、DDS 和第三方库原始错误 detail 保留原文。`SAFETY_DIAGNOSTIC`、`LOCALIZATION_DIAGNOSTIC_BUILD`、`LOCALIZATION_DTC_CONFIG`、`GLOBAL_RELOCALIZATION[backend]`、`SOLID_KISS_REJECT`、`SOLID_KISS_ACCEPT`、`COMPUTE_BENCH_*` 和 `LIO_BENCH_FRAME` 等结构化标签保留；字段名、数值、时间戳和日志级别保持原有契约。长中文日志超过原有 8192 字节上限时，在完整 UTF-8 字符边界截断并标记 `async_truncated`，因此不能假定正文完整。
+
+常见事件码包括 `LOC_INITIAL_POSE_UNSET`、`LOC_MATCH_FAILED`、`LOC_OUTPUT_DISABLED`、`LOC_OUTPUT_STOPPED`、`LOC_OUTPUT_RECOVERED`、`LOC_SENSOR_QUEUE_LAG`、`LOC_SENSOR_QUEUE_RECOVERED`、`LIO_STALE_CORRECTION_DROPPED`、`LIO_ADAPTIVE_LOAD_CHANGED`、`LOC_RELOCALIZATION_ACCEPTED`、`LOC_TRACKING_LOST`、`LOC_CAN_SPEED_IGNORED`、`IMU_LONG_INTERVAL`、`SOLID_CLOUD_LOAD_FAILED`、`SOLID_TARGET_BUILD_FAILED` 和 `SOLID_QUERY_PREPARE_FAILED`。队列延迟使用 `lag_sec`，自适应负载级别变化使用 `from_step`（变化前级别）和 `to_step`（变化后级别）；`age`、`hard_deadline`、`processing_ms`、`latency_ms`、`tracking_healthy` 等原有字段仍按原名称读取。
+
+例如，以下仅为格式示意，并非实际采集结果，也不能据此判断物理根因：
+
+```text
+event=LOC_MATCH_FAILED 激光定位匹配失败 score: 2.28, map_checked=1, map_overlap=0.72
+```
+
+历史英文日志没有事件码时，`scripts/diagnose_localization.sh` 调用的诊断逻辑继续按旧规则识别；日志存在显式大写事件码时，即使该码暂不被识别，也不再根据正文猜测事件。新增或修改源码日志时，应同步维护诊断解析与回归用例，并按下方开发同步检查审查合同。日志文本和事件码的调整不改变 Safety 消息、采集触发条件或 CSV/JSON schema；现场应以实际运行版本和证据为准。
+
 ## 匹配失败点云证据
 
 普通 tracking 拒绝、启动 seed 和全局重定位候选均提供取证，独立保存在 `runs/match_failures`。配置位于 `diagnostics.match_failure_capture`；启动器导出 `SANY_MATCH_FAILURE_DIR=$out_root/match_failures` 并写入 `run_metadata.match_failure_dir`。应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。
