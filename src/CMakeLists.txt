@@ -267,6 +267,8 @@ if(BUILD_TESTING)
     add_test(NAME laser_mapping_projection_test COMMAND $<TARGET_FILE:laser_mapping_projection_test>)
     add_test(NAME laser_mapping_timing_test COMMAND $<TARGET_FILE:laser_mapping_timing_test>)
     add_test(NAME debug_event_test COMMAND $<TARGET_FILE:debug_event_test>)
+    add_test(NAME debug_event_language_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_debug_event_language.py)
 endif()
 
 add_subdirectory(app)

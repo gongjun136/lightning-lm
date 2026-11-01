@@ -207,7 +207,7 @@ bool PGO::ProcessDR(const NavState& dr_result) {
             LOG(WARNING) << "当前DR定位的结果的时间戳应当比上一个时间戳数值大，实际相减得"
                          << dr_result.timestamp_ - last_stamp;
             std::ostringstream message;
-            message << "Rejected DR timestamp rollback: rollback_sec="
+            message << "拒绝 DR 时间戳回退: rollback_sec="
                     << last_stamp - dr_result.timestamp_;
             debug_event::EmitThrottled("pgo_dr_timestamp_rollback", message.str(),
                                        std::chrono::seconds(1));
@@ -290,7 +290,7 @@ bool PGO::ProcessLidarOdom(const NavState& lio_result) {
         if (lio_result.timestamp_ < last_stamp) {
             LOG(WARNING) << "当前LidarOdom定位时间戳回退，实际相减得" << lio_result.timestamp_ - last_stamp;
             std::ostringstream message;
-            message << "Rejected lidar odometry timestamp rollback: rollback_sec="
+            message << "拒绝激光里程计时间戳回退: rollback_sec="
                     << last_stamp - lio_result.timestamp_;
             debug_event::EmitThrottled("pgo_lidar_odom_timestamp_rollback", message.str(),
                                        std::chrono::seconds(1));
@@ -347,7 +347,7 @@ bool PGO::CheckStationaryMapConsistency(const LocalizationResult& loc_result) {
                << " rotation_deg=" << rotation_deg
                << " held_xyz=[" << parking_result_.pose_.translation().transpose()
                << "] match_xyz=[" << loc_result.pose_.translation().transpose() << "]";
-    debug_event::Emit("Stationary held pose conflicts with map localization; outputs stopped and relocalization requested");
+    debug_event::Emit("静止保持位姿与地图定位冲突，已停止输出并请求重定位");
     parking_result_.valid_ = false;
     impl_->result_.valid_ = false;
     is_parking_ = false;
@@ -368,8 +368,8 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
     // 如果相对位姿(DR和LidarOdom有一个即可)还没来，也退出
     const bool relative_pose_queue_empty = RelativePoseQueueEmpty();
     debug_event::ReportState("pgo_waiting_for_relative_pose", relative_pose_queue_empty,
-                             "PGO is waiting for lidar odometry or DR",
-                             "PGO relative-pose input recovered",
+                             "PGO 正在等待激光里程计或 DR 输入",
+                             "PGO 相对位姿输入已恢复",
                              std::chrono::milliseconds(500));
     if (relative_pose_queue_empty) {
         LOG(WARNING) << "event=PGO_WAIT_RELATIVE_POSE PGO 已收到激光定位，正在等待激光里程计或航位推算";
@@ -386,7 +386,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
                      << ", hold release watermark="
                      << static_hold_release_watermark_;
         std::ostringstream message;
-        message << "Rejected parked-epoch lidar localization after hold release: age_sec="
+        message << "静止保持解除后，拒绝旧静止周期的激光定位结果: age_sec="
                 << static_hold_release_watermark_ - loc_result.timestamp_;
         debug_event::EmitThrottled("pgo_lidar_loc_parked_epoch_drop", message.str(),
                                    std::chrono::seconds(1));
@@ -408,7 +408,7 @@ bool PGO::ProcessLidarLoc(const LocalizationResult& loc_result) {
         if (lidar_loc_delta_t < 0) {
             LOG(ERROR) << "lidar loc 时间回退: " << lidar_loc_delta_t;
             std::ostringstream message;
-            message << "Rejected lidar localization timestamp rollback: rollback_sec="
+            message << "拒绝激光定位时间戳回退: rollback_sec="
                     << -lidar_loc_delta_t;
             debug_event::EmitThrottled("pgo_lidar_loc_timestamp_rollback", message.str(),
                                        std::chrono::seconds(1));
@@ -593,8 +593,8 @@ bool PGO::ExtrapolateLocResult(LocalizationResult& output_result) {
         imu_interruption_tag_ = false;
     }
     debug_event::ReportState("pgo_dr_interruption", imu_interruption_tag_,
-                             "DR input is stale; possible IMU interruption",
-                             "DR input recovered after possible IMU interruption",
+                             "DR 输入已过期，可能发生 IMU 断流",
+                             "DR 输入已恢复（此前疑似 IMU 断流）",
                              std::chrono::milliseconds(500));
 
     // 用LO外推到最新时刻

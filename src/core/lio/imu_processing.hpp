@@ -404,7 +404,7 @@ inline void ImuProcess::UndistortPcl(const MeasureGroup &meas, ESKF &kf_state, C
             LOG(WARNING) << "event=IMU_LONG_INTERVAL IMU 递推间隔过长 dt_sec=" << dt << ", lidar: " << pcl_beg_time << " -> "
                          << pcl_end_time;
             std::ostringstream message;
-            message << "IMU propagation interval is too long: interval_sec=" << dt
+            message << "IMU 递推间隔过长: interval_sec=" << dt
                     << ", warning_threshold_sec=" << warn_dt;
             debug_event::EmitThrottled("long_imu_propagation_interval", message.str(),
                                        std::chrono::seconds(1));

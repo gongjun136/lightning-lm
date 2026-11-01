@@ -151,7 +151,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
         LOG(ERROR) << "event=PGO_RELATIVE_POSE_FAILED PGO 无法为收到的帧获取相对位姿";
         debug_event::EmitThrottled(
             "pgo_relative_pose_assignment_failed",
-            "PGO could not assign a relative pose to an optimization frame",
+            "PGO 无法为优化帧获取相对位姿",
             std::chrono::seconds(1));
         return false;
     }
@@ -183,7 +183,7 @@ bool PGOImpl::AddPGOFrame(std::shared_ptr<PGOFrame> pgo_frame) {
                    << " frames=" << frames_.size();
         debug_event::EmitThrottled(
             "pgo_optimization_failed",
-            "PGO optimization failed; invalidating output and rebuilding the graph",
+            "PGO 优化失败，输出已失效，正在重建位姿图",
             std::chrono::seconds(1));
 
         result_ = LocalizationResult{};

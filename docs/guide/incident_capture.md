@@ -53,6 +53,8 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 定位程序自身输出的自然语言日志正文使用中文，诊断使用稳定的 `event=` 大写事件码识别事件。机器字段、单位和枚举值，以及 ROS、DDS 和第三方库原始错误 detail 保留原文。`SAFETY_DIAGNOSTIC`、`LOCALIZATION_DIAGNOSTIC_BUILD`、`LOCALIZATION_DTC_CONFIG`、`GLOBAL_RELOCALIZATION[backend]`、`SOLID_KISS_REJECT`、`SOLID_KISS_ACCEPT`、`COMPUTE_BENCH_*` 和 `LIO_BENCH_FRAME` 等结构化标签保留；字段名、数值、时间戳和日志级别保持原有契约。长中文日志超过原有 8192 字节上限时，在完整 UTF-8 字符边界截断并标记 `async_truncated`，因此不能假定正文完整。
 
+`/localization/debug_message` 的 `lightning/msg/DebugMessage.message` 人类可读正文也使用中文，覆盖节点就绪、首次定位、全局重定位开始/失败/接受及 LIO、ESKF、PGO、平滑器异常与恢复等事件。原有数值字段名、单位、枚举值及原始 `reason`/`detail` 保留，便于诊断；`header` 时间戳、`node_name`、ROS 话题和消息结构，以及内部限频键和状态键不变。上述日志的 `event=` 规则不新增消息字段：`DebugMessage` 仍为 `header`、`node_name` 和 `message`，正文中已有的 `event=` 文本仍可能出现。
+
 常见事件码包括 `LOC_INITIAL_POSE_UNSET`、`LOC_MATCH_FAILED`、`LOC_OUTPUT_DISABLED`、`LOC_OUTPUT_STOPPED`、`LOC_OUTPUT_RECOVERED`、`LOC_SENSOR_QUEUE_LAG`、`LOC_SENSOR_QUEUE_RECOVERED`、`LIO_STALE_CORRECTION_DROPPED`、`LIO_ADAPTIVE_LOAD_CHANGED`、`LOC_RELOCALIZATION_ACCEPTED`、`LOC_TRACKING_LOST`、`LOC_CAN_SPEED_IGNORED`、`IMU_LONG_INTERVAL`、`SOLID_CLOUD_LOAD_FAILED`、`SOLID_TARGET_BUILD_FAILED` 和 `SOLID_QUERY_PREPARE_FAILED`。队列延迟使用 `lag_sec`，自适应负载级别变化使用 `from_step`（变化前级别）和 `to_step`（变化后级别）；`age`、`hard_deadline`、`processing_ms`、`latency_ms`、`tracking_healthy` 等原有字段仍按原名称读取。
 
 例如，以下仅为格式示意，并非实际采集结果，也不能据此判断物理根因：

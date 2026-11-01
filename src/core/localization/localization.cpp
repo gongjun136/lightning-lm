@@ -730,8 +730,8 @@ bool Localization::ShouldThrottleLidarInput(double timestamp) {
                   << " sec；恢复雷达输入";
     }
     debug_event::ReportState("sensor_queue_overload", throttled,
-                             "Sensor queue overloaded",
-                             "Sensor queue recovered from overload",
+                             "传感器队列过载",
+                             "传感器队列已从过载状态恢复",
                              std::chrono::seconds(2));
 
     if (throttled) {
@@ -775,7 +775,7 @@ void Localization::ObserveSensorProcessed(double timestamp) {
     }
     if (severe_rollback) {
         std::ostringstream message;
-        message << "Processed sensor timestamp rolled back severely: rollback_sec="
+        message << "已处理传感器数据的时间戳严重回退: rollback_sec="
                 << rollback << ", timestamp=" << std::setprecision(16) << timestamp;
         debug_event::EmitThrottled("processed_sensor_timestamp_rollback", message.str(),
                                    std::chrono::seconds(1));
@@ -907,8 +907,8 @@ bool Localization::UpdateImuStaticState(const IMUPtr& imu) {
     }
     debug_event::ReportState("can_imu_timestamp_mismatch",
                              wheel_speed_observed_ && !fresh_wheel_speed,
-                             "No fresh causal CAN sample at IMU epoch; using IMU/LIO fallback",
-                             "Fresh causal CAN sample recovered",
+                             "IMU 当前时刻未找到新鲜的 CAN 历史样本，回退至 IMU/LIO",
+                             "有效的新鲜 CAN 历史样本已恢复",
                              std::chrono::seconds(1));
     const bool wheel_reports_stationary =
         fresh_wheel_speed && std::abs(wheel_speed_mps) < kEnterWheelSpeed;
@@ -1211,7 +1211,7 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     if (last_imu_time_ > 0 && this_imu_time < last_imu_time_) {
         LOG(WARNING) << "IMU 时间异常：" << this_imu_time << ", last: " << last_imu_time_;
         std::ostringstream message;
-        message << "Rejected IMU timestamp rollback: rollback_sec="
+        message << "拒绝 IMU 时间戳回退: rollback_sec="
                 << last_imu_time_ - this_imu_time;
         debug_event::EmitThrottled("imu_timestamp_rollback", message.str(),
                                    std::chrono::seconds(1));
@@ -1281,8 +1281,8 @@ void Localization::ProcessIMUData(IMUPtr imu) {
     const bool static_hold_active = UpdateImuStaticState(imu);
     debug_event::ReportState(
         "imu_static_hold", static_hold_active,
-        "Entered conservative IMU static hold",
-        "Exited conservative IMU static hold",
+        "已进入保守 IMU 静止保持状态",
+        "已退出保守 IMU 静止保持状态",
         std::chrono::seconds(1));
     lio_->SetIMUStaticHold(static_hold_active);
     dr_state = lio_->GetIMUState();

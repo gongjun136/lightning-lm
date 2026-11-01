@@ -41,7 +41,7 @@ void LogCovarianceStats(const CovType& P, const char* stage) {
         LOG(WARNING) << "event=ESKF_EIGENSOLVER_FAILED ESKF 协方差特征值求解失败 stage=" << stage;
         lightning::debug_event::EmitThrottled(
             "eskf_covariance_eigensolver_failed",
-            "ESKF covariance eigensolver failed",
+            "ESKF 协方差特征值求解失败",
             std::chrono::seconds(1));
         return;
     }
@@ -92,7 +92,7 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
                 LOG(WARNING) << "event=ESKF_COVARIANCE_NONFINITE 协方差矩阵 P 存在非有限值 value=" << P(i, j);
                 lightning::debug_event::EmitThrottled(
                     "eskf_covariance_non_finite",
-                    "ESKF covariance contained a non-finite value and was repaired",
+                    "ESKF 协方差包含非有限值，已修复",
                     std::chrono::seconds(1));
                 P(i, j) = (i == j) ? min_cov_diag : 0.0;
             }
@@ -109,7 +109,7 @@ void SymmetrizeAndFloorCovariance(CovType& P, double min_cov_diag) {
         LOG(WARNING) << "event=ESKF_PSD_RESET ESKF 协方差半正定投影失败，已重置为对角下限";
         lightning::debug_event::EmitThrottled(
             "eskf_covariance_reset",
-            "ESKF covariance could not be projected to PSD and was reset",
+            "ESKF 协方差无法投影为半正定矩阵（PSD），已重置",
             std::chrono::seconds(1));
         P = CovType::Identity() * min_cov_diag;
         return;
@@ -506,7 +506,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(WARNING) << "event=ESKF_DECOMPOSITION_FAILED ESKF 观测信息矩阵分解失败";
             debug_event::EmitThrottled(
                 "eskf_observation_decomposition_failed",
-                "ESKF rejected an observation because information decomposition failed",
+                "ESKF 观测信息分解失败，已拒绝该观测",
                 std::chrono::seconds(1));
             continue;
         }
@@ -541,7 +541,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 观测方差无效，拒绝 ESKF 更新 variance=" << R;
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because observation variance was invalid",
+                "ESKF 观测方差无效，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
@@ -558,7 +558,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 先验协方差非正定，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because prior covariance was not positive definite",
+                "ESKF 先验协方差非正定，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
@@ -572,7 +572,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 信息矩阵包含非有限值，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because the information matrix was non-finite",
+                "ESKF 信息矩阵包含非有限值，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
@@ -584,7 +584,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 后验信息矩阵非正定，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because posterior information was not positive definite",
+                "ESKF 后验信息矩阵非正定，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
@@ -604,7 +604,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
             LOG(ERROR) << "event=ESKF_UPDATE_REJECTED 求解增量包含非有限值，拒绝 ESKF 更新";
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because the solved increment was non-finite",
+                "ESKF 求解增量包含非有限值，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;
@@ -639,7 +639,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                              << ", dba: " << dba << ", dgrav: " << dgrav;
                 debug_event::EmitThrottled(
                     "eskf_update_degraded",
-                    "ESKF degraded a lidar update to preserve inertial states",
+                    "ESKF 已降级激光更新以保留惯性状态",
                     std::chrono::seconds(1));
                 return true;
             }
@@ -692,7 +692,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                              << ", limit: " << options_.max_update_velocity_step_;
                 debug_event::EmitThrottled(
                     "eskf_update_degraded",
-                    "ESKF degraded a lidar update to pose-only because the velocity step was too large",
+                    "ESKF 速度更新增量过大，已将激光更新降级为仅更新位姿",
                     std::chrono::seconds(1));
                 apply_lidar_limited_update(true, true);
             }
@@ -728,7 +728,7 @@ void ESKF::Update(ESKF::ObsType obs, const double& R) {
                        << ", dvel: " << dx_velocity;
             debug_event::EmitThrottled(
                 "eskf_update_rejected",
-                "ESKF rejected an update because the state increment was too large",
+                "ESKF 状态增量过大，已拒绝更新",
                 std::chrono::seconds(1));
             x_ = start_x;
             P_ = P_propagated;

@@ -719,14 +719,14 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         ++pre_imu_drop_count_;
         last_tracking_healthy_ = false;
         debug_event::ReportState("lio_missing_imu", true,
-                                 "LIO lidar frame has no covering IMU data",
-                                 "LIO IMU coverage recovered",
+                                 "LIO 雷达帧缺少覆盖该帧的 IMU 数据",
+                                 "LIO IMU 数据覆盖已恢复",
                                  std::chrono::milliseconds(500));
         return RunStatus::kConsumed;
     }
     debug_event::ReportState("lio_missing_imu", false,
-                             "LIO lidar frame has no covering IMU data",
-                             "LIO IMU coverage recovered",
+                             "LIO 雷达帧缺少覆盖该帧的 IMU 数据",
+                             "LIO IMU 数据覆盖已恢复",
                              std::chrono::milliseconds(500));
 
     const double lidar_gap =
@@ -735,8 +735,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         LOG(ERROR) << "检测到雷达断流，时长：" << lidar_gap
                    << "；跳过不连续帧并重置 IMU 积分衔接";
         std::ostringstream message;
-        message << "Lidar stream interrupted for " << lidar_gap
-                << " sec; skipped frame and reset IMU integration";
+        message << "雷达数据流中断，持续 " << lidar_gap
+                << " sec；已跳过当前帧并重置 IMU 积分";
         debug_event::EmitThrottled("lidar_stream_interruption", message.str(),
                                    std::chrono::seconds(1));
         auto safe_state = kf_.GetX();
@@ -859,16 +859,16 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         last_tracking_healthy_ = false;
         if (!flg_first_scan_) {
             debug_event::ReportState("lio_empty_scan", true,
-                                     "LIO produced an empty undistorted scan",
-                                     "LIO scan output recovered",
+                                     "LIO 去畸变后点云为空",
+                                     "LIO 点云输出已恢复",
                                      std::chrono::milliseconds(500));
         }
         emit_pipeline_benchmark("empty_scan", 0);
         return RunStatus::kConsumed;
     }
     debug_event::ReportState("lio_empty_scan", false,
-                             "LIO produced an empty undistorted scan",
-                             "LIO scan output recovered",
+                             "LIO 去畸变后点云为空",
+                             "LIO 点云输出已恢复",
                              std::chrono::milliseconds(500));
     last_lidar_latency_sec_ = latest_input_sensor_timestamp_ > 0.0
                                   ? std::max(0.0, latest_input_sensor_timestamp_ - measures_.lidar_end_time_)
@@ -881,18 +881,18 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                      << last_lidar_latency_sec_ << " sec, hard_deadline="
                      << multi_lidar_config_.adaptive_load.hard_latency_sec;
         std::ostringstream message;
-        message << "Dropped stale lidar correction: age_sec="
+        message << "已丢弃过期激光校正: age_sec="
                 << last_lidar_latency_sec_ << ", hard_deadline_sec="
                 << multi_lidar_config_.adaptive_load.hard_latency_sec;
         debug_event::ReportState("stale_lidar_correction", true, message.str(),
-                                 "Lidar correction latency recovered",
+                                 "激光校正延迟已恢复",
                                  std::chrono::milliseconds(500));
         emit_pipeline_benchmark("hard_stale", 0);
         return RunStatus::kConsumed;
     }
     debug_event::ReportState("stale_lidar_correction", false,
-                             "Dropped stale lidar correction",
-                             "Lidar correction latency recovered",
+                             "已丢弃过期激光校正",
+                             "激光校正延迟已恢复",
                              std::chrono::milliseconds(500));
     profiling::Stopwatch selection_profile_timer(profiling_enabled);
     if (multi_lidar_config_.enabled) {
@@ -907,8 +907,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                 << "event=LIO_SOURCES_INSUFFICIENT 可用雷达未达到当前定位最低要求，跳过当前帧";
             debug_event::ReportState(
                 "insufficient_lidar_sources", true,
-                "Available lidar sources do not satisfy the localization minimum",
-                "Available lidar sources recovered",
+                "可用雷达输入未达到定位最低要求",
+                "可用雷达输入已恢复",
                 std::chrono::milliseconds(500));
             selection_timing = selection_profile_timer.Stop();
             emit_pipeline_benchmark("empty_selection", 0);
@@ -916,8 +916,8 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         }
         debug_event::ReportState(
             "insufficient_lidar_sources", false,
-            "Available lidar sources do not satisfy the localization minimum",
-            "Available lidar sources recovered",
+            "可用雷达输入未达到定位最低要求",
+            "可用雷达输入已恢复",
             std::chrono::milliseconds(500));
     } else {
         scan_undistort_ = scan_undistort_full_;
@@ -1191,7 +1191,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
                      << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
                      << ", tracking_healthy=" << last_tracking_healthy_;
         std::ostringstream message;
-        message << "Adaptive lidar load step changed: " << old_adaptive_step
+        message << "自适应雷达负载级别变化: " << old_adaptive_step
                 << " -> " << new_adaptive_step
                 << ", processing_ms=" << last_frame_processing_ms_
                 << ", latency_ms=" << last_lidar_latency_sec_ * 1e3
@@ -1431,7 +1431,7 @@ bool LaserMapping::EnqueueCloud(double timestamp, CloudPtr cloud, const MultiLid
         LOG(ERROR) << "event=LIO_TIMESTAMP_ROLLBACK 融合雷达时间戳回退，丢弃当前帧 timestamp=" << std::setprecision(14) << timestamp
                    << " < " << last_timestamp_lidar_;
         std::ostringstream message;
-        message << "Dropped fused lidar frame with timestamp rollback: timestamp="
+        message << "丢弃时间戳回退的融合雷达帧: timestamp="
                 << std::setprecision(14) << timestamp
                 << ", last_timestamp=" << last_timestamp_lidar_;
         debug_event::EmitThrottled("fused_lidar_timestamp_rollback", message.str(),

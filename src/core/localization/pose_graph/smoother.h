@@ -37,7 +37,7 @@ class PoseSmoother {
                          << timestamp << ", speed_mps=" << speed_mps;
             debug_event::EmitThrottled(
                 "smoother_invalid_dr_metadata",
-                "Pose smoother rejected invalid DR metadata",
+                "位姿平滑器拒绝无效的 DR 元数据",
                 std::chrono::seconds(1));
             motion_effective_ = false;
             return false;
@@ -61,7 +61,7 @@ class PoseSmoother {
                              << timestamp << " <= " << dr_queue_.back().timestamp;
                 debug_event::EmitThrottled(
                     "smoother_dr_timestamp_rollback",
-                    "Pose smoother rejected a non-increasing DR timestamp",
+                    "位姿平滑器拒绝非递增的 DR 时间戳",
                     std::chrono::seconds(1));
                 motion_effective_ = false;
                 return false;
@@ -80,7 +80,7 @@ class PoseSmoother {
                              << ", dt=" << dt << ", speed_mps=" << reference_speed
                              << ", allowed_distance=" << allowed_distance;
                 std::ostringstream message;
-                message << "Pose smoother rejected a motion jump: distance_m="
+                message << "位姿平滑器拒绝运动突变: distance_m="
                         << distance << ", allowed_distance_m=" << allowed_distance;
                 debug_event::EmitThrottled("smoother_motion_jump", message.str(),
                                            std::chrono::seconds(1));
@@ -141,7 +141,7 @@ class PoseSmoother {
                          << ", output:" << output_pose_.translation().transpose();
             debug_event::EmitThrottled(
                 "smoother_output_jump",
-                "Pose smoother diverged from its target and was reset",
+                "位姿平滑器偏离目标，已重置",
                 std::chrono::seconds(1));
             output_pose_ = pose;
             pose_queue_.clear();

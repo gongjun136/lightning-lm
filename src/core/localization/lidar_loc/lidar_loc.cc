@@ -932,7 +932,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
     // 阶段 2：检查检索结果并建立统计。
     if (!relocalization_event_active_) {
         relocalization_event_active_ = true;
-        debug_event::Emit("Global relocalization started");
+        debug_event::Emit("开始全局重定位");
     }
 
     MatchStats summary;
@@ -963,7 +963,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                      << ", descriptors=" << result->descriptor_count
                      << ", search_ms=" << result->search_time_ms;
         std::ostringstream message;
-        message << "Global relocalization search failed: reason=" << result->reason
+        message << "全局重定位搜索失败: reason=" << result->reason
                 << ", candidate=" << result->candidate_id
                 << ", score=" << result->score
                 << ", search_ms=" << result->search_time_ms;
@@ -1332,7 +1332,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                   << ", interval=" << confirmation_interval
                   << ", pose=" << current_abs_pose_.translation().transpose();
         std::ostringstream message;
-        message << "Global relocalization accepted; PGO reset requested: candidate="
+        message << "全局重定位已接受，已请求重置 PGO: candidate="
                 << candidate.candidate_id
                 << ", confirmations=" << accepted_confirmation_count
                 << ", retrieval_score=" << candidate.score
@@ -1354,7 +1354,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                  << "] event=LOC_RELOCALIZATION_ALL_REJECTED 所有 Top-K 候选均被拒绝 count="
                  << result->candidates.size() << ", search_ms=" << result->search_time_ms;
     std::ostringstream message;
-    message << "Global relocalization failed: all candidates were rejected; count="
+    message << "全局重定位失败，所有候选均被拒绝: count="
             << result->candidates.size()
             << ", search_ms=" << result->search_time_ms;
     debug_event::Emit(message.str());
@@ -1720,7 +1720,7 @@ void LidarLoc::RequestGlobalRelocalization() {
     if (global_relocalizer_) global_relocalizer_->ResetQuery();
     LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                  << "] event=LOC_RELOCALIZATION_REQUESTED 已请求全局重定位";
-    debug_event::Emit("Global relocalization started");
+    debug_event::Emit("开始全局重定位");
 }
 
 void LidarLoc::Align(const CloudPtr& input) {
@@ -1744,8 +1744,8 @@ void LidarLoc::Align(const CloudPtr& input) {
         LOG(WARNING) << "event=LOC_LO_POSE_UNAVAILABLE 无法获取激光里程计位姿";
     }
     debug_event::ReportState("lidar_loc_lo_pose_assignment", !lo_pose_assigned,
-                             "Lidar localization could not assign an LO pose",
-                             "Lidar localization LO pose assignment recovered",
+                             "激光定位未能获取 LO 位姿",
+                             "激光定位获取 LO 位姿已恢复",
                              std::chrono::milliseconds(500));
 
     const bool dr_pose_assigned = AssignDRPose(current_time);
@@ -1753,8 +1753,8 @@ void LidarLoc::Align(const CloudPtr& input) {
         LOG(WARNING) << "event=LOC_DR_POSE_UNAVAILABLE 无法获取航位推算位姿";
     }
     debug_event::ReportState("lidar_loc_dr_pose_assignment", !dr_pose_assigned,
-                             "Lidar localization could not assign a DR pose",
-                             "Lidar localization DR pose assignment recovered",
+                             "激光定位未能获取 DR 位姿",
+                             "激光定位获取 DR 位姿已恢复",
                              std::chrono::milliseconds(500));
     frame_profiling_.assign_pose = assign_pose_profile_timer.Stop();
 
@@ -2100,8 +2100,8 @@ void LidarLoc::Align(const CloudPtr& input) {
                          << "] event=LOC_TRACKING_LOST 激光定位跟踪丢失 consecutive_rejected_matches=" << match_fail_count_
                          << "，已达到连续匹配拒绝阈值";
             std::ostringstream message;
-            message << "Localization tracking lost after " << match_fail_count_
-                    << " consecutive rejected tracking matches; global relocalization started";
+            message << "激光定位连续 " << match_fail_count_
+                    << " 帧匹配被拒绝，跟踪已丢失，开始全局重定位";
             debug_event::Emit(message.str());
             relocalization_event_active_ = true;
         }

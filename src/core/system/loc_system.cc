@@ -594,7 +594,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             sizeof(msg) + msg.active_fault.capacity() * sizeof(std::uint32_t));
     });
     LOG(INFO) << "event=LOC_NODE_READY 在线定位节点已创建";
-    debug_event::Emit("Online localization node is ready");
+    debug_event::Emit("在线定位节点已就绪");
     return true;
 }
 
@@ -982,22 +982,22 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
     }
     if (result.status_ == loc::LocalizationStatus::GOOD) {
         if (!localization_ever_good_.exchange(true)) {
-            debug_event::Emit("Localization is available for the first time");
+            debug_event::Emit("定位结果首次可用");
         }
     }
     if (localization_ever_good_.load()) {
         debug_event::ReportState(
             "localization_following_dr",
             result.status_ == loc::LocalizationStatus::FOLLOWING_DR,
-            "Localization degraded; pose outputs stopped pending a valid match",
-            "Localization recovered from dead reckoning",
+            "定位质量降级，暂停位姿输出，等待有效匹配",
+            "定位已从航位推算状态恢复",
             std::chrono::milliseconds(300));
     }
     // 阶段 2：检查点云发布条件。
     debug_event::ReportState(
         "fused_cloud_suppressed", !eligible,
-        "Fused cloud publication suppressed because too few lidars are available",
-        "Fused cloud publication recovered",
+        "可用雷达数量不足，暂停发布融合点云",
+        "融合点云发布已恢复",
         std::chrono::milliseconds(500));
     if (!eligible) {
         ++cloud_publish_suppressed_count_;
@@ -1174,13 +1174,13 @@ void LocSystem::PublishHealthStatus() {
         fault_status.level == lightning::msg::FaultStatus::LEVEL_P0;
     debug_event::ReportState(
         "localization_lost", localization_lost,
-        "Localization lost; pose and map-frame outputs are disabled",
-        "Localization recovered after loss",
+        "定位已丢失，已禁用位姿和地图坐标系输出",
+        "定位已从丢失状态恢复",
         std::chrono::milliseconds(0));
     debug_event::ReportState(
         "lidar_match_stale", !localization_lost && lidar_match_stale,
-        "Localization pose and map outputs stopped because the lidar match is stale",
-        "Localization pose and map outputs recovered after a fresh lidar match",
+        "激光匹配已过期，已停止定位位姿和地图输出",
+        "新鲜激光匹配已到达，定位位姿和地图输出已恢复",
         std::chrono::milliseconds(500));
     const bool map_outputs_were_enabled =
         map_outputs_enabled_last_.exchange(map_outputs_enabled);
