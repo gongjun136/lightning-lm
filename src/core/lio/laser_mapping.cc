@@ -44,6 +44,7 @@ namespace lightning {
  *
  * @param config_yaml LIO 配置文件路径。
  * @return 配置成功返回 true；参数加载失败返回 false。
+ * @note 文件读取及部分 YAML 转换可能向外传播异常。
  */
 bool LaserMapping::Init(const std::string &config_yaml) {
     // 阶段 1：读取并验证运行配置。
@@ -91,6 +92,12 @@ bool LaserMapping::Init(const std::string &config_yaml) {
     return true;
 }
 
+/**
+ * @brief 从 YAML 配置前端的传感器、地图、滤波器及运行策略。
+ * @param yaml_file 配置文件路径。
+ * @return 显式校验成功返回 true；校验失败或已捕获的转换错误返回 false。
+ * @note 文件读取及未被捕获的 YAML 转换异常会向外传播。
+ */
 bool LaserMapping::LoadParamsFromYAML(const std::string &yaml_file) {
     // get params from yaml
     int lidar_type, ivox_nearby_type;
@@ -591,7 +598,7 @@ void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
  *
  * @par 主要流程
  * 1. <b>检查输入及时间顺序</b>：拒绝无效量测、重复时间戳和时间倒退。
- * 2. <b>执行入口陀螺预滤波</b>：按配置复制并平滑角速度，保留调用者的原始量测。
+ * 2. <b>执行入口陀螺预滤波</b>：启用时复制样本并平滑角速度，保留调用者的原始量测。
  * 3. <b>推进已初始化的高频状态</b>：从 kf_imu_ 当前时刻预测，并在成功推进后应用轮速与静止约束。
  * 4. <b>记录样本并入队</b>：保存连续积分端点，将同一预处理样本交给后续同步。
  *
@@ -600,7 +607,8 @@ void LaserMapping::ResetWheelSpeedIntegrationBridge(double timestamp) {
  * @note 高频预测只在 IMU 初始化后执行；初始化前的合格样本仍然入队。
  * PredictTo() 只积分滤波状态尚未覆盖的正时间间隔，输入检查后持有的缓存锁覆盖后续处理。
  *
- * @param raw_imu 原始 IMU 样本，时间戳单位为秒。
+ * @param raw_imu 原始 IMU 样本，传感器时间戳单位为秒。
+ * @note 样本可能被缓存共享；调用者在提交后应保持其内容不变。
  */
 void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
     // 阶段 1：检查输入及时间顺序。
@@ -633,7 +641,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
 
     // 阶段 3：推进已初始化的高频状态。
     if (p_imu_->IsIMUInited()) {
-        /// 更新最新imu状态
+        // 更新最新imu状态
         Vec3d raw_acc = imu->linear_acceleration;
         Vec3d gyro = imu->angular_velocity;
         if (high_frequency_previous_imu_ && high_frequency_previous_imu_->timestamp < timestamp &&
@@ -656,7 +664,7 @@ void LaserMapping::ProcessIMU(const lightning::IMUPtr &raw_imu) {
 
         // LOG(INFO) << "newest wrt lidar: " << timestamp - kf_.GetX().timestamp_;
 
-        /// 更新ui
+        // 更新ui
         if (ui_) {
             ui_->UpdateNavState(kf_imu_.GetX());
         }
@@ -954,7 +962,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
         skip_lidar_cnt_ = skip_lidar_cnt_ % skip_lidar_num_;
 
         if (skip_lidar_cnt_ != 0) {
-            /// 更新UI中的内容
+            // 更新UI中的内容
             if (ui_) {
                 ui_->UpdateNavState(kf_.GetX());
                 ui_->UpdateScan(scan_undistort_, kf_.GetX().GetPose());
@@ -992,9 +1000,9 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     int cur_pts = scan_down_lidar_->size();
 
     // 如果yaml配置的体素分辨率导致点数过少，则临时用0.1m重新降采样。
-    // 这是一个保护分支：保证观测模型至少有足够点参与匹配。
+    // 这是一个保护分支：尝试增加参与匹配的点数。
     if (cur_pts < (scan_undistort_->size() * 0.1) || cur_pts < options_.min_pts) {
-        /// 降采样太狠了,有效点数不够，用0.1分辨率代替
+        // 降采样太狠了,有效点数不够，用0.1分辨率代替
         // LOG(INFO) << "too few points, using 0.1 resol";
         if (multi_lidar_config_.enabled) {
             scan_down_lidar_ = DownsamplePreservingSource(scan_undistort_, 0.1);
@@ -1146,7 +1154,7 @@ LaserMapping::RunStatus LaserMapping::RunDetailed() {
     // }
 
     // 阶段 6：按关键帧条件维护地图与负载策略。
-    /// keyframes - 智能关键帧创建决策
+    // keyframes - 智能关键帧创建决策
     // 只有创建关键帧时才会调用MakeKF()，而MakeKF()内部会把当前帧点云增量加入IVox地图。
     // 因此关键帧阈值也间接控制了局部地图更新频率。
     profiling::Stopwatch map_update_profile_timer(profiling_enabled);
@@ -1343,24 +1351,28 @@ void LaserMapping::ProjectKFs(CloudPtr cloud, int size_limit) {
 /**
  * @brief 创建当前Lidar帧对应的关键帧，并维护关键帧列表与局部地图。
  * @details 关键帧会继承当前ESKF状态；优化位姿优先沿用上一关键帧的优化位姿递推。
- *          SLAM模式下额外保存到全局关键帧序列，并将当前帧增量加入IVox局部地图。
+ *          SLAM 模式下保存到全局关键帧序列；两种模式均增量更新 IVox。
+ * @par 主要流程
+ * 1. 创建关键帧并递推优化位姿。
+ * 2. 记录状态并按模式保存关键帧。
+ * 3. 更新最新关键帧及局部地图。
+ * 4. 按配置维护投影关键帧队列。
  */
 void LaserMapping::MakeKF() {
-    // 创建关键帧对象，包含ID、点云和当前状态
+    // 阶段 1：创建关键帧并递推优化位姿。
     Keyframe::Ptr kf = std::make_shared<Keyframe>(kf_id_++, scan_undistort_, state_point_);
 
     if (last_kf_) {
-        /// opt pose 用之前的递推
+        // opt pose 用之前的递推
         SE3 delta = last_kf_->GetLIOPose().inverse() * kf->GetLIOPose();
         // 基于上一关键帧的优化位姿递推当前关键帧的优化位姿
-        // TODO. 这里为什么不用LIO前端里程计 kf->SetOptPose(kf->GetLIOPose())
         kf->SetOptPose(last_kf_->GetOptPose() * delta);
     } else {
         // 第一个关键帧：优化位姿直接使用LIO位姿
         kf->SetOptPose(kf->GetLIOPose());
     }
 
-    // 设置关键帧的ESKF状态信息
+    // 阶段 2：记录状态并按模式保存关键帧。
     kf->SetState(state_point_);
 
     // 记录关键帧创建信息
@@ -1377,18 +1389,19 @@ void LaserMapping::MakeKF() {
         all_keyframes_.emplace_back(kf);
     }
 
-    // 更新最新关键帧指针
+    // 阶段 3：更新最新关键帧及局部地图。
     last_kf_ = kf;
 
     // 有keyframes时更新local map
     Timer::Evaluate([&, this]() { MapIncremental(); }, "    Incremental Mapping");
 
+    // 阶段 4：按配置维护投影关键帧队列。
     if (!options_.proj_kfs_ || options_.max_proj_kfs_ <= 0) {
         proj_kfs_.clear();
         return;
     }
 
-    /// 更新project kfs
+    // 更新project kfs
     if (proj_kfs_.size() >= options_.max_proj_kfs_) {
         auto last = proj_kfs_.back();
 
@@ -1526,11 +1539,13 @@ bool LaserMapping::ProcessPointCloud2(CloudPtr cloud, int lidar_id) {
     UL lock(mtx_buffer_);
     if (!cloud) return false;
     const double timestamp = math::ToSec(cloud->header.stamp);
+    // 多雷达模式：先组帧，再入队
     if (multi_lidar_config_.enabled) {
         const bool accepted = multi_lidar_assembler_.AddCloud(lidar_id, timestamp, cloud);
         DrainAssembledFrames();
         return accepted;
     }
+    // 单雷达模式：直接入队
     return EnqueueCloud(timestamp, std::move(cloud));
 }
 
@@ -1564,7 +1579,7 @@ bool LaserMapping::SyncPackages() {
     }
 
     // 阶段 2：确定当前激光时间窗口。
-    /*** push a lidar scan ***/
+    // 准备一帧激光扫描窗口。
     if (!lidar_pushed_) {
         measures_.scan_ = lidar_buffer_.front();
         measures_.lidar_begin_time_ = time_buffer_.front();
@@ -1585,7 +1600,7 @@ bool LaserMapping::SyncPackages() {
                 (measures_.scan_->points.back().time / double(1000) - lidar_mean_scantime_) / scan_num_;
 
             if ((lidar_end_time_ - measures_.lidar_begin_time_) > 5 * lo::lidar_time_interval) {
-                /// timestamp 有异常
+                // 点内时间异常
                 lidar_end_time_ = measures_.lidar_begin_time_ + lo::lidar_time_interval;
                 lidar_mean_scantime_ = lo::lidar_time_interval;
             }
@@ -1607,7 +1622,7 @@ bool LaserMapping::SyncPackages() {
     }
     // [lio-wait-for-imu]
 
-    /*** push imu_ data, and pop from imu_ buffer ***/
+    // 将 IMU 数据写入同步包并从缓冲队列移出。
     // 最新 IMU 覆盖扫描末才到这里；严格大于末时刻的消息留在队列中。
     // 若初始队首恰等于扫描末，外层 < 条件不会进入；不能将 true 理解为必有 IMU。
     // [sensor-sync-consume-imu]
@@ -1675,7 +1690,7 @@ void LaserMapping::MapIncremental() {
     }
 
     // 阶段 2：变换并按邻域筛选地图点。
-    // TODO. 这里的逻辑不太对，导致体素边缘的点可能较为密集
+    // 此筛选可能导致体素边缘的点较为密集。
     std::for_each(index.begin(), index.end(), [&](const size_t &i) {
         /* transform to world frame */
         PointBodyToWorld(scan_down_lidar_->points[i], scan_down_world_->points[i]);
@@ -1732,7 +1747,7 @@ void LaserMapping::MapIncremental() {
         "    IVox Add Points");
 }
 
-/// 按量程与入射角计算点面观测信息缩放；关闭噪声模型时返回 1。
+// 按量程与入射角计算点面观测信息缩放；关闭噪声模型时返回 1。
 double LaserMapping::PointInformationScale(const PointType &point, const Vec3d &plane_normal_world,
                                            const NavState &state) const {
     if (!point_noise_enabled_) return 1.0;
@@ -1796,7 +1811,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 PointType &point_lidar = scan_down_lidar_->points[i];
                 PointType &point_world = scan_down_world_->points[i];
 
-                /// 将点从当前帧Lidar坐标系变换到世界坐标系，用于在局部地图中查最近邻。
+                // 将点从当前帧Lidar坐标系变换到世界坐标系，用于在局部地图中查最近邻。
                 Vec3f p_lidar = point_lidar.getVector3fMap();
                 point_world.getVector3fMap() = R_wl * p_lidar + t_wl;
                 point_world.intensity = point_lidar.intensity;
@@ -1804,23 +1819,23 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                 auto &points_near = nearest_points_[i];
                 points_near.clear();
 
-                /// 在IVox地图中搜索当前世界系点附近的地图点，后续用这些点拟合局部平面。
+                // 在IVox地图中搜索当前世界系点附近的地图点，后续用这些点拟合局部平面。
                 ivox_->GetClosestPoint(point_world, points_near, fasterlio::NUM_MATCH_POINTS);
                 point_selected_surf_[i] = points_near.size() >= fasterlio::MIN_NUM_MATCH_POINTS;
 
                 // 点到点ICP复用同一批最近邻。只有能找到足够最近邻的点才有资格参与点到点约束。
                 point_selected_icp_[i] = point_selected_surf_[i];
 
-                /// 最近邻数量足够时，尝试拟合局部平面，plane_coef_[i] = [nx, ny, nz, d]。
+                // 最近邻数量足够时，尝试拟合局部平面，plane_coef_[i] = [nx, ny, nz, d]。
                 if (point_selected_surf_[i]) {
                     point_selected_surf_[i] =
                         math::esti_plane(plane_coef_[i], points_near, fasterlio::ESTI_PLANE_THRESHOLD);
                 }
-                /// 平面拟合和有效性验证
+                // 平面拟合和有效性验证
                 if (point_selected_surf_[i]) {
                     auto temp = point_world.getVector4fMap();
                     temp[3] = 1.0;
-                    float pd2 = plane_coef_[i].dot(temp);  ///< 计算点到平面的距离（有符号）
+                    float pd2 = plane_coef_[i].dot(temp);  // 计算点到平面的有符号距离。
                     // 根据点面残差和量测距离做经验筛选，剔除几何关系不可靠的匹配。
                     // 该条件等价于 FAST-LIO 中的 s = 1 - 0.9 * fabs(pd2) / sqrt(range), s > 0.9。
                     // 化简后得到 range > 81 * pd2^2，因此这里应使用 p_lidar.norm() 而不是 squaredNorm()。
@@ -1882,8 +1897,8 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     const Vec3f off_t = offset_t_lidar_fixed_.cast<float>();
     const Mat3f Rt = s.rot_.matrix().transpose().cast<float>();
 
-    /// 点面ICP部分：每个有效点贡献一个标量残差 r = - point_to_plane_distance。
-    /// 观测只约束6维位姿，因此最终累加到6x6的HTH_和6x1的HTr_。
+    // 点面ICP部分：每个有效点贡献一个标量残差 r = - point_to_plane_distance。
+    // 观测只约束6维位姿，因此最终累加到6x6的HTH_和6x1的HTr_。
     obs.HTH_.setZero();
     obs.HTr_.setZero();
 
@@ -1903,15 +1918,15 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
         const int end = std::min(effect_feat_surf_, (block + 1) * kReductionBlockSize);
         for (int i = block * kReductionBlockSize; i < end; ++i) {
             // [lio-plane-jacobian]
-            Vec3f point_this_be = corr_pts_[i].head<3>();      //< lidar坐标系下的点
-            Vec3f point_this = off_R * point_this_be + off_t;  ///< IMU坐标系下的点
+            Vec3f point_this_be = corr_pts_[i].head<3>();      // 雷达坐标系下的点。
+            Vec3f point_this = off_R * point_this_be + off_t;  // IMU 坐标系下的点。
             // 旋转扰动对点坐标的影响由叉乘矩阵表达，后面用于构造姿态雅可比。
             Mat3f point_crossmat = math::SKEW_SYM_MATRIX(point_this);
 
-            /*** get the normal vector of closest surface/corner ***/
+            // get the normal vector of closest surface/corner
             Vec3f norm_vec = corr_norm_[i].head<3>();
 
-            /*** calculate the Measurement Jacobian matrix H ***/
+            // calculate the Measurement Jacobian matrix H
             // 残差是世界系点到世界系平面的距离。平移雅可比就是平面法向量；
             // 姿态雅可比需要把世界系法向量转回IMU切空间，再与Lidar点在IMU系下的位置叉乘。
             Vec3f C(Rt * norm_vec);
@@ -1966,7 +1981,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     // [lio-plane-residual-statistic]
 
     // 阶段 5：按配置叠加点点观测。
-    /// 点到点ICP部分
+    // 点到点ICP部分
 
     if (options_.enable_icp_part_) {
         // 点到点ICP为每个有效点贡献3维残差：当前点世界坐标 - 最近地图点世界坐标。
@@ -1989,17 +2004,17 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
                     continue;
                 }
 
-                /// q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
+                // q是当前点在Lidar系下的坐标，qs是使用当前状态投影后的世界系坐标。
                 Vec3d q = scan_down_lidar_->points[i].getVector3fMap().cast<double>();
                 Vec3d qs = scan_down_world_->points[i].getVector3fMap().cast<double>();
 
                 Eigen::Matrix<double, 3, ESKF::pose_obs_dim_> J;
                 J.setZero();
 
-                /// translation 部分
+                // 平移部分
                 J.block<3, 3>(0, 0) = Mat3d::Identity();
 
-                /// rotation 部分
+                // 旋转部分
                 J.block<3, 3>(0, 3) = -rotation * SO3::hat(q);
 
                 // 点到点残差：当前点世界坐标和最近地图点世界坐标之差。
@@ -2027,15 +2042,7 @@ void LaserMapping::ObsModel(NavState &s, ESKF::CustomObservationModel &obs) {
     }
 }
 
-///////////////////////////  private method /////////////////////////////////////////////////////////////////////
 
-/**
- * @brief 根据全部关键帧点云拼接全局地图。
- * @param use_lio_pose true时使用前端LIO位姿，false时使用关键帧优化位姿。
- * @param use_voxel 是否对单帧关键帧点云和最终全局点云执行体素滤波。
- * @param res 体素滤波叶子尺寸，单位m。
- * @return 拼接并设置好PCD元信息的全局点云。
- */
 CloudPtr LaserMapping::PrepareMapExportCloud(const CloudPtr& cloud) const {
     if (!cloud || !map_export_self_point_filter_config_.enabled) return cloud;
     CloudPtr filtered(new PointCloudType(*cloud));
@@ -2046,16 +2053,18 @@ CloudPtr LaserMapping::PrepareMapExportCloud(const CloudPtr& cloud) const {
 
 CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res,
                                     bool apply_map_export_filter) {
+    // 阶段 1：准备体素滤波器与雷达到 IMU 的固定变换。
     CloudPtr global_map(new PointCloudType);
     std::size_t map_export_removed = 0;
 
-    /// 体素滤波器在关键帧级和全局地图级复用，分辨率由调用方指定。
+    // 体素滤波器在关键帧级和全局地图级复用，分辨率由调用方指定。
     pcl::VoxelGrid<PointType> voxel;
     voxel.setLeafSize(res, res, res);
 
-    /// 关键帧点云保存在Lidar坐标系下，拼接前需要先变换到IMU坐标系。
+    // 关键帧点云保存在Lidar坐标系下，拼接前需要先变换到IMU坐标系。
     SE3 T_imu_lidar(Eigen::Quaterniond(offset_R_lidar_fixed_).normalized(), offset_t_lidar_fixed_);
 
+    // 阶段 2：逐关键帧执行可选自车过滤和体素降采样。
     for (auto &kf : all_keyframes_) {
         const CloudPtr source_cloud = kf->GetCloud();
         CloudPtr cloud = apply_map_export_filter
@@ -2068,7 +2077,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
         CloudPtr cloud_filter(new PointCloudType);
 
-        /// 可选地先对单个关键帧点云降采样，降低全局拼接的点数和内存占用。
+        // 可选地先对单个关键帧点云降采样，降低全局拼接的点数和内存占用。
         if (use_voxel) {
             if (multi_lidar_config_.enabled) {
                 cloud_filter = DownsamplePreservingSource(cloud, res);
@@ -2084,21 +2093,23 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 
         CloudPtr cloud_trans(new PointCloudType);
 
-        /// 保存调试地图时可使用原始LIO位姿；保存最终地图时通常使用回环优化后的位姿。
+        // 保存调试地图时可使用原始LIO位姿；保存最终地图时通常使用回环优化后的位姿。
+        // 阶段 3：按选定位姿变换到世界系并拼接。
         if (use_lio_pose) {
             pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetLIOPose() * T_imu_lidar).matrix());
         } else {
             pcl::transformPointCloud(*cloud_filter, *cloud_trans, (kf->GetOptPose() * T_imu_lidar).matrix());
         }
 
-        /// 将当前关键帧点云累加到世界坐标系下的全局点云。
+        // 将当前关键帧点云累加到世界坐标系下的全局点云。
         *global_map += *cloud_trans;
 
         LOG(INFO) << "event=LIO_KEYFRAME_POSE 关键帧 id=" << kf->GetID() << ", pose: " << kf->GetOptPose().translation().transpose();
     }
 
+    // 阶段 4：可选全局降采样并设置输出元数据。
     CloudPtr global_map_filtered(new PointCloudType);
-    /// 拼接完成后再做一次全局体素滤波，合并关键帧重叠区域中的冗余点。
+    // 拼接完成后再做一次全局体素滤波，合并关键帧重叠区域中的冗余点。
     if (use_voxel) {
         if (multi_lidar_config_.enabled) {
             global_map_filtered = DownsamplePreservingSource(global_map, res);
@@ -2110,7 +2121,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
         global_map_filtered = global_map;
     }
 
-    /// 补齐PCL保存PCD时需要的点云组织信息。
+    // 补齐PCL保存PCD时需要的点云组织信息。
     global_map_filtered->is_dense = false;
     global_map_filtered->height = 1;
     global_map_filtered->width = global_map_filtered->size();
@@ -2125,7 +2136,7 @@ CloudPtr LaserMapping::GetGlobalMap(bool use_lio_pose, bool use_voxel, float res
 }
 
 void LaserMapping::SaveMap() {
-    /// 保存地图
+    // 保存地图
     auto global_map = GetGlobalMap(true);
 
     pcd_io::SaveWorldCloudBinaryCompressed("./data/lio.pcd", *global_map);

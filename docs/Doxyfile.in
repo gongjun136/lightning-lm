@@ -25,6 +25,9 @@ EXTRACT_ANON_NSPACES    = YES
 LOOKUP_CACHE_SIZE      = 2
 HIDE_UNDOC_MEMBERS     = NO
 HIDE_UNDOC_CLASSES     = NO
+# Keep API summaries, class lists and detailed members in alphabetical order.
+SORT_BRIEF_DOCS        = YES
+SORT_MEMBER_DOCS       = YES
 FULL_PATH_NAMES        = YES
 STRIP_FROM_PATH        = "@LIGHTNING_SOURCE_DIR@"
 STRIP_FROM_INC_PATH    = "@LIGHTNING_SOURCE_DIR@/src"

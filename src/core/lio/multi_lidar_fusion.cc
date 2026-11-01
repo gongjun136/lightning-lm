@@ -15,12 +15,14 @@
 namespace lightning {
 namespace {
 
+/// 错误输出指针非空时记录说明。
 void SetError(std::string* error, const std::string& message) {
     if (error) {
         *error = message;
     }
 }
 
+/// 从雷达话题推断对应 IMU 话题。
 std::string InferImuTopic(std::string lidar_topic) {
     const std::string token = "/lidar_";
     const auto pos = lidar_topic.find(token);
@@ -30,6 +32,7 @@ std::string InferImuTopic(std::string lidar_topic) {
     return lidar_topic;
 }
 
+/// 从配置键中的数字解析雷达 ID。
 bool ParseId(const std::string& key, int& id) {
     std::string digits;
     for (const char c : key) {
@@ -44,6 +47,7 @@ bool ParseId(const std::string& key, int& id) {
     return true;
 }
 
+/// 读取并校验雷达到主雷达的刚体变换。
 bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* error) {
     if (!node) {
         SetError(error, "missing lidar transform");
@@ -84,6 +88,7 @@ bool ReadTransform(const YAML::Node& node, Mat3d& R, Vec3d& t, std::string* erro
     return true;
 }
 
+/// 校验启用的多雷达配置及负载阈值。
 bool ValidateConfig(const MultiLidarConfig& config, std::string* error) {
     if (!config.enabled) {
         return true;
@@ -358,8 +363,8 @@ CloudPtr DownsamplePreservingSource(const CloudPtr& cloud, double leaf_size) {
     }
     using Key = std::tuple<long long, long long, long long>;
     struct Representative {
-        PointType point;
-        double center_distance = std::numeric_limits<double>::max();
+        PointType point;  // 该体素目前选中的原始点。
+        double center_distance = std::numeric_limits<double>::max();  // 到体素中心的平方距离。
     };
     std::map<Key, Representative> representatives;
     for (const auto& point : cloud->points) {
@@ -433,7 +438,10 @@ int AdaptiveLidarLoadController::TargetLidarCount() const {
  *
  * 以下名称与函数体中的“阶段 1”至“阶段 3”对应，可按阶段定位源码。
  *
- * @note processing_sec 与 latency_sec 均为秒；Observe() 更新策略状态，不直接裁剪点云。
+ * @param processing_sec 本帧处理耗时（s）。
+ * @param latency_sec 本帧处理滞后（s）。
+ * @param tracking_healthy 前端跟踪是否健康。
+ * @note Observe() 更新策略状态，不直接裁剪点云。
  * 过载分支会直接返回，不继续执行阶段 3；选择下一帧观测来源和点数由 Select() 完成。
  */
 void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_sec,
@@ -492,7 +500,10 @@ void AdaptiveLidarLoadController::Observe(double processing_sec, double latency_
  *
  * 以下名称与函数体中的“阶段 1”至“阶段 4”对应，可按阶段定位源码。
  *
- * @note healthy 同时要求 localization_good_ 和 tracking_healthy_；预算模式不健康时恢复全部可用来源。
+ * @param stats 当前帧的来源和点数统计。
+ * @param latency_sec 当前处理滞后（s）。
+ * @return 选择的来源、采样步长和点数预算。
+ * @note 健康状态同时要求 localization_good_ 和 tracking_healthy_；预算模式不健康时恢复全部可用来源。
  * 返回空 lidar_ids 表示来源门槛未满足；max_points 为 0 表示不限制点数，实际采样由后续点云处理完成。
  */
 AdaptiveLidarSelection AdaptiveLidarLoadController::Select(const MultiLidarFrameStats& stats,
@@ -603,8 +614,10 @@ CloudPtr SelectLidarPoints(const CloudPtr& cloud, const AdaptiveLidarSelection& 
 
 CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
                                 bool preserve_density) {
+    // 阶段 1：未超上限时直接返回输入。
     if (!cloud || max_points == 0 || cloud->size() <= max_points) return cloud;
-    // 8 azimuth sectors x 2 elevation signs x 2 ranges per uint8 source ID.
+    // 阶段 2：将有限坐标点按来源和空间特征分桶。
+    // 每个来源分为 8 个方位扇区、2 个高度符号和 2 个距离区间。
     constexpr std::size_t kBins = 256 * 32;
     constexpr std::uint16_t kInvalid = kBins;
     std::array<std::size_t, kBins> counts{}, quotas{}, seen{};
@@ -622,6 +635,7 @@ CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
         ++valid_points;
         if (counts[bin]++ == 0) active.push_back(bin);
     }
+    // 阶段 3：按配置分配各桶配额。
     std::sort(active.begin(), active.end());
     const auto target = std::min(max_points, valid_points);
     std::size_t remaining = target;
@@ -646,6 +660,7 @@ CloudPtr SampleSpatiallyBalanced(const CloudPtr& cloud, std::size_t max_points,
             }
         }
     }
+    // 阶段 4：按输入顺序选取原始点并设置元数据。
     CloudPtr selected(new PointCloudType);
     selected->reserve(target - remaining);
     // [sensor-sampling-real-points]
@@ -716,6 +731,9 @@ bool MultiLidarFrameAssembler::IsExpired(long long bucket) const {
  * @note timestamp 单位为秒；匹配容差检查同桶最晚与最早输入的时间差，不是到桶中心的距离。
  * 返回 true 只表示输入被接纳，可能仍在等待其他雷达；是否形成输出需调用 PopReady()。
  *
+ * @param lidar_id 输入雷达 ID，须在配置中。
+ * @param timestamp 扫描开始的传感器时间戳（s）。
+ * @param cloud 输入雷达坐标系的点云，须非空指针；点内 time 单位为毫秒，缓存期间调用者不得改写。
  * @return 合格输入已缓存时返回 true，否则计入对应丢弃统计并返回 false。
  */
 bool MultiLidarFrameAssembler::AddCloud(int lidar_id, double timestamp, CloudPtr cloud) {

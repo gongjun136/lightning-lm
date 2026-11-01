@@ -126,6 +126,27 @@ def stamp_source(text, version):
     return text.replace('</div><!-- top -->', banner + '</div><!-- top -->', 1)
 
 
+def prepare_resizer(text):
+    """Use directory-scoped storage on file:// pages, where cookies do not work."""
+    additions = {
+        '  function readCookie(cookie)\n  {\n': '''    try {
+      var stored = window.localStorage.getItem('lightning-lm:' + new URL('.', window.location.href).href + cookie);
+      if (stored !== null) return stored;
+    } catch (error) { /* Keep Doxygen's cookie fallback when storage is blocked. */ }
+''',
+        '    if (val==undefined) return;\n': '''    try {
+      window.localStorage.setItem('lightning-lm:' + new URL('.', window.location.href).href + cookie, val);
+    } catch (error) { /* Resizing still works when storage is blocked. */ }
+''',
+    }
+    for marker, addition in additions.items():
+        if text.count(marker) != 1:
+            raise ValueError('Unrecognized Doxygen width persistence in resize.js')
+        if addition not in text:
+            text = text.replace(marker, marker + addition, 1)
+    return text
+
+
 def prepare_html(folder):
     root = Path(__file__).resolve().parents[2]
     # Deliver the layout and theme together, including in search-result iframes.
@@ -134,6 +155,8 @@ def prepare_html(folder):
     (folder / theme_name).write_bytes(base_style + b'\n' + Path(__file__).with_name(theme_name).read_bytes())
     provenance = source_version(root)
     manual_targets = {folder / name for name in manual_html_names(root)}
+    resizer_file = folder / 'resize.js'
+    resizer_file.write_text(prepare_resizer(resizer_file.read_text(encoding='utf-8')), encoding='utf-8')
     loader_file = folder / 'navtree.js'
     loader = loader_file.read_text(encoding='utf-8')
     if len(LOADER.findall(loader)) != 1:

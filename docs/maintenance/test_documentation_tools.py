@@ -6,7 +6,31 @@ import unittest
 from unittest.mock import patch
 
 from check_links import check_snippets
-from prepare_html import manual_html_names, prepare_html, source_version, stamp_source, strip_fragment_links
+from prepare_html import manual_html_names, prepare_html, prepare_resizer, source_version, stamp_source, strip_fragment_links
+
+
+RESIZER = '''function initResizable()
+{
+  function readCookie(cookie)
+  {
+    return 0;
+  }
+  function writeCookie(cookie, val, expiration)
+  {
+    if (val==undefined) return;
+  }
+}
+'''
+
+
+class SidebarStorageChecks(unittest.TestCase):
+    def test_reprocessing_does_not_duplicate_storage_hooks(self):
+        prepared = prepare_resizer(RESIZER)
+        self.assertEqual(prepare_resizer(prepared), prepared)
+
+    def test_changed_doxygen_format_fails_instead_of_silently_losing_persistence(self):
+        with self.assertRaisesRegex(ValueError, 'resize.js'):
+            prepare_resizer('function initResizable() {}')
 
 
 class SnippetChecks(unittest.TestCase):
@@ -112,6 +136,7 @@ class FragmentLinkChecks(unittest.TestCase):
             folder = root / 'html'
             folder.mkdir()
             (folder / 'navtree.js').write_text("script.src = scriptName+'.js';\n", encoding='utf-8')
+            (folder / 'resize.js').write_text(RESIZER, encoding='utf-8')
             base_style = 'body { margin: 0; }\n'
             (folder / 'doxygen.css').write_text(base_style, encoding='utf-8')
             fragment = ('<div class="fragment"><div class="line"><a name="l00001"></a>'

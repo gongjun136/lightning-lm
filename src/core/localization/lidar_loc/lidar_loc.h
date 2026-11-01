@@ -43,6 +43,7 @@ namespace lightning::loc {
 class LidarLoc {
    public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    /// 互斥锁的独占作用域锁。
     using UL = std::unique_lock<std::mutex>;
 
     /// 定位方法
@@ -50,6 +51,7 @@ class LidarLoc {
         NDT_OMP,  ///< OMP 版本 NDT。
     };
 
+    /// 地图定位、跟踪及重定位参数；部分遗留选项当前不参与处理。
     struct Options {
         Options() {}
 
@@ -58,10 +60,10 @@ class LidarLoc {
         LocMethod match_method_ = LocMethod::NDT_OMP;  ///< 保留配置；本类实现未读取。
         bool try_self_extrap_ = false;                 ///< 读取配置但对应的自身外推匹配分支当前停用。
         bool with_height_ = true;                      ///< 读取配置但对应的高度约束分支当前停用。
-        bool force_2d_ = true;                         ///< 强制在2D空间
+        bool force_2d_ = true;                         ///< 仅限制跟踪阶段 0.1 平滑后的位姿为二维；不约束首次定位或全局重定位。
         float min_init_confidence_ = 0.1;              ///< 初始化时要求的最小分值
         float min_tracking_confidence_ = 0.1;  ///< 正常跟踪接受匹配结果的最低置信度。
-        int relocalization_lost_frame_threshold_ = 5;  ///< 触发失锁状态的连续匹配失败帧数。
+        int relocalization_lost_frame_threshold_ = 5;  ///< 全局重定位后端就绪时，触发失锁重定位的连续匹配失败帧数。
         bool init_with_fp_ = true;                     ///< 是否使用功能点进行初始化
         bool enable_parking_static_ = false;           ///< 停车保持分支是否额外设置结果 valid_ 和 is_parking_；不控制是否跳过匹配。
         bool enable_icp_adjust_ = false;               ///< 是否使用icp调整ndt匹配结果提高定位精度
@@ -80,11 +82,11 @@ class LidarLoc {
         double update_kf_dis_ = 5.0;           ///< 动态图层更新距离阈值（m）。
         double update_kf_time_ = 10.0;         ///< 动态图层更新时间阈值（s）。
         double update_lidar_loc_score_ = 2.2;  ///< 更新时激光定位匹配分值阈值
-        double lidar_loc_odom_th_ = 0.3;       ///< 激光两帧匹配结果与对应lidarodom结果差的阈值，超过则认为lidarodom异常
+        double lidar_loc_odom_th_ = 0.3;       ///< 地图配准与 LO 水平平移增量差的拒绝阈值（m）。
 
-        double max_update_cache_dis_ = 30.0;  ///< 更新动态图层的缓冲距离
+        double max_update_cache_dis_ = 30.0;  ///< 遗留缓冲距离（m）；对应分支当前停用。
         std::string recover_pose_path_ = "./data/recover_pose.txt";  ///< 定位恢复位姿记录文件的路径。
-        bool enable_relocalization_map_consistency_ = true;  ///< 是否对重定位候选执行地图一致性验证。
+        bool enable_relocalization_map_consistency_ = true;  ///< 是否对跟踪配准和重定位候选执行地图一致性验证。
         double relocalization_bounds_margin_ = 0.5;  ///< 地图空间包围范围的外扩余量（m）。
         double relocalization_nearest_neighbor_distance_ = 0.5;  ///< 计算地图重合率使用的最大近邻距离（m）。
         double relocalization_min_inside_xy_ratio_ = 0.90;  ///< 接受候选所需的最小水平范围内点比例。
@@ -94,7 +96,7 @@ class LidarLoc {
         int relocalization_map_consistency_max_points_ = 50000;  ///< 精配后地图一致性检查的采样点数上限。
         int relocalization_precheck_max_points_ = 50000;  ///< 候选预检查的采样点数上限。
         int relocalization_validation_workers_ = 2;  ///< 候选验证使用的并行工作线程数。
-        int relocalization_max_refinement_candidates_ = 0;  ///< 一次重定位允许精配的候选数配置。
+        int relocalization_max_refinement_candidates_ = 0;  ///< 一次重定位精配候选数上限；0 表示不裁剪。
         int relocalization_confirmation_count_ = 2;  ///< 接受候选所需的连续确认次数。
         double relocalization_confirmation_max_translation_ = 1.0;  ///< 连续确认之间允许的最大平移差（m）。
         double relocalization_confirmation_max_rotation_deg_ = 5.0;  ///< 连续确认之间允许的最大旋转差（deg）。
@@ -104,12 +106,13 @@ class LidarLoc {
         std::string relocalization_debug_dir_;  ///< 候选验证的调试产物输出目录。
     };
 
+    /// 最近匹配和重定位的诊断快照；比例仅在对应检查执行后有意义。
     struct MatchStats {
-        double confidence = 0.0;  ///< 本次匹配得到的置信度。
+        double confidence = 0.0;  ///< 最近精配分数：NDT 变换分数或平面 ICP 的 1/(1+RMSE)，不是统一标定的概率。
         int iterations = 0;  ///< 本次匹配使用的迭代次数。
-        bool success = false;  ///< 本次地图定位是否成功。
+        bool success = false;  ///< 最近局部配准及后续门控结果；并非每次 ProcessCloud() 都刷新。
         bool registration_pose_available = false;  ///< 本次精配确实产生了有限位姿，不能将初值伪装成匹配结果。
-        const char* registration_reason = "not_attempted";  ///< NDT 原始拒绝原因，指向静态字符串。
+        const char* registration_reason = "not_attempted";  ///< NDT 基础配准判定说明，指向静态字符串；后续门控拒绝时也可能仍为 accepted。
         int active_map_chunks = 0;  ///< 本次匹配加载的地图块数量。
         bool relocalization_attempted = false;  ///< 本帧是否尝试全局重定位。
         bool relocalization_candidate_found = false;  ///< 本次重定位是否检索到候选。
@@ -117,12 +120,12 @@ class LidarLoc {
         int relocalization_candidate_id = -1;  ///< 本次重定位候选的数据库 ID。
         double relocalization_score = 0.0;  ///< 本次重定位候选检索分值。
         int relocalization_candidate_count = 0;  ///< 本次检索返回的候选数量。
-        int relocalization_candidates_prechecked = 0;  ///< 本次完成预检查的候选数量。
+        int relocalization_candidates_prechecked = 0;  ///< 本次预检查阶段的候选总数，含关闭检查时直接放行的候选。
         int relocalization_confirmation_count = 0;  ///< 当前候选连续确认的次数。
         int relocalization_query_submap_size = 0;  ///< 本次查询使用的子地图帧数。
         double relocalization_search_time_ms = 0.0;  ///< 本次候选检索耗时（ms）。
         std::string relocalization_reason;  ///< 本次重定位的接受或拒绝原因。
-        bool map_consistency_evaluated = false;  ///< 是否执行地图一致性验证。
+        bool map_consistency_evaluated = false;  ///< 是否进入地图一致性检查；缺少前置数据时也为真，需结合点数和通过标志。
         bool map_consistency_passed = false;  ///< 是否通过地图一致性验证。
         std::size_t map_consistency_points = 0;  ///< 地图一致性验证使用的点数。
         double map_inside_xy_ratio = 0.0;  ///< 候选点落在地图水平边界内的比例。
@@ -131,13 +134,16 @@ class LidarLoc {
         double map_gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
 
+    /// 构造匹配器并保存初始选项；地图和线程由 Init() 准备。
     explicit LidarLoc(Options options = Options());
+    /// 停止取证写入并等待仍可连接的地图线程，不执行 Finish() 的地图持久化。
     virtual ~LidarLoc();
 
     /**
      * @brief 读取地图定位配置，准备地图与重定位后端，最后启动地图更新线程。
      * @param config_path YAML 配置文件路径。
      * @return 必需配置或地图准备失败返回 false；后端不可用是否致命取决于地图归一化要求。
+     * @note YAML 和外参读取异常可能向调用方传播。
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
      * 1. <b>读取预算并检查地图元数据</b>：读取 YAML，验证计算预算；启用地图高度归一化时要求地图元数据可读。
@@ -146,7 +152,7 @@ class LidarLoc {
      * 4. <b>校验参数并补齐定位选项</b>：验证细化和地图一致性参数，再读取功能点、静止处理、ICP 微调等定位开关。
      * 5. <b>加载地图并准备匹配目标</b>：设置动态图层策略，加载地图索引与可选验证缓存；有功能点时加载首个功能点附近的地图。
      * 6. <b>初始化全局重定位后端</b>：按配置创建 BTC 或 SOLiD；后端初始化失败时，归一化地图要求返回 false，否则保留 NDT 定位能力。
-     * 7. <b>加入恢复位姿并启动地图线程</b>：存在恢复文件时将其读作功能点，再启动地图更新线程；恢复位姿尚未通过本帧匹配验证。
+     * 7. <b>加入恢复位姿并启动地图线程</b>：存在恢复文件时将其读作功能点，可选初始化取证写入器后再启动地图更新线程；恢复位姿尚未通过本帧匹配验证，取证初始化异常被捕获后继续运行。
      */
     bool Init(const std::string& config_path);
 
@@ -159,8 +165,8 @@ class LidarLoc {
 
     /**
      * @brief 对定位点云做基础检查，运行初始化或跟踪并记录本帧耗时。
-     * @param cloud_input 非空定位点云。
-     * @return 点数不足返回 false；返回 true 仅表示已调用 Align()，定位有效性应另查结果状态。
+     * @param cloud_input 非空、已去畸变的主雷达系点云；header.stamp 为扫描起点（ns）。共享所有权被保存在 current_scan_，调用方应避免并发修改。
+     * @return 点数不足返回 false，且不重置上一帧匹配统计；返回 true 仅表示已调用 Align()，定位有效性应另查结果状态。
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
      * 1. <b>检查定位点云</b>：断言指针非空，并拒绝少于 50 个点的输入。
@@ -178,7 +184,8 @@ class LidarLoc {
     bool ProcessDR(const NavState& state);
 
     /**
-     * @brief 返回当前地图位姿、时间和分数，以及队尾 LO 状态的速度（若有）。
+     * @brief 返回当前保存的地图位姿、传感器时间（s）和分数，以及最新 LO 队尾的速度（若有）。
+     * @note 速度原样复制自队尾，既非扫描时刻插值，也未转换到地图系；此接口不做雷达与 IMU 外参转换，字段不保证同一时刻或坐标系。
      * @note 此结果本身不能判断定位是否有效；请检查 GetLocalizationResult()。
      */
     NavState GetState();
@@ -199,6 +206,7 @@ class LidarLoc {
      * @param input 非空且包含点的点云；调用前须准备对应地图匹配目标。
      * @param fp_pose 地图系初始位姿。
      * @return 配准和启用的一致性检查均通过时返回 true。
+     * @note 成功时按点云 header 时刻写入结果时间，与 Align() 估计的扫描结束时刻不同。
      * @see Localize(), Align()
      */
     bool InitWithFP(CloudPtr input, const SE3& fp_pose);
@@ -225,16 +233,16 @@ class LidarLoc {
      * 3. <b>执行可选 ICP 微调</b>：只在已初始化且 NDT 成功时执行；ICP 收敛且平移、转角修正分别不超过 0.05 m、0.05 rad 才采用。
      * 4. <b>写回候选位姿与统计</b>：数值有效时写回候选位姿并记录结果；返回 false 不保证 pose 保持原值，也不表示已通过 Align() 的全部门控。
      * @param pose 输入地图系初值；输出配准后的位姿，返回 false 时也可能被修改。
-     * @param confidence 输出 NDT 分数。
+     * @param confidence NDT 执行后写入分数；目标不可用时保持原值。
      * @param input 输入点云
-     * @param output 输出点云
+     * @param output 配准输出点云；NDT 或 ICP 可写入，即使最终返回 false。
      * @param use_rough_res 是否使用粗分辨率
      * @return 局部配准通过基础检查返回 true；Align() 仍须检查里程计增量和可选地图一致性。
      * @see @ref loc_read_acceptance "局部配准通过后还要验证什么"
      */
     bool Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr output, bool use_rough_res = false);
 
-    /// 设置UI
+    /// 设置可选显示窗口。
     void SetUI(std::shared_ptr<ui::PangolinWindow> ui) { ui_ = ui; }
 
     /// @brief 保存地图系初值并取消已初始化状态，后续点云尝试从该初值定位。
@@ -253,23 +261,23 @@ class LidarLoc {
         return localization_result_;
     }
 
-    /// @brief 复制最近匹配统计，并刷新当前活动地图块数。
+    /// @brief 复制最近匹配统计，并刷新当前活动地图块数；调用方须避免与帧处理并发。
     MatchStats GetLastMatchStats() const;
 
     /// @brief 停止并等待地图线程，满足持久化配置时保存动态图层；应在 Init() 成功且停止输入后调用一次。
     void Finish();
 
-    /// 激光定位是否认为LO有效
+    /// 返回当前 LO 可靠性标志。
     bool LidarLocThinkLOReliable() { return lo_reliable_; }
 
    private:
     friend struct LidarLocRegressionAccess;
-    // 内部函数  ==========================================================================
+    // 内部函数
     /**
      * @brief 按初始化或跟踪状态处理点云，决定是否接受地图位姿或退回 LO 外推。
      * @par 主要流程
      * 以下阶段与函数体中的“阶段 N”使用相同名称，按实际执行顺序阅读；早退分支不会经过后续阶段。
-     * 1. <b>对齐帧时间与里程计</b>：使用去畸变结束时刻，分别为本帧关联 LO 和 DR 位姿。
+     * 1. <b>对齐帧时间与里程计</b>：以扫描起点加全局扫描周期估计结束时刻，分别为本帧关联 LO 和 DR 位姿。
      * 2. <b>处理静止保持</b>：已初始化且 parking_ 为真时跳过匹配并沿用上一地图位姿；可选设置结果的 valid_ 和 is_parking_，随后返回。
      * 3. <b>执行首次定位或重定位</b>：未初始化时尝试外部初值、可选功能点和全局候选；DR 可控制功能点失败重试，该分支结束本帧。
      * 4. <b>构造跟踪初值</b>：将 LO 相对运动接到上次地图位姿上；自身外推只用于后续平滑性比较。
@@ -283,14 +291,15 @@ class LidarLoc {
     void Align(const CloudPtr& input);
 
     /**
-     * @brief 按帧时间插值 LO 位姿并更新当前速度。
+     * @brief 按帧时间插值或受限外推 LO 位姿，并用匹配量测更新速度。
+     * @note 速度取 PoseInterp 返回的 best_match，不作速度插值；同时转换一份到 LO 本体坐标系。
      * @param timestamp 点云结束时刻（s）。
      * @return 插值成功返回 true；失败时清除当前 LO 位姿有效标志。
      */
     bool AssignLOPose(double timestamp);
 
     /**
-     * @brief 按帧时间插值 DR 位姿，并从匹配状态设置静止标志。
+     * @brief 按帧时间插值或受限外推 DR 位姿，并从匹配状态设置静止标志。
      * @param timestamp 点云结束时刻（s）。
      * @return 插值成功返回 true；失败时清除 DR 位姿有效标志和静止标志。
      */
@@ -347,14 +356,30 @@ class LidarLoc {
      * @see @ref loc_read_confirmation "全局候选的连续确认"
      */
     bool TryGlobalRelocalization(const CloudPtr& input);
+    /**
+     * @brief 从当前帧统计和阈值构造失败取证记录，尚不保存点云。
+     * @param input 当前非空点云，用于计算采样步长。
+     * @param stats 匹配及地图一致性统计。
+     * @param stage 失败阶段。
+     * @param detail 拒绝原因；空指针记为 unknown。
+     * @param maximum_points 一致性检查的采样点数上限。
+     * @param minimum_overlap 本次检查的最小重合率。
+     * @return 包含传感器时间、阶段、阈值和统计的记录。
+     */
     diagnostics::MatchFailureRecorder::Frame MakeFailureEvidence(
         const CloudPtr& input, const MatchStats& stats,
         diagnostics::MatchFailureRecorder::Stage stage, const char* detail,
         std::size_t maximum_points, double minimum_overlap) const;
+    /**
+     * @brief 将失败帧及点云交给取证记录器；未配置记录器或已初始化的非跟踪事件会跳过。
+     * @param input 当前点云。
+     * @param frame 已填充的失败记录。
+     */
     void RecordFailureEvidence(const CloudPtr& input,
                                const diagnostics::MatchFailureRecorder::Frame& frame);
+    /// 一次地图一致性检查的结果；points 为零时比例没有测量意义。
     struct MapConsistencyResult {
-        bool evaluated = false;  ///< 是否执行了地图一致性检查。
+        bool evaluated = false;  ///< 是否进入一致性检查；前置数据不足而提前返回时也为真。
         bool passed = false;  ///< 候选是否通过地图一致性检查。
         std::size_t points = 0;  ///< 一致性检查实际使用的点数。
         double inside_xy_ratio = 0.0;  ///< 落在地图水平包围范围内的点比例。
@@ -364,17 +389,41 @@ class LidarLoc {
     };
     /// @brief 加载 global.pcd 并建立边界及各验证线程的近邻索引；地图不可用返回 false。
     bool BuildRelocalizationMapCache();
-    /// @brief 检查候选的边界、重合率和重力方向；缺少当前 LO 或地图索引时不通过。
+    /**
+     * @brief 检查候选的地图边界、静态地图重合率和重力方向。
+     * @param input 待检查扫描；空指针或空点云不通过。
+     * @param pose 扫描到地图系的候选变换。
+     * @param worker_index 使用的近邻索引编号；并行调用需使用各自索引。
+     * @param min_overlap_ratio 本次接受所需的最小重合率。
+     * @param maximum_points 采样点数上限，至少按 1 计算步长。
+     * @return 检查结果；缺少当前 LO 或地图索引时 evaluated 为真但不通过。
+     */
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
         const CloudPtr& input, const SE3& pose, std::size_t worker_index,
         double min_overlap_ratio, std::size_t maximum_points) const;
+    /// 将一致性检查结果复制到最近匹配统计。
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
-    /// @brief 执行并记录一致性检查；配置禁用时直接返回 true。
+    /**
+     * @brief 执行并记录一致性检查；配置禁用时直接返回 true。
+     * @param input 待验证扫描。
+     * @param pose 扫描到地图系的候选变换。
+     * @return 禁用检查或检查通过时为 true。
+     */
     bool ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose);
+    /**
+     * @brief 将地图系扫描保存为 PCD，并生成带一致性统计的俯视图。
+     * @param static_map 地图系静态地图点云。
+     * @param scan_world 已转换到地图系的扫描点云。
+     * @param map_min 地图包围盒下界（m）。
+     * @param map_max 地图包围盒上界（m）。
+     * @param stats 图中标注的一致性统计。
+     * @note 调试目录为空或点云指针为空时跳过；文件异常只记录告警。
+     */
     void SaveRelocalizationBirdseye(const CloudPtr& static_map, const CloudPtr& scan_world,
                                     const Vec3d& map_min, const Vec3d& map_max,
                                     const MatchStats& stats);
 
+    /// 单帧计时与 NDT 工作量；计时以 ms 记录单调时钟经过时间、线程和进程 CPU 时间，valid 区分未测量和零耗时。
     struct FrameProfiling {
         profiling::TimingSample assign_pose;  ///< 本帧分派 LIO/DR 位姿的耗时。
         profiling::TimingSample map_load;  ///< 本帧加载活动地图的耗时。
@@ -385,36 +434,38 @@ class LidarLoc {
         profiling::TimingSample recover_pose_io;  ///< 本帧记录恢复位姿的 I/O 耗时。
         profiling::TimingSample relocalization_poll;  ///< 本帧检查重定位任务结果的耗时。
         int ndt_calls = 0;  ///< 本帧调用 NDT 的次数。
-        std::size_t ndt_input_points = 0;  ///< 本帧送入 NDT 的点数。
-    } frame_profiling_;
+        std::size_t ndt_input_points = 0;  ///< 本帧最近一次 NDT 调用的输入点数，多次调用时不累计。
+    } frame_profiling_;  ///< 合格点云帧开始时重置的计时和工作量统计。
 
-    // 成员变量  ==========================================================================
+    // 成员变量
     Options options_;  ///< 跟踪、地图更新与重定位配置。
     int ndt_threads_ = 4;  ///< NDT 匹配使用的并行线程上限。
-    std::size_t ndt_max_points_ = 0;  ///< NDT 输入点数上限，0 表示不限制。
+    std::size_t ndt_max_points_ = 0;  ///< 已初始化、上一匹配成功且使用细分辨率时的 NDT 输入点数上限，0 表示不限制。
 
-    std::mutex match_mutex_;  ///< 锁定pcl_ndt指针
+    std::mutex match_mutex_;  ///< 保护匹配器替换及 Localize() 中的配准操作。
 
+    /// NDT 点云配准器类型。
     using NDTType = pclomp::NormalDistributionsTransform<PointType, PointType>;
     NDTType::Ptr pcl_ndt_ = nullptr;  ///< 正常跟踪使用的 NDT 匹配器。
     NDTType::Ptr pcl_ndt_rough_ = nullptr;  ///< 粗分辨率
 
+    /// ICP 点云配准器类型。
     using ICPType = pcl::IterativeClosestPoint<PointType, PointType>;
     ICPType::Ptr pcl_icp_ = nullptr;  ///< 可选的匹配结果 ICP 调整器。
 
-    CloudPtr current_scan_ = nullptr;                   ///< 当前扫描
+    CloudPtr current_scan_ = nullptr;                   ///< 当前输入扫描的共享指针，未复制点云。
     std::shared_ptr<ui::PangolinWindow> ui_ = nullptr;  ///< 可选的定位点云与匹配状态显示窗口。
-    SE3 last_loc_pose_;  ///< 最近一次保存的地图定位位姿。
+    SE3 last_loc_pose_;  ///< 遗留成员，当前实现未读写。
 
-    std::mutex initial_pose_mutex_;  ///< 初始定位锁
+    std::mutex initial_pose_mutex_;  ///< 保护初始位姿设置和相关重定位请求操作。
     bool initial_pose_set_ = false;  ///< 定位是否被手动设置
     SE3 initial_pose_;               ///< 手动设置的初始位姿
     bool loc_inited_ = false;        ///< 定位是否初始化成功
     bool evidence_ever_localized_ = false;  ///< 区分首次启动与运行中的全局重定位取证。
 
-    double current_timestamp_ = 0;  ///< 本次输入的时间戳
-    std::int64_t current_match_started_steady_ns_ = 0;  ///< 本次 ProcessCloud 开始，接受匹配后才对外提交。
-    double last_timestamp_ = 0;     ///< 上次输入的时间戳
+    double current_timestamp_ = 0;  ///< 当前扫描的传感器时间（s）。
+    std::int64_t current_match_started_steady_ns_ = 0;  ///< 本次 ProcessCloud 开始的 steady_clock 时间（ns），接受匹配后才对外提交。
+    double last_timestamp_ = 0;     ///< 上次更新状态的传感器时间（s）。
 
     bool last_lo_pose_set_ = false;  ///< 是否已有上一帧 LIO 相对位姿。
     bool current_lo_pose_set_ = false;  ///< 当前帧是否找到对应 LIO 位姿。
@@ -451,23 +502,22 @@ class LidarLoc {
     int match_fail_count_ = 0;  ///< 连续地图匹配失败的次数。
     int static_count_ = 0;  ///< 静止判定的累计次数。
 
-    int rtk_reset_cnt_ = 0;  ///< RTK重置计数
+    int rtk_reset_cnt_ = 0;  ///< 遗留 RTK 重置计数，当前实现未读写。
 
-    std::mutex result_mutex_;  ///< 保护最近输出的定位结果。
+    std::mutex result_mutex_;  ///< 保护部分定位结果的读写；并非所有字段写入都持有此锁。
     LocalizationResult localization_result_;  ///< 输出结果
 
     // 相对运动观测队列
     std::mutex lo_pose_mutex_;  ///< 保护 LIO 状态历史队列。
-    std::deque<NavState> lo_pose_queue_;  ///< 按时间保存的 LIO 状态，用于匹配对应扫描。
+    std::deque<NavState> lo_pose_queue_;  ///< 按时间保存的 LIO 状态，用于匹配扫描；实际最多 49 条。
 
     std::mutex dr_pose_mutex_;  ///< 保护 DR 状态历史队列。
-    std::deque<NavState> dr_pose_queue_;  ///< 按时间保存的 DR 状态，用于帧时间关联及功能点初始化重试。
+    std::deque<NavState> dr_pose_queue_;  ///< 按时间保存的 DR 状态，用于帧时间关联及功能点初始化重试；实际最多 999 条。
 
-    /// 功能点初始化的记录
-    std::vector<SE3> fp_init_fail_pose_vec_;
-    double fp_last_tried_time_ = 0;  ///< 最近尝试功能点初始化的时间戳（s）。
+    std::vector<SE3> fp_init_fail_pose_vec_;  ///< 功能点初值及失败时 DR 位置的记录，用于限制重试。
+    double fp_last_tried_time_ = 0;  ///< 功能点重试门控时间；InitWithFP 失败写 header.stamp × 1e-6，Align 失败写 current_time（s），部分成功路径清零。
 
-    bool update_map_quit_ = false;  ///< 请求地图更新线程退出的标志。
+    bool update_map_quit_ = false;  ///< 请求地图更新线程退出的标志；不提供通用线程同步保证。
     std::thread update_map_thread_;            ///< 地图更新
     std::shared_ptr<TiledMap> map_ = nullptr;  ///< 按位姿加载活动块并管理动态层的分块地图。
     std::unique_ptr<GlobalRelocalizer> global_relocalizer_;  ///< 当前选择的全局候选检索后端。
@@ -478,6 +528,7 @@ class LidarLoc {
     Vec3d relocalization_map_min_ = Vec3d::Zero();  ///< 静态地图空间包围盒下界（m）。
     Vec3d relocalization_map_max_ = Vec3d::Zero();  ///< 静态地图空间包围盒上界（m）。
     std::vector<std::unique_ptr<pcl::KdTreeFLANN<PointType>>> relocalization_kdtrees_;  ///< 按验证工作线程保存的静态地图最近邻索引。
+    /// 跨帧确认中的全局候选及其 map→odom 关系。
     struct PendingRelocalization {
         bool valid = false;  ///< 当前待确认的重定位候选是否有效。
         SE3 T_map_odom;  ///< 候选对应的里程计坐标系到地图坐标系变换。
@@ -485,12 +536,12 @@ class LidarLoc {
         int candidate_id = -1;  ///< 待确认候选的数据库 ID。
         int query_submap_size = 0;  ///< 待确认候选使用的查询子地图帧数。
         double score = 0.0;  ///< 待确认候选的检索分值。
-        double ndt_confidence = 0.0;  ///< 待确认候选精配后的 NDT 置信度。
+        double ndt_confidence = 0.0;  ///< 待确认候选精配分数；平面 ICP 后端使用 1/(1+RMSE)。
         double timestamp = 0.0;  ///< 当前候选对应的传感器时间戳（s）。
         int confirmation_count = 0;  ///< 当前候选已通过的连续确认次数。
-    } pending_relocalization_;
+    } pending_relocalization_;  ///< 当前等待跨帧确认的重定位候选。
     bool relocalization_event_active_ = false;  ///< 是否已发出本轮重定位开始事件。
-    double map_height_ = 0;  ///< 地图高度约束使用的参考高度（m）。
+    double map_height_ = 0;  ///< 初始化位姿高度（m）；对应高度约束分支当前停用。
     int relocalization_debug_index_ = 0;  ///< 重定位调试产物的编号。
 
     bool has_set_pose_ = false;  ///< 退出保存的抑制标志；当前仅默认初始化，SetInitialPose() 修改的是 initial_pose_set_。

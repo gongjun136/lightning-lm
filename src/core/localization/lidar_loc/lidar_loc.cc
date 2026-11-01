@@ -50,6 +50,7 @@
 namespace lightning::loc {
 namespace {
 
+/// 创建非拥有的点云视图；使用期间须保持点云有效。
 diagnostics::MatchFailureRecorder::CloudView EvidenceCloud(const CloudPtr& cloud) {
     return {cloud.get(), cloud ? cloud->size() : 0, [](const void* data, std::size_t index) {
         const auto& point = static_cast<const PointCloudType*>(data)->points[index];
@@ -58,6 +59,7 @@ diagnostics::MatchFailureRecorder::CloudView EvidenceCloud(const CloudPtr& cloud
     }};
 }
 
+/// 将位姿矩阵复制为取证记录使用的行主序数组。
 diagnostics::MatchFailureRecorder::Pose EvidencePose(const SE3& pose) {
     diagnostics::MatchFailureRecorder::Pose result;
     const auto matrix = pose.matrix();
@@ -66,6 +68,7 @@ diagnostics::MatchFailureRecorder::Pose EvidencePose(const SE3& pose) {
     return result;
 }
 
+/// 从配置读取雷达到 IMU 的外参；旋转或平移长度错误时抛出异常。
 SE3 ReadLidarToImu(const YAML::Node& root) {
     Mat3d rotation = Mat3d::Identity();
     Vec3d translation = Vec3d::Zero();
@@ -85,6 +88,7 @@ SE3 ReadLidarToImu(const YAML::Node& root) {
     return SE3(Quatd(rotation).normalized(), translation);
 }
 
+/// 累加有效计时样本；未测量样本跳过。
 void AccumulateTiming(profiling::TimingSample& target,
                       const profiling::TimingSample& sample) {
     if (!sample.valid) return;
@@ -122,7 +126,7 @@ LidarLoc::LidarLoc(LidarLoc::Options options) : options_(options) {
 }
 
 LidarLoc::~LidarLoc() {
-    // The writer reads the immutable validation map, so drain before releasing it.
+    // 写入器读取验证地图，先停止写入再释放地图。
     if (match_failure_recorder_) match_failure_recorder_->Stop();
     if (update_map_thread_.joinable()) {
         update_map_quit_ = true;
@@ -209,10 +213,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.relocalization_precheck_min_overlap_ratio_ =
             relocalization["map_precheck_min_overlap_ratio"].as<double>();
     }
-    // A global feature matcher has already passed descriptor, compatibility-
-    // graph and robust-estimation gates before reaching map validation.  Let a
-    // selected backend tune only its own changed-scene overlap thresholds;
-    // legacy SOLiD/BTC behavior remains byte-for-byte configurable as before.
+    // 全局特征匹配已通过几何门控；所选后端可覆盖自己的重合率阈值。
     const YAML::Node backend_relocalization =
         relocalization ? relocalization[relocalization_backend_name_]
                        : YAML::Node();
@@ -346,9 +347,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         plane_options.max_rotation_correction_deg =
             plane_icp["max_rotation_correction_deg"].as<double>();
     }
-    // The selected coarse backend may have a different capture error and
-    // changed-scene residual distribution.  Keep these overrides local to the
-    // backend so the validated SOLiD+ICP baseline is unchanged.
+    // 粗匹配后端的误差分布可能不同，覆盖参数仅作用于所选后端。
     const YAML::Node backend_plane_icp =
         backend_relocalization ? backend_relocalization["plane_icp"]
                                : YAML::Node();
@@ -478,7 +477,7 @@ bool LidarLoc::Init(const std::string& config_path) {
     }
 
     // 阶段 7：加入恢复位姿并启动地图线程。
-    // load recover pose if exist
+    // 存在恢复位姿时读入。
     if (PathExists(options_.recover_pose_path_)) {
         std::ifstream fin(options_.recover_pose_path_);
         double data[7] = {0, 0, 0, 0, 0, 0, 1};
@@ -493,8 +492,7 @@ bool LidarLoc::Init(const std::string& config_path) {
         map_->AddFP(fp_recover);
     }
 
-    // Capture only when an explicit archive root was supplied by the runtime.
-    // Failure to record diagnostics must never change localization acceptance.
+    // 仅在配置归档目录时启用取证；取证初始化失败不改变定位结果。
     try {
         const auto capture_options = diagnostics::MatchFailureRecorder::Options::FromYaml(
             root["diagnostics"] ? root["diagnostics"]["match_failure_capture"] : YAML::Node());
@@ -557,8 +555,7 @@ bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
     current_scan_ = cloud_input;
     const double previous_match_stamp = localization_result_.lidar_match_stamp_;
     Align(cloud_input);
-    // Parking, pending initialization and other no-match paths are not evidence
-    // of continuous successful matching, even when their cached result is GOOD.
+    // 静止保持、等待初始化等未匹配路径不能视为连续匹配成功。
     if (match_failure_recorder_ && localization_result_.lidar_match_stamp_ <= previous_match_stamp)
         match_failure_recorder_->ObserveTracking(false);
     // 阶段 3：记录耗时并结束处理。
@@ -619,7 +616,7 @@ bool LidarLoc::ProcessDR(const NavState& state) {
         return false;
     }
 
-    // DR数据check
+    // 检查 DR 时间顺序。
     UL lock(dr_pose_mutex_);
     if (!dr_pose_queue_.empty()) {
         const double last_stamp = dr_pose_queue_.back().timestamp_;
@@ -708,7 +705,7 @@ bool LidarLoc::YawSearch(SE3& pose, double& confidence, CloudPtr input, CloudPtr
         pose_opti[i] = pose_esti;
     });
 
-    // find best match
+    // 选择最高分候选。
     auto best_score_idx = std::max_element(scores.begin(), scores.end()) - scores.begin();
     confidence = scores.at(best_score_idx);
     pose = pose_opti.at(best_score_idx);
@@ -837,8 +834,7 @@ diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
 void LidarLoc::RecordFailureEvidence(const CloudPtr& input,
                                     const diagnostics::MatchFailureRecorder::Frame& frame) {
     if (!match_failure_recorder_) return;
-    // A successful functional-point seed can precede the optional global search
-    // in this same initialization call. Its later search result is not a loss.
+    // 同一初始化调用中功能点可能已成功，后续全局检索失败不应记为失锁。
     if (loc_inited_ && frame.phase != diagnostics::MatchFailureRecorder::Phase::kTracking) return;
     match_failure_recorder_->ObserveTracking(false);
     match_failure_recorder_->Capture(EvidenceCloud(input),frame);
@@ -904,11 +900,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         return false;
     }
 
-    // Confirm on the next processed scan. Online processing deliberately
-    // drops stale scans, so an expensive first search can make the sensor-time
-    // gap exceed the configured nominal interval even though this is still
-    // the next independent observation. Spatial map-to-odom consistency below
-    // remains the acceptance gate.
+    // 下一处理帧继续确认；在线丢帧可能使时间间隔超过配置值，接受仍由空间一致性门控。
     const bool reuse_pending = pending_relocalization_.valid &&
                                current_timestamp_ > pending_relocalization_.timestamp;
     std::optional<RelocalizationResult> result;
@@ -962,8 +954,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         evidence.query_descriptors = result->descriptor_count;
         evidence.search_ms = result->search_time_ms;
         evidence.refinement_backend = diagnostics::MatchFailureRecorder::Backend::kNone;
-        // Retrieval may have found a descriptor ID without a valid geometric
-        // candidate. Never serialize default identity as a map alignment.
+        // 检索到描述符 ID 不代表存在有效几何候选，不能把默认单位变换记为匹配位姿。
         RecordFailureEvidence(input,evidence);
         LOG(WARNING) << "GLOBAL_RELOCALIZATION[" << relocalization_backend_name_
                      << "] event=LOC_RELOCALIZATION_REJECTED 全局重定位搜索被拒绝 reason=" << result->reason
@@ -1175,8 +1166,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                 options_.relocalization_refinement_backend_ == "plane_icp" ? "plane_icp_quality_rejected" :
                     last_match_stats_.registration_reason,
                 options_.relocalization_map_consistency_max_points_,options_.relocalization_min_overlap_ratio_);
-            // A diagnostic map check may pass even though the refinement quality
-            // failed. Do not relabel such a failure as gravity/map rejection.
+            // 精配质量失败时，即使诊断地图检查通过，也不将失败归因为地图或重力门控。
             evidence.reason = EvidenceRecorder::Reason::kRegistration;
             const bool attempted_pose_available = options_.relocalization_refinement_backend_ == "plane_icp" ?
                 plane_result.attempted_pose_valid : last_match_stats_.registration_pose_available;
@@ -1418,10 +1408,7 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
                             position.z() <= relocalization_map_max_.z() + margin;
         if (xy_ok) ++inside_xy;
         if (xyz_ok) ++inside_xyz;
-        // A point outside the map AABB expanded by the accepted neighbour
-        // distance cannot contribute to overlap. Avoiding a global-tree query
-        // here is especially important for bad height hypotheses, for which a
-        // nearest-neighbour traversal can otherwise dominate the whole frame.
+        // 超出按近邻距离扩展的地图包围盒的点不可能重合，无需查询近邻。
         const double search_margin =
             options_.relocalization_nearest_neighbor_distance_;
         const bool can_have_neighbor =
@@ -1592,7 +1579,7 @@ void LidarLoc::SaveRelocalizationBirdseye(const CloudPtr& static_map, const Clou
 void LidarLoc::ResetLastPose(const SE3& last_pose) {
     last_abs_pose_ = last_pose;
 
-    // TODO：清空动态图层
+    // 此操作不清空动态图层。
 
     return;
 }
@@ -1640,7 +1627,7 @@ bool LidarLoc::UpdateGlobalMap() {
     ndt->setNeighborhoodSearchMethod(pclomp::DIRECT7);
     ndt->setOulierRatio(0.45);
     ndt->setStepSize(0.1);
-    // Map refresh must preserve the tracking matcher configured at startup.
+    // 刷新地图时保留启动时的跟踪匹配参数。
     ndt->setTransformationEpsilon(0.01);
     ndt->setMaximumIterations(20);
     ndt->setNumThreads(ndt_threads_);
@@ -1879,7 +1866,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
 
     // 阶段 4：构造跟踪初值。
-    // NOTE: LO设置预测的位置和LidarLoc自身递推设置预测的方法并不完全一致，自身外推容易受噪声影响
+    // LO 预测与自身外推不同，后者容易受噪声影响。
 
     // [loc-lo-prior]
     SE3 guess_from_lo = last_abs_pose_;
@@ -1952,7 +1939,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     map_->LoadOnPose(guess_from_lo);
     frame_profiling_.map_load = map_load_profile_timer.Stop();
 
-    loc_success_lo = Localize(current_pose_esti, fitness_score, input, output_cloud);  // LO 那个肯定会算
+    loc_success_lo = Localize(current_pose_esti, fitness_score, input, output_cloud);  // 使用 LO 初值配准。
     double score_lo = fitness_score;
 
     SE3 res_of_lo = current_pose_esti;
@@ -2031,14 +2018,12 @@ void LidarLoc::Align(const CloudPtr& input) {
 
     // [loc-tracking-acceptance]
     if (loc_success) {
-        // Validate the raw registration, before the 0.1 smoothing above can
-        // hide a large correction. Do not commit a rejected match as the next prior.
+        // 使用平滑前的原始配准解验证，避免 0.1 平滑掩盖大幅修正。
         lidar_loc_odom_valid = CheckLidarOdomValid(res_of_lo, delta_rel_abs_pose);
         loc_success = lidar_loc_odom_valid;
     }
     if (loc_success && options_.enable_relocalization_map_consistency_) {
-        // A high local NDT score does not establish whole-scan map agreement.
-        // Reuse the immutable validation map with bounded work in production.
+        // 局部 NDT 高分不能证明整帧与地图一致；复用验证地图并限制检查量。
         const auto consistency = EvaluateRelocalizationMapConsistency(
             input, current_pose_esti, 0, options_.relocalization_min_overlap_ratio_, 2000);
         ApplyMapConsistencyResult(consistency);
@@ -2046,9 +2031,7 @@ void LidarLoc::Align(const CloudPtr& input) {
     }
     // [loc-tracking-acceptance]
     last_match_stats_.success = loc_success;
-    // Snapshot the actual checked pose before the rejected-match fallback below.
-    // No serialization, filesystem work or additional nearest-neighbor queries
-    // are performed here; retention and map cropping belong to the writer.
+    // 在失败回退前记录实际检查的位姿；保存和地图裁剪由写入器负责。
     if (match_failure_recorder_) {
         match_failure_recorder_->ObserveTracking(loc_success);
         if (!loc_success) {
@@ -2106,8 +2089,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                      << ", map_min_gravity_cos=" << options_.relocalization_min_gravity_alignment_cos_;
         // [loc-rejected-match-fallback]
         ++match_fail_count_;
-        // Do not propagate a rejected NDT transform. Lidar odometry remains
-        // the short-term motion source while global relocalization starts.
+        // 拒绝 NDT 结果后退回激光里程计初值，必要时启动全局重定位。
         current_pose_esti = guess_from_lo;
         if (global_relocalizer_ && global_relocalizer_->IsReady() &&
             match_fail_count_ >= options_.relocalization_lost_frame_threshold_) {
@@ -2429,7 +2411,7 @@ bool LidarLoc::AssignLOPose(double timestamp) {
     UL lock(lo_pose_mutex_);
     SE3 interp_pose;
     NavState best_match;
-    // 无法拿到最新的，插值结果都是外推出来的，和真实有时偏差会很大（╯﹏╰）
+    // 缺少较新状态时可能外推，结果可能偏离实际位姿。
     // if (!lo_pose_queue_.empty()) {
     //     LOG(INFO) << "lo interp: " << timestamp << " " << lo_pose_queue_.back().timestamp_ << " "
     //               << lo_pose_queue_.back().pose_.translation().transpose();
