@@ -112,8 +112,8 @@ void CheckConfirmedLossPolicy() {
     Require(EvaluateSafetyDecision(unknown, false, true, false, true, false).selected == 2,
             "bounded UNKNOWN grace is insufficient evidence for radar-degraded operation");
     unknown.consistency_unknown_tolerated = false;
-    Require(EvaluateSafetyDecision(unknown, false, true, false, true, false).selected == 4,
-            "required UNKNOWN without tolerance still stops");
+    Require(EvaluateSafetyDecision(unknown, false, true, false, true, false).selected == 2,
+            "motion UNKNOWN is advisory but does not authorize suppressing a radar fault");
     auto failed = healthy;
     failed.confirmed_failure = true;
     Require(EvaluateSafetyDecision(failed, false, true, false, true, false).selected == 4,
@@ -161,6 +161,43 @@ void CheckConfirmedLossPolicy() {
     Feed(running, 2040, Pose(2.04), 1, 0, 2);
     Require(!running.Evaluate(tracking, At(2040)).output_continuous,
             "a new pose epoch cannot borrow continuous output evidence from before relocalization");
+}
+void CheckMotionUnknownAdvisory() {
+    for (double grace : {0.0, 0.15}) {
+        for (double speed : {0.0, 5.0}) {
+            for (int gap : {150, 151, 208, 400}) {
+                Config cfg;
+                cfg.consistency_unknown_grace_sec = grace;
+                Monitor monitor(cfg, At(0));
+                for (int ms = 0; ms <= 1000; ms += 20)
+                    Feed(monitor, ms, Pose(speed * ms * .001), speed);
+                const int now = 1000 + gap;
+                const double stamp = 100 + now * .001;
+                const SE3 pose = Pose(speed * now * .001);
+                monitor.ObserveSpeed(stamp, speed, At(now));
+                monitor.ObservePose(stamp, pose, pose, SmallCov(), true, false, 1, At(now));
+                TrackingEvidence tracking;
+                tracking.initialized = tracking.output_gate_open = tracking.latest_match_valid = true;
+                tracking.valid_match_age_sec = 0;
+                const auto state = monitor.Evaluate(tracking, At(now));
+                Require(state.observations[0].condition == kUnknown && state.yaw_condition == kUnknown &&
+                        state.observations[1].condition == kPass && !state.confirmed_failure,
+                        "an IMU evidence gap stays UNKNOWN rather than PASS or confirmed failure");
+                Require(std::abs(state.gyro_arrival_age_sec - gap * .001) < 1e-9,
+                        "the real input evidence age is retained for diagnosis");
+                functional_safety::LidarFrameWatchdog::Snapshot frames;
+                frames.started = frames.seen = true;
+                const auto decision = EvaluateFrameSafetyDecision(state, frames, true);
+                Require(decision.raw == 0 && decision.selected == 0 && decision.published == 0,
+                        "150-208 ms and longer motion UNKNOWN does not independently publish 4 with fresh accepted output");
+                frames.fault = true;
+                Require(EvaluateFrameSafetyDecision(state, frames, true).published == 2,
+                        "motion UNKNOWN advisory cannot bypass a raw radar frame-supply fault");
+                Require(SafetyValue(monitor.Evaluate(tracking, At(now + 501)), false, false, true) == 4,
+                        "output timeout remains independent of advisory motion UNKNOWN");
+            }
+        }
+    }
 }
 void CheckSanyUncertaintyConfig(const char* path) {
     const auto diagnostics = YAML::LoadFile(path)["diagnostics"];
@@ -230,6 +267,7 @@ int main(int argc, char** argv) {
     }
     Config cfg;
     CheckConfirmedLossPolicy();
+    CheckMotionUnknownAdvisory();
     Monitor normal(cfg, At(0));
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");
     for (int ms = 0; ms <= 1000; ms += 20) Feed(normal, ms, Pose(ms * 0.001));
@@ -243,7 +281,7 @@ int main(int argc, char** argv) {
     Require(SafetyValue(masked_severe, false, true, false, true) == -9, "mask preserves localization severe");
     auto masked_unknown = snapshot;
     masked_unknown.observations[0].condition = kUnknown;
-    Require(SafetyValue(masked_unknown, false, true, false, true) == 4, "mask preserves localization unknown");
+    Require(SafetyValue(masked_unknown, false, true, false, true) == 0, "motion UNKNOWN alone does not stop");
     masked_unknown.observations[0].condition = kFail;
     Require(SafetyValue(masked_unknown, false, true, false, true) == 4, "mask preserves localization failure");
     const auto healthy_loc = snapshot;
@@ -400,8 +438,8 @@ int main(int argc, char** argv) {
     for (auto* monitor : {&strict_gap, &bounded_gap})
         monitor->ObservePose(101.107, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1107));
     const auto delayed = bounded_gap.Evaluate(false, At(1107));
-    Require(SafetyValue(strict_gap.Evaluate(false, At(1107)), false, false, true) == 4,
-            "zero grace reproduces the original stop at 107 ms");
+    Require(SafetyValue(strict_gap.Evaluate(false, At(1107)), false, false, true) == 0,
+            "motion UNKNOWN does not require a configured grace to avoid an independent stop");
     Require(delayed.observations[0].condition == kUnknown &&
             delayed.observations[1].condition == kPass && delayed.consistency_unknown_tolerated &&
             SafetyValue(delayed, false, false, true) == 0,
@@ -421,8 +459,8 @@ int main(int argc, char** argv) {
             "150 ms total evidence-age boundary is inclusive");
     bounded_gap.ObservePose(101.151, Pose(0), Pose(0), SmallCov(), true, false, 1, At(1151));
     Require(!bounded_gap.Evaluate(false, At(1151)).consistency_unknown_tolerated &&
-            SafetyValue(bounded_gap.Evaluate(false, At(1151)), false, false, true) == 4,
-            "fresh poses and repeated UNKNOWN cannot extend the 150 ms total deadline");
+            SafetyValue(bounded_gap.Evaluate(false, At(1151)), false, false, true) == 0,
+            "the historical evidence deadline remains visible without independently stopping fresh outputs");
     Require(bounded_gap.Evaluate(false, At(1652)).output_stale &&
             !bounded_gap.Evaluate(false, At(1652)).severe && delayed.confirmed_failure == false,
             "output timeout is 500 ms and missing evidence is not confirmed loss");
@@ -462,8 +500,8 @@ int main(int argc, char** argv) {
     // independent translation check must stay UNKNOWN rather than become PASS.
     Monitor no_can(bounded_cfg, At(0));
     FeedWithoutCan(no_can, 0, Pose(0));
-    Require(SafetyValue(no_can.Evaluate(false, At(0)), false, false, true) == 4,
-            "no CAN does not bypass required yaw warmup");
+    Require(SafetyValue(no_can.Evaluate(false, At(0)), false, false, true) == 0,
+            "motion-window warmup alone is advisory once valid localization output exists");
     for (int ms = 20; ms <= 60000; ms += 20) FeedWithoutCan(no_can, ms, Pose(ms * 0.005));
     const auto optional = no_can.Evaluate(false, At(60000));
     Require(optional.translation_condition == kUnknown && optional.yaw_condition == kPass &&
@@ -477,8 +515,8 @@ int main(int argc, char** argv) {
     Require(no_can.Evaluate(false, At(60107)).consistency_unknown_tolerated,
             "required IMU still uses bounded prior yaw evidence without CAN");
     no_can.ObservePose(160.151, Pose(300.755), Pose(300.755), SmallCov(), true, false, 1, At(60151));
-    Require(SafetyValue(no_can.Evaluate(false, At(60151)), false, false, true) == 4,
-            "fresh poses cannot hide required IMU loss beyond its deadline");
+    Require(SafetyValue(no_can.Evaluate(false, At(60151)), false, false, true) == 0,
+            "expired IMU evidence remains UNKNOWN without an independent stop while output stays valid");
     Require(SafetyValue(no_can.Evaluate(false, At(60652)), false, false, true) == 4 &&
             SafetyValue(no_can.Evaluate(true, At(60151)), false, false, true) == -9,
             "optional CAN never masks output timeout or confirmed tracking loss");

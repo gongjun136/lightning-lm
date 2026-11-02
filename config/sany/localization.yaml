@@ -297,16 +297,16 @@ diagnostics:
     input_timeout_seconds: 0.5
     cooldown_seconds: 10.0
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v6-radar-input
+  config_version: localization-dtc-v7-motion-unknown
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
-  # Legacy device-DTC/shadow switches are retained for comparison under v6.
+  # 历史设备 DTC/shadow 开关仅保留作诊断对照。
   # Actual radar runstate=2 uses raw-input grouping below.
   radar_time_sync_shadow_enabled: true
   # Retain bounded PTP evidence in the diagnostic comparison.
   radar_bounded_sync_warning_enabled: true
-  # Historical device-DTC mask flag; does not mask v6 radar-input runstate=2.
+  # 历史设备 DTC 屏蔽开关不影响当前雷达输入组帧故障码 2。
   radar_fault_mask_enabled: false
   radar_role_source_ids: [7, 12, 8, 9]  # front, rear, left, right
   radar_snapshot_timeout_sec: 0.5
@@ -332,11 +332,8 @@ diagnostics:
   output_timeout_sec: 0.5
   # The quality result belongs to that output; expire both at the same age.
   evaluation_timeout_sec: 0.5
-  # TOTAL steady age of prior passing required yaw evidence; CAN is optional.
-  # This is not extra time after
-  # max_input_gap_sec. 150 ms is a commissioning candidate from the 2026-10-21
-  # stationary load capture; validate under driving load before acceptance.
-  # UNKNOWN cannot renew this deadline or override a confirmed failure/-9.
+  # 保留历史 UNKNOWN 宽容观测字段；当前策略不再因运动 UNKNOWN 超过此值单独报 4。
+  # UNKNOWN 不等于 PASS，也不能清除先前已确认且尚未恢复的 FAIL。
   consistency_unknown_grace_sec: 0.15
   startup_grace_sec: 8.0
   radar_frame_warning_sec: 0.2

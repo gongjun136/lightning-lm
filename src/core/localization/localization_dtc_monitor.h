@@ -13,7 +13,7 @@ using Clock = std::chrono::steady_clock;
 enum Condition : uint8_t { kUnknown = 0, kPass = 1, kFail = 2 };
 constexpr uint32_t kConsistency = 0x30811813;
 constexpr uint32_t kUncertainty = 0x40450198;
-constexpr const char* kSafetyPolicyVersion = "localization-dtc-v6-radar-input";
+constexpr const char* kSafetyPolicyVersion = "localization-dtc-v7-motion-unknown";
 struct Config {
     double window_sec = 0.5, max_input_gap_sec = 0.1;
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
@@ -22,7 +22,7 @@ struct Config {
     double covariance_scale = 1.0;  ///< Additional variance inflation; calibrate against independent error evidence.
     double position_sigma_floor_m = 0.10, angle_sigma_floor_rad = 0.5 * M_PI / 180.0;
     double output_timeout_sec = 0.5, evaluation_timeout_sec = 0.5, startup_grace_sec = 8.0;
-    double consistency_unknown_grace_sec = 0.0;  ///< Disabled by default; maximum age of required passing yaw evidence, steady seconds.
+    double consistency_unknown_grace_sec = 0.0;  ///< Historical evidence-age diagnostic; motion UNKNOWN no longer independently stops.
     double max_speed_mps = 30.0, max_yaw_rate_radps = 3.0;
 };
 struct Observation {
@@ -41,7 +41,7 @@ struct Snapshot {
     std::array<Observation, 2> observations;
     bool severe = false;
     bool confirmed_failure = false;  ///< A definite failure remains active until the corresponding check passes again.
-    bool consistency_unknown_tolerated = false;  ///< Only motion UNKNOWN may use bounded prior passing evidence.
+    bool consistency_unknown_tolerated = false;  ///< Historical bounded-evidence flag, retained for diagnosis rather than the stop decision.
     bool optional_can_unavailable = false;  ///< Translation UNKNOWN alone does not stop when required yaw evidence passes.
     Condition translation_condition = kUnknown, yaw_condition = kUnknown;
     double output_age_sec = 0.0;  ///< Steady time since the last accepted output.

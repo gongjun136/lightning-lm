@@ -138,6 +138,8 @@ run_frontend_offline.sh 输出文件说明：
 | `analyze_frontend_topic_bag.py` | 审计在线前端录制的五个公开 Topic，包括消息类型、字段、频率、时间戳和 `lidar_id`。 |
 | `plot_posres_statistics.py` | 可视化 `/PosRes` 接收间隔、端到端时延和每秒接收数量。输入由 `pos_res_recorder` 生成的两个 CSV。 |
 
+现场诊断按日志中的策略版本解释证据。`localization-dtc-v7-motion-unknown` 下，运动一致性 UNKNOWN 保持原始 UNKNOWN，不再单独触发 Safety 4；`raw=0` 时的“运动证据提示”不计入故障段，JSON 的 `motion_evidence` 提供 `status`（`UNKNOWN`、`PASS`、`FAIL` 或 `unavailable`）和 `unknown_advisory`。若 v7 的 4 只有运动 UNKNOWN 而缺少其他判据，报告判据缺失；此前明确 FAIL 未恢复、协方差异常、初始化、输出/匹配过期或门控关闭等仍须分别检查。v6/v5 旧日志按对应历史规则解释，IMU 源间隔和回调到达间隔仍作为输入时序证据保留。
+
 ## 公共复现工具
 
 | 脚本 | 用途 |

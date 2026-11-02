@@ -1,8 +1,12 @@
 @page dtc_delivery DTC 与安全状态接口交付
 
-@section dtc_frame_supply_v6 雷达输入组帧策略（v6）
+@section dtc_frame_supply_v6 运动证据与雷达输入组帧策略（v7）
 
-新策略及配置版本均为 `localization-dtc-v6-radar-input`，取代后文历史 v5 中以雷达 DTC 直接决定 Safety 的规则；历史记录和 v5 解析保留。业务状态读取 `runstate`，兼容接口 `errorcode` 默认仍为 0。状态优先级为：确认定位失锁 `-9`；雷达输入组帧超时及恢复确认阶段 `2`，优先于其后果性输出过期和无输入造成的启动过期；其他启动、质量或输出降级 `4`；健康 `0`。雷达 DTC、独立心跳和严格 DTC 对照继续保留，但设备 DTC 不直接触发 2 或 -9。
+策略及配置版本为 `localization-dtc-v7-motion-unknown`；业务状态读取 `runstate`，兼容接口 `errorcode` 默认仍为 0。状态优先级为：确认定位失锁先给 `-9`；雷达输入组帧超时及恢复确认阶段给 `2`，优先于其后果性输出过期和无输入造成的启动过期；其他启动、质量或输出降级按各自判据给 `4` 或 `-9`；其余为 `0`。雷达 DTC、独立心跳和严格 DTC 对照继续保留，但设备 DTC 不直接触发 2 或 -9。
+
+v7 中运动一致性 UNKNOWN 本身不单独触发 4，原始 DTC 观测仍为 UNKNOWN，不转换为 PASS。IMU 暂无更新导致证据不足时，仍保留输入的源间隔和回调到达间隔；`consistency_unknown_grace_sec` 和日志中的 `unknown_tolerated` 作为历史观测兼容保留，v7 不依赖该宽容期决定 UNKNOWN 是否单独停车。此前的明确 FAIL 不能由 UNKNOWN 清除，仍需相应检查获得 PASS；无更高优先级状态时，未恢复的 FAIL、运动一致性 FAIL、协方差 FAIL/UNKNOWN、初始化未完成、输出或匹配过期及门控关闭仍按其规则给 4 或 -9。不能把 Safety 0 当作运动一致性已通过或实车安全结论。
+
+雷达输入组帧阈值和恢复条件沿用 `localization-dtc-v6-radar-input`，确认失锁的 -9 规则不变。旧 v6 与 v5 记录仍按其运行版本的原有判据解析；下文的历史验证不能用于声称 v7 已验证。
 
 现有定位 C++ 进程内 20 ms Safety wall timer 以 `steady_clock` 独立监测，覆盖组帧回调彻底断流，不新增 Python 运行检测或独立服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒故障，`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格帧恢复；启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。诊断展示 frame age、seen、started、warning、fault 和 recovery count。阈值为候选值，200 ms 和 300 ms 均未由本文证明适合现场安全要求。
 
@@ -70,50 +74,50 @@ https://sanygroup.feishu.cn/wiki/XoT4wYusciDuhKkuw5Fcfo1Bn7T
 
 @section dtc_safety_decision_reading 3. Safety 怎样选择 -9、4、2、0，哪些开关会改变含义？
 
-先看门控丢失如何进入诊断，再看输出年龄怎样成为严重条件。这里的年龄使用单调时钟；计时点是监测器接受位姿观测，不是下游收到 ROS 消息的时刻。
+先看门控状态如何进入诊断，再看启动、输出年龄和定位失锁如何进入判定。这里的年龄使用单调时钟；计时点是监测器接受位姿观测，不是下游收到 ROS 消息的时刻。
 
 @snippet{lineno} core/system/loc_system.cc dtc-publication-gate-loss
 
 @snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-output-severity
 
-曾发布过位姿后，发布门控关闭会令 `lost=true`；还没见过位姿时则使用启动宽限。最终判定按下面的提前返回顺序执行：
+监测器分别保留确认失锁、启动超时、输出过期和门控状态。v7 的 `EvaluateFrameSafetyDecision` 先判断确认失锁和原始雷达组帧，再调用下面的定位质量判定：
 
 @snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-safety-priority
 
-<b>从上往下读</b>：严重定位条件或全部启用雷达不可用优先给 `-9`；待恢复故障、一致性 FAIL、不确定度非 PASS 给 `4`；其余一致性未通过若没有明确允许条件也给 `4`；最后才检查雷达分支并决定 `2/0`。`mask_radar_fault` 仅跳过最后的雷达分支，不能越过前面的 `-9/4`。
+<b>从上往下读</b>：确认失锁优先给 `-9`，雷达输入组帧故障或恢复确认期给 `2`；其余情况下，启动未完成、输出或有效匹配过期、门控关闭、待恢复故障、运动一致性 FAIL 或不确定度非 PASS 按各自判据给 `4` 或 `-9`。只有运动一致性 UNKNOWN 时不会单独给 4。上面的 `SafetyValue` 还保留雷达 DTC 对照分支，但 v7 对外的 `2` 来自输入组帧看门狗，不由设备 DTC 或 `mask_radar_fault` 直接决定。
 
 CAN 可选不是把 UNKNOWN 改成 PASS，它要求以下所有条件同时成立：
 
 @snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-optional-can-evidence
 
-必需航向也变成 UNKNOWN 时，只能再检查有限的旧通过证据：
+下列代码仍计算历史的有限旧证据标记，供观察和兼容旧记录：
 
 @snippet{lineno} core/localization/localization_dtc_monitor.cc dtc-unknown-evidence-age
 
-`grace` 限制的是最后一次航向 PASS、输出观测、IMU 到达和 IMU 时间戳差的总年龄；不是每次 UNKNOWN 后重新获得一段宽限。所有条件以 `&&` 连接。
+旧 `grace` 判断使用最后一次航向 PASS、输出观测、IMU 到达和 IMU 时间戳差的总年龄；不是每次 UNKNOWN 后重新获得一段宽限。v7 保留 `unknown_tolerated` 的观测含义，但不再用它决定运动 UNKNOWN 是否单独触发 4。
 
-<b>手算例子</b>：假设无严重条件和待恢复故障、不确定度 PASS、启用雷达全部通过。仅 CAN 平移 UNKNOWN、航向 PASS 时，`optional_can_unavailable=true`，可以走到 `0`；若此前平移 FAIL 未恢复，则先得到 `4`。再假设 `grace=0.15 s`，航向 UNKNOWN 且四项年龄均为 `0.12 s`，可有限容忍；最后一次航向 PASS 年龄达到 `0.16 s` 时，即使其他项仍是 `0.12 s`，也会给 `4`。若曾有输出、之后超过配置的 `output_timeout_sec`，则严重条件优先给 `-9`。
+<b>手算例子</b>：假设定位已初始化、输入组帧正常、输出和匹配新鲜、门控打开、不确定度 PASS，且没有待恢复故障。IMU 暂无更新使航向及运动一致性变为 UNKNOWN 时，v7 可以给 `0`，但原始检查仍为 UNKNOWN。若之前有平移或航向 FAIL 尚未由该子项的 PASS 清除，则在无更高优先级状态时仍给 `4`。如果同时出现组帧故障或确认失锁，则分别按 `2` 或 `-9` 的优先级处理。
 
 最后核对实际发布的选择，避免把内部判定值当成对外消息值：
 
 @snippet{lineno} core/system/loc_system.cc dtc-safety-output-switches
 
-<b>边界与停止点</b>：`safety_fault_reporting_enabled_=false` 会直接发布 `0`；雷达屏蔽和有界同步选项也会改变所选雷达判定。因而单独看到 `runstate=0`，不能证明位姿在发布或全部诊断健康。Safety 是独立输出；`4` 也不等于位姿发布门控必然关闭。读到实际 `msg.runstate` 和 `publish()` 即完成本节，具体配置及历史验证继续看 @ref dtc_interfaces "接口与职责"、@ref dtc_unknown_and_cpu_20261020 "证据年龄与部署边界"。完整源码：@ref lightning::loc::dtc::SafetyValue() "SafetyValue()"、@ref lightning::loc::dtc::Monitor::Evaluate() "Evaluate()"、@ref lightning::LocSystem::PublishSafety() "PublishSafety()"。
+<b>边界与停止点</b>：`safety_fault_reporting_enabled_=false` 会直接发布 `0`；雷达屏蔽和有界同步选项属于旧雷达判据或对照，不改变 v7 的组帧判定。因而单独看到 `runstate=0`，不能证明位姿在发布或全部诊断健康。Safety 是独立输出；`4` 也不等于位姿发布门控必然关闭。读到实际 `msg.runstate` 和 `publish()` 即完成本节，具体配置及历史验证继续看 @ref dtc_interfaces "接口与职责"、@ref dtc_unknown_and_cpu_20261020 "历史证据年龄与部署边界"。完整源码：@ref lightning::loc::dtc::SafetyValue() "SafetyValue()"、@ref lightning::loc::dtc::Monitor::Evaluate() "Evaluate()"、@ref lightning::LocSystem::PublishSafety() "PublishSafety()"。
 
 @section dtc_interfaces 接口与职责
 
-2026-10-21 动态联调后的 CAN 可选输入修订：CAN 未接入、冻结、过期或历史窗口缺口，
+2026-10-21 的历史 v3 CAN 可选输入修订：CAN 未接入、冻结、过期或历史窗口缺口，
 本身不再触发 `runstate=4`。平移轮速一致性仍记录 UNKNOWN，航向独立使用 IMU 检查；
 必须有当前航向 Pass（含预热窗口）及有效不确定度，且不存在待恢复的明确故障。
-短时 IMU 证据缺失仍受下文 150 ms 总证据年龄约束，输出超时、门禁丢失、全雷达失效的 -9 条件不变。
+当时短时 IMU 证据缺失仍受下文 150 ms 总证据年龄约束，输出超时、门禁丢失、全雷达失效的 -9 条件不变。
 无 CAN 时缺少独立平移验证，不能把 UNKNOWN 解读成平移精度已通过。
-SANY 模板及代码默认诊断版本为 `localization-dtc-v3-optional-can`；更新后核对启动版本及配置快照。
+当时的 SANY 模板及代码版本为 `localization-dtc-v3-optional-can`；当前版本和实际运行配置应按启动日志与配置快照核对。v7 的运动 UNKNOWN 处理见本文开头。
 
 平移、航向、不确定度分别保存明确故障。CAN 断开不能解除已确认平移故障，
 需恢复完整有效 CAN 窗口并重新通过；航向故障可在无 CAN 时由独立航向 Pass 恢复。
 对外保留原 DTC 码及消息定义；心跳清除一致性码时要求没有任何待恢复子项且必需检查已通过。
 日志增加 `translation_condition`、`yaw_condition`、`optional_can_unavailable`、`yaw_pass_age_sec`。
-CAN 单独不可用不计入 `unknown_tolerated`，该字段只表示必需 IMU 证据的有限容忍。
+CAN 单独不可用不计入 `unknown_tolerated`；该历史字段反映必需 IMU 旧通过证据是否符合有限条件，v7 不以它决定运动 UNKNOWN 的 Safety 上报。
 
 启动入口使用 `check_localization_inputs --optional-wheel-speed`，缺 CAN 不阻止启动，
 仍检查实际 LiDAR/IMU 收包；单独手动使用旧 `--wheel-speed` 仍可做严格 CAN 检查。
@@ -121,7 +125,7 @@ CAN 单独不可用不计入 `unknown_tolerated`，该字段只表示必需 IMU 
 CAN 恢复后仅有效且符合时间门限的样本参与融合，不能以新接收时间替代旧 Header 时间。
 LIO 共享工作线程等待及两核调度对照方案见 [动态联调 LIO 调度说明](lio_scheduling_20261021.md)。
 
-本轮本地 WSL Ubuntu 22.04 / ROS Humble 验证：`run_loc_online`、启动探针及三个回归目标构建成功；
+以下为 2026-10-21 v3 修订的本地 WSL Ubuntu 22.04 / ROS Humble 验证，不是 v7 验收：`run_loc_online`、启动探针及三个回归目标构建成功；
 `localization_dtc_test`、`localization_pgo_test`、`heartbeat_dtc_test` 3/3 通过。
 真实 ROS 输入探针验证四项：可选 CAN 缺失通过、严格 CAN 缺失失败、必需 IMU 缺失失败、必需 LiDAR 缺失失败。
 启动脚本回归 8/8、依赖接口回归 9/9 通过；真实三雷达进程 smoke 通过，Safety steady 平均约 50.1 Hz。
@@ -139,7 +143,7 @@ LIO 共享工作线程等待及两核调度对照方案见 [动态联调 LIO 调
 每台驱动的检测快照直接更新自己的心跳，设备码不集中上报。
 不再创建未登记的聚合节点 ID 13 或 /diagnostics/heartbeat/livox_dtc。
 0x10F00001/0x10F00002 没有已登记的节点归属，不自行挂到定位或其他设备心跳；
-多台/全雷达不可用仍在定位 Safety 内部组合判定，不依赖这些外部汇总码。
+定位仍保留多台/全雷达不可用的内部对照判定，不依赖这些外部汇总码；v7 对外 Safety 使用原始输入组帧判据。
 心跳默认 10 Hz、best_effort、volatile、KeepLast(1)，每次携带排序去重后的完整活动集合。
 FAIL 加入，明确且新鲜的 PASS 才移除，UNKNOWN、缺项或过期保留此前活动状态。
 零码和历史码不进入 active_fault；雷达四角色的 base+12/base+13 仅保留在内部观测。
@@ -180,12 +184,9 @@ Topic 拼写 throstle 保留；接收端订阅 Safety 并读取 runstate。
 @ref lightning::LocSystem::PublishSafety() 始终以 50 Hz 发布 `runstate=0`，
 包括启动 UNKNOWN、定位失锁、超时及雷达故障；时间戳仍正常更新。
 该开关只覆盖 Safety 输出，不改变源 DTC、心跳或 `/localization/fault_status`。
-开关为 `true` 时使用以下判定规则。
-优先级 -9 > 4 > 2 > 0：定位失锁/有效输出超时或本次启用的雷达全部不可用给 -9；
-定位 DTC FAIL 或尚未恢复的明确故障给 4；其他雷达故障给 2。
-定位检测 UNKNOWN 不满足 @ref dtc_unknown_and_cpu_20261020 的有限证据条件时给 4；
-满足条件的一致性 UNKNOWN 继续检查雷达分支，全部分支允许时给 0，原始观测仍为 UNKNOWN。
-仅雷达检测 UNKNOWN/过期给 2。
+开关为 `true` 时，v7 使用本文开头的优先级：确认失锁 `-9`，雷达输入组帧故障及恢复确认期 `2`，其余启动、质量或输出降级按对应规则给 `4` 或 `-9`，其他情况为 `0`。运动一致性 UNKNOWN 本身不单独触发 4；不确定度 UNKNOWN 和此前尚未恢复的明确故障仍参与判定。旧版有限证据判断见 @ref dtc_unknown_and_cpu_20261020，为历史记录。
+
+以下设备 DTC 组合行为是 v5 及更早策略的历史说明；v7 继续保留设备 DTC 和严格判定作为对照，对外 Safety 的 2 不再由设备 DTC 直接决定：
 已恢复通信历史（四个角色码的 base+12）与同步历史（base+13）仍保留在源 DTC 中，
 但新鲜的历史 FAIL 不单独参与当前 Safety 故障判定；历史 UNKNOWN、过期、其他当前 DTC
 以及本次启用设备的实际可用性仍须校验。因此历史事件本身不会让正常设备永久保持 runstate=2。
@@ -198,9 +199,9 @@ Topic 拼写 throstle 保留；接收端订阅 Safety 并读取 runstate。
 
 标准启动脚本通过 `/opt/conf/vehicle_config.yaml` 解析本次有效配置。
 沿用现有约定：`LIDAR: MASTER AND SLAVE` 为前、左、右三雷达，`LIDAR: MASTER` 为前、左、右、后四雷达。
-Safety 从同一运行快照的 `vehicle_configuration` 和 `multi_lidar.topics` 确定必检角色，
+定位诊断从同一运行快照的 `vehicle_configuration` 和 `multi_lidar.topics` 确定必检角色，
 不在运行中重新读取车辆文件，也不根据话题在线状态或自适应点云抽样减少必检雷达。
-三雷达配置不订阅后雷达诊断，不因后雷达缺失给 2；三路全部不可用仍给 -9。
+三雷达配置不订阅后雷达诊断；v7 的 Safety 2 取决于原始输入是否能满足实际组帧条件，设备诊断故障自身不直接决定 2 或 -9。
 配置矛盾、缺失所需话题或未经解析的 SANY 模板会拒绝启动。
 不含 SANY 车辆快照的旧配置保留四路检查。角色 ID 和同步故障掩码仍按前、后、左、右排列，不能按启用数量重新编号。
 启动日志逐项输出 `LOCALIZATION_RADAR_REQUIRED role=... required=...`，用于核对实际检查范围。
@@ -256,7 +257,7 @@ slave_lidar 只运行后雷达。四雷达部署须确保四个 diagnostic_state
 驱动 dtc.* 参数
 可设置角色、超时、有效点数和配置版本。默认点包/点云 500 ms、HMS 2500 ms、
 内部状态 500 ms、启动等待 8 s，设备状态每 1 s 查询。
-遗漏设备在启动宽限后按不可用处理，因此三雷达实车必须显式补齐后雷达输入才能正常。
+遗漏的必检设备在启动宽限后标为不可用。旧版固定四路检查曾要求三雷达工况补齐后雷达；现行配置按本次实际启用角色解析，v7 的 Safety 2 仍按组帧条件判断。
 主、从驱动与定位须使用 `livox-dtc-v3-bounded-sync` 语义并重新构建、重启后生效；
 混合配置版本的设备状态会被拒绝，不得只更新主机就宣称后雷达完成修复。
 
@@ -283,7 +284,7 @@ HMS 为 0x04050002 与 0x04090002，属于上述同类误报。12 s 内后角色
 积分到与最终后轴位姿相同的时间窗口，检查纵向、横向及航向误差。
 同时检查平滑前位姿和最终发布位姿；相邻增量检查覆盖窗口预热时的突跳。
 输入间隙、无效值、重复/回退时间戳、缺少完整窗口均为 UNKNOWN。
-CAN 缺失只使平移子项 UNKNOWN，航向继续独立检查；UNKNOWN 不自动等于停车，详见上方 CAN 可选输入修订。
+CAN 缺失只使平移子项 UNKNOWN，航向继续独立检查；v7 运动一致性 UNKNOWN 本身不单独触发停车，详见本文开头。
 重定位/图重置推进 pose_epoch，跨 epoch 不比较，重新预热检测。
 rpm 比例、轮速符号、时间对齐、陀螺偏差和安装方向须用实车独立参考标定；
 平面运动近似需在项目道路坡度范围内验证。
@@ -300,12 +301,12 @@ rpm 比例、轮速符号、时间对齐、陀螺偏差和安装方向须用实�
 数值无效或缺失协方差给 UNKNOWN，可观测性丢失给 FAIL。
 模型方差倍率与标准差下限防止相关观测和模型误差导致过度自信。
 
-当前默认 `covariance_variance_scale=1.0`，版本为
-`localization-dtc-v2-model-scale`。原台架默认值 4.0 会将标准差放大两倍，
+默认 `covariance_variance_scale=1.0`，该倍率调整最早使用版本标记
+`localization-dtc-v2-model-scale`，并不代表当前策略版本。原台架默认值 4.0 会将标准差放大两倍，
 而 PGO 已使用 0.3 m / 1° 的观测噪声，并传播 DR 过程噪声、后轴杆臂和输出偏移。
 这与 0.3 m 横向门限不匹配，连无误差的正常 PGO 轨迹也会持续触发 FAIL。
 移除未经独立参考标定的额外放大；0.5 m 长轴、0.3 m 横向、2° 航向门限，
-0.1 m / 0.5° 下限，以及失锁、超时、不可观和 UNKNOWN 的处理均保持不变。
+0.1 m / 0.5° 下限及不可观判据未因该倍率调整改变；运动 UNKNOWN 的 Safety 处理以本文开头的 v7 说明为准。
 额外方差倍率仍可配置，但必须根据独立误差覆盖率标定，不能仅用轨迹看起来平稳来确定。
 
 升级后须重新由 `config/sany/localization.yaml` 生成运行配置并重启定位。
@@ -335,7 +336,7 @@ config/sany/localization.yaml 的 diagnostics 和 localization_pgo 为台架起�
    验证 0/2/4/-9 优先级、故障发生与恢复时间、50 Hz 输出及接收端消息兼容。
 6. 用稳态时钟测量故障注入到源 DTC、兼容状态和诊断中心安全动作的各段延迟。
    默认上界预算：设备 HMS 检出约 1 s 查询 + 100 ms 评估 + 网络；
-   断流约 500 ms + 100 ms 评估 + 网络；定位有效输出超时 300 ms + 20 ms 状态周期；
+   设备断流约 500 ms + 100 ms 评估 + 网络；v7 默认原始雷达组帧故障 300 ms、定位输出过期 500 ms，各加约 20 ms 状态周期；
    运动窗口 500 ms，突跳可由相邻增量提前发现。
    对外 DTC 改由心跳发送后，还需计入最多一个心跳周期（默认 100 ms）；
    检测变化只更新缓存，不额外插发心跳。Safety 仍使用独立的 20 ms 发布周期。
@@ -359,7 +360,7 @@ src/test/dtc_online_smoke.py 检查实际 run_loc_online 的心跳、50 Hz Safet
 回放健康状态时，若 bag 没有设备 HMS/诊断消息，不能把缺失雷达证据认定为正常；
 隔离测试可明确注入健康雷达夹具，但该结果只验证定位和状态组合，不证明真实雷达健康。
 
-2026-10-15 修复回归保留了以下证据，不能将其表述为实车安全验收：
+2026-10-15 历史修复回归保留了以下证据，不能将其表述为 v7 验收或实车安全验收：
 
 - sany-03-master 现场日志中，一致性 PASS、不确定度 FAIL 的 589 个周期样本，
   横向标准差中位数约 0.498 m；使用相同协方差和下限、仅移除额外 4 倍方差放大后，
@@ -452,9 +453,9 @@ Safety 为 -9/4/0 分别 2942/28/35 条。切换前的 10 s 基线同样没有�
 本次未改 NDT/PGO 源码或放宽定位门限，不能把 DTC 接口正确表述为定位连续性或整车健康验收通过。
 主机原有 radar_fault_mask_enabled=true 已原样保留，也不能用 Safety=0 证明雷达健康。
 
-@section dtc_unknown_and_cpu_20261020 Unknown、明确失败与关键线程隔离
+@section dtc_unknown_and_cpu_20261020 历史 Unknown、明确失败与关键线程隔离（2026-10-20/21）
 
-Safety 的判定顺序为：
+本节记录 2026-10-20/21 当时的策略及验证，不适用于 v7 运动 UNKNOWN 的停车判定。当前策略见本文开头。历史 Safety 判定顺序为：
 
 | 条件 | runstate | 本次边界 |
 |---|---|---|
@@ -504,7 +505,7 @@ epoch 切换和非法 IMU 输入会取消旧航向证据；位姿源时间增量
 wall 时间段含跳变，不可直接据其分位数标定容忍时间，也不能仅凭相关性断言 Chrony 是根因。
 首段 -9 前有 stale lidar correction 约 3.1 s 和发布门禁关闭记录；
 另外两段分别在 15:00:35 与 15:04:46，门禁匹配年龄约 0.50/0.60 s，
-不能用同一时钟跳变解释所有急停。当前仍保持容忍参数为 0，等待稳定授时下的负载验证。
+不能用同一时钟跳变解释所有急停。当时仍保持容忍参数为 0，等待稳定授时下的负载验证。
 
 Orin 12 核部署候选使用 `config/sany/orin_cpu_roles.bash`：
 CPU 10 为 `loc_sensor`，CPU 11 为 `loc_executor`/`loc_output`，
@@ -524,7 +525,7 @@ LIO 的 OpenMP 每个工作线程（包括没有分到迭代的线程）在 para
 核对 /proc 中每条线程的实际 CPU 掩码及 /sys 中的隔离核。
 该检查不能替代 IRQ 增量、实际运行 CPU、输入/发布延迟和实车负载测试。
 
-当前候选验证记录：独立 C++ 核心回归、ARM CTest 两项、九项接口检查、
+当时的候选验证记录：独立 C++ 核心回归、ARM CTest 两项、九项接口检查、
 两项 extlinux 修改测试通过。ARM 真实节点在 localhost-only、ROS domain 172
 验证了启动 Unknown、超时急停与约 50 Hz Safety 发布。
 测试须显式检查 `ldd`：加载旧 install 库会造成结构 ABI/符号不匹配，

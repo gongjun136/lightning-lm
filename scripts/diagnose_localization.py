@@ -32,7 +32,9 @@ LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
 FAULT_CODES = (2, 4, -9)
 CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
 FRAME_SUPPLY_POLICY = 'localization-dtc-v6-radar-input'
-MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, FRAME_SUPPLY_POLICY)
+MOTION_UNKNOWN_POLICY = 'localization-dtc-v7-motion-unknown'
+FRAME_SUPPLY_POLICIES = (FRAME_SUPPLY_POLICY, MOTION_UNKNOWN_POLICY)
+MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, *FRAME_SUPPLY_POLICIES)
 CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
 LAUNCH_LOGS = ('map_manifest.log', 'input_check.log', 'config_resolution.log',
                'launcher.log', 'launch.log', 'launch_compute_config.log')
@@ -766,7 +768,8 @@ def classify(row, limits):
                            source=row.get('_source'), scope=row.get('_scope'),
                            published=row.get('published_runstate')))
     modern = row.get('policy_version') in MODERN_POLICIES
-    frame_policy = row.get('policy_version') == FRAME_SUPPLY_POLICY
+    frame_policy = row.get('policy_version') in FRAME_SUPPLY_POLICIES
+    motion_unknown_advisory = row.get('policy_version') == MOTION_UNKNOWN_POLICY
     if row.get('policy_version') not in (None, '', *MODERN_POLICIES) and code in FAULT_CODES:
         add('unsupported_policy', '未知 Safety 策略版本，不能沿用旧版故障含义', ['policy_version', 'raw_runstate'],
             '核对运行合同并同步诊断脚本；原始码保留，但不猜测该版本的具体判据。', '规则缺失')
@@ -855,7 +858,7 @@ def classify(row, limits):
         latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
         if latched:
             add('latched_failure', '先前确认的失败尚未重新通过', ['confirmed_failure', 'localization_consistency', 'localization_uncertainty'], '向前检查首次 FAIL；UNKNOWN 不会清除已确认失败。')
-        if not latched and row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:
+        if not motion_unknown_advisory and not latched and row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:
             add('consistency_unknown', '运动一致性证据不足，未满足 UNKNOWN 宽容条件',
                 ['localization_consistency', 'yaw_condition', 'translation_condition', 'yaw_pass_age_sec',
                  'output_age_sec', 'imu_arrival_age_sec', 'imu_stamp_lag_sec', 'unknown_tolerated'],
@@ -880,6 +883,11 @@ def classify(row, limits):
                     cause['title'] = '启动后尚无有效定位输出；' + cause['title']
                     cause['evidence']['output_age_sec'] = row['output_age_sec']
                     cause['advice'] = '先核对初始位姿、全局重定位候选拒绝原因及接受时间，再核对首个有效定位输出。'
+        if motion_unknown_advisory and row.get('localization_consistency') == 0 and not causes:
+            add('policy_state_incomplete', '新版记录为 4，但运动 UNKNOWN 本身不触发 4，缺少其他故障依据',
+                ['localization_consistency', 'localization_uncertainty', 'confirmed_failure',
+                 'output_stale', 'output_gate_open', 'latest_match_valid'],
+                '核对完整 Safety 状态和运行合同；不能把 IMU/CAN 证据不足重新解释为已确认运动失败。', '证据不足')
     elif code == -9:
         for key, title in [('output_stale', '定位输出超时'), ('localization_lost', '定位输出门控关闭/定位丢失'), ('radar_all_failed', '所有必需雷达均不可用')]:
             if row.get(key) == 1:
@@ -1589,7 +1597,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                        'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
-                compute_profile=compute_profile, input_timing=input_timing,
+                compute_profile=compute_profile, input_timing=input_timing, motion_evidence=motion_evidence(latest),
                 trajectory_recording=dict(logged_limits.get('_trajectory', {}),
                                           final=logged_limits.get('_trajectory_final', {})),
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
@@ -1603,6 +1611,19 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 launch_findings=launch_findings, has_launch_evidence=bool(launch_findings),
                 has_safety_evidence=bool(rows or logdata),
                 limitation='输出的是故障判据及相关线索，不是已证明的物理根因；日志/时间线样本数不是故障次数或时间占比。')
+
+
+def motion_evidence(row):
+    condition = number(row.get('localization_consistency'))
+    names = {0: 'UNKNOWN', 1: 'PASS', 2: 'FAIL'}
+    advisory = condition == 0 and row.get('policy_version') == MOTION_UNKNOWN_POLICY
+    return dict(status=names.get(condition, 'unavailable'), unknown_advisory=advisory,
+                confirmed_failure=row.get('confirmed_failure'),
+                evidence={k: row[k] for k in ('policy_version', 'translation_condition', 'yaw_condition',
+                          'imu_arrival_age_sec', 'can_arrival_age_sec', 'imu_stamp_lag_sec',
+                          'can_stamp_lag_sec', 'yaw_pass_age_sec', 'unknown_tolerated', '_time', '_source') if k in row},
+                explanation=('运动一致性 UNKNOWN：证据不足，仅作诊断，不单独触发故障码 4；先前已确认失败仍须对应检查恢复。'
+                             if advisory else '运动检查状态按该记录的策略解释；UNKNOWN 不等于 PASS。'))
 
 
 def render(report, color=False, all_events=False):
@@ -1742,12 +1763,16 @@ def render(report, color=False, all_events=False):
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
-    if latest.get('policy_version') == FRAME_SUPPLY_POLICY:
+    if latest.get('policy_version') in FRAME_SUPPLY_POLICIES:
         lines.append('雷达输入组帧策略: 2 依据原始输入组帧中断/恢复确认；算法处理滞后不参与，雷达 DTC 仅作对照。')
         lines.append('  状态: ' + json.dumps({k: latest.get(k) for k in ('lidar_frame_started', 'lidar_frame_seen',
                      'lidar_frame_warning', 'lidar_frame_fault', 'lidar_frame_age_sec', 'lidar_frame_recovery_count')}, ensure_ascii=False))
     elif latest.get('policy_version') == CONFIRMED_LOSS_POLICY:
         lines.append(f'新版策略: 严格原始={latest.get("strict_runstate")} → 策略选择={latest.get("selected_runstate")} → 上报={latest.get("published_runstate")}')
+    motion = report.get('motion_evidence', {})
+    if motion.get('unknown_advisory'):
+        lines.append('运动证据提示: ' + motion['explanation'])
+        lines.append('  观测: ' + json.dumps(motion['evidence'], ensure_ascii=False))
     for suppressed in report.get('partial_radar_suppressions', []):
         lines.append(paint('部分雷达诊断曾由定位综合健康策略抑制（原始原因仍保留，不等于雷达故障已修复）', '33'))
         lines += ['  时间: ' + str(suppressed['time']) + '；范围: ' + str(suppressed['scope']),

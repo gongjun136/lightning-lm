@@ -266,11 +266,10 @@ Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_p
         out.observations[1].condition == kPass && out.translation_condition == kUnknown &&
         out.yaw_condition == kPass;
     // [dtc-optional-can-evidence]
-    // Do not report UNKNOWN as PASS. Grace affects only the stop decision and
-    // cannot refresh itself, survive an epoch change, hide a failure, stale
-    // output, missing uncertainty, or a detected clock discontinuity. The
-    // integration gap limit decides whether evidence is complete; the separate
-    // grace is a TOTAL evidence-age limit, not extra time after that gap limit.
+    // Retain the historical bounded-evidence flag for log compatibility.
+    // Motion UNKNOWN stays UNKNOWN and no longer independently triggers 4.
+    // The integration gap still determines whether motion evidence is complete;
+    // neither this flag nor UNKNOWN clears an earlier confirmed failure.
     // [dtc-unknown-evidence-age]
     const double grace = config_.consistency_unknown_grace_sec;
     out.consistency_unknown_tolerated =
@@ -292,8 +291,7 @@ int8_t SafetyValue(const Snapshot& loc, bool all_failed, bool radar_fault, bool 
         (loc.match_evidence_available && !loc.output_gate_open)) return 4;
     if (loc.confirmed_failure || loc.observations[0].condition == kFail ||
         loc.observations[1].condition != kPass) return 4;
-    if (loc.observations[0].condition != kPass && !loc.consistency_unknown_tolerated &&
-        !loc.optional_can_unavailable) return 4;
+    // 缺少运动证据只保留 UNKNOWN；明确失败、输出状态和不确定度分别由上面的判据处理。
     if (!mask_radar_fault && (radar_fault || !radar_all_pass)) return 2;
     return 0;
 }

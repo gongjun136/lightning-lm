@@ -103,6 +103,55 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(report['trajectory_recording']['final']['last_comm_seq'], 3982)
         self.assertIn('最后发布序号=3982', d.render(report))
 
+    def test_motion_unknown_advisory_is_visible_without_a_safety_fault(self):
+        for imu_age in (.15, .151, .208):
+            with self.subTest(imu_age=imu_age):
+                self.log.write_text('I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=1 '
+                    f'policy_version={d.MOTION_UNKNOWN_POLICY} raw_runstate=0 selected_runstate=0 '
+                    'published_runstate=0 localization_consistency=0 localization_uncertainty=1 '
+                    'translation_condition=0 yaw_condition=0 confirmed_failure=0 covariance_valid=1 '
+                    f'unknown_tolerated=0 imu_arrival_age_sec={imu_age} output_age_sec=0.01\n')
+                report = d.analyze(self.run, None, '指定路径', [])
+                self.assertEqual(report['current_findings'], [])
+                self.assertEqual(report['findings'], [])
+                self.assertEqual(report['motion_evidence']['status'], 'UNKNOWN')
+                self.assertTrue(report['motion_evidence']['unknown_advisory'])
+                self.assertEqual(report['motion_evidence']['evidence']['imu_arrival_age_sec'], imu_age)
+                self.assertIn('不单独触发故障码 4', d.render(report))
+
+    def test_motion_unknown_v7_does_not_reinterpret_legacy_stops(self):
+        row = dict(raw_runstate=4, published_runstate=4, localization_consistency=0,
+                   localization_uncertainty=1, covariance_valid=1, confirmed_failure=0,
+                   unknown_tolerated=0, optional_can_unavailable=0, imu_arrival_age_sec=.208)
+        for policy in (d.FRAME_SUPPLY_POLICY, d.CONFIRMED_LOSS_POLICY):
+            self.assertEqual(d.classify(dict(row, policy_version=policy), {})[0]['key'], 'consistency_unknown')
+        current = d.classify(dict(row, policy_version=d.MOTION_UNKNOWN_POLICY), {})
+        self.assertEqual([x['key'] for x in current], ['policy_state_incomplete'])
+        self.assertIn('缺少其他故障依据', current[0]['title'])
+
+    def test_motion_unknown_does_not_hide_confirmed_failure_or_other_stop_causes(self):
+        base = dict(policy_version=d.MOTION_UNKNOWN_POLICY, raw_runstate=4,
+                    localization_consistency=0, localization_uncertainty=1, covariance_valid=1,
+                    yaw_condition=0, translation_condition=0, confirmed_failure=0,
+                    unknown_tolerated=0, optional_can_unavailable=0)
+        for fields, expected in [({'confirmed_failure': 1}, 'latched_failure'),
+                                 ({'localization_uncertainty': 0}, 'uncertainty_unknown'),
+                                 ({'localization_uncertainty': 2}, 'uncertainty_fail'),
+                                 ({'output_stale': 1}, 'output_stale_degraded'),
+                                 ({'match_stale': 1}, 'match_stale_degraded'),
+                                 ({'output_gate_open': 0, 'latest_match_valid': 0,
+                                   'confirmed_tracking_lost': 0}, 'match_rejected_unconfirmed'),
+                                 ({'startup_pending': 1}, 'startup_pending')]:
+            with self.subTest(expected=expected):
+                self.assertEqual([x['key'] for x in d.classify(dict(base, **fields), {})], [expected])
+
+    def test_motion_unknown_policy_keeps_radar_supply_and_confirmed_loss(self):
+        row = dict(policy_version=d.MOTION_UNKNOWN_POLICY, raw_runstate=2,
+                   lidar_frame_seen=1, lidar_frame_fault=1, lidar_frame_age_sec=.31)
+        self.assertEqual(d.classify(row, {})[0]['key'], 'frame_supply')
+        row.update(raw_runstate=-9, confirmed_tracking_lost=1)
+        self.assertEqual(d.classify(row, {})[0]['key'], 'confirmed_tracking_lost')
+
     def test_frame_supply_policy_replaces_device_dtc_stop(self):
         limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
         row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,

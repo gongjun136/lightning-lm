@@ -45,7 +45,9 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 记录按来源、设备和判据时段保留，区分启动未输出与运行超时，并保留首次异常、较坏样例及附近重定位、CAN、IMU 日志。Safety 日志 sequence 不连续时报告会提示；未知的新故障码会提示规则缺失，不按健康处理。状态优先依据最新时间戳；旧记录或超过 5 秒的记录不能证明当前健康。摘要和时间线范围会与故障起始时刻交叉检查；未找到覆盖时提示可能仍在导出、被抑制或已轮转，范围重叠也不保证逐条完整。事件摘要最多 256 条，采集统计区分累计计数和窗口丢弃增量。
 
-关联日志受同源 Safety 恢复为 0 和观测缺口的边界约束，避免相邻故障时段串联；保留最近 1000 条普通日志及最早 128 条关键边界日志，去重并在超限时明确提示；保留首次局部匹配失败和禁用输出证据，避免长期重定位日志刷掉故障起点。独立 runtime 保护统计覆盖扫描范围或指定事件范围内的过期校正丢弃和自适应降载，不能作为 Safety 故障次数。匹配失败日志记录地图点数、XY 范围内点的比例、重力余弦及其阈值（`map_points`、`map_inside_xy`、`map_gravity_cos`、`map_min_inside_xy`、`map_min_overlap`、`map_min_gravity_cos`）；解析优先使用日志中的实际阈值，旧包配置值仅作线索。`map_checked=1` 或 overlap 不足不能证明车辆驶出地图。航向检查比较位姿航向增量与 IMU 机体系 z 角速度积分，CAN 参与平移检查；日志缺少积分累计转角或窗口分支时，不能重建确切动态阈值，也不能判定物理根因。首次输出或 epoch 重建后尚无 yaw PASS 时，应检查窗口建立与历史 IMU 覆盖；状态 4 的 UNKNOWN 无法可靠区分这两种情况，应说明证据不足。启动阶段无有效输出且状态 4 的判据为 UNKNOWN 时，优先核查初始化；摘要自动关联首次 -9 起点附近的 sensor queue lag 与过期 LIO 校正证据，区分首次 -9、门控关闭与解除、原始码恢复 0，并包含状态 2 的同步方位与恢复；lag 是最新入队与最新处理传感器时间之差，不能直接归因于 CPU 或 DDS。并存雷达条件仅作为对应历史 -9 记录的旁证，不虚报状态 2，也不能据此证明当前仍异常或认定故障因果。事件覆盖故障起点不等于覆盖整段故障。上述规则的现场验证以实际复验结果为准。
+关联日志受同源 Safety 恢复为 0 和观测缺口的边界约束，避免相邻故障时段串联；保留最近 1000 条普通日志及最早 128 条关键边界日志，去重并在超限时明确提示；保留首次局部匹配失败和禁用输出证据，避免长期重定位日志刷掉故障起点。独立 runtime 保护统计覆盖扫描范围或指定事件范围内的过期校正丢弃和自适应降载，不能作为 Safety 故障次数。匹配失败日志记录地图点数、XY 范围内点的比例、重力余弦及其阈值（`map_points`、`map_inside_xy`、`map_gravity_cos`、`map_min_inside_xy`、`map_min_overlap`、`map_min_gravity_cos`）；解析优先使用日志中的实际阈值，旧包配置值仅作线索。`map_checked=1` 或 overlap 不足不能证明车辆驶出地图。航向检查比较位姿航向增量与 IMU 机体系 z 角速度积分，CAN 参与平移检查；日志缺少积分累计转角或窗口分支时，不能重建确切动态阈值，也不能判定物理根因。首次输出或 epoch 重建后尚无 yaw PASS 时，应检查窗口建立与历史 IMU 覆盖，不能仅凭 UNKNOWN 区分这两种情况。启动阶段无有效输出时，优先核查初始化；摘要自动关联首次 -9 起点附近的 sensor queue lag 与过期 LIO 校正证据，区分首次 -9、门控关闭与解除、原始码恢复 0，并包含状态 2 的同步方位与恢复；lag 是最新入队与最新处理传感器时间之差，不能直接归因于 CPU 或 DDS。并存雷达条件仅作为对应历史 -9 记录的旁证，不虚报状态 2，也不能据此证明当前仍异常或认定故障因果。事件覆盖故障起点不等于覆盖整段故障。上述规则的现场验证以实际复验结果为准。
+
+诊断按日志的 `policy_version` 区分 v7 与历史 v6、v5。v7 的 `raw=0` 同时运动一致性 UNKNOWN 时，文本单独显示“运动证据提示”，JSON 的 `motion_evidence` 保留 `status` 和 `unknown_advisory`；该提示不计为故障段，也不把 UNKNOWN 描述为 PASS。v7 的 `raw=4` 若只有运动 UNKNOWN 而缺少其他支持判据，应报告判据缺失，不能声称 UNKNOWN 触发了 4；还需核查初始化、此前 FAIL 是否恢复、协方差、输出及匹配新鲜度与门控等证据。历史 v5/v6 日志继续按各自策略解释，不以 v7 的规则倒推旧记录。
 
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
@@ -96,6 +98,10 @@ event=LOC_MATCH_FAILED 激光定位匹配失败 score: 2.28, map_checked=1, map_
 
 ## 匹配失败点云证据
 
+普通 NDT 基础配准接受要求 `hasConverged()` 为真、confidence 和变换均为有限值，且 confidence 不低于当前跟踪或初始化阈值。零增量或有限步长小于 `transformation_epsilon` 可以置收敛；仅耗尽 20 次迭代预算不构成收敛证据，最后一次也可能满足收敛条件。基础配准通过后，候选仍可能因相对与绝对里程计差异或地图一致性检查被拒绝；单帧拒绝也不等于已确认定位失锁。
+
+例如，旧 13:48 包的五帧失败记录中 `iterations=20`，score 为 2.848–3.039，高于当时 tracking 阈值 0.4，且 `map_checked=0`；日志没有 `registration_reason`。这些记录表明分数阈值不是已知的拒绝原因，也未记录到地图一致性检查；不能仅凭 20 次迭代断言具体失败原因或物理根因。
+
 普通 tracking 拒绝、启动 seed 和全局重定位候选均提供取证，独立保存在 `runs/match_failures`。配置位于 `diagnostics.match_failure_capture`；启动器导出 `SANY_MATCH_FAILURE_DIR=$out_root/match_failures` 并写入 `run_metadata.match_failure_dir`。应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。
 
 schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及原始、精修和实际检查位姿；只有实际可用的位姿有值，无候选为 null。tracking 包含 `summary.json`、配置、扫描及局部地图，可按三维最近邻原判据点复算分数。候选在地图范围外、局部地图为空时仍保存地图边界、扫描和实际位姿；单传感器坐标扫描图不伪叠加地图，也不能据此推定车辆在地图外。`run_loc.sh --diagnose [包路径]` 展示证据；支持 `--json` 和 `--no-match-image`。例如 `bash ~/Sany/run_loc.sh --diagnose /绝对路径/匹配失败包`；默认在包内 `birdseye/comparison.png`、`birdseye/index.html` 和 `birdseye/analysis.json` 输出图与分析。历史保存图的时间可能不同于最新 Safety，须按时间分别解释。红色未命中点不直接证明动态物体。
@@ -104,13 +110,17 @@ schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及�
 
 采集不增加 DDS 订阅或独立进程；两个预分配槽最多保存 50000 个展示点及 50000 个原 global 检查点，后台线程避开隔离核 10/11、nice 10，限速 10 MiB/s。单事件上限 64 MiB，总预算 1 GiB，磁盘预留 2 GiB，保护期至少 7 天；保护期内空间不足时拒绝新包并报告丢弃原因。功能需要部署后的新采集，不能恢复已轮转的 2026-10-30 16:29 原始点云；测试和现场验收以实际结果为准。
 
-## 雷达输入组帧策略（v6）
+## 运动证据与雷达输入组帧策略（v7）
 
-新策略及配置版本均为 `localization-dtc-v6-radar-input`，以雷达输入持续无法满足组帧条件作为 Safety `runstate=2` 的判据，取代下节历史 v5 的雷达 DTC 判据。定位 C++ 进程内现有的 20 ms Safety wall timer 使用 `steady_clock` 独立检查，不新增 Python 运行检测或服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒为预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒为故障；`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格输入组帧恢复。启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。上述阈值尚不能据此声称现场安全。
+策略及配置版本为 `localization-dtc-v7-motion-unknown`。运动一致性证据不足时，DTC 保持 UNKNOWN；UNKNOWN 本身不再单独触发 Safety `runstate=4`。例如 IMU 150–208 ms 未更新可能使运动一致性证据不足，但须结合其他判据判断 Safety，不能由此推定定位已经通过运动一致性检查。此前的明确 FAIL 仍需相应 PASS 恢复，在无更高优先级状态时未恢复仍为 4；运动一致性明确 FAIL、协方差 FAIL/UNKNOWN、初始化未完成、输出或匹配过期及门控关闭仍按各自规则处理为 4 或 -9。输入源间隔和回调到达间隔继续记录，供排查使用。
+
+`consistency_unknown_grace_sec` 配置和 `unknown_tolerated` 日志字段继续保留历史观测兼容，但 v7 不再依赖有限宽容期判断运动 UNKNOWN 是否单独停车。必须按同次运行的版本、配置和原始判据解释历史日志；较早的 v6 运动 UNKNOWN 宽容判据以及下节 v5 的设备 DTC 判据仍仅适用于各自版本。
+
+v7 沿用 v6 的原始雷达输入组帧策略，以雷达输入持续无法满足组帧条件作为 Safety `runstate=2` 的判据。定位 C++ 进程内现有的 20 ms Safety wall timer 使用 `steady_clock` 独立检查，不新增 Python 运行检测或服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒为预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒为故障；`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格输入组帧恢复。启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。上述阈值尚不能据此声称现场安全。
 
 检查位于 `LocSystem` 原始雷达订阅入口，在预处理、限流和 LIO 排队之前，复用组帧器的时间戳、来源及最低来源数规则，不合并点云、不执行算法计算。仅接受非空原始消息，要求主雷达；完成新鲜输入组帧条件检查时更新进度，原始主雷达接收索引用于防止旧输入缓存续命。算法排队、处理或地图匹配滞后不参与该计时和恢复，不能作为报 2 的原因。`cloud_publish_min_lidars=3` 仅控制对外点云发布，不是报 2 的门槛。200 ms 为两个 100 ms 时间桶周期，现场同桶容差为 20 ms、乱序窗口为 100 ms；20 ms 约束雷达之间的相对组帧时间跨度，不保证绝对授时或与 IMU 对齐。诊断应结合 frame age、seen、started、warning、fault 和 recovery count 判断，并检查实际运行配置与版本。
 
-优先级为：确认定位失锁 `-9`；雷达输入组帧超时及恢复确认期间 `2`，优先于其后果性输出过期及无输入导致的启动过期；其余启动、质量或输出降级 `4`；健康 `0`。雷达 DTC 和独立心跳继续保留，严格 DTC 评估仅作对照；设备 DTC 不直接触发 2 或 -9。兼容接口 `errorcode` 默认仍为 0，业务状态看 `runstate`。部分雷达故障仍能满足实际组帧最低来源规则时不报 2；无法满足时可以报 2，这不等于全部雷达硬件损坏。历史 v5 记录仍按原策略解析。
+优先级为：确认定位失锁先给 `-9`；雷达输入组帧超时及恢复确认期间给 `2`，优先于其后果性输出过期及无输入导致的启动过期；其余启动、质量或输出降级按各自判据给 `4` 或 `-9`；其他情况给 `0`。雷达 DTC 和独立心跳继续保留，严格 DTC 评估仅作对照；设备 DTC 不直接触发 2 或 -9。兼容接口 `errorcode` 默认仍为 0，业务状态看 `runstate`。部分雷达故障仍能满足实际组帧最低来源规则时不报 2；无法满足时可以报 2，这不等于全部雷达硬件损坏。历史 v5/v6 记录仍按原策略解析。
 
 实施后须回归断流、旧缓存、时间戳不前进、来源不足、启动宽限、恢复及状态优先级，并在目标设备验证触发与恢复延迟、日志和实际发布值。本文不表示新策略已部署或通过实车验收。
 
