@@ -131,7 +131,7 @@ run_frontend_offline.sh 输出文件说明：
 
 | 脚本 | 用途 |
 |---|---|
-| `run_sany_lidar_loc.sh --diagnose [path]` | 仓库内只读诊断入口，转交 `diagnose_localization.sh` / `diagnose_localization.py` 分析当前定位实例、事件或 rosbag 中的 Safety 证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
+| `run_sany_lidar_loc.sh --diagnose [path]` | 仓库内只读诊断入口，转交 `diagnose_localization.sh` / `diagnose_localization.py` 分析当前定位实例、事件或 rosbag 中的 Safety 与输入时序证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
 | `inspect_rosbag2_sqlite.py` | 读取 SQLite3 ROS2 bag 和 YAML，核对 Topic 合同、主 LiDAR 末帧、数据时长及输入哈希。由离线前端入口调用。 |
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
 | `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |
@@ -189,16 +189,27 @@ bash scripts/run_frontend_offline_batch.sh \
 
 所有输出目录都应预先不存在或不含同名运行产物。正式实验前执行 `git status --short`，确保工作树干净。
 
-### 记录并可视化在线 `/PosRes`
+### 现场定位轨迹
 
-`run_sany_lidar_loc.sh` 会在运行期间实时写入三份定位轨迹：
+`run_sany_lidar_loc.sh` 默认只保存一份全程定位 TUM 轨迹 `results/trajectory_published_rear_axle.tum`。每次
+`/localization/pose_vel` 发布调用成功返回后，记录该消息对应的后轴中心、业务地图坐标位姿，
+不降频。标准 TUM 八列依次为 `timestamp x y z qx qy qz qw`，时间戳以秒为单位，直接由发布消息
+`header.stamp` 的整数秒和纳秒写出九位小数，避免纪元时间转 double 时丢失低位；这保留的是发布消息头
+的时间精度，不代表原始硬件时间精度。姿态以四元数表示；轨迹不包含 `speed`，也不能证明下游订阅者已收到消息。
 
-* `results/trajectory_global.tum`：PGO 全局校正轨迹。
+轨迹采用缓冲写入，运行中约每秒 flush，正常退出时也会 flush，因此读取时可能暂时看不到最新几条；
+`SIGKILL` 可能丢失最后尚未 flush 的部分，写盘错误也可能使文件不完整。已发布消息若含异常数值或
+经 ROS 时间精度量化后出现重复时间戳，轨迹仍保留该行，分析时应检查数据有效性。故障采集与全程轨迹
+分别管理，不因关闭内部轨迹而关闭故障采集。
 
-* `results/trajectory_high_frequency.tum`：定位器内部的高频原始位姿。
+成功启用记录时，`LOC_TUM_RECORDING` 日志包含 `sample_policy=all_pose_vel`、
+`flush_interval_sec=1` 和 `buffer_bytes=65536`。`--diagnose` 文本可提示全频记录和缓冲刷新，
+JSON 的 `trajectory_recording` 保留扫描到的字段；这只说明记录器已启用，不保证后续写入完整或下游已接收。
 
-* `results/trajectory_published_rear_axle.tum`：经过后轴外参和固定地图变换后，实际发布到
-  `/PosRes` 的位姿。该文件逐条刷新，可供下游联调时实时读取。
+PGO 全局校正轨迹和定位器内部高频轨迹默认不记录，也不积累这两份轨迹的无界内存。
+调试需要时可直接启动 `run_loc_online`，通过 `--output_tum=/路径/global.tum` 和
+`--output_high_frequency_tum=/路径/high_frequency.tum` 分别显式启用旧的导出接口；
+这些内部轨迹不能替代上述业务发布轨迹。
 
 SANY LiDAR 入口 `run_sany_lidar_loc.sh` 默认使用 `LIGHTNING_LM_RUN_MODE=diagnostic` 和
 `LIGHTNING_LM_COMPUTE_PROFILE=1`，将 LIO、NDT/重定位、PGO、IMU/DR、ROS
@@ -241,7 +252,13 @@ SANY 正式定位 YAML 通过统一的 `compute_budget` 限制 LIO、NDT 和 SOL
 已为定位预留的核心。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写；脚本会在启动前
 校验 SOLiD worker 核心集合是定位进程有效核心集合的子集，不满足时拒绝启动。
 
-构建并加载工作空间后启动接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
+### 历史 `/PosRes` 接收统计
+
+`pos_res_recorder` 订阅历史 `geosun_msgs/msg/PosRes`，只适用于仍发布该类型的旧系统。
+当前定位程序发布 `/localization/pose_vel`，不发布 `/PosRes`，因此下面的工具不能记录当前业务话题。
+接收端统计反映订阅者实际收到的消息，与上面的进程内发布轨迹含义不同。
+
+构建并加载工作空间后启动历史接收节点；按 `Ctrl-C` 停止时会保留最后一个不足一秒的统计窗口：
 
 ```bash
 ros2 run lightning_lm pos_res_recorder --ros-args \

@@ -6,6 +6,7 @@
 #define LIGHTNING_LOC_SYSTEM_H
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -41,6 +42,7 @@
 #include "core/localization/localization_dtc_monitor.h"
 #include "utils/compute_profiling.h"
 #include "utils/incident_recorder.h"
+#include "utils/input_timing_monitor.h"
 
 namespace lightning {
 
@@ -60,6 +62,8 @@ class LocSystem {
     struct Options {
         bool pub_tf_ = false;  ///< 是否发布 TF，可由 YAML 的 system.pub_tf 显式启用。
         std::string incident_directory;  ///< Absolute archive root; no new ROS subscriptions.
+        bool record_global_trajectory = false;
+        bool record_internal_high_frequency_trajectory = false;
     };
 
     explicit LocSystem(Options options);
@@ -129,27 +133,31 @@ class LocSystem {
      * @details 由 ROS 订阅回调调用；SetInitPose() 之前只记录输入状态。
      * @see loc::Localization::ProcessIMUMsg()
      */
-    void ProcessIMU(const lightning::IMUPtr& imu);
+    void ProcessIMU(const lightning::IMUPtr& imu,
+                    diagnostics::InputTimingMonitor::Clock::time_point arrived = diagnostics::InputTimingMonitor::Clock::now());
 
     /**
      * @brief 检查标准点云的输入时效，并在定位启动后转交算法。
      * @details 多雷达模式默认使用主雷达 ID；单雷达模式使用 ID 0。
      * @see ObserveLidarInput(), loc::Localization::ProcessLidarMsg()
      */
-    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
+    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud,
+                      diagnostics::InputTimingMonitor::Clock::time_point arrived = diagnostics::InputTimingMonitor::Clock::now());
     /**
      * @brief 按指定雷达 ID 检查并转发标准点云。
      * @param cloud 非空标准点云消息，使用消息头时间戳检查输入时效。
      * @param lidar_id 与多雷达配置对应的传感器 ID。
      * @see ObserveLidarInput(), loc::Localization::ProcessLidarMsg()
      */
-    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id);
+    void ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id,
+                      diagnostics::InputTimingMonitor::Clock::time_point arrived = diagnostics::InputTimingMonitor::Clock::now());
     /**
      * @brief 检查 Livox 自定义点云的输入时效，并在定位启动后转交算法。
      * @details 输入统计使用 ID 0；算法侧通过 ProcessLivoxLidarMsg() 处理该消息格式。
      * @see loc::Localization::ProcessLivoxLidarMsg()
      */
-    void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud);
+    void ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr& cloud,
+                      diagnostics::InputTimingMonitor::Clock::time_point arrived = diagnostics::InputTimingMonitor::Clock::now());
 
     /**
      * @brief 进入 ROS 事件循环，执行传感器回调和定时器，直到 ROS 关闭。
@@ -177,7 +185,7 @@ class LocSystem {
     bool SaveHighFrequencyTrajectoryTum(const std::string& path) const;
     /**
      * @brief 打开 TUM 文件，在运行中记录实际发布到 /localization/pose_vel 的后轴位姿。
-     * @details 创建父目录并截断目标文件；记录频率受运行开销策略控制。
+     * @details 创建父目录并截断目标文件；每条实际发布位姿均写入缓冲，周期及退出时刷新。
      * @return 文件与表头初始化成功返回 true；路径、目录或文件操作失败返回 false。
      * @see PublishLocalizationResult(), Finish()
      */
@@ -249,10 +257,11 @@ class LocSystem {
      * @return 时间戳有效且满足配置的输入时效门槛时返回 true。
      * @see ProcessLidar(), PublishHealthStatus()
      */
-    bool ObserveLidarInput(int lidar_id, double sensor_stamp);
-    void ObserveImuInput(double sensor_stamp);
+    bool ObserveLidarInput(int lidar_id, double sensor_stamp, diagnostics::InputTimingMonitor::Clock::time_point arrived);
+    void ObserveImuInput(double sensor_stamp, diagnostics::InputTimingMonitor::Clock::time_point arrived);
     void ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
-                                double motor_torque);
+                                double motor_torque, diagnostics::InputTimingMonitor::Clock::time_point arrived);
+    void LogInputTiming(bool force = false);
 
     struct InputTopicStats {
         std::string topic;  ///< 该路输入的 ROS 话题名称。
@@ -261,6 +270,7 @@ class LocSystem {
         double last_sensor_stamp = 0.0;  ///< 最近收到消息的传感器时间戳（s）。
         std::chrono::steady_clock::time_point last_arrival;  ///< 最近一次接收消息的单调时钟时刻，用于判断断流。
         bool has_arrival = false;  ///< 是否已接收到该路输入，用于区分未启动与断流。
+        diagnostics::InputTimingMonitor timing;
     };
 
     Options options_;  ///< ROS 编排层的启动选项。
@@ -295,9 +305,11 @@ class LocSystem {
     std::vector<NavState> global_localization_states_;  ///< 全局校正状态轨迹，供 SaveTrajectoryTum() 导出。
     mutable std::mutex published_tum_mutex_;  ///< 保护已发布 TUM 文件流、时间戳与写入统计。
     std::ofstream published_tum_stream_;  ///< 记录实际发布的后轴位姿的 TUM 文件流。
+    std::array<char, 64 * 1024> published_tum_buffer_{};
+    std::chrono::steady_clock::time_point published_tum_last_flush_;
+    std::chrono::steady_clock::time_point input_timing_last_log_, input_timing_last_summary_;
     std::string published_tum_path_;  ///< 已发布位姿 TUM 轨迹文件的输出路径。
     double last_published_tum_timestamp_ = 0.0;  ///< TUM 写入门控使用的上一条位姿时间戳（s）。
-    double last_production_pose_audit_stamp_ = 0.0;  ///< 最近一次生产位姿审计日志的传感器时间戳（s），用于限制日志频率。
     std::uint64_t published_tum_pose_count_ = 0;  ///< 成功写入已发布 TUM 轨迹的位姿数。
     std::uint64_t published_tum_write_error_count_ = 0;  ///< TUM 记录位姿时的失败次数。
     bool finished_ = false;  ///< 标记 Finish() 已完成，避免重复收尾。

@@ -12,7 +12,7 @@ diagnostics:
     enabled: true  # 改为 false 关闭
 ```
 
-SANY 启动脚本通过 `--incident_dir` 指向 `$out_root/incidents`；检查本次运行的配置快照和启动日志，确认设置与路径。手工启动时可显式传入绝对路径 `--incident_dir=/绝对路径/incidents`；未提供该参数但提供 `--output_tum` 时，回退到 TUM 父目录下的 `incidents`；若两者均未提供，日志会提示禁用采集，算法继续运行。事件各有目录；全程 bag 与事件采集分别开关。使用此采集器时可设置 `SANY_RECORD_BAG=0`、`SANY_ENABLE_POSE_VEL_WATCHDOG=0`，避免同时启用全程录包和独立看门狗；原始数据默认缓存且不增加重复 DDS 订阅。
+SANY 启动脚本通过 `--incident_dir` 指向 `$out_root/incidents`；检查本次运行的配置快照和启动日志，确认设置与路径。手工启动时可显式传入绝对路径 `--incident_dir=/绝对路径/incidents`；未提供该参数时，优先回退到 `--output_published_tum` 父目录下的 `incidents`，其次使用 `--output_tum` 的父目录；如果都未提供，日志会提示禁用采集，算法继续运行。事件各有目录；全程 bag 与事件采集分别开关。使用此采集器时可设置 `SANY_RECORD_BAG=0`、`SANY_ENABLE_POSE_VEL_WATCHDOG=0`，避免同时启用全程录包和独立看门狗；原始数据默认缓存且不增加重复 DDS 订阅。
 
 ## 现场单命令分析
 
@@ -49,9 +49,38 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
+## IMU、雷达与 CAN 输入时序
+
+定位进程对主 IMU、每路已配置雷达以及启用轮速观测时的 CAN 分别统计相邻消息的源时间间隔和订阅回调的单调到达间隔。源时间取消息头时间戳并转为 double 统计，日志保留 17 位有效数字，不保证保留原始硬件时间戳的纳秒精度；到达间隔使用回调开始时采样的单调时钟，不受墙钟校时影响。CAN 消息无法解码时仍记录回调到达，源时间标为无效，不将其误认为回调静默。
+
+统计复用已有回调和健康定时器：每条消息在现有输入统计锁内做 O(1) 更新，每路使用固定 16 条异常记录缓存；健康定时器最多每秒排出一次记录，正常运行约每 10 秒输出一次累计摘要。缓存满时记录丢弃数，不保证每个异常都留存。该功能不新增运行时监控进程、线程、DDS 订阅或 ROS 消息字段，不改变 Safety 2、4、-9 的判定策略；原有故障采集仍独立保留。
+
+日志标记为 `INPUT_TIMING`，正文为“输入时序观测”，当前 `schema=1`。各行按 `stream=imu|lidar|can` 和 `topic` 区分输入；`kind=start|interval|silence|summary` 分别表示首个样本、异常相邻间隔、回调静默及累计摘要。常用字段如下，时间单位均为秒：
+
+| 字段 | 含义 |
+|---|---|
+| `sample_seq` | 该路从进程启动以来已观测的回调样本序号；摘要为 0 表示尚未观测到该路样本。正常样本不逐帧输出，不能以该序号的间隔判断日志丢弃。 |
+| `event_seq` | 该路首样本、异常间隔和静默等事件的单调编号；事件缓存满时也递增，`summary` 仅记录当前编号而不递增。 |
+| `source_stamp_sec`、`previous_source_stamp_sec`、`source_gap_sec` | 在 `interval` 中表示当前和上一条源时间戳及其间隔；`silence` 中的 `source_stamp_sec` 是最近收到的源时间戳。上一条或当前源时间无效时不能计算间隔；回退时的间隔为负，需结合原始时间戳解释。 |
+| `arrival_gap_sec`、`arrival_steady_sec`、`emitted_steady_sec` | 回调间隔、记录的单调时钟时刻和批量输出时刻。静默记录的间隔是采样时距上次回调的时间；单调时钟只用于本进程内比较，不能当作墙钟或跨进程直接比较。 |
+| `threshold_sec` | 时序取证阈值：IMU 和 CAN 为 0.1 秒，每路雷达为 0.2 秒；间隔严格大于该值才计为缺口。这不是 Safety 阈值，也不等于已证实丢包。 |
+| `source_gaps`、`arrival_gaps`、`duplicates`、`rollbacks`、`invalid` | 该路进程生命周期内源间隔超阈、到达间隔超阈、源时间重复、回退和无效的累计次数；对应最大间隔见 `max_source_gap_sec`、`max_arrival_gap_sec`。 |
+| `events_lost` | 该路原生异常记录缓存满导致的累计丢弃数。日志本身也可能因异步日志丢弃或读取预算而不完整，不能以该值为 0 证明证据完整。 |
+
+现场可用 `bash ~/Sany/run_loc.sh --diagnose` 查看“上游输入时序”，JSON 输出对应 `input_timing`。报告对照相邻事件记录和累计摘要的 `event_seq` 识别扫描范围内的未覆盖事件，`event_sequence_gaps` 表示观察到的事件序号缺口；`events_lost` 表示原生缓存丢弃，两者可能重叠，不能相加当作丢弃总数。报告关联相应时间窗口的 Safety 段，但不将时序记录增加为 Safety 故障次数；回调墙钟时间由日志墙钟与单调时钟间隔估算，批量排出、调度和日志写入可能带来偏差，不应当作精密授时。具体分类及含义如下：
+
+| 分类 | 观察到的条件和解释 |
+|---|---|
+| `callback_silence` | 该路曾有样本，之后回调超过阈值未到达；只说明观察点暂未收到新样本。下一条消息尚未到达时，没有新的源时间间隔可比较。 |
+| `delivery_delay` | 同一对消息的源间隔大于 0 且不超过阈值，而回调间隔超过阈值；这是延迟交付或回调调度等的线索，不能单凭它确定延迟发生在哪个环节。 |
+| `source_gap` | 同一对消息的源间隔超过阈值，说明接收序列存在源时间缺口。源端停发、传输或接收过程丢失及源时钟跳变都可能产生类似现象，不能直接认定硬件停发。 |
+| `source_rollback`、`duplicate_source_stamp`、`invalid_source_stamp` | 源时间回退、重复或无效；需结合原始消息、解码状态和时钟状态进一步检查。 |
+
+这些间隔不是绝对端到端时延，也不能单独区分硬件故障和网络丢弃。旧版运行库、缺少对应日志或受日志读取预算限制时，报告会缺少时序证据；没有证据不能证明输入正常或发生断流。新功能需重新编译并重启后采集，再核对运行库标记及实际现场结果。
+
 ## 定位日志与事件码
 
-定位程序自身输出的自然语言日志正文使用中文，诊断使用稳定的 `event=` 大写事件码识别事件。机器字段、单位和枚举值，以及 ROS、DDS 和第三方库原始错误 detail 保留原文。`SAFETY_DIAGNOSTIC`、`LOCALIZATION_DIAGNOSTIC_BUILD`、`LOCALIZATION_DTC_CONFIG`、`GLOBAL_RELOCALIZATION[backend]`、`SOLID_KISS_REJECT`、`SOLID_KISS_ACCEPT`、`COMPUTE_BENCH_*` 和 `LIO_BENCH_FRAME` 等结构化标签保留；字段名、数值、时间戳和日志级别保持原有契约。长中文日志超过原有 8192 字节上限时，在完整 UTF-8 字符边界截断并标记 `async_truncated`，因此不能假定正文完整。
+定位程序自身输出的自然语言日志正文使用中文，诊断使用稳定的 `event=` 大写事件码识别事件。机器字段、单位和枚举值，以及 ROS、DDS 和第三方库原始错误 detail 保留原文。`SAFETY_DIAGNOSTIC`、`INPUT_TIMING`、`LOCALIZATION_DIAGNOSTIC_BUILD`、`LOCALIZATION_DTC_CONFIG`、`GLOBAL_RELOCALIZATION[backend]`、`SOLID_KISS_REJECT`、`SOLID_KISS_ACCEPT`、`COMPUTE_BENCH_*` 和 `LIO_BENCH_FRAME` 等结构化标签保留；字段名、数值、时间戳和日志级别保持原有契约。长中文日志超过原有 8192 字节上限时，在完整 UTF-8 字符边界截断并标记 `async_truncated`，因此不能假定正文完整。
 
 `/localization/debug_message` 的 `lightning/msg/DebugMessage.message` 人类可读正文也使用中文，覆盖节点就绪、首次定位、全局重定位开始/失败/接受及 LIO、ESKF、PGO、平滑器异常与恢复等事件。原有数值字段名、单位、枚举值及原始 `reason`/`detail` 保留，便于诊断；`header` 时间戳、`node_name`、ROS 话题和消息结构，以及内部限频键和状态键不变。上述日志的 `event=` 规则不新增消息字段：`DebugMessage` 仍为 `header`、`node_name` 和 `message`，正文中已有的 `event=` 文本仍可能出现。
 

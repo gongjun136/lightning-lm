@@ -513,8 +513,72 @@ def is_boundary_context(text):
     return any_event(text, BOUNDARY_EVENTS)
 
 
+def input_timing_event(row, timezone=None):
+    """只解释同一对源时间/回调时间；不把订阅缺口定性为硬件停发。"""
+    kind = row.get('kind')
+    if row.get('schema') != 1 or kind not in ('start', 'interval', 'silence', 'summary') or not row.get('topic'):
+        return None
+    result = dict(row, time=row['_time'], source=row['_source'])
+    if kind == 'summary':
+        result.update(category='summary', title='输入间隔累计统计')
+    elif kind == 'silence':
+        result.update(category='callback_silence', title='接收回调静默，等待后续源时间判断缺口或延迟', resolved=False)
+    elif kind == 'start':
+        result.update(category='start', title='已开始记录输入源时间和回调到达间隔')
+    else:
+        stamp, previous = number(row.get('source_stamp_sec')), number(row.get('previous_source_stamp_sec'))
+        source_gap, arrival_gap, threshold = (number(row.get(k)) for k in ('source_gap_sec', 'arrival_gap_sec', 'threshold_sec'))
+        if None in (source_gap, arrival_gap, threshold) or threshold <= 0:
+            return None
+        if stamp is None or previous is None or stamp <= 0 or previous <= 0:
+            category, title = 'invalid_source_stamp', '回调已到达，但源时间无效或缺少可比较的前一条时间'
+        elif source_gap < 0:
+            category, title = 'source_rollback', '源时间戳回退，不能当作正常连续输入'
+        elif source_gap == 0:
+            category, title = 'duplicate_source_stamp', '回调仍到达，但源时间戳重复'
+        elif source_gap > threshold:
+            category, title = 'source_gap', '接收序列出现源时间缺口：停发、链路丢弃或跳时仍需上游证据区分'
+        elif arrival_gap > threshold:
+            category, title = 'delivery_delay', '相邻源时间连续，回调交付间隔增大：存在延迟交付证据'
+        else:
+            category, title = 'interval', '输入相邻时间间隔记录'
+        result.update(category=category, title=title)
+    emitted, arrived = number(row.get('emitted_steady_sec')), number(row.get('arrival_steady_sec'))
+    if row_ns(row) is not None and emitted is not None and arrived is not None and 0 < arrived <= emitted:
+        result['observed_wall_ns'] = row_ns(row) - int((emitted - arrived) * 1e9)
+        result['time'] = dt.datetime.fromtimestamp(result['observed_wall_ns'] / 1e9, timezone).strftime('%m-%d %H:%M:%S.%f')
+    return result
+
+
+def collect_input_timing(store, event):
+    topic = event['topic']
+    store['observed_records'] += 1
+    sequence = number(event.get('event_seq'))
+    if sequence is not None:
+        previous = store['last_event_sequence'].get(topic)
+        if previous is not None and sequence > previous + (0 if event['kind'] == 'summary' else 1):
+            store['event_sequence_gaps'][topic] = store['event_sequence_gaps'].get(topic, 0) + sequence - previous - (0 if event['kind'] == 'summary' else 1)
+        store['last_event_sequence'][topic] = sequence
+    for old in reversed(store['events']):
+        if old['topic'] == topic and old['category'] == 'callback_silence' and not old['resolved']:
+            if number(event.get('sample_seq')) is not None and event['sample_seq'] > old.get('sample_seq', 0):
+                old.update(resolved=True, title='曾出现接收回调静默，后续样本已到达',
+                           recovery_category=event['category'])
+            break
+    if event['kind'] == 'summary':
+        store['streams'][topic] = event
+    else:
+        store['counts'][event['category']] = store['counts'].get(event['category'], 0) + 1
+        store['events'].append(event)
+        if len(store['events']) > 512:
+            store['events'].pop(0)
+            store['truncated_events'] += 1
+    if number(event.get('events_lost')):
+        store['lost_by_topic'][topic] = max(store['lost_by_topic'].get(topic, 0), event['events_lost'])
+
+
 def log_rows(path, budget, warnings, reference=None, context=None,
-             protections=None, protection_window=None):
+             protections=None, protection_window=None, input_timing=None):
     """Bounded tail, original byte offsets as evidence; does not slurp the log."""
     result, config = [], {}
     if not path or not Path(path).is_file():
@@ -534,6 +598,8 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                     config.update(fields(line))
                 if 'LOCALIZATION_DIAGNOSTIC_BUILD' in line:
                     config['_build'] = fields(line)
+                if 'event=LOC_TUM_RECORDING ' in line:
+                    config['_trajectory'] = fields(line)
             size = os.fstat(f.fileno()).st_size
             start = max(0, size - budget)
             f.seek(start)
@@ -544,6 +610,7 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                 offset = f.tell()
                 line = f.readline(min(128 * 1024, size - offset)).decode(errors='replace')
                 modern = 'SAFETY_DIAGNOSTIC' in line
+                timing = input_timing is not None and 'INPUT_TIMING ' in line
                 protection_key = None
                 if protections is not None:
                     if has_event(line, 'LIO_STALE_CORRECTION_DROPPED'):
@@ -553,7 +620,7 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                 contextual = context is not None and (
                     any_event(line, CONTEXT_EVENTS) or
                     any(marker in line for marker in ('GLOBAL_RELOCALIZATION[', 'SOLID_KISS_REJECT')))
-                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual and not protection_key:
+                if not modern and 'SAFETY_TIME_SYNC_SHADOW' not in line and not contextual and not protection_key and not timing:
                     continue
                 row = fields(line)
                 if not modern:
@@ -570,6 +637,18 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                         pass
                 row['_source'] = f'{path}:byte={offset}'
                 row['_scope'] = '运行日志（有界尾部）' if modern else '旧日志上报码（原始码未知）'
+                if timing:
+                    event = input_timing_event(row, reference.tzinfo if reference else None)
+                    if event is None:
+                        warning = '输入时序记录不完整或版本不支持，未据此判断断流或延迟。'
+                        if warning not in warnings: warnings.append(warning)
+                        continue
+                    observed = event.get('observed_wall_ns', row_ns(row))
+                    if protection_window is not None and (not protection_window or observed is None or
+                            not protection_window[0] <= observed <= protection_window[1]):
+                        continue
+                    collect_input_timing(input_timing, event)
+                    continue
                 if protection_key and not modern:
                     if protection_window is not None:
                         stamp = row_ns(row)
@@ -1367,8 +1446,14 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         if not times:
             warnings.append('缺少指定事件时间线范围，未统计运行保护线索；不使用窗口外日志补充次数。')
     context, protections = [], {}
+    input_timing = dict(observed_records=0, streams={}, events=[], counts={}, truncated_events=0, lost_by_topic={},
+                        last_event_sequence={}, event_sequence_gaps={})
     logdata, logged_limits = log_rows(log, int(log_mb * MIB), warnings, reference, context,
-                                      protections, protection_window)
+                                      protections, protection_window, input_timing)
+    input_timing['status'] = 'available' if input_timing['observed_records'] else 'unavailable'
+    input_timing['limitation'] = '观察点为本进程订阅回调；源时间缺口不等于已证实硬件停发，单调时钟不跨进程比较，墙钟事件时间按排出延迟估算。'
+    if input_timing['lost_by_topic'] or input_timing['truncated_events'] or input_timing['event_sequence_gaps']:
+        warnings.append('输入时序异常缓存或诊断保留列表存在丢弃，缺口内不能保证覆盖全部异常，见 input_timing。')
     if not limits:
         limits = {k: v for k, v in logged_limits.items() if k in LIMITS}
         warnings.append('缺少配置快照，使用能找到的运行配置日志；未知阈值不作超限判断。')
@@ -1408,6 +1493,11 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         if process:
             warnings.append('同时显示本事件和当前运行日志尾部的故障；日志中的较早故障不一定属于此事件，见每项时间与来源。')
     findings = fault_episodes(rows + logdata, limits)
+    for finding in findings:
+        start, end = finding.get('start_ns'), finding.get('end_ns') or finding.get('last_ns')
+        finding['input_timing_evidence'] = [event for event in input_timing['events']
+            if event['category'] != 'start' and start is not None and end is not None and
+            event.get('observed_wall_ns') is not None and start - int(1e9) <= event['observed_wall_ns'] <= end + int(1e9)]
     scope_rows = {}
     for row in rows + logdata:
         scope_rows.setdefault(row.get('_scope'), []).append(row)
@@ -1495,7 +1585,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                        'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
-                compute_profile=compute_profile,
+                compute_profile=compute_profile, input_timing=input_timing,
+                trajectory_recording=logged_limits.get('_trajectory', {}),
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
@@ -1534,6 +1625,24 @@ def render(report, color=False, all_events=False):
                   '  定位方向: ' + finding['advice']]
     if report.get('upstream_lidar'):
         lines += render_driver_diagnosis(report['upstream_lidar'])
+    timing = report.get('input_timing', {})
+    trajectory = report.get('trajectory_recording', {})
+    if trajectory.get('sample_policy') == 'all_pose_vel':
+        lines.append('后轴 TUM: 逐条记录 pose_vel 发布位姿，保留 ROS 头精确时间；周期缓冲刷新，不等于下游实收。')
+    if timing.get('status') == 'available':
+        lines.append('上游输入时序: 已记录源时间戳间隔和回调到达间隔（不计入 Safety 故障次数）')
+        lines.append('  分类累计: ' + json.dumps(timing['counts'], ensure_ascii=False))
+        for topic, summary in timing['streams'].items():
+            lines.append(f'  {topic} 累计回调={summary.get("sample_seq")}，源间隔超限={summary.get("source_gaps")}，'
+                         f'到达间隔超限={summary.get("arrival_gaps")}；最大源间隔={summary.get("max_source_gap_sec")} s，'
+                         f'最大回调间隔={summary.get("max_arrival_gap_sec")} s（累计值可能早于本次日志读取窗口）')
+        for event in (timing['events'] if all_events else timing['events'][-12:]):
+            lines.append(f'  {event["time"]} {event.get("stream")} {event["topic"]}: {event["title"]}；'
+                         f'源间隔={event.get("source_gap_sec")} s，回调间隔={event.get("arrival_gap_sec")} s；证据={event["source"]}')
+        if timing['lost_by_topic'] or timing['truncated_events'] or timing['event_sequence_gaps']:
+            lines.append('  时序证据存在丢弃或序号缺口: ' + json.dumps(dict(runtime=timing['lost_by_topic'], retained=timing['truncated_events'], sequence_gaps=timing['event_sequence_gaps'])))
+    else:
+        lines.append('上游输入时序: 当前日志缺少配对间隔证据，无法仅凭接收龄期区分源缺口和延迟交付。')
     match_image = report.get('match_failure_image', {})
     if match_image:
         lines.append(paint('定位失败证据与俯视图: ' + str(match_image.get('status')), '1;36'))
@@ -1754,7 +1863,7 @@ def main(argv=None):
         report['scheduling'] = scheduling
         print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
         has_driver = report['upstream_lidar'].get('report', {}).get('has_evidence') is True
-        return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or report.get('has_match_evidence') or has_driver else 2
+        return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or report.get('has_match_evidence') or has_driver or report.get('input_timing', {}).get('status') == 'available' else 2
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(error=str(exc)), ensure_ascii=False) if args.json else '无法完成诊断: ' + str(exc))
         return 2

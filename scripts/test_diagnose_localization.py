@@ -18,6 +18,72 @@ import check_diagnostic_contract as contract
 
 
 class DiagnosisTest(unittest.TestCase):
+    def test_input_timing_distinguishes_source_and_delivery_intervals(self):
+        base = dict(schema=1, kind='interval', topic='/imu', stream='imu', sample_seq=2,
+                    source_stamp_sec=100.005, previous_source_stamp_sec=100,
+                    source_gap_sec=.005, arrival_gap_sec=.2, threshold_sec=.1,
+                    _time='11-02 14:00:00.000000', _source='log:byte=1')
+        self.assertEqual(d.input_timing_event(base)['category'], 'delivery_delay')
+        for changes, expected in [
+                (dict(source_stamp_sec=100.2, source_gap_sec=.2), 'source_gap'),
+                (dict(source_stamp_sec=99.9, source_gap_sec=-.1), 'source_rollback'),
+                (dict(source_stamp_sec=100, source_gap_sec=0), 'duplicate_source_stamp'),
+                (dict(source_stamp_sec='nan', source_gap_sec=-1), 'invalid_source_stamp'),
+                (dict(kind='silence', source_gap_sec=-1), 'callback_silence')]:
+            with self.subTest(expected=expected):
+                self.assertEqual(d.input_timing_event(dict(base, **changes))['category'], expected)
+        self.assertIsNone(d.input_timing_event(dict(base, schema=99)))
+        self.assertIsNone(d.input_timing_event(dict(base, arrival_gap_sec='bad')))
+
+    def test_input_timing_recovery_does_not_add_safety_faults(self):
+        self.log.write_text(
+            'I1028 12:00:01.200000 42] INPUT_TIMING 输入时序观测 schema=1 kind=silence stream=imu topic=/imu '
+            'sample_seq=1 source_stamp_sec=100 source_gap_sec=-1 arrival_gap_sec=.2 '
+            'arrival_steady_sec=10.2 emitted_steady_sec=10.2 threshold_sec=.1 events_lost=0\n'
+            'I1028 12:00:01.210000 42] INPUT_TIMING 输入时序观测 schema=1 kind=interval stream=imu topic=/imu '
+            'sample_seq=2 source_stamp_sec=100.005 previous_source_stamp_sec=100 source_gap_sec=.005 arrival_gap_sec=.21 '
+            'arrival_steady_sec=10.21 emitted_steady_sec=10.21 threshold_sec=.1 events_lost=0\n'
+            'I1028 12:00:01.220000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=0 published_runstate=0\n'
+            'I1028 12:00:02.000000 42] INPUT_TIMING 输入时序观测 schema=1 kind=summary stream=imu topic=/imu '
+            'sample_seq=10 events_lost=3\n', encoding='utf-8')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['log_samples'], 1)
+        self.assertEqual(report['findings'], [])
+        timing = report['input_timing']
+        self.assertEqual(timing['status'], 'available')
+        self.assertTrue(timing['events'][0]['resolved'])
+        self.assertEqual(timing['events'][1]['category'], 'delivery_delay')
+        self.assertEqual(timing['lost_by_topic']['/imu'], 3)
+        self.assertIn('延迟交付', d.render(report))
+        self.assertTrue(any('时序' in warning and '丢弃' in warning for warning in report['warnings']))
+
+    def test_input_timing_silence_is_pending_and_wall_time_uses_run_timezone(self):
+        zone = dt.timezone(dt.timedelta(hours=8))
+        ns = int(dt.datetime(2026, 11, 2, 14, 0, 1, tzinfo=zone).timestamp()*1e9)
+        event = d.input_timing_event(dict(schema=1, kind='silence', topic='/imu',
+            _time='11-02 14:00:01.000000', _source='log', _wall_ns=ns,
+            arrival_steady_sec=10, emitted_steady_sec=11), zone)
+        self.assertEqual(event['time'], '11-02 14:00:00.000000')
+        self.assertFalse(event['resolved'])
+        self.assertIn('等待', event['title'])
+        self.assertEqual(d.analyze(self.run, None, '旧包', [])['input_timing']['status'], 'unavailable')
+
+    def test_input_timing_loss_is_visible_even_if_the_final_event_log_dropped(self):
+        store = dict(observed_records=0, streams={}, events=[], counts={}, truncated_events=0,
+                     lost_by_topic={}, last_event_sequence={}, event_sequence_gaps={})
+        base = dict(topic='/imu', _time='now', _source='log', schema=1)
+        d.collect_input_timing(store, d.input_timing_event(dict(base, kind='start', event_seq=1)))
+        d.collect_input_timing(store, d.input_timing_event(dict(base, kind='summary', event_seq=3, sample_seq=20)))
+        self.assertEqual(store['event_sequence_gaps']['/imu'], 2)
+        self.assertEqual(store['lost_by_topic'], {})
+
+    def test_full_published_trajectory_policy_comes_from_running_binary_marker(self):
+        self.log.write_text('I1028 12:00:01.000000 42] event=LOC_TUM_RECORDING 正在记录后轴发布位姿 '
+            'path=/tmp/published.tum sample_policy=all_pose_vel flush_interval_sec=1 buffer_bytes=65536\n', encoding='utf-8')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['trajectory_recording']['sample_policy'], 'all_pose_vel')
+        self.assertIn('逐条记录 pose_vel', d.render(report))
+
     def test_frame_supply_policy_replaces_device_dtc_stop(self):
         limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
         row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,

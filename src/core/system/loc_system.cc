@@ -433,6 +433,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         }
         imu_sub_ = node_->create_subscription<sensor_msgs::msg::Imu>(
             topic, imu_qos, [this, capture_id](sensor_msgs::msg::Imu::SharedPtr msg) {
+            const auto arrived = std::chrono::steady_clock::now();
             if (incident_recorder_) incident_recorder_->Capture(capture_id, msg,
                 sizeof(*msg) + msg->header.frame_id.capacity(), CaptureStamp(msg->header.stamp));
             IMUPtr imu = std::make_shared<IMU>();
@@ -441,7 +442,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 Vec3d(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
             imu->angular_velocity = Vec3d(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
 
-            ProcessIMU(imu);
+            ProcessIMU(imu, arrived);
         });
     };
 
@@ -460,11 +461,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 sensor.lidar_topic, lidar_qos,
                 [this, id = sensor.id, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(id, ToSec(cloud->header.stamp),
                         cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
-                    Timer::Evaluate([&]() { ProcessLidar(cloud, id); }, "Proc Lidar",
+                    Timer::Evaluate([&]() { ProcessLidar(cloud, id, arrived); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 }));
         }
@@ -482,11 +484,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 cloud_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             cloud_subs_.push_back(node_->create_subscription<sensor_msgs::msg::PointCloud2>(
                 cloud_topic_, lidar_qos, [this, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
+                    const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
                         cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
-                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
+                    Timer::Evaluate([&]() { ProcessLidar(cloud, arrived); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 }));
         }
@@ -496,11 +499,12 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 livox_topic_, diagnostics::IncidentRecorder::Kind::kLidar) : -1;
             livox_sub_ = node_->create_subscription<livox_ros_driver2::msg::CustomMsg>(
                 livox_topic_, lidar_qos, [this, capture_id](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
+                    const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
                         cloud->point_num > 0 && !cloud->points.empty());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         sizeof(*cloud) + cloud->points.capacity() * sizeof(livox_ros_driver2::msg::CustomPoint), CaptureStamp(cloud->header.stamp));
-                    Timer::Evaluate([&]() { ProcessLidar(cloud); }, "Proc Lidar",
+                    Timer::Evaluate([&]() { ProcessLidar(cloud, arrived); }, "Proc Lidar",
                                     !profiling::ReduceNonessentialOverhead());
                 });
         }
@@ -519,11 +523,17 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
             wheel_speed_topic_, "geosun_msgs/msg/SpeThrCAN4",
             rclcpp::QoS(rclcpp::KeepLast(50)).reliable().durability_volatile(),
             [this, capture_id](std::shared_ptr<rclcpp::SerializedMessage> message) {
+                const auto arrived = std::chrono::steady_clock::now();
                 const auto& bytes = message->get_rcl_serialized_message();
                 if (incident_recorder_) incident_recorder_->Capture(capture_id, message,
                     sizeof(*message) + bytes.buffer_capacity);
                 SanyWheelSpeedWire sample;
                 if (!DecodeSanyWheelSpeed(bytes.buffer, bytes.buffer_length, sample)) {
+                    // 无法解码源时间时仍保留真实回调，避免误诊为订阅静默。
+                    {
+                        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+                        wheel_speed_input_stats_.timing.Observe(std::numeric_limits<double>::quiet_NaN(), arrived);
+                    }
                     LOG_EVERY_N(ERROR, 200) << "event=LOC_CAN_LAYOUT_REJECTED 拒绝格式错误或不支持的 SpeThrCAN4 消息布局 bytes="
                                             << bytes.buffer_length;
                     return;
@@ -531,7 +541,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 LOG_FIRST_N(INFO, 1) << "event=LOC_CAN_LAYOUT CAN 消息布局 layout="
                                     << (sample.has_comm_header ? "comm_header+Header+x+y" : "Header+x+y")
                                     << ", stamp=" << std::setprecision(16) << sample.stamp;
-                ObserveWheelSpeedInput(sample.stamp, sample.rpm, sample.torque);
+                ObserveWheelSpeedInput(sample.stamp, sample.rpm, sample.torque, arrived);
             });
         LOG(INFO) << "event=LOC_CAN_ENABLED 已启用轮速观测 topic=" << wheel_speed_topic_
                   << ", scale=" << std::setprecision(16)
@@ -645,8 +655,8 @@ void LocSystem::SetInitPose(const SE3 &pose) {
     // [online-loc-start-input]
 }
 
-void LocSystem::ProcessIMU(const IMUPtr &imu) {
-    ObserveImuInput(imu ? imu->timestamp : 0.0);
+void LocSystem::ProcessIMU(const IMUPtr &imu, diagnostics::InputTimingMonitor::Clock::time_point arrived) {
+    ObserveImuInput(imu ? imu->timestamp : 0.0, arrived);
     if (imu && dtc_monitor_)
         dtc_monitor_->ObserveGyro(imu->timestamp, (loc_->GetImuToBodyRotation() * imu->angular_velocity).z());
     // [online-loc-imu-start-gate]
@@ -656,25 +666,28 @@ void LocSystem::ProcessIMU(const IMUPtr &imu) {
     // [online-loc-imu-start-gate]
 }
 
-void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &cloud) {
+void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr &cloud,
+                            diagnostics::InputTimingMonitor::Clock::time_point arrived) {
     const int lidar_id = loc_ && loc_->IsMultiLidarEnabled()
                              ? loc_->GetMultiLidarConfig().primary_lidar_id
                              : 0;
-    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
+    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0, arrived)) return;
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud);
     }
 }
 
-void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id) {
-    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
+void LocSystem::ProcessLidar(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud, int lidar_id,
+                            diagnostics::InputTimingMonitor::Clock::time_point arrived) {
+    if (!ObserveLidarInput(lidar_id, cloud ? ToSec(cloud->header.stamp) : 0.0, arrived)) return;
     if (loc_started_) {
         loc_->ProcessLidarMsg(cloud, lidar_id);
     }
 }
 
-void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud) {
-    if (!ObserveLidarInput(0, cloud ? ToSec(cloud->header.stamp) : 0.0)) return;
+void LocSystem::ProcessLidar(const livox_ros_driver2::msg::CustomMsg::SharedPtr &cloud,
+                            diagnostics::InputTimingMonitor::Clock::time_point arrived) {
+    if (!ObserveLidarInput(0, cloud ? ToSec(cloud->header.stamp) : 0.0, arrived)) return;
     if (loc_started_) {
         loc_->ProcessLivoxLidarMsg(cloud);
     }
@@ -695,6 +708,7 @@ void LocSystem::Finish() {
     if (safety_timer_) safety_timer_->cancel();
     debug_event::ClearSink();
     if (loc_) loc_->Finish();
+    LogInputTiming(true);
     if (heartbeat_) heartbeat_->Stop();
     ClosePublishedTrajectoryTum();
     if (incident_recorder_) incident_recorder_->Stop();
@@ -724,6 +738,7 @@ bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
         return false;
     }
 
+    published_tum_stream_.rdbuf()->pubsetbuf(published_tum_buffer_.data(), published_tum_buffer_.size());
     published_tum_stream_.open(output_path, std::ios::out | std::ios::trunc);
     if (!published_tum_stream_) {
         LOG(ERROR) << "event=LOC_TUM_OPEN_FAILED 后轴发布轨迹 TUM 文件打开失败 path=" << path;
@@ -733,6 +748,7 @@ bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
     last_published_tum_timestamp_ = 0.0;
     published_tum_pose_count_ = 0;
     published_tum_write_error_count_ = 0;
+    published_tum_last_flush_ = std::chrono::steady_clock::now();
     published_tum_stream_ << "# timestamp tx ty tz qx qy qz qw\n";
     published_tum_stream_.flush();
     if (!published_tum_stream_) {
@@ -740,7 +756,8 @@ bool LocSystem::StartPublishedTrajectoryTum(const std::string& path) {
         published_tum_stream_.close();
         return false;
     }
-    LOG(INFO) << "event=LOC_TUM_RECORDING 正在记录后轴发布位姿 path=" << path;
+    LOG(INFO) << "event=LOC_TUM_RECORDING 正在记录后轴发布位姿 path=" << path
+              << " sample_policy=all_pose_vel flush_interval_sec=1 buffer_bytes=" << published_tum_buffer_.size();
     return true;
 }
 
@@ -748,15 +765,19 @@ void LocSystem::RecordPublishedPoseTum(const geometry_msgs::msg::PoseStamped& po
     std::lock_guard<std::mutex> lock(published_tum_mutex_);
     if (!published_tum_stream_.is_open()) return;
     if (!sany_output::WriteTumPoseLine(
-            published_tum_stream_, pose, last_published_tum_timestamp_)) {
+            published_tum_stream_, pose, last_published_tum_timestamp_, true)) {
         ++published_tum_write_error_count_;
         LOG_EVERY_N(ERROR, 100)
             << "event=LOC_TUM_WRITE_FAILED 后轴发布轨迹 TUM 位姿追加失败 stamp="
             << std::setprecision(16) << ToSec(pose.header.stamp);
         return;
     }
-    // Keep the file usable while localization is still running and after Ctrl-C.
-    published_tum_stream_.flush();
+    // 每条已发布位姿都写入缓冲；不在高频发布线程逐帧刷新文件。
+    const auto now = std::chrono::steady_clock::now();
+    if (now - published_tum_last_flush_ >= std::chrono::seconds(1)) {
+        published_tum_stream_.flush();
+        published_tum_last_flush_ = now;
+    }
     if (!published_tum_stream_) {
         ++published_tum_write_error_count_;
         LOG(ERROR) << "event=LOC_TUM_FLUSH_FAILED 后轴发布轨迹 TUM 刷新失败 path="
@@ -770,6 +791,10 @@ void LocSystem::ClosePublishedTrajectoryTum() {
     std::lock_guard<std::mutex> lock(published_tum_mutex_);
     if (!published_tum_stream_.is_open()) return;
     published_tum_stream_.flush();
+    if (!published_tum_stream_) {
+        ++published_tum_write_error_count_;
+        LOG(ERROR) << "event=LOC_TUM_FLUSH_FAILED 后轴发布轨迹 TUM 收尾刷新失败 path=" << published_tum_path_;
+    }
     published_tum_stream_.close();
     LOG(INFO) << "event=LOC_TRAJECTORY_SAVED 轨迹已保存 count=" << published_tum_pose_count_
               << " 条后轴发布位姿 path=" << published_tum_path_
@@ -814,6 +839,7 @@ bool LocSystem::WriteTrajectoryTum(const std::string& path, const std::vector<Na
 }
 
 void LocSystem::CaptureGlobalLocalizationResult(const loc::LocalizationResult& result) {
+    if (!options_.record_global_trajectory) return;
     if (!result.valid_ || result.timestamp_ <= 0.0) return;
     const NavState state = result.ToNavState();
     std::lock_guard<std::mutex> lock(trajectory_mutex_);
@@ -849,9 +875,9 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
         return;
     }
     // [output-result-publication-gates]
-    // 阶段 2：缓存状态并转换后轴位姿。
-    const NavState state = result.ToNavState();
-    {
+    // 阶段 2：仅显式调试时缓存内部状态，并转换后轴位姿。
+    if (options_.record_internal_high_frequency_trajectory) {
+        const NavState state = result.ToNavState();
         std::lock_guard<std::mutex> lock(trajectory_mutex_);
         if (localization_states_.empty() || state.timestamp_ > localization_states_.back().timestamp_) {
             localization_states_.push_back(state);
@@ -959,11 +985,8 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     const auto diagnostic_io_timing = diagnostic_io_timer.Stop();
 
     profiling::Stopwatch record_tum_timer(profiling_enabled);
-    if (position_published &&
-        (!profiling::ReduceNonessentialOverhead() ||
-         result.timestamp_ - last_production_pose_audit_stamp_ >= 1.0)) {
+    if (position_published) {
         RecordPublishedPoseTum(pose);
-        last_production_pose_audit_stamp_ = result.timestamp_;
     }
     const auto record_tum_timing = record_tum_timer.Stop();
     const auto outer_timing = outer_timer.Stop();
@@ -1082,6 +1105,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
 }
 
 void LocSystem::PublishHealthStatus() {
+    LogInputTiming();
     // 阶段 1：采集输入统计。
     if (!node_ || !telemetry_ || !fault_status_pub_ || !loc_status_pub_ || !pipeline_diagnostics_pub_) return;
     std::lock_guard<std::mutex> publish_lock(pose_publish_mutex_);
@@ -1310,15 +1334,18 @@ void LocSystem::PublishHealthStatus() {
 void LocSystem::RegisterLidarInput(int lidar_id, const std::string& topic) {
     std::lock_guard<std::mutex> lock(input_stats_mutex_);
     lidar_input_stats_[lidar_id].topic = topic;
+    // 10 Hz 点云的正常间隔约 100 ms；输入时序告警留出两帧余量。
+    lidar_input_stats_[lidar_id].timing = diagnostics::InputTimingMonitor(0.2);
 }
 
-bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
+bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp, diagnostics::InputTimingMonitor::Clock::time_point arrived) {
     const auto timestamp_decision = lidar_input_timestamp_gate_.Observe(sensor_stamp);
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         auto& stats = lidar_input_stats_[lidar_id];
         ++stats.message_count;
-        stats.last_arrival = std::chrono::steady_clock::now();
+        stats.last_arrival = arrived;
+        stats.timing.Observe(sensor_stamp, arrived);
         stats.has_arrival = true;
         if (timestamp_decision.accepted) {
             stats.last_sensor_stamp = std::max(stats.last_sensor_stamp, sensor_stamp);
@@ -1342,23 +1369,25 @@ bool LocSystem::ObserveLidarInput(int lidar_id, double sensor_stamp) {
     return timestamp_decision.accepted;
 }
 
-void LocSystem::ObserveImuInput(double sensor_stamp) {
+void LocSystem::ObserveImuInput(double sensor_stamp, diagnostics::InputTimingMonitor::Clock::time_point arrived) {
     std::lock_guard<std::mutex> lock(input_stats_mutex_);
     ++imu_input_stats_.message_count;
     imu_input_stats_.last_sensor_stamp = sensor_stamp;
-    imu_input_stats_.last_arrival = std::chrono::steady_clock::now();
+    imu_input_stats_.last_arrival = arrived;
+    imu_input_stats_.timing.Observe(sensor_stamp, arrived);
     imu_input_stats_.has_arrival = true;
 }
 
 void LocSystem::ObserveWheelSpeedInput(double sensor_stamp, double motor_rpm,
-                                       double motor_torque) {
+                                       double motor_torque, diagnostics::InputTimingMonitor::Clock::time_point arrived) {
     const double speed_mps = motor_rpm * wheel_speed_scale_mps_per_rpm_;
     if (dtc_monitor_) dtc_monitor_->ObserveSpeed(sensor_stamp, speed_mps);
     {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         ++wheel_speed_input_stats_.message_count;
         wheel_speed_input_stats_.last_sensor_stamp = sensor_stamp;
-        wheel_speed_input_stats_.last_arrival = std::chrono::steady_clock::now();
+        wheel_speed_input_stats_.last_arrival = arrived;
+        wheel_speed_input_stats_.timing.Observe(sensor_stamp, arrived);
         wheel_speed_input_stats_.has_arrival = true;
         last_motor_rpm_ = motor_rpm;
         last_motor_torque_ = motor_torque;
@@ -1599,6 +1628,45 @@ void LocSystem::PublishSafety() {
         last_safety_sync_mask_ = radar.time_sync_fault_mask;
         last_safety_published_ = msg.runstate;
         last_safety_bounded_mask_ = radar.bounded_sync_warning_mask;
+    }
+}
+
+void LocSystem::LogInputTiming(bool force) {
+    using Monitor = diagnostics::InputTimingMonitor;
+    const auto now = Monitor::Clock::now();
+    if (!force && now - input_timing_last_log_ < std::chrono::seconds(1)) return;
+    const bool summary = force || now - input_timing_last_summary_ >= std::chrono::seconds(10);
+    input_timing_last_log_ = now;
+    if (summary) input_timing_last_summary_ = now;
+    struct Entry { std::string stream, topic; Monitor::Record record; };
+    std::vector<Entry> entries;
+    {
+        std::lock_guard<std::mutex> lock(input_stats_mutex_);
+        auto collect = [&](const char* stream, InputTopicStats& stats) {
+            if (stats.topic.empty()) return;
+            stats.timing.Poll(now);
+            Monitor::Record record;
+            while (stats.timing.Pop(record)) entries.push_back({stream, stats.topic, record});
+            if (summary) entries.push_back({stream, stats.topic, stats.timing.Summary()});
+        };
+        for (auto& item : lidar_input_stats_) collect("lidar", item.second);
+        collect("imu", imu_input_stats_);
+        if (wheel_speed_observation_enabled_) collect("can", wheel_speed_input_stats_);
+    }
+    const double emitted = std::chrono::duration<double>(now.time_since_epoch()).count();
+    for (const auto& entry : entries) {
+        const auto& r = entry.record;
+        // 英文字段为稳定机器接口；正文保持中文，输出移出传感器回调和输入锁。
+        LOG(INFO) << "INPUT_TIMING 输入时序观测 schema=1 stream=" << entry.stream << " topic=" << entry.topic
+                  << " kind=" << Monitor::Name(r.kind) << " sample_seq=" << r.sample << " event_seq=" << r.event
+                  << std::setprecision(17) << " source_stamp_sec=" << r.stamp
+                  << " previous_source_stamp_sec=" << r.previous_stamp << " source_gap_sec=" << r.source_gap
+                  << " arrival_gap_sec=" << r.arrival_gap << " arrival_steady_sec=" << r.arrival_steady
+                  << " emitted_steady_sec=" << emitted << " threshold_sec=" << r.threshold
+                  << " events_lost=" << r.lost << " max_source_gap_sec=" << r.max_source_gap
+                  << " max_arrival_gap_sec=" << r.max_arrival_gap << " source_gaps=" << r.source_gaps
+                  << " arrival_gaps=" << r.arrival_gaps << " duplicates=" << r.duplicates
+                  << " rollbacks=" << r.rollbacks << " invalid=" << r.invalid;
     }
 }
 

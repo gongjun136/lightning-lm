@@ -110,6 +110,8 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(input_timing_monitor_test test/input_timing_monitor_test.cc)
+    add_test(NAME input_timing_monitor_test COMMAND $<TARGET_FILE:input_timing_monitor_test>)
     add_executable(lidar_frame_watchdog_test test/lidar_frame_watchdog_test.cc)
     add_test(NAME lidar_frame_watchdog_test COMMAND $<TARGET_FILE:lidar_frame_watchdog_test>)
     add_executable(radar_input_frame_monitor_test test/radar_input_frame_monitor_test.cc)

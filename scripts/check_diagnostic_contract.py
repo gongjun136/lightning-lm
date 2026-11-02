@@ -9,6 +9,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'scripts/diagnose_contract.json'
 SOURCES = (
+    'src/app/run_loc_online.cc',
+    'src/utils/input_timing_monitor.h',
     'src/utils/lidar_frame_watchdog.h',
     'src/core/localization/radar_input_frame_monitor.h',
     'src/core/lio/multi_lidar_fusion.h',

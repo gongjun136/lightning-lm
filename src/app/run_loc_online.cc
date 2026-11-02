@@ -153,8 +153,9 @@ int main(int argc, char** argv) {
     // Resolve the optional archive before constructing the matching worker. No
     // image generation or additional sensor subscription runs in this process.
     std::string match_failure_dir = FLAGS_match_failure_dir;
-    if (match_failure_dir.empty() && !std::getenv("SANY_MATCH_FAILURE_DIR") && !FLAGS_output_tum.empty()) {
-        match_failure_dir = (std::filesystem::absolute(FLAGS_output_tum).parent_path() / "match_failures").string();
+    const std::string trajectory_anchor = !FLAGS_output_published_tum.empty() ? FLAGS_output_published_tum : FLAGS_output_tum;
+    if (match_failure_dir.empty() && !std::getenv("SANY_MATCH_FAILURE_DIR") && !trajectory_anchor.empty()) {
+        match_failure_dir = (std::filesystem::absolute(trajectory_anchor).parent_path() / "match_failures").string();
     }
     if (!match_failure_dir.empty()) {
         match_failure_dir = std::filesystem::absolute(match_failure_dir).string();
@@ -164,9 +165,11 @@ int main(int argc, char** argv) {
         }
     }
     LocSystem::Options opt;
+    opt.record_global_trajectory = !FLAGS_output_tum.empty();
+    opt.record_internal_high_frequency_trajectory = !FLAGS_output_high_frequency_tum.empty();
     if (!FLAGS_incident_dir.empty()) opt.incident_directory = std::filesystem::absolute(FLAGS_incident_dir).string();
-    else if (!FLAGS_output_tum.empty()) opt.incident_directory =
-        (std::filesystem::absolute(FLAGS_output_tum).parent_path() / "incidents").string();
+    else if (!trajectory_anchor.empty()) opt.incident_directory =
+        (std::filesystem::absolute(trajectory_anchor).parent_path() / "incidents").string();
     LocSystem loc(opt);
 
     if (!loc.Init(FLAGS_config, FLAGS_map)) {

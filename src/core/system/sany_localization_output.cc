@@ -162,7 +162,7 @@ geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::msg::VehiclePos
 
 bool WriteTumPoseLine(std::ostream& stream,
                       const geometry_msgs::msg::PoseStamped& pose,
-                      double& last_timestamp) {
+                      double& last_timestamp, bool retain_published_sample) {
     const double timestamp = ToSec(pose.header.stamp);
     const auto& position = pose.pose.position;
     const auto& orientation = pose.pose.orientation;
@@ -170,10 +170,17 @@ bool WriteTumPoseLine(std::ostream& stream,
                              std::isfinite(position.z) && std::isfinite(orientation.x) &&
                              std::isfinite(orientation.y) && std::isfinite(orientation.z) &&
                              std::isfinite(orientation.w);
-    if (!(timestamp > 0.0) || timestamp <= last_timestamp || !finite_pose) return false;
+    // 已发布消息须忠实留痕；异常数值或量化后重复时戳也不能静默漏记。
+    if (!retain_published_sample && (!(timestamp > 0.0) || timestamp <= last_timestamp || !finite_pose)) return false;
 
-    stream << std::fixed << std::setprecision(9) << timestamp << ' '
-           << std::setprecision(12) << position.x << ' ' << position.y << ' '
+    if (retain_published_sample && pose.header.stamp.sec >= 0) {
+        // 直接写 ROS 整数秒/纳秒，避免纪元大数转 double 后损失低位时间。
+        stream << pose.header.stamp.sec << '.' << std::setw(9) << std::setfill('0')
+               << pose.header.stamp.nanosec << std::setfill(' ');
+    } else {
+        stream << std::fixed << std::setprecision(9) << timestamp;
+    }
+    stream << ' ' << std::fixed << std::setprecision(12) << position.x << ' ' << position.y << ' '
            << position.z << ' ' << orientation.x << ' ' << orientation.y << ' '
            << orientation.z << ' ' << orientation.w << '\n';
     if (!stream.good()) return false;

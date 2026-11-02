@@ -49,11 +49,11 @@ lightning::msg::VehiclePose MakeVehiclePoseMessage(const SE3& map_rear_axle_pose
 
 geometry_msgs::msg::PoseStamped MakePoseMessage(const lightning::msg::VehiclePose& position);
 
-/// Append one strictly monotonic PoseStamped sample in TUM format. The caller
-/// owns stream lifetime and flushing.
+/// 追加标准 TUM 位姿，调用方管理缓冲与刷新。默认过滤无效/非递增样本；
+/// retain_published_sample 用于忠实记录已发布消息，不静默丢弃异常值或量化后重复时戳。
 bool WriteTumPoseLine(std::ostream& stream,
                       const geometry_msgs::msg::PoseStamped& pose,
-                      double& last_timestamp);
+                      double& last_timestamp, bool retain_published_sample = false);
 
 sensor_msgs::msg::PointCloud2 MakeCloudMessage(const CloudPtr& cloud, double begin_time, double end_time,
                                                const SE3& T_output_lidar, const std::string& frame_id);

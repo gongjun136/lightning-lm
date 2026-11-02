@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -153,6 +154,22 @@ int main() {
             "published TUM tracks the last timestamp");
     Require(!WriteTumPoseLine(published_tum, pose_message, last_published_tum_timestamp),
             "published TUM rejects duplicate timestamps");
+    Require(WriteTumPoseLine(published_tum, pose_message, last_published_tum_timestamp, true),
+            "full published audit retains quantized duplicate header timestamps");
+    auto invalid_published = pose_message;
+    invalid_published.pose.position.z = std::numeric_limits<double>::quiet_NaN();
+    std::ostringstream invalid_audit;
+    double invalid_stamp = 0;
+    Require(WriteTumPoseLine(invalid_audit, invalid_published, invalid_stamp, true) &&
+                invalid_audit.str().find("nan") != std::string::npos,
+            "a published nonfinite coordinate must remain visible in the audit");
+    auto exact_header = pose_message;
+    exact_header.header.stamp.sec = 1793600000;
+    exact_header.header.stamp.nanosec = 123456789;
+    std::ostringstream exact_audit;
+    Require(WriteTumPoseLine(exact_audit, exact_header, invalid_stamp, true) &&
+                exact_audit.str().find("1793600000.123456789 ") == 0,
+            "published TUM retains exact integer ROS nanoseconds at Unix epoch scale");
     std::istringstream published_tum_input(published_tum.str());
     double tum_stamp = 0.0;
     double tum_x = 0.0, tum_y = 0.0, tum_z = 0.0;

@@ -699,8 +699,6 @@ export SANY_MATCH_FAILURE_DIR="${out_root}/match_failures"
 algorithm_args=(
   ros2 run lightning_lm run_loc_online
   --config="${config_path}"
-  --output_tum="${run_dir}/results/trajectory_global.tum"
-  --output_high_frequency_tum="${run_dir}/results/trajectory_high_frequency.tum"
   --output_published_tum="${run_dir}/results/trajectory_published_rear_axle.tum"
   --incident_dir="${out_root}/incidents"
 )
