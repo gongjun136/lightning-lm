@@ -798,7 +798,8 @@ void LocSystem::ClosePublishedTrajectoryTum() {
     published_tum_stream_.close();
     LOG(INFO) << "event=LOC_TRAJECTORY_SAVED 轨迹已保存 count=" << published_tum_pose_count_
               << " 条后轴发布位姿 path=" << published_tum_path_
-              << ", write_errors=" << published_tum_write_error_count_;
+              << ", write_errors=" << published_tum_write_error_count_
+              << " last_comm_seq=" << pose_vel_comm_seq_.load(std::memory_order_relaxed);
 }
 
 bool LocSystem::SaveTrajectoryTum(const std::string& path) const {
@@ -1644,7 +1645,8 @@ void LocSystem::LogInputTiming(bool force) {
         std::lock_guard<std::mutex> lock(input_stats_mutex_);
         auto collect = [&](const char* stream, InputTopicStats& stats) {
             if (stats.topic.empty()) return;
-            stats.timing.Poll(now);
+            // 正常退出只排空已有证据，不把停止订阅后的收尾时间制造成新断流。
+            if (!force) stats.timing.Poll(now);
             Monitor::Record record;
             while (stats.timing.Pop(record)) entries.push_back({stream, stats.topic, record});
             if (summary) entries.push_back({stream, stats.topic, stats.timing.Summary()});

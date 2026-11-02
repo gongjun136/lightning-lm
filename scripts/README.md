@@ -205,6 +205,7 @@ bash scripts/run_frontend_offline_batch.sh \
 成功启用记录时，`LOC_TUM_RECORDING` 日志包含 `sample_policy=all_pose_vel`、
 `flush_interval_sec=1` 和 `buffer_bytes=65536`。`--diagnose` 文本可提示全频记录和缓冲刷新，
 JSON 的 `trajectory_recording` 保留扫描到的字段；这只说明记录器已启用，不保证后续写入完整或下游已接收。
+正常收尾时可结合 `LOC_TRAJECTORY_SAVED` 的 `last_comm_seq`、`count` 和 `write_errors` 核对本地发布序列与轨迹完整性；诊断 JSON 将收尾字段放在 `trajectory_recording.final`。这些字段不是订阅端收到的条数，退出清理时订阅端可能少收到尾部消息。
 
 PGO 全局校正轨迹和定位器内部高频轨迹默认不记录，也不积累这两份轨迹的无界内存。
 调试需要时可直接启动 `run_loc_online`，通过 `--output_tum=/路径/global.tum` 和

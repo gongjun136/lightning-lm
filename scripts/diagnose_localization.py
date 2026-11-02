@@ -612,6 +612,8 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                 offset = f.tell()
                 line = f.readline(min(128 * 1024, size - offset)).decode(errors='replace')
                 modern = 'SAFETY_DIAGNOSTIC' in line
+                if 'event=LOC_TRAJECTORY_SAVED ' in line and 'last_comm_seq=' in line:
+                    config['_trajectory_final'] = fields(line)
                 timing = input_timing is not None and 'INPUT_TIMING ' in line
                 protection_key = None
                 if protections is not None:
@@ -1588,7 +1590,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
                 latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
                 compute_profile=compute_profile, input_timing=input_timing,
-                trajectory_recording=logged_limits.get('_trajectory', {}),
+                trajectory_recording=dict(logged_limits.get('_trajectory', {}),
+                                          final=logged_limits.get('_trajectory_final', {})),
                 capture_windows=windows, collector_totals=summary.get('collector_totals', {}),
                 window_collector_drop_delta=max(dropped) - min(dropped) if dropped else None,
                 event_samples=dict(Counter(str(int(r['raw_runstate'])) for r in rows if number(r.get('raw_runstate')) is not None)),
@@ -1631,6 +1634,9 @@ def render(report, color=False, all_events=False):
     trajectory = report.get('trajectory_recording', {})
     if trajectory.get('sample_policy') == 'all_pose_vel':
         lines.append('后轴 TUM: 逐条记录 pose_vel 发布位姿，保留 ROS 头精确时间；周期缓冲刷新，不等于下游实收。')
+        if trajectory.get('final'):
+            final = trajectory['final']
+            lines.append(f'  收尾写入数={final.get("count")}，最后发布序号={final.get("last_comm_seq")}，写入错误={final.get("write_errors")}。')
     if timing.get('status') == 'available':
         lines.append('上游输入时序: 已记录源时间戳间隔和回调到达间隔（不计入 Safety 故障次数）')
         lines.append('  分类累计: ' + json.dumps(timing['counts'], ensure_ascii=False))

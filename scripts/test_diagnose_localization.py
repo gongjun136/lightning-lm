@@ -94,6 +94,15 @@ class DiagnosisTest(unittest.TestCase):
         self.assertAlmostEqual(event['relative_delivery_change_sec'], .11)
         self.assertIn('不保证逐帧', event['title'])
 
+    def test_published_trajectory_final_sequence_is_not_a_subscriber_count(self):
+        self.log.write_text('I1028 12:00:01.000000 42] event=LOC_TUM_RECORDING 后轴发布位姿 '
+            'sample_policy=all_pose_vel\n'
+            'I1028 12:00:03.000000 42] event=LOC_TRAJECTORY_SAVED 轨迹已保存 '
+            'count=3982 write_errors=0 last_comm_seq=3982\n', encoding='utf-8')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['trajectory_recording']['final']['last_comm_seq'], 3982)
+        self.assertIn('最后发布序号=3982', d.render(report))
+
     def test_frame_supply_policy_replaces_device_dtc_stop(self):
         limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
         row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,
