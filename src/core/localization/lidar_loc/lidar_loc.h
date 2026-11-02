@@ -110,6 +110,13 @@ class LidarLoc {
     struct MatchStats {
         double confidence = 0.0;  ///< 最近精配分数：NDT 变换分数或平面 ICP 的 1/(1+RMSE)，不是统一标定的概率。
         int iterations = 0;  ///< 本次匹配使用的迭代次数。
+        bool ndt_metrics_available = false, ndt_converged = false;
+        bool ndt_transform_finite = false, ndt_confidence_finite = false;
+        int ndt_max_iterations = 0;
+        double ndt_epsilon = 0, min_confidence = 0;
+        bool NdtBudgetExhausted() const {
+            return ndt_metrics_available && !ndt_converged && ndt_max_iterations > 0 && iterations >= ndt_max_iterations;
+        }
         bool success = false;  ///< 最近局部配准及后续门控结果；并非每次 ProcessCloud() 都刷新。
         bool registration_pose_available = false;  ///< 本次精配确实产生了有限位姿，不能将初值伪装成匹配结果。
         const char* registration_reason = "not_attempted";  ///< NDT 基础配准判定说明，指向静态字符串；后续门控拒绝时也可能仍为 accepted。
@@ -127,6 +134,7 @@ class LidarLoc {
         std::string relocalization_reason;  ///< 本次重定位的接受或拒绝原因。
         bool map_consistency_evaluated = false;  ///< 是否进入地图一致性检查；缺少前置数据时也为真，需结合点数和通过标志。
         bool map_consistency_passed = false;  ///< 是否通过地图一致性验证。
+        const char* map_rejection_reason = "not_evaluated";
         std::size_t map_consistency_points = 0;  ///< 地图一致性验证使用的点数。
         double map_inside_xy_ratio = 0.0;  ///< 候选点落在地图水平边界内的比例。
         double map_inside_xyz_ratio = 0.0;  ///< 候选点落在地图三维边界内的比例。
@@ -374,13 +382,15 @@ class LidarLoc {
      * @brief 将失败帧及点云交给取证记录器；未配置记录器或已初始化的非跟踪事件会跳过。
      * @param input 当前点云。
      * @param frame 已填充的失败记录。
+     * @return true 表示已入队，不表示后台写入已完成。
      */
-    void RecordFailureEvidence(const CloudPtr& input,
+    bool RecordFailureEvidence(const CloudPtr& input,
                                const diagnostics::MatchFailureRecorder::Frame& frame);
     /// 一次地图一致性检查的结果；points 为零时比例没有测量意义。
     struct MapConsistencyResult {
         bool evaluated = false;  ///< 是否进入一致性检查；前置数据不足而提前返回时也为真。
         bool passed = false;  ///< 候选是否通过地图一致性检查。
+        const char* reason = "map_evidence_unavailable";
         std::size_t points = 0;  ///< 一致性检查实际使用的点数。
         double inside_xy_ratio = 0.0;  ///< 落在地图水平包围范围内的点比例。
         double inside_xyz_ratio = 0.0;  ///< 落在地图三维包围范围内的点比例。

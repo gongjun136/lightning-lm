@@ -137,7 +137,11 @@ exit 91
         self.assertEqual(result.returncode, 23, result.stderr)
         self.assertIn("algorithm_exit_code=23", files["run_metadata.txt"])
         self.assertIn("mock algorithm failure", files["logs/run_loc_online.stderr.log"])
-        self.assertRegex(files["logs/run_loc_online.stdout.log"], r'--incident_dir=\S+/runs/incidents')
+        self.assertRegex(files["logs/run_loc_online.stdout.log"], r'--incident_dir=\S+/runs/test/results/incidents')
+        metadata = dict(line.split('=', 1) for line in files['run_metadata.txt'].splitlines() if '=' in line)
+        run = Path(metadata['run_dir'])
+        self.assertEqual(Path(metadata['match_failure_dir']), run / 'match_failures')
+        self.assertEqual(Path(metadata['incident_dir']), run / 'results/incidents')
 
     def test_diagnostic_mode_enables_full_profile_by_default(self):
         result, files = self.run_launcher(0, 0, run_mode='diagnostic')

@@ -152,6 +152,93 @@ class DiagnosisTest(unittest.TestCase):
         row.update(raw_runstate=-9, confirmed_tracking_lost=1)
         self.assertEqual(d.classify(row, {})[0]['key'], 'confirmed_tracking_lost')
 
+    def test_rejection_diagnosis_retains_actual_ndt_budget_and_admission(self):
+        clue = dict(time='t', source='log', text='event=LOC_MATCH_FAILED 匹配失败 score: 2.91 '
+            'rejection_reason=ndt_not_converged registration_reason=ndt_not_converged '
+            'sensor_stamp_ns=1793600419700208896 ndt_metrics_available=1 ndt_converged=0 '
+            'iterations=20 ndt_max_iterations=20 ndt_epsilon=.01 ndt_budget_exhausted=1 '
+            'min_confidence=.4 ndt_transform_finite=1 ndt_confidence_finite=1 '
+            'snapshot_recorder_present=1 snapshot_capture_admitted=1 map_checked=0')
+        detail = d.matching_rejection(clue)
+        self.assertEqual(detail['sensor_stamp_ns'], 1793600419700208896)
+        self.assertEqual(detail['reason_code'], 'ndt_not_converged')
+        text, _ = d.matching_summary(clue, {})
+        self.assertIn('已耗尽本次迭代预算', text)
+        self.assertIn('迭代=20', text)
+        self.assertIn('接受阈值=0.4', text)
+        self.assertIn('快照已入队', text)
+        self.assertIn('地图一致性未确认执行', text)
+
+    def test_legacy_iteration_count_does_not_invent_nonconvergence(self):
+        text, _ = d.matching_summary(dict(time='t', text='localization failed! score: 2.91 iterations=20 map_checked=0'), {})
+        self.assertIn('未记录具体拒绝码', text)
+        self.assertNotIn('已耗尽本次迭代预算', text)
+
+    def test_rejection_titles_distinguish_registration_odometry_and_map_inputs(self):
+        for reason, title in [('ndt_transform_nonfinite', '非有限'), ('ndt_confidence_below_threshold', '接受阈值'),
+                              ('raw_odometry_disagreement', '里程计增量差'), ('map_bounds', '水平范围'),
+                              ('map_overlap', '重合率'), ('map_gravity', '重力方向'),
+                              ('map_target_unavailable', '缺少静态地图')]:
+            with self.subTest(reason=reason):
+                detail = d.matching_rejection(dict(time='t', text='rejection_reason='+reason))
+                self.assertIn(title, detail['title'])
+        text, _ = d.matching_summary(dict(time='t', text='rejection_reason=ndt_target_unavailable '
+            'ndt_metrics_available=0 ndt_converged=0 map_checked=0 snapshot_capture_admitted=0'), {})
+        self.assertIn('本次未执行 NDT', text)
+        self.assertIn('本帧未入队', text)
+
+    def test_saved_snapshot_is_joined_after_fault_recovery_without_claiming_current_file(self):
+        stamp = 1793600419700208896
+        name = 'match_failure_1793188801000000000_42_1'
+        path = self.root / 'match_failures' / name
+        policy = d.MOTION_UNKNOWN_POLICY
+        self.log.write_text(
+            f'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 policy_version={policy} raw_runstate=0 published_runstate=0\n'
+            f'I1028 12:00:01.000000 42] event=LOC_MATCH_FAILED 匹配失败 score: 2.91 rejection_reason=ndt_not_converged '
+            f'sensor_stamp_ns={stamp} ndt_metrics_available=1 ndt_converged=0 ndt_budget_exhausted=1 '
+            'iterations=20 ndt_max_iterations=20 map_checked=0 snapshot_capture_admitted=1\n'
+            f'I1028 12:00:01.010000 42] SAFETY_DIAGNOSTIC sequence=2 policy_version={policy} raw_runstate=4 published_runstate=4 '
+            'startup_pending=0 output_stale=0 output_gate_open=0 latest_match_valid=0 confirmed_tracking_lost=0\n'
+            f'I1028 12:00:01.200000 42] SAFETY_DIAGNOSTIC sequence=3 policy_version={policy} raw_runstate=0 published_runstate=0\n'
+            f'I1028 12:00:02.000000 42] MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_SAVED saved={json.dumps(str(path))} sensor_stamp_ns={stamp}\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        rejection = next(f for f in report['findings'] if f['key']=='match_rejected_unconfirmed')['matching_rejection']
+        self.assertEqual(rejection['reason_code'], 'ndt_not_converged')
+        saved = rejection['snapshots'][0]
+        self.assertEqual(saved['association'], 'sensor_stamp_exact')
+        self.assertEqual(saved['status_at_log'], 'saved')
+        self.assertEqual(saved['current_status'], 'not_found_here')
+        self.assertIn('日志确认当时已保存', d.render(report))
+        path.mkdir(parents=True)
+        metadata = dict(schema=2, kind='lightning_match_failure', status='complete',
+                        run_dir=str(self.run), pid=42, sensor_stamp_ns=stamp)
+        (path/'summary.json').write_text(json.dumps(metadata))
+        (path/'scan.bin').write_bytes(b'');(path/'map_local.bin').write_bytes(b'')
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['match_snapshots']['records'][0]['current_status'], 'available')
+        metadata['run_dir'] = str(self.root/'different_run')
+        (path/'summary.json').write_text(json.dumps(metadata))
+        report = d.analyze(self.run, None, '指定路径', [])
+        self.assertEqual(report['match_snapshots']['records'][0]['current_status'], 'identity_mismatch')
+
+    def test_copied_nested_incident_resolves_enclosing_run_by_full_identity(self):
+        original = '/remote/Sany/runs/sany_lidar_20261028_120000'
+        (self.run/'run_metadata.txt').write_text(f'run_dir={original}\nstarted_at=2026-10-28T12:00:00+00:00\n')
+        self.log.write_text('I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=0 published_runstate=0\n')
+        event = self.run/'results/incidents/event_1793188801000000000_42'
+        event.mkdir(parents=True)
+        (event/'run_metadata.txt').write_text(f'run_dir={original}\nstarted_at=2026-10-28T12:00:00+00:00\n')
+        (event/'config.yaml').write_text('diagnostics: {}\n')
+        (event/'summary.json').write_text(json.dumps(dict(schema=1, status='complete',
+            trigger_wall_ns=1793188801000000000, streams=[])))
+        report = d.analyze(event, None, '指定路径', [])
+        self.assertEqual(Path(report['resolved_run']), self.run)
+        self.assertEqual(report['runtime_build']['status'], 'unverified')
+        # An event with a different original full identity must not borrow this run's logs.
+        (event/'run_metadata.txt').write_text('run_dir=/other/run\n')
+        report = d.analyze(event, None, '指定路径', [])
+        self.assertNotEqual(Path(report['resolved_run']), self.run)
+
     def test_frame_supply_policy_replaces_device_dtc_stop(self):
         limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
         row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,
@@ -1559,6 +1646,22 @@ class MatchFailureSelectionTest(unittest.TestCase):
 
     def rendered(self):
         return subprocess.CompletedProcess([], 0, json.dumps(dict(status='generated', image='test.png')))
+
+    def test_no_match_image_keeps_measured_rejection_metadata(self):
+        path, value = self.fixture(self.frames, self.run, 2000)
+        value.update(phase='tracking', stage='tracking_acceptance', rejection_reason='ndt_not_converged',
+                     registration=dict(ndt_metrics_available=True, ndt_converged=False,
+                                       iterations=20, ndt_max_iterations=20, ndt_budget_exhausted=True))
+        (path/'summary.json').write_text(json.dumps(value))
+        with patch.object(d.subprocess, 'run') as plotting:
+            result = d.match_failure_image(self.report, enabled=False)
+        plotting.assert_not_called()
+        self.assertEqual(result['status'], 'disabled')
+        self.assertEqual(result['failure_observation']['rejection_reason'], 'ndt_not_converged')
+        rendered = d.render(dict(selection='指定快照', selected=str(path), process=None,
+                                 has_match_evidence=True, match_failure_image=result))
+        self.assertIn('NDT 未达到收敛条件', rendered)
+        self.assertIn('已耗尽本次迭代预算', rendered)
 
     def test_only_latest_complete_same_run_and_pid_lifetime_is_selected(self):
         old, _ = self.fixture(self.frames, self.run, 900)

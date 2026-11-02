@@ -20,6 +20,7 @@ SOURCES = (
     'src/core/lio/laser_mapping.cc',
     'src/core/lio/imu_processing.hpp',
     'src/core/localization/lidar_loc/lidar_loc.cc',
+    'src/core/localization/lidar_loc/lidar_loc.h',
     'src/core/localization/solid_relocalizer.cc',
     'src/core/localization/pose_graph/pgo.cc',
     'src/core/localization/pose_graph/smoother.h',

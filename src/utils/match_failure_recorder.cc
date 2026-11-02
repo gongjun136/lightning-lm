@@ -55,6 +55,23 @@ std::string Number(double n) {
     if (!std::isfinite(n)) return "null";
     std::ostringstream out; out << std::setprecision(17) << n; return out.str();
 }
+std::string Registration(const Recorder::Frame& f) {
+    const bool available = f.ndt_metrics_available && f.refinement_backend == Recorder::Backend::kNdt;
+    const auto flag = [available](bool value) { return available ? (value ? "true" : "false") : "null"; };
+    std::ostringstream out;
+    out << "{\"confidence\":" << Number(f.confidence) << ",\"min_confidence\":" << Number(f.min_confidence)
+        << ",\"iterations\":" << f.iterations << ",\"raw_odom_valid\":" << (f.raw_odom_valid ? "true" : "false")
+        << ",\"raw_odom_delta\":" << Number(f.raw_odom_delta)
+        << ",\"ndt_metrics_available\":" << (available ? "true" : "false")
+        << ",\"ndt_converged\":" << flag(f.ndt_converged)
+        << ",\"ndt_transform_finite\":" << flag(f.ndt_transform_finite)
+        << ",\"ndt_confidence_finite\":" << flag(f.ndt_confidence_finite)
+        << ",\"ndt_max_iterations\":" << (available ? std::to_string(f.ndt_max_iterations) : "null")
+        << ",\"ndt_epsilon\":" << (available ? Number(f.ndt_epsilon) : "null")
+        << ",\"ndt_budget_exhausted\":" << flag(!f.ndt_converged && f.ndt_max_iterations > 0 && f.iterations >= f.ndt_max_iterations)
+        << '}';
+    return out.str();
+}
 template <std::size_t N> std::string Array(const std::array<double, N>& values) {
     std::string out = "[";
     for (std::size_t i = 0; i < N; ++i) { if (i) out += ','; out += Number(values[i]); }
@@ -300,7 +317,8 @@ class MatchFailureRecorder::Impl {
             << ",\"phase\":" << Json(PhaseName(latest.phase)) << ",\"stage\":" << Json(StageName(latest.stage))
             << ",\"rejection_reason\":" << Json(Detail(latest)) << ",\"candidate_available\":" << (latest.candidate_available ? "true" : "false")
             << ",\"candidate_id\":" << latest.candidate_id << ",\"retrieval_score\":" << Number(latest.retrieval_score)
-            << ",\"map_evaluated\":" << (latest.evaluated ? "true" : "false") << ",\"map_overlap\":" << Number(latest.overlap) << "}";
+            << ",\"map_evaluated\":" << (latest.evaluated ? "true" : "false") << ",\"map_overlap\":" << Number(latest.overlap)
+            << ",\"registration\":" << Registration(latest) << "}";
         out
             << ",\"writer_scheduling\":" << scheduling << "}\n";
         const fs::path path = fs::path(context.directory)/"collector_status.json";
@@ -414,7 +432,7 @@ class MatchFailureRecorder::Impl {
               << ",\"overlap\":" << Number(f.overlap) << ",\"inside_xy\":" << Number(f.inside_xy) << ",\"inside_xyz\":" << Number(f.inside_xyz) << ",\"gravity_cos\":" << Number(f.gravity_cos)
               << ",\"min_overlap\":" << Number(f.min_overlap) << ",\"min_inside_xy\":" << Number(f.min_inside_xy) << ",\"min_gravity_cos\":" << Number(f.min_gravity_cos)
               << ",\"nearest_neighbor_distance_m\":" << Number(f.nearest_neighbor_distance_m) << ",\"bounds_margin_m\":" << Number(f.bounds_margin_m) << "}"
-              << ",\"registration\":{\"confidence\":" << Number(f.confidence) << ",\"min_confidence\":" << Number(f.min_confidence) << ",\"iterations\":" << f.iterations << ",\"raw_odom_valid\":" << (f.raw_odom_valid ? "true" : "false") << ",\"raw_odom_delta\":" << Number(f.raw_odom_delta) << "},\"plane_icp\":";
+              << ",\"registration\":" << Registration(f) << ",\"plane_icp\":";
             if (!f.plane_icp.available) s << "null";
             else s << "{\"matches\":" << f.plane_icp.matches << ",\"inlier_ratio\":" << Number(f.plane_icp.inlier_ratio)
                 << ",\"rmse\":" << Number(f.plane_icp.rmse) << ",\"condition_number\":" << Number(f.plane_icp.condition_number)
@@ -426,7 +444,10 @@ class MatchFailureRecorder::Impl {
               << ",\"protection_days\":" << options.protect_days << ",\"writer_scheduling\":" << scheduling << "}\n";
             WriteText(temporary/"summary.json", s.str()); Sync(temporary,true);
             fs::rename(temporary, final); Sync(root,true); ++saved; last_error.clear();
-            LOG(INFO) << "MATCH_FAILURE_CAPTURE saved=" << final << " sensor_stamp_ns=" << f.sensor_stamp_ns << " overlap=" << f.overlap << " validation_points=" << slot.validation_points;
+            LOG(INFO) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_SAVED saved=" << final
+                      << " sensor_stamp_ns=" << f.sensor_stamp_ns << " rejection_reason=" << Detail(f)
+                      << " phase=" << PhaseName(f.phase) << " stage=" << StageName(f.stage)
+                      << " overlap=" << f.overlap << " validation_points=" << slot.validation_points;
         } catch (...) {
             // An incomplete package is never presented as complete evidence.
             std::error_code ec; fs::remove_all(temporary,ec); throw;

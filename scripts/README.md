@@ -131,7 +131,7 @@ run_frontend_offline.sh 输出文件说明：
 
 | 脚本 | 用途 |
 |---|---|
-| `run_sany_lidar_loc.sh --diagnose [path]` | 仓库内只读诊断入口，转交 `diagnose_localization.sh` / `diagnose_localization.py` 分析当前定位实例、事件或 rosbag 中的 Safety 与输入时序证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
+| `run_sany_lidar_loc.sh --diagnose [path]` | 仓库内诊断入口，转交 `diagnose_localization.sh` / `diagnose_localization.py` 分析当前定位实例、事件或 rosbag 中的 Safety、匹配拒绝与输入时序证据；用法和限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。 |
 | `inspect_rosbag2_sqlite.py` | 读取 SQLite3 ROS2 bag 和 YAML，核对 Topic 合同、主 LiDAR 末帧、数据时长及输入哈希。由离线前端入口调用。 |
 | `monitor_process_tree.py` | 采样算法进程树的 CPU 和 RSS，生成 `resource_samples.csv` 与 `resource_summary.json`。 |
 | `extract_frontend_timing.py` | 从离线前端日志提取阶段耗时，生成 `processing_timing.csv` 与 `processing_timing_summary.json`。 |
@@ -139,6 +139,10 @@ run_frontend_offline.sh 输出文件说明：
 | `plot_posres_statistics.py` | 可视化 `/PosRes` 接收间隔、端到端时延和每秒接收数量。输入由 `pos_res_recorder` 生成的两个 CSV。 |
 
 现场诊断按日志中的策略版本解释证据。`localization-dtc-v7-motion-unknown` 下，运动一致性 UNKNOWN 保持原始 UNKNOWN，不再单独触发 Safety 4；`raw=0` 时的“运动证据提示”不计入故障段，JSON 的 `motion_evidence` 提供 `status`（`UNKNOWN`、`PASS`、`FAIL` 或 `unavailable`）和 `unknown_advisory`。若 v7 的 4 只有运动 UNKNOWN 而缺少其他判据，报告判据缺失；此前明确 FAIL 未恢复、协方差异常、初始化、输出/匹配过期或门控关闭等仍须分别检查。v6/v5 旧日志按对应历史规则解释，IMU 源间隔和回调到达间隔仍作为输入时序证据保留。
+
+遇到匹配拒绝后的 `4`，用 `bash ~/Sany/run_loc.sh --diagnose [路径]` 对照对应时间的 Safety 与 `LOC_MATCH_FAILED`、`LOC_INIT_MATCH_FAILED` 日志。诊断解释已记录的匹配拒绝判据及其数值，包括 NDT 是否执行和收敛、迭代预算、数值有效性及 confidence 阈值，也覆盖里程计差异与地图一致性判据。只记录 `iterations=20` 的旧日志不足以判断是否收敛；单帧拒绝也不等于确认失锁，缺失字段不是 `false`。
+
+原始 Safety 变化到 2、4、-9 时的事件采集和接受前匹配失败快照分别管理，标准启动器默认分别保存在本次 `$run_dir/results/incidents` 和 `$run_dir/match_failures`，路径均写入 `run_metadata.txt`。两类目录均在默认位置时，确认写入完成后复制整个 `$run_dir` 即可一并移交；旧版或手工指定运行目录外的路径时，需按实际位置补带相应目录。旧版全局目录保留诊断兼容，不会因默认路径变更而迁移或删除。入队不等于写盘成功：应查看 `MATCH_FAILURE_CAPTURE saved=` 和完整的快照摘要及文件；缺少快照不能证明当时从未保存。事件目录有数量和磁盘限制；匹配快照限制每次连续失败的入队次数，并有目录磁盘预算。这些目录预算不限制跨运行的累计占用。选中完整快照时，默认俯视图会写入匹配包；`--no-match-image` 跳过画图但仍读取和显示快照摘要。详细条件和旧数据限制见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。
 
 ## 公共复现工具
 
@@ -244,7 +248,7 @@ SANY 可选 MCAP 录制启用的雷达点云、主 IMU、`pose_vel`、定位 fau
 更新车辆代码时须将根入口的 LiDAR 调用同步改为
 `exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_lidar_loc.sh" "$@"`，以透传参数；纯组合导航调用同步改为
 `exec bash "$LIGHTNING_LM_REPO_DIR/scripts/run_sany_ins_only.sh" "$SITE_CONFIG"`。
-现场故障分析优先使用 `bash ~/Sany/run_loc.sh --diagnose [path]`。这是仓库外已有的部署入口，其 `lidar` 分支会原样透传路径及 `--all`、`--color`、`--json` 等选项。开发联调可从仓库根目录直接运行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`；仓库入口在启动副作用前转交独立的 `diagnose_localization.sh` 和 Python 分析器。详见 [故障采集与排查](../docs/guide/incident_capture.md)。
+现场故障分析可使用 `bash ~/Sany/run_loc.sh --diagnose [path]`，前提是仓库外部署入口的 `lidar` 分支已按上述方式原样透传路径及 `--all`、`--color`、`--json` 等选项。开发联调可从仓库根目录直接运行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`；仓库入口在启动副作用前转交独立的 `diagnose_localization.sh` 和 Python 分析器。详见 [故障采集与排查](../docs/guide/incident_capture.md)。
 
 `LIGHTNING_LM_REDUCE_NONESSENTIAL_OVERHEAD` 只裁剪诊断输出；用于下次启动恢复的
 `recover_pose` 始终更新，不受该开关影响。

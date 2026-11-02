@@ -28,6 +28,9 @@ struct LidarLocRegressionAccess {
     static bool MapAgrees(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
         return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000).passed;
     }
+    static const char* MapReason(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
+        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000).reason;
+    }
     static bool RawOdomAgrees(LidarLoc& loc, const SE3& pose) {
         double delta = 0.0;
         return loc.CheckLidarOdomValid(pose, delta);
@@ -89,9 +92,26 @@ int main() {
     ndt->align(output, guess);
     Require(ndt->getFinalNumIteration() == 1, "NDT respects its actual iteration budget");
     Require(!ndt->hasConverged(), "iteration exhaustion is not convergence");
+    CloudPtr aligned(new PointCloudType);
+    SE3 candidate(SO3(), Vec3d(.12, 0, 0));
+    double confidence = 0;
+    Require(!loc.Localize(candidate, confidence, map, aligned), "actual Localize rejects exhausted NDT budget");
+    auto stats = loc.GetLastMatchStats();
+    Require(stats.ndt_metrics_available && !stats.ndt_converged && stats.NdtBudgetExhausted() &&
+            stats.ndt_max_iterations == 1 && stats.iterations == 1 &&
+            stats.ndt_transform_finite && stats.ndt_confidence_finite &&
+            std::string(stats.registration_reason) == "ndt_not_converged",
+            "Localize retains its measured rejection instead of inferring from an iteration count");
     ndt->setMaximumIterations(20);
     ndt->align(output, guess);
     Require(ndt->hasConverged(), "a sufficient iteration budget converges on the same scan");
+    candidate = SE3(SO3(), Vec3d(.12, 0, 0));
+    Require(loc.Localize(candidate, confidence, map, aligned), "Localize accepts the same scan with sufficient budget");
+    stats = loc.GetLastMatchStats();
+    Require(stats.ndt_converged && !stats.NdtBudgetExhausted() && stats.ndt_max_iterations == 20 &&
+            std::abs(stats.ndt_epsilon - .01) < 1e-9 &&
+            std::abs(stats.min_confidence - .1) < 1e-6,
+            "diagnostics retain actual convergence and acceptance thresholds");
     std::cout << "NDT regression: iterations=" << ndt->getFinalNumIteration()
               << " translation=" << ndt->getFinalTransformation().block<3, 1>(0, 3).transpose()
               << " score=" << ndt->getTransformationProbability() << std::endl;
@@ -100,6 +120,13 @@ int main() {
 
     Access::SetMap(loc, map);
     Require(Access::MapAgrees(loc, map, SE3()), "whole-scan map validation accepts correct alignment");
+    Require(std::string(Access::MapReason(loc, map, SE3())) == "accepted", "accepted map reason");
+    Require(std::string(Access::MapReason(loc, CloudPtr(), SE3())) == "map_scan_unavailable",
+            "missing map-check evidence is not mislabeled as low overlap");
+    Require(std::string(Access::MapReason(loc, map, SE3(SO3(), Vec3d(40, 0, 0)))) == "map_bounds",
+            "map bounds rejection reason is specific");
+    Require(std::string(Access::MapReason(loc, map, SE3(SO3(), Vec3d(0, 0, 20)))) == "map_overlap",
+            "overlap rejection remains separate from XY bounds");
     Require(!Access::MapAgrees(loc, map, SE3(SO3(), Vec3d(40.0, 0.0, 0.0))),
             "whole-scan map validation rejects a 40 m displaced pose independently of NDT score");
     Require(!Access::RawOdomAgrees(loc, SE3(SO3(), Vec3d(2.0, 0.0, 0.0))),

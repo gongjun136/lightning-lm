@@ -37,4 +37,5 @@ The local newer dependency hid this mistake. Keep the checks above in future wor
 
 - 定位日志和 `/localization/debug_message` 的人类可读正文已中文化；后续定位程序、诊断工具和相关运行入口新增或修改面向人的日志、状态、警告和错误提示时使用中文。稳定的 `event=` 事件码、机器字段名、单位、枚举、ROS 接口以及第三方原始错误详情保持原有契约；诊断解析和历史日志兼容性必须同步维护。
 - SANY LiDAR 现场默认只保存一份全程 TUM 轨迹 `results/trajectory_published_rear_axle.tum`：按每次 `/localization/pose_vel` 发布调用完成记录对应消息的后轴中心业务地图位姿，时间列由 ROS 消息头的整数秒和纳秒写成九位小数，避免纪元时间转 double 的低位损失。标准 TUM 八列不含速度，文件不能证明下游订阅者已收到消息；使用缓冲写入与周期、正常退出时 flush，强杀可能丢失尚未 flush 的尾段。故障采集另有分析用途，应继续保留。
+- SANY LiDAR 标准入口默认将匹配快照放在本次 `<run_dir>/match_failures`、事件采集放在 `<run_dir>/results/incidents`，保持整次运行目录可整体拷贝；旧全局路径只保留诊断兼容，不迁移或删除历史文件。
 - PGO 全局校正和定位器内部高频轨迹仅供显式调试时导出，现场默认关闭相应记录和无界内存累积。修改轨迹行为时同步检查使用说明，不要把默认现场轨迹改成内部位姿或降频轨迹。

@@ -779,16 +779,30 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
     } else {
         auto evidence = MakeFailureEvidence(input, last_match_stats_,
             diagnostics::MatchFailureRecorder::Stage::kSeedRegistration,
-            last_match_stats_.map_consistency_evaluated ? "seed_map_consistency_rejected" : last_match_stats_.registration_reason,
+            last_match_stats_.map_consistency_evaluated ? last_match_stats_.map_rejection_reason : last_match_stats_.registration_reason,
             options_.relocalization_map_consistency_max_points_, options_.relocalization_min_overlap_ratio_);
         evidence.candidate_available = true;
         evidence.pose_available = {{true, last_match_stats_.registration_pose_available,
                                    last_match_stats_.map_consistency_evaluated}};
         evidence.guess = EvidencePose(fp_pose);
         evidence.ndt = evidence.check = EvidencePose(pose_esti);
-        RecordFailureEvidence(input,evidence);
+        const bool snapshot_admitted = RecordFailureEvidence(input,evidence);
         // 添加失败历史记录
-        LOG(INFO) << "event=LOC_INIT_MATCH_FAILED 初始化匹配失败 score: " << fitness_score;
+        LOG(INFO) << "event=LOC_INIT_MATCH_FAILED 初始化匹配失败 score: " << fitness_score
+                  << " rejection_reason=" << evidence.rejection_reason.data()
+                  << " registration_reason=" << last_match_stats_.registration_reason
+                  << " sensor_stamp_ns=" << evidence.sensor_stamp_ns
+                  << " min_confidence=" << last_match_stats_.min_confidence
+                  << " ndt_metrics_available=" << last_match_stats_.ndt_metrics_available
+                  << " ndt_converged=" << last_match_stats_.ndt_converged
+                  << " ndt_max_iterations=" << last_match_stats_.ndt_max_iterations
+                  << " ndt_epsilon=" << last_match_stats_.ndt_epsilon
+                  << " ndt_budget_exhausted=" << last_match_stats_.NdtBudgetExhausted()
+                  << " iterations=" << last_match_stats_.iterations
+                  << " ndt_transform_finite=" << last_match_stats_.ndt_transform_finite
+                  << " ndt_confidence_finite=" << last_match_stats_.ndt_confidence_finite
+                  << " snapshot_recorder_present=" << bool(match_failure_recorder_)
+                  << " snapshot_capture_admitted=" << snapshot_admitted;
         fp_init_fail_pose_vec_.emplace_back(fp_pose);
         fp_last_tried_time_ = 1e-6 * static_cast<double>(input->header.stamp);
     }
@@ -823,6 +837,13 @@ diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
     frame.confidence = stats.confidence;
     frame.min_confidence = options_.min_init_confidence_;
     frame.iterations = stats.iterations;
+    frame.ndt_metrics_available = stats.ndt_metrics_available;
+    frame.ndt_converged = stats.ndt_converged;
+    frame.ndt_transform_finite = stats.ndt_transform_finite;
+    frame.ndt_confidence_finite = stats.ndt_confidence_finite;
+    frame.ndt_max_iterations = stats.ndt_max_iterations;
+    frame.ndt_epsilon = stats.ndt_epsilon;
+    if (stats.ndt_metrics_available) frame.min_confidence = stats.min_confidence;
     if (frame.evaluated) {
         frame.reason = frame.inside_xy < frame.min_inside_xy ? Recorder::Reason::kBounds :
             frame.overlap < frame.min_overlap ? Recorder::Reason::kOverlap : Recorder::Reason::kGravity;
@@ -831,13 +852,13 @@ diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
     return frame;
 }
 
-void LidarLoc::RecordFailureEvidence(const CloudPtr& input,
+bool LidarLoc::RecordFailureEvidence(const CloudPtr& input,
                                     const diagnostics::MatchFailureRecorder::Frame& frame) {
-    if (!match_failure_recorder_) return;
+    if (!match_failure_recorder_) return false;
     // 同一初始化调用中功能点可能已成功，后续全局检索失败不应记为失锁。
-    if (loc_inited_ && frame.phase != diagnostics::MatchFailureRecorder::Phase::kTracking) return;
+    if (loc_inited_ && frame.phase != diagnostics::MatchFailureRecorder::Phase::kTracking) return false;
     match_failure_recorder_->ObserveTracking(false);
-    match_failure_recorder_->Capture(EvidenceCloud(input),frame);
+    return match_failure_recorder_->Capture(EvidenceCloud(input),frame);
 }
 
 bool LidarLoc::BuildRelocalizationMapCache() {
@@ -1367,11 +1388,13 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     double min_overlap_ratio, std::size_t maximum_points) const {
     MapConsistencyResult result;
     result.evaluated = true;
-    if (!input || input->empty() || !current_lo_pose_set_ ||
-        !relocalization_static_map_ || relocalization_static_map_->empty() ||
-        worker_index >= relocalization_kdtrees_.size() ||
-        !relocalization_kdtrees_[worker_index]) {
-        return result;
+    if (!input || input->empty()) { result.reason = "map_scan_unavailable"; return result; }
+    if (!current_lo_pose_set_) { result.reason = "map_odometry_unavailable"; return result; }
+    if (!relocalization_static_map_ || relocalization_static_map_->empty()) {
+        result.reason = "map_target_unavailable"; return result;
+    }
+    if (worker_index >= relocalization_kdtrees_.size() || !relocalization_kdtrees_[worker_index]) {
+        result.reason = "map_index_unavailable"; return result;
     }
 
     const std::size_t maximum = std::max<std::size_t>(1, maximum_points);
@@ -1427,7 +1450,7 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     }
 
     result.points = evaluated_points;
-    if (evaluated_points == 0) return result;
+    if (evaluated_points == 0) { result.reason = "map_no_valid_points"; return result; }
     const double denominator = static_cast<double>(evaluated_points);
     result.inside_xy_ratio = static_cast<double>(inside_xy) / denominator;
     result.inside_xyz_ratio = static_cast<double>(inside_xyz) / denominator;
@@ -1438,12 +1461,16 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
         result.inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
         result.overlap_ratio >= min_overlap_ratio &&
         result.gravity_alignment_cos >= options_.relocalization_min_gravity_alignment_cos_;
+    result.reason = result.passed ? "accepted" :
+        result.inside_xy_ratio < options_.relocalization_min_inside_xy_ratio_ ? "map_bounds" :
+        result.overlap_ratio < min_overlap_ratio ? "map_overlap" : "map_gravity";
     return result;
 }
 
 void LidarLoc::ApplyMapConsistencyResult(const MapConsistencyResult& result) {
     last_match_stats_.map_consistency_evaluated = result.evaluated;
     last_match_stats_.map_consistency_passed = result.passed;
+    last_match_stats_.map_rejection_reason = result.reason;
     last_match_stats_.map_consistency_points = result.points;
     last_match_stats_.map_inside_xy_ratio = result.inside_xy_ratio;
     last_match_stats_.map_inside_xyz_ratio = result.inside_xyz_ratio;
@@ -2032,20 +2059,22 @@ void LidarLoc::Align(const CloudPtr& input) {
     // [loc-tracking-acceptance]
     last_match_stats_.success = loc_success;
     // 在失败回退前记录实际检查的位姿；保存和地图裁剪由写入器负责。
+    const char* rejection_reason = loc_success ? "accepted" : !lidar_loc_odom_valid ? "raw_odometry_disagreement" :
+        last_match_stats_.map_consistency_evaluated ? last_match_stats_.map_rejection_reason : last_match_stats_.registration_reason;
+    const auto rejection_stamp_ns = static_cast<std::int64_t>(std::llround(current_timestamp_ * 1e9));
+    bool snapshot_admitted = false;
     if (match_failure_recorder_) {
         match_failure_recorder_->ObserveTracking(loc_success);
         if (!loc_success) {
             using Recorder = diagnostics::MatchFailureRecorder;
             Recorder::Frame frame;
-            frame.sensor_stamp_ns = static_cast<std::int64_t>(std::llround(current_timestamp_ * 1e9));
+            frame.sensor_stamp_ns = rejection_stamp_ns;
             frame.guess = EvidencePose(guess_from_lo);
             frame.ndt = EvidencePose(res_of_lo);
             frame.check = EvidencePose(current_pose_esti);
             frame.pose_available = {{true,last_match_stats_.registration_pose_available,
                                     last_match_stats_.map_consistency_evaluated}};
-            if (!last_match_stats_.map_consistency_evaluated)
-                std::snprintf(frame.rejection_reason.data(),frame.rejection_reason.size(),"%s",
-                              lidar_loc_odom_valid ? last_match_stats_.registration_reason : "raw_odometry_disagreement");
+            std::snprintf(frame.rejection_reason.data(),frame.rejection_reason.size(),"%s",rejection_reason);
             frame.evaluated = last_match_stats_.map_consistency_evaluated;
             frame.validation_stride = std::max<std::size_t>(1, (input->size() + 1999) / 2000);
             frame.validation_points = last_match_stats_.map_consistency_points;
@@ -2061,13 +2090,19 @@ void LidarLoc::Align(const CloudPtr& input) {
             frame.confidence = fitness_score;
             frame.min_confidence = options_.min_tracking_confidence_;
             frame.iterations = last_match_stats_.iterations;
+            frame.ndt_metrics_available = last_match_stats_.ndt_metrics_available;
+            frame.ndt_converged = last_match_stats_.ndt_converged;
+            frame.ndt_transform_finite = last_match_stats_.ndt_transform_finite;
+            frame.ndt_confidence_finite = last_match_stats_.ndt_confidence_finite;
+            frame.ndt_max_iterations = last_match_stats_.ndt_max_iterations;
+            frame.ndt_epsilon = last_match_stats_.ndt_epsilon;
             frame.raw_odom_valid = lidar_loc_odom_valid;
             frame.raw_odom_delta = delta_rel_abs_pose;
             if (frame.evaluated) {
                 frame.reason = frame.inside_xy < frame.min_inside_xy ? Recorder::Reason::kBounds :
                     frame.overlap < frame.min_overlap ? Recorder::Reason::kOverlap : Recorder::Reason::kGravity;
             } else frame.reason = lidar_loc_odom_valid ? Recorder::Reason::kRegistration : Recorder::Reason::kOdometry;
-            match_failure_recorder_->Capture(EvidenceCloud(input), frame);
+            snapshot_admitted = match_failure_recorder_->Capture(EvidenceCloud(input), frame);
         }
     }
     if (loc_success) {
@@ -2076,9 +2111,25 @@ void LidarLoc::Align(const CloudPtr& input) {
     } else {
         current_score_ = fitness_score;
         LOG(WARNING) << "event=LOC_MATCH_FAILED 激光定位匹配失败 score: " << current_score_
+                     << ", rejection_reason=" << rejection_reason
+                     << ", registration_reason=" << last_match_stats_.registration_reason
+                     << ", sensor_stamp_ns=" << rejection_stamp_ns
+                     << ", min_confidence=" << last_match_stats_.min_confidence
+                     << ", ndt_metrics_available=" << last_match_stats_.ndt_metrics_available
+                     << ", ndt_converged=" << last_match_stats_.ndt_converged
+                     << ", ndt_max_iterations=" << last_match_stats_.ndt_max_iterations
+                     << ", ndt_epsilon=" << last_match_stats_.ndt_epsilon
+                     << ", ndt_budget_exhausted=" << last_match_stats_.NdtBudgetExhausted()
+                     << ", ndt_transform_finite=" << last_match_stats_.ndt_transform_finite
+                     << ", ndt_confidence_finite=" << last_match_stats_.ndt_confidence_finite
+                     << ", snapshot_recorder_present=" << bool(match_failure_recorder_)
+                     << ", snapshot_capture_admitted=" << snapshot_admitted
+                     << ", consecutive_rejected_matches=" << match_fail_count_ + 1
+                     << ", lost_frame_threshold=" << options_.relocalization_lost_frame_threshold_
                      << ", iterations=" << last_match_stats_.iterations
                      << ", raw_odom_valid=" << lidar_loc_odom_valid
                      << ", raw_odom_delta=" << delta_rel_abs_pose
+                     << ", raw_odom_limit=" << options_.lidar_loc_odom_th_
                      << ", map_checked=" << last_match_stats_.map_consistency_evaluated
                      << ", map_overlap=" << last_match_stats_.map_overlap_ratio
                      << ", map_points=" << last_match_stats_.map_consistency_points
@@ -2271,6 +2322,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     Eigen::Matrix4f guess_pose = pose.matrix().cast<float>();
     last_match_stats_ = MatchStats{};
     last_match_stats_.active_map_chunks = map_ ? map_->NumActiveChunks() : 0;
+    last_match_stats_.min_confidence = loc_inited_ ? options_.min_tracking_confidence_ : options_.min_init_confidence_;
 
     if (!profiling::ReduceNonessentialOverhead()) {
         LOG(INFO) << "event=LOC_MATCH_GUESS 定位匹配初值 pose=" << pose.translation().transpose();
@@ -2303,6 +2355,12 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     confidence = ndt->getTransformationProbability();
     last_match_stats_.confidence = confidence;
     last_match_stats_.iterations = ndt->getFinalNumIteration();
+    last_match_stats_.ndt_metrics_available = true;
+    last_match_stats_.ndt_converged = ndt->hasConverged();
+    last_match_stats_.ndt_transform_finite = trans.allFinite();
+    last_match_stats_.ndt_confidence_finite = std::isfinite(confidence);
+    last_match_stats_.ndt_max_iterations = ndt->getMaximumIterations();
+    last_match_stats_.ndt_epsilon = ndt->getTransformationEpsilon();
 
     // [loc-ndt-acceptance]
     const double confidence_threshold =

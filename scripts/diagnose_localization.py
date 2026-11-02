@@ -1047,9 +1047,110 @@ def context_bounds(finding, rows):
     return lower, upper
 
 
+MATCH_REJECTION_TITLES = {
+    'ndt_target_unavailable': 'NDT 目标地图不可用',
+    'ndt_transform_nonfinite': 'NDT 变换包含非有限数值',
+    'ndt_confidence_nonfinite': 'NDT 分数不是有限数值',
+    'ndt_not_converged': 'NDT 未达到收敛条件',
+    'ndt_confidence_below_threshold': 'NDT 分数低于接受阈值',
+    'ndt_rotation_invalid': '配准旋转无效',
+    'raw_odometry_disagreement': '原始配准与激光里程计增量差超限',
+    'map_bounds': '地图水平范围内点比例不足',
+    'map_overlap': '静态地图重合率不足',
+    'map_gravity': '地图重力方向一致性不足',
+    'map_scan_unavailable': '地图检查缺少有效扫描',
+    'map_odometry_unavailable': '地图检查缺少当前激光里程计位姿',
+    'map_target_unavailable': '地图检查缺少静态地图',
+    'map_index_unavailable': '地图检查缺少近邻索引',
+    'map_no_valid_points': '地图检查没有有效评估点',
+}
+
+
+def matching_rejection(clue):
+    values = fields(clue['text'])
+    reason = values.get('rejection_reason')
+    stamp = re.search(r'\bsensor_stamp_ns=(\d+)', clue['text'])
+    score = re.search(r'\bscore:\s*([^\s,]+)', clue['text'])
+    return dict(reason_code=reason, title=MATCH_REJECTION_TITLES.get(reason,
+                    '未记录具体拒绝码，不能仅凭迭代次数确认未收敛' if reason is None else '未识别拒绝码，保留原始记录'),
+                time=clue['time'], wall_ns=clue.get('wall_ns'), source=clue.get('source'),
+                sensor_stamp_ns=int(stamp[1]) if stamp else None,
+                confidence=number(score[1]) if score else None,
+                evidence={k: values[k] for k in ('registration_reason', 'min_confidence', 'iterations',
+                          'ndt_metrics_available', 'ndt_converged', 'ndt_max_iterations', 'ndt_epsilon',
+                          'ndt_budget_exhausted', 'ndt_transform_finite', 'ndt_confidence_finite',
+                          'raw_odom_valid', 'raw_odom_delta', 'raw_odom_limit',
+                          'consecutive_rejected_matches', 'lost_frame_threshold',
+                          'snapshot_recorder_present', 'snapshot_capture_admitted') if k in values},
+                snapshots=[], relation='故障起点附近的实际匹配拒绝；不等于物理根因')
+
+
+def match_snapshot_records(context, run, window=None):
+    """Saved logs prove past completion; current files require same-run identity."""
+    import match_failure_birdseye as bird
+    meta = key_values(run / 'run_metadata.txt')
+    identities = {str(run), meta.get('run_dir')}
+    roots = [run / 'match_failures', run / 'results/match_failures', run.parent / 'match_failures']
+    declared = meta.get('match_failure_dir')
+    if declared and Path(declared).is_absolute(): roots.insert(0, Path(declared))
+    roots = list(dict.fromkeys(roots))
+    records, seen = [], set()
+    for clue in context:
+        if not has_event(clue['text'], 'MATCH_CAPTURE_SAVED'): continue
+        found = re.search(r'\bsaved=("(?:\\.|[^"\\])*"|\S+)', clue['text'])
+        stamp = re.search(r'\bsensor_stamp_ns=(\d+)', clue['text'])
+        if not found or not stamp: continue
+        try:
+            saved = json.loads(found[1]) if found[1].startswith('"') else found[1].rstrip(',')
+        except ValueError:
+            continue
+        name = saved.replace('\\', '/').rsplit('/', 1)[-1]
+        identity = re.fullmatch(r'match_failure_(\d+)_(\d+)_(\d+)', name)
+        if not identity: continue
+        if window is not None and (not window or not window[0] <= int(identity[1]) <= window[1]): continue
+        key = (saved, int(stamp[1]))
+        if key in seen: continue
+        seen.add(key)
+        record = dict(saved_path=saved, sensor_stamp_ns=int(stamp[1]), capture_wall_ns=int(identity[1]),
+                      pid=int(identity[2]), saved_log_time=clue['time'], source=clue['source'],
+                      status_at_log='saved', current_status='not_found_here', current_path=None)
+        for root in roots:
+            candidate = root / name
+            if not candidate.is_dir(): continue
+            try:
+                summary = bird.read_summary(candidate)
+                if (summary.get('run_dir') not in identities or summary.get('pid') != record['pid'] or
+                        summary.get('sensor_stamp_ns') != record['sensor_stamp_ns']):
+                    record['current_status'] = 'identity_mismatch'
+                    continue
+                complete = all((candidate / f).is_file() for f in ('scan.bin', 'map_local.bin'))
+                record.update(current_status='available' if complete else 'files_missing',
+                              current_path=str(candidate), rejection_reason=summary.get('rejection_reason'))
+                if complete: break
+            except (OSError, ValueError, TypeError):
+                record['current_status'] = 'unreadable_or_incomplete'
+        records.append(record)
+    return dict(records=records, retained_saved_logs=len(records),
+                limitation='saved 日志表示当时已完成写入；当前只核对摘要身份和文件存在，未在此处复算点云校验和。入队不等于写入成功，外部目录未导出或当前不可访问也不代表当时未保存。')
+
+
 def matching_summary(clue, matching, prefix='首次失锁前匹配记录'):
     values = fields(clue['text'])
     text = f'{prefix}: {clue["time"]}，map_checked={values.get("map_checked", "未知")}，map_overlap={values.get("map_overlap", "未知")}，raw_odom_valid={values.get("raw_odom_valid", "未知")}。'
+    rejection = matching_rejection(clue)
+    text += ' 拒绝判据: ' + rejection['title'] + ('（' + str(rejection['reason_code']) + '）' if rejection['reason_code'] else '') + '。'
+    if values.get('ndt_metrics_available') == 1:
+        text += (f' NDT 收敛={values.get("ndt_converged", "未知")}，迭代={values.get("iterations", "未知")}/'
+                 f'{values.get("ndt_max_iterations", "未知")}，epsilon={values.get("ndt_epsilon", "未知")}；'
+                 f'分数={rejection["confidence"]}，接受阈值={values.get("min_confidence", "未知")}。')
+        if values.get('ndt_budget_exhausted') == 1:
+            text += ' 已耗尽本次迭代预算，仍未达到收敛条件。'
+    elif values.get('ndt_metrics_available') == 0:
+        text += ' 本次未执行 NDT，不将默认的收敛标志解释为未收敛。'
+    if values.get('snapshot_capture_admitted') == 1:
+        text += ' 本帧快照已入队；是否完成写入须看 saved 记录或完整摘要。'
+    elif values.get('snapshot_capture_admitted') == 0:
+        text += ' 本帧未入队，不等于该故障段从未保存快照；检查采集器状态、同段抑制和预算。'
     points, overlap = number(values.get('map_points')), number(values.get('map_overlap'))
     if values.get('map_checked') != 1:
         return text + ' 地图一致性未确认执行，不判断其失败项。', False
@@ -1300,14 +1401,14 @@ def match_failure_collector(report):
 
 def match_failure_image(report, explicit=None, output_dir=None, enabled=True):
     result = _match_failure_image(report, explicit, output_dir, enabled)
+    if not enabled and result.get('status') == 'not_found':
+        result.update(status='disabled', message='已跳过失败匹配俯视图；' + result.get('message', ''))
     result['collector'] = match_failure_collector(report)
     return result
 
 
 def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
     """Select one complete, same-run frame; rendering is bounded and optional."""
-    if not enabled:
-        return dict(status='disabled', message='已跳过失败匹配俯视图。')
     import match_failure_birdseye as bird
     chosen = Path(report['selected']) if report.get('selected') else None
     process = report.get('process')
@@ -1385,6 +1486,9 @@ def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
          'retrieval_score', 'refinement_backend', 'registration', 'query', 'plane_icp', 'episode', 'wall_ns', 'sensor_stamp_ns')}
     failure_observation['phase'] = evidence_summary.get('phase', 'tracking')
     failure_observation['stage'] = evidence_summary.get('stage', 'tracking_acceptance')
+    if not enabled:
+        return dict(status='disabled', evidence=str(evidence), selection=selection,
+                    failure_observation=failure_observation, message='已读取快照摘要，跳过俯视图绘制。')
     # Avoid user-site NumPy shadowing the distro SciPy/matplotlib ABI on Orin.
     command = [sys.executable, '-s', str(Path(__file__).with_name('match_failure_birdseye.py')), str(evidence)]
     if output_dir:
@@ -1436,9 +1540,15 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     if process:
         run = Path(process['run'])
     elif not is_run_directory(path) and (meta.get('run_dir') or summary.get('kind') == 'lightning_match_failure' and summary.get('run_dir')):
-        original = Path(meta.get('run_dir') or summary['run_dir'])
+        declared_run = meta.get('run_dir') or summary['run_dir']
+        original = Path(declared_run)
+        # A self-contained copied package keeps the original full identity in metadata.
+        normalize = lambda value: str(value).replace('\\', '/').rstrip('/')
+        enclosing = next((p for p in path.parents if is_run_directory(p) and
+                          normalize(key_values(p / 'run_metadata.txt').get('run_dir') or p.resolve()) ==
+                          normalize(declared_run)), None)
         relocated = path.parent.parent / original.name
-        run = relocated if (relocated / 'logs/run_loc_online.stderr.log').is_file() else original
+        run = enclosing or (relocated if (relocated / 'logs/run_loc_online.stderr.log').is_file() else original)
     config = path / 'config.yaml' if path.is_dir() else path.parent / 'config.yaml'
     launch_findings = launch_failures(run, warnings) if run == path and not summary else []
     limits = thresholds(config)
@@ -1505,6 +1615,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         if process:
             warnings.append('同时显示本事件和当前运行日志尾部的故障；日志中的较早故障不一定属于此事件，见每项时间与来源。')
     findings = fault_episodes(rows + logdata, limits)
+    snapshots = match_snapshot_records(context, run, protection_window)
     for finding in findings:
         start, end = finding.get('start_ns'), finding.get('end_ns') or finding.get('last_ns')
         finding['input_timing_evidence'] = [event for event in input_timing['events']
@@ -1526,11 +1637,11 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         nearby_context = [c for c in context if start is not None and c['wall_ns'] is not None
                           and lower <= c['wall_ns'] <= upper]
         onset_context = []
-        for marker in ('LOC_MATCH_FAILED', 'LOC_OUTPUT_DISABLED'):
+        for marker in ('LOC_MATCH_FAILED', 'LOC_INIT_MATCH_FAILED', 'LOC_OUTPUT_DISABLED'):
             candidates = [c for c in nearby_context if c['wall_ns'] <= start + 2e9 and has_event(c['text'], marker)]
             before = [c for c in candidates if c['wall_ns'] <= start]
             after = [c for c in candidates if c['wall_ns'] > start]
-            clue = (before[-1] if before else None) if marker == 'LOC_MATCH_FAILED' else (after[0] if after else before[-1] if before else None)
+            clue = (before[-1] if before else None) if marker in ('LOC_MATCH_FAILED', 'LOC_INIT_MATCH_FAILED') else (after[0] if after else before[-1] if before else None)
             if clue is not None:
                 onset_context.append(clue)
         if finding['code'] == -9:
@@ -1539,6 +1650,16 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 if candidates:
                     onset_context.append(min(candidates, key=lambda c: c['wall_ns']))
         finding['onset_context'] = [c for c in nearby_context if c in onset_context]
+        rejected = next((c for c in onset_context if any_event(c['text'], ('LOC_MATCH_FAILED', 'LOC_INIT_MATCH_FAILED'))), None)
+        if rejected:
+            detail = matching_rejection(rejected)
+            for saved in snapshots['records']:
+                exact = detail['sensor_stamp_ns'] is not None and detail['sensor_stamp_ns'] == saved['sensor_stamp_ns']
+                nearby = (detail['sensor_stamp_ns'] is None and detail['wall_ns'] is not None and
+                          abs(saved['capture_wall_ns'] - detail['wall_ns']) <= 50_000_000)
+                if exact or nearby:
+                    detail['snapshots'].append(dict(saved, association='sensor_stamp_exact' if exact else 'capture_time_nearby'))
+            finding['matching_rejection'] = detail
         finding['context'] = recent_context_clues([c for c in nearby_context if c not in onset_context], 6)
     absent = sum(f['capture_coverage'] == 'no_retained_overlap' for f in findings if f['scope'] == '运行日志（有界尾部）')
     if absent:
@@ -1588,6 +1709,11 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
     dropped = [number(r.get('collector_dropped')) for r in rows]
     dropped = [v for v in dropped if v is not None]
+    current_findings = classify(latest, limits)
+    for current in current_findings:
+        retained = [f for f in findings if f['key'] == current['key'] and f['code'] == current['code'] and
+                    f.get('last_ns') == row_ns(latest) and f.get('matching_rejection')]
+        if retained: current['matching_rejection'] = retained[-1]['matching_rejection']
     return dict(schema=2, selected=str(path), resolved_run=str(run), selection=selection, process=process,
                 has_match_evidence=summary.get('kind') == 'lightning_match_failure' and summary.get('status') == 'complete',
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
@@ -1596,7 +1722,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                        'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope',
                        'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
-                latest_age_sec=age, current_findings=classify(latest, limits), runtime_build=build,
+                latest_age_sec=age, current_findings=current_findings, runtime_build=build,
+                match_snapshots=snapshots,
                 compute_profile=compute_profile, input_timing=input_timing, motion_evidence=motion_evidence(latest),
                 trajectory_recording=dict(logged_limits.get('_trajectory', {}),
                                           final=logged_limits.get('_trajectory_final', {})),
@@ -1672,6 +1799,15 @@ def render(report, color=False, all_events=False):
             lines.append('  时序证据存在丢弃或序号缺口: ' + json.dumps(dict(runtime=timing['lost_by_topic'], retained=timing['truncated_events'], sequence_gaps=timing['event_sequence_gaps'])))
     else:
         lines.append('上游输入时序: 当前日志缺少配对间隔证据，无法仅凭接收龄期区分源缺口和延迟交付。')
+    snapshots = report.get('match_snapshots', {})
+    if snapshots.get('records'):
+        lines.append('匹配快照保存记录: ' + str(snapshots['retained_saved_logs']) + ' 条（已读取日志范围）')
+        for saved in (snapshots['records'] if all_events else snapshots['records'][-6:]):
+            status = {'available': '当前找到同运行摘要和点云文件', 'not_found_here': '当前可访问位置未找到原文件',
+                      'identity_mismatch': '同名文件身份不符，未关联', 'files_missing': '摘要存在，点云文件不齐',
+                      'unreadable_or_incomplete': '文件不可读或尚未完整'}.get(saved['current_status'], saved['current_status'])
+            lines.append(f'  日志确认当时已保存: {saved["saved_path"]}；{status}；源时间戳={saved["sensor_stamp_ns"]}')
+        lines.append('  ' + snapshots['limitation'])
     match_image = report.get('match_failure_image', {})
     if match_image:
         lines.append(paint('定位失败证据与俯视图: ' + str(match_image.get('status')), '1;36'))
@@ -1700,8 +1836,17 @@ def render(report, color=False, all_events=False):
         if observation.get('phase'):
             phase = {'tracking': '运行跟踪', 'startup': '初始定位', 'global_relocalization': '全局重定位'}.get(observation['phase'], observation['phase'])
             lines.append(f'  保留快照阶段: {phase} / {observation.get("stage")}；拒绝原因: ' + str(observation.get('rejection_reason') or observation.get('recorded_reason') or observation.get('reason')))
+            reason = observation.get('rejection_reason') or observation.get('recorded_reason') or observation.get('reason')
+            if reason in MATCH_REJECTION_TITLES:
+                lines.append('  拒绝判据: ' + MATCH_REJECTION_TITLES[reason])
             lines.append('  候选位姿可用: ' + str(observation.get('candidate_available')) + '；候选 ID: ' + str(observation.get('candidate_id')) + '；检索分数: ' + str(observation.get('retrieval_score')))
             lines.append('  配准质量记录: ' + json.dumps(observation.get('registration', {}), ensure_ascii=False))
+            registration = observation.get('registration') or {}
+            if registration.get('ndt_metrics_available'):
+                lines.append(f'  NDT 收敛={registration.get("ndt_converged")}；迭代={registration.get("iterations")}/'
+                             f'{registration.get("ndt_max_iterations")}；epsilon={registration.get("ndt_epsilon")}')
+                if registration.get('ndt_budget_exhausted'):
+                    lines.append('  已耗尽本次迭代预算，仍未达到收敛条件。')
             if observation.get('query'):
                 lines.append('  查询规模/耗时: ' + json.dumps(observation['query'], ensure_ascii=False))
             if observation.get('plane_icp'):
@@ -1843,6 +1988,11 @@ def render(report, color=False, all_events=False):
         coverage = ('起始时刻落在保留事件范围内（不保证整段覆盖或中间完整）' if f['event_paths'] else
                     '起始时刻未找到保留事件范围覆盖（不代表整段未采集），需核对写入/抑制/轮转' if f['capture_coverage'] == 'no_retained_overlap' else '起始时间证据不足')
         lines.append(paint('  故障起点数据覆盖: ' + coverage, '36' if f['event_paths'] else '33'))
+        rejection = f.get('matching_rejection')
+        if rejection:
+            lines.append('  匹配拒绝判据: ' + rejection['title'] + '；原因码=' + str(rejection['reason_code']))
+            for snapshot in rejection['snapshots']:
+                lines.append('  关联的快照保存日志: ' + snapshot['saved_path'] + '；当前状态=' + snapshot['current_status'])
         for clue in f.get('onset_context', []):
             lines.append(f'  起点附近日志（相关线索）: {clue["text"]}\n    位置: {clue["source"]}')
         for clue in recent_context_clues(f['context'], 2):

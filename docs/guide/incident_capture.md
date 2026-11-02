@@ -12,11 +12,15 @@ diagnostics:
     enabled: true  # 改为 false 关闭
 ```
 
-SANY 启动脚本通过 `--incident_dir` 指向 `$out_root/incidents`；检查本次运行的配置快照和启动日志，确认设置与路径。手工启动时可显式传入绝对路径 `--incident_dir=/绝对路径/incidents`；未提供该参数时，优先回退到 `--output_published_tum` 父目录下的 `incidents`，其次使用 `--output_tum` 的父目录；如果都未提供，日志会提示禁用采集，算法继续运行。事件各有目录；全程 bag 与事件采集分别开关。使用此采集器时可设置 `SANY_RECORD_BAG=0`、`SANY_ENABLE_POSE_VEL_WATCHDOG=0`，避免同时启用全程录包和独立看门狗；原始数据默认缓存且不增加重复 DDS 订阅。
+SANY 启动脚本通过 `--incident_dir` 指向本次运行的 `$run_dir/results/incidents`，并在 `run_metadata.txt` 记录该路径；检查本次运行的配置快照和启动日志，确认设置与路径。手工启动时可显式传入绝对路径 `--incident_dir=/绝对路径/incidents`；未提供该参数时，优先回退到 `--output_published_tum` 父目录下的 `incidents`，其次使用 `--output_tum` 的父目录；如果都未提供，日志会提示禁用采集，算法继续运行。事件各有目录；全程 bag 与事件采集分别开关。使用此采集器时可设置 `SANY_RECORD_BAG=0`、`SANY_ENABLE_POSE_VEL_WATCHDOG=0`，避免同时启用全程录包和独立看门狗；原始数据默认缓存且不增加重复 DDS 订阅。
+
+标准启动器默认把本次匹配失败快照放在 `$run_dir/match_failures`，把事件放在 `$run_dir/results/incidents`。两类目录均在默认位置时，需要交付取证数据可在确认保存完成后复制整个 `$run_dir`，一并携带这两类目录、日志和运行元数据；仅复制单个事件目录不包含整个运行及匹配快照。复制后元数据中仍可能保留原机器上的绝对路径，应对照复制后的运行目录检查文件。旧版可能使用 `$out_root/match_failures` 与 `$out_root/incidents`，诊断保留对旧路径的兼容，路径变更不会迁移或删除历史文件；旧运行或手工指定运行目录外路径时，应按元数据和实际位置另行携带所需目录。
+
+本文的 `$run_dir` 表示本次运行目录，不一定是当前 shell 中已设置的变量。可从启动或正常结束时输出的运行目录路径查找，也可查看 `--diagnose --json` 输出的 `resolved_run`；实际操作时用该次运行的绝对路径替换，注意多个实例时核对选中的进程和时间。
 
 ## 现场单命令分析
 
-现场使用仓库外已有的部署入口 `~/Sany/run_loc.sh`；其 `lidar` 分支将参数原样传给仓库内的 `scripts/run_sany_lidar_loc.sh`。执行：
+现场部署入口 `~/Sany/run_loc.sh` 的 `lidar` 分支须将参数原样传给仓库内的 `scripts/run_sany_lidar_loc.sh`；确认入口已按此更新后执行：
 
 ```bash
 bash ~/Sany/run_loc.sh --diagnose
@@ -27,7 +31,7 @@ bash ~/Sany/run_loc.sh --diagnose --json > diagnosis.json
 
 开发联调也可从仓库根目录直接执行 `bash scripts/run_sany_lidar_loc.sh --diagnose [path]`，并附加相同选项。仓库入口在启动定位、录包或创建运行目录之前转入 `scripts/diagnose_localization.sh`；独立 shell 和 Python 脚本仍可直接使用。支持 `--pid`、`--root`、`--log-mb`、`--bag-mb`、`--all` 和 `--color auto|always|never`。默认文本显示最近 12 段及按来源分类的全部汇总；同一真实故障可能同时出现在日志段和事件时间线段，不能将这些统计相加当作事件数。仅有入口日志的新运行也优先于旧事件检查；报告区分 runtime_loader 缺库、map_preflight 拒绝和 input_preflight 超时，若运行目录创建之前未留下日志则不能推断原因。诊断开头优先给出结论和简短问题链，同时保留最近明确航向一致性 FAIL 的段数、时间、残差及恢复情况，避免较早失锁掩盖后续状态 4；`--all` 展开所有已扫描判据，JSON 包含全部已分析段，日志读取仍受预算限制，不能保证覆盖全量日志。`auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；JSON 始终无 ANSI。红色表示最新记录故障，黄色表示历史或缺失证据，绿色仅表示最新记录为 0，青色为信息。
 
-`path` 可以是事件目录、`summary.json`、`timeline.csv`、运行目录、归档根目录、裸 MCAP 或 db3 文件，也可以是 rosbag 目录；不支持压缩归档。显式指定运行目录时检查该次运行日志，仍受 `--log-mb` 预算限制；显式指定事件目录时按该事件时间窗检查。无进程自动查找仍选择最新包。例如：
+`path` 可以是事件目录、匹配失败快照目录、`summary.json`、`timeline.csv`、运行目录、归档根目录、裸 MCAP 或 db3 文件，也可以是 rosbag 目录；不支持压缩归档。显式指定运行目录时检查该次运行日志，仍受 `--log-mb` 预算限制；显式指定事件目录时按该事件时间窗检查。无进程自动查找仍选择最新包。例如：
 
 ```bash
 bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
@@ -39,7 +43,7 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 脚本默认用标准库读取摘要、时间线和运行日志尾部 32 MiB，另读取日志头部 1 MiB 以获取配置；`--log-mb` 可调整尾部范围，报告会标明覆盖范围。新版本时间线包含细分 Safety 判据；旧包需要同次运行日志补充判据证据；日志无法恢复未记录的物理根因。指定事件只关联其时间窗内的日志；自动检查正在运行的实例时，还会显示当前运行日志尾部的历史故障并标明来源时间。
 
-裸 bag 缺少摘要和时间线时，脚本通过 `rosbag2_py` 离线筛选 Safety，不创建 ROS 节点、不解点云；默认文件预算 128 MiB，可用 `--bag-mb` 调整，读取还受 15 秒和 30000 次状态变化上限约束。只有上报码而缺少原始细分判据时，报告会说明证据不足。脚本不订阅 DDS、不启动定位、不修改阈值或输入数据；默认不写报告，`--json` 将 JSON 打印到标准输出，可自行重定向保存。
+裸 bag 缺少摘要和时间线时，脚本通过 `rosbag2_py` 离线筛选 Safety，不创建 ROS 节点、不解点云；默认文件预算 128 MiB，可用 `--bag-mb` 调整，读取还受 15 秒和 30000 次状态变化上限约束。只有上报码而缺少原始细分判据时，报告会说明证据不足。脚本不订阅 DDS、不启动定位、不修改阈值或输入数据；文本或 `--json` 报告打印到标准输出，可自行重定向保存。选中完整匹配快照时默认另在快照包中写入俯视图和分析文件；`--no-match-image` 只跳过画图，仍读取和显示可用的快照摘要。
 
 脚本及 ROS 环境准备辅助进程以 nice 10 运行，从自身允许的 CPU 集合中排除系统隔离核；若没有可用的非隔离核则拒绝分析。退出码 `0` 表示读到了可分析的 Safety 记录，不能理解为没有故障；无证据或选择失败返回 `2`。检查报告中的事件时间、原始及发布故障码、具体字段及阈值或状态、证据位置和缺失证据。判据触发原因不能直接当作已证实的物理根因，证据不足时应继续调查。
 
@@ -86,7 +90,7 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 `/localization/debug_message` 的 `lightning/msg/DebugMessage.message` 人类可读正文也使用中文，覆盖节点就绪、首次定位、全局重定位开始/失败/接受及 LIO、ESKF、PGO、平滑器异常与恢复等事件。原有数值字段名、单位、枚举值及原始 `reason`/`detail` 保留，便于诊断；`header` 时间戳、`node_name`、ROS 话题和消息结构，以及内部限频键和状态键不变。上述日志的 `event=` 规则不新增消息字段：`DebugMessage` 仍为 `header`、`node_name` 和 `message`，正文中已有的 `event=` 文本仍可能出现。
 
-常见事件码包括 `LOC_INITIAL_POSE_UNSET`、`LOC_MATCH_FAILED`、`LOC_OUTPUT_DISABLED`、`LOC_OUTPUT_STOPPED`、`LOC_OUTPUT_RECOVERED`、`LOC_SENSOR_QUEUE_LAG`、`LOC_SENSOR_QUEUE_RECOVERED`、`LIO_STALE_CORRECTION_DROPPED`、`LIO_ADAPTIVE_LOAD_CHANGED`、`LOC_RELOCALIZATION_ACCEPTED`、`LOC_TRACKING_LOST`、`LOC_CAN_SPEED_IGNORED`、`IMU_LONG_INTERVAL`、`SOLID_CLOUD_LOAD_FAILED`、`SOLID_TARGET_BUILD_FAILED` 和 `SOLID_QUERY_PREPARE_FAILED`。队列延迟使用 `lag_sec`，自适应负载级别变化使用 `from_step`（变化前级别）和 `to_step`（变化后级别）；`age`、`hard_deadline`、`processing_ms`、`latency_ms`、`tracking_healthy` 等原有字段仍按原名称读取。
+常见事件码包括 `LOC_INITIAL_POSE_UNSET`、`LOC_MATCH_FAILED`、`LOC_INIT_MATCH_FAILED`、`LOC_OUTPUT_DISABLED`、`LOC_OUTPUT_STOPPED`、`LOC_OUTPUT_RECOVERED`、`LOC_SENSOR_QUEUE_LAG`、`LOC_SENSOR_QUEUE_RECOVERED`、`LIO_STALE_CORRECTION_DROPPED`、`LIO_ADAPTIVE_LOAD_CHANGED`、`LOC_RELOCALIZATION_ACCEPTED`、`LOC_TRACKING_LOST`、`LOC_CAN_SPEED_IGNORED`、`IMU_LONG_INTERVAL`、`SOLID_CLOUD_LOAD_FAILED`、`SOLID_TARGET_BUILD_FAILED` 和 `SOLID_QUERY_PREPARE_FAILED`。队列延迟使用 `lag_sec`，自适应负载级别变化使用 `from_step`（变化前级别）和 `to_step`（变化后级别）；`age`、`hard_deadline`、`processing_ms`、`latency_ms`、`tracking_healthy` 等原有字段仍按原名称读取。
 
 例如，以下仅为格式示意，并非实际采集结果，也不能据此判断物理根因：
 
@@ -94,21 +98,27 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 event=LOC_MATCH_FAILED 激光定位匹配失败 score: 2.28, map_checked=1, map_overlap=0.72
 ```
 
-历史英文日志没有事件码时，`scripts/diagnose_localization.sh` 调用的诊断逻辑继续按旧规则识别；日志存在显式大写事件码时，即使该码暂不被识别，也不再根据正文猜测事件。新增或修改源码日志时，应同步维护诊断解析与回归用例，并按下方开发同步检查审查合同。日志文本和事件码的调整不改变 Safety 消息、采集触发条件或 CSV/JSON schema；现场应以实际运行版本和证据为准。
+历史英文日志没有事件码时，`scripts/diagnose_localization.sh` 调用的诊断逻辑继续按旧规则识别；日志存在显式大写事件码时，即使该码暂不被识别，也不再根据正文猜测事件。新增或修改源码日志时，应同步维护诊断解析与回归用例，并按下方开发同步检查审查合同。新增匹配取证字段不改变 Safety 消息、事件触发条件或时间线 CSV；匹配快照 schema 2 和诊断 JSON 可追加向后兼容的字段。现场应以实际运行版本和证据为准。
 
 ## 匹配失败点云证据
 
-普通 NDT 基础配准接受要求 `hasConverged()` 为真、confidence 和变换均为有限值，且 confidence 不低于当前跟踪或初始化阈值。零增量或有限步长小于 `transformation_epsilon` 可以置收敛；仅耗尽 20 次迭代预算不构成收敛证据，最后一次也可能满足收敛条件。基础配准通过后，候选仍可能因相对与绝对里程计差异或地图一致性检查被拒绝；单帧拒绝也不等于已确认定位失锁。
+排查匹配拒绝与 Safety `4` 的关系时，先按时间对照 `SAFETY_DIAGNOSTIC`、`LOC_MATCH_FAILED`（跟踪）和 `LOC_INIT_MATCH_FAILED`（初始化）。失败日志中的 `rejection_reason` 和 `registration_reason` 记录实际判定项；诊断逐项解释 NDT、原始里程计差异、地图边界、重合率、重力一致性或前置证据缺失，并显示已记录的数值和阈值。跟踪日志还记录原始里程计差异的阈值 `raw_odom_limit`、传感器时间戳和连续拒绝帧数及阈值。两类日志的 `snapshot_recorder_present` 仅表示采集器对象是否存在，不能据此判断 YAML 开关或写线程是否成功启动；`snapshot_capture_admitted` 表示本帧是否成功入队。单帧拒绝本身不等于 Safety `4` 或确认失锁；判断是否相关仍需核对同一时段的 Safety 判据、匹配新鲜度和状态变化。日志中的判定原因也不等于已查明的物理根因。
+
+基础配准日志及新匹配快照的 `registration` 记录 NDT 是否实际执行和收敛、迭代次数与上限、收敛步长阈值、迭代预算是否耗尽、变换与分数的数值有效性，以及 `confidence` 与 `min_confidence`。`ndt_budget_exhausted=1` 表示本次实际执行、尚未收敛且迭代次数达到上限；最后一次已收敛时不能仅凭达到上限认定预算耗尽。未执行 NDT 时快照的 `ndt_metrics_available` 为 `false`，新增的 NDT 收敛、数值有效性、迭代上限、epsilon 和耗尽状态字段为 `null`；保留的通用分数和迭代次数字段及日志中的默认布尔值不能作为 NDT 实测结果。旧日志和旧 schema 2 快照缺少字段时不能将缺项当作 `false`。诊断只依据实际记录解释，缺少必要字段时报告证据不足。
+
+普通 NDT 基础配准接受要求 `hasConverged()` 为真、confidence 和变换均为有限值，且 confidence 不低于当前跟踪或初始化阈值。零增量或有限步长小于 `transformation_epsilon` 可以置收敛；仅看到迭代次数达到 20 次上限，不能判断是否收敛，最后一次也可能满足收敛条件。基础配准通过后，候选仍可能因相对与绝对里程计差异或地图一致性检查被拒绝；单帧拒绝也不等于已确认定位失锁。
 
 例如，旧 13:48 包的五帧失败记录中 `iterations=20`，score 为 2.848–3.039，高于当时 tracking 阈值 0.4，且 `map_checked=0`；日志没有 `registration_reason`。这些记录表明分数阈值不是已知的拒绝原因，也未记录到地图一致性检查；不能仅凭 20 次迭代断言具体失败原因或物理根因。
 
-普通 tracking 拒绝、启动 seed 和全局重定位候选均提供取证，独立保存在 `runs/match_failures`。配置位于 `diagnostics.match_failure_capture`；启动器导出 `SANY_MATCH_FAILURE_DIR=$out_root/match_failures` 并写入 `run_metadata.match_failure_dir`。应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。
+普通 tracking 拒绝、启动 seed 和全局重定位候选均可采集接受前的扫描，以及当时可用的候选和局部地图，保存到本次运行的匹配快照目录。SANY 配置默认开启 `diagnostics.match_failure_capture`；启动器导出 `SANY_MATCH_FAILURE_DIR=$run_dir/match_failures` 并将原运行路径写入 `run_metadata.txt`。应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。此采集器独立于 Safety 触发，不能保证每次 `4` 或 `-9` 都有对应的匹配快照。
 
 schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及原始、精修和实际检查位姿；只有实际可用的位姿有值，无候选为 null。tracking 包含 `summary.json`、配置、扫描及局部地图，可按三维最近邻原判据点复算分数。候选在地图范围外、局部地图为空时仍保存地图边界、扫描和实际位姿；单传感器坐标扫描图不伪叠加地图，也不能据此推定车辆在地图外。`run_loc.sh --diagnose [包路径]` 展示证据；支持 `--json` 和 `--no-match-image`。例如 `bash ~/Sany/run_loc.sh --diagnose /绝对路径/匹配失败包`；默认在包内 `birdseye/comparison.png`、`birdseye/index.html` 和 `birdseye/analysis.json` 输出图与分析。历史保存图的时间可能不同于最新 Safety，须按时间分别解释。红色未命中点不直接证明动态物体。
 
-一次连续失败最多保存三包：首次，以及原因变化或候选显著改善（重合率增加至少 0.05 或检索分数增加至少 0.10）。普通 tracking 的初始拒绝也计入本轮，连续成功 2 秒且相邻成功匹配通知间隔不超过 0.5 秒后才重置；停车复用旧位姿或少点时没有有效匹配，不算恢复，也不刷新匹配新鲜度。不会每 30 秒周期补包。旧 `cooldown_seconds` 键保留兼容，不再触发周期补包。其余轻量最新观测和状态继续更新。
+一次连续失败最多入队三包：尚无入队记录时可尝试记录失败；首包入队后，仅相对上一次入队记录出现阶段或原因变化、从无候选变为有候选，或候选显著改善才再次尝试。改善以本轮已入队记录的最佳有效重合率或检索分数为基准，分别要求增加至少 0.05 或 0.10；如果之前没有对应的有效值，首次取得有效值也可触发尝试。实际入队仍受空槽等条件限制。普通 tracking 的初始拒绝也计入本轮，连续成功 2 秒且相邻成功匹配通知间隔不超过 0.5 秒后才重置；停车复用旧位姿或少点时没有有效匹配，不算恢复，也不刷新匹配新鲜度。不会每 30 秒周期补包。旧 `cooldown_seconds` 键保留兼容，不再触发周期补包。其余轻量最新观测和状态继续更新。
 
-采集不增加 DDS 订阅或独立进程；两个预分配槽最多保存 50000 个展示点及 50000 个原 global 检查点，后台线程避开隔离核 10/11、nice 10，限速 10 MiB/s。单事件上限 64 MiB，总预算 1 GiB，磁盘预留 2 GiB，保护期至少 7 天；保护期内空间不足时拒绝新包并报告丢弃原因。功能需要部署后的新采集，不能恢复已轮转的 2026-10-30 16:29 原始点云；测试和现场验收以实际结果为准。
+日志中的入队成功只表示工作交给后台写入线程，不证明写盘成功。`MATCH_FAILURE_CAPTURE saved=` 日志证明当时完成保存；实际排查还应核对对应目录中状态为 complete 的 `summary.json` 及其列出的文件。已保存日志也不能保证该目录现在仍存在；当前未找到目录或上传包中缺少摘要，不能据此断言当时从未保存。诊断 JSON 对可关联的故障项提供 `matching_rejection`，顶层 `match_snapshots` 区分已读取的保存日志与当前文件可用性。复制整次运行目录可一并携带默认位置的两类采集数据；如果只取得事件子目录，需另查对应快照，未找到时应报告证据缺失，不能用事件包或轨迹代替。
+
+采集不增加 DDS 订阅或独立进程；两个预分配槽最多保存 50000 个展示点及 50000 个原 global 检查点，后台线程避开隔离核 10/11、nice 10，限速 10 MiB/s。单包上限 64 MiB，匹配快照归档目录的默认预算为 1 GiB，磁盘预留 2 GiB，保护期至少 7 天；保护期内空间不足时拒绝新包并报告丢弃原因。新默认位置下该预算分别作用于每次运行的匹配快照目录，不是所有运行合计的全局上限。功能需要部署后的新采集，不能恢复已轮转的 2026-10-30 16:29 原始点云；测试和现场验收以实际结果为准。
 
 ## 运动证据与雷达输入组帧策略（v7）
 
@@ -134,13 +144,13 @@ v7 沿用 v6 的原始雷达输入组帧策略，以雷达输入持续无法满�
 
 ## 现场三步
 
-1. 找到 `$out_root/incidents` 下对应时间的事件目录，先打开本地 `summary.html`。查看触发原因、首个观测异常阶段、原始和上报码、图表与丢失计数。
-2. 查看 `summary.json` 和 `timeline.csv`，按时间关联输入回调与时间戳、队列、匹配和发布；对照运行配置。诊断阶段是观测顺序，不等于硬件根因。
+1. 找到本次 `$run_dir/results/incidents` 下对应时间的事件目录，先打开本地 `summary.html`。查看触发原因、首个观测异常阶段、原始和上报码、图表与丢失计数；旧运行按元数据和实际路径查找。
+2. 查看 `summary.json` 和 `timeline.csv`，按时间关联输入回调与时间戳、队列、匹配和发布；对照运行配置。检查运行元数据中的 `match_failure_dir` 及对应时段的匹配失败包，结合 `saved=` 日志核对实际保存情况。新默认路径可通过复制整个 `$run_dir` 一并移交；诊断阶段是观测顺序，不等于硬件根因。
 3. 需要复现时再检查或回放事件中的分段 MCAP，例如 `ros2 bag info /路径/segment_0`；事件包不含地图，复现需要对应地图。采集只包含实际启用雷达点云、主 IMU、开启融合时的 CAN、`pose_vel` 及 Safety、heartbeat、状态、流水线和参与雷达诊断等低带宽证据；不录重复 raw 位姿和不需要的 TF。是否足够回放取决于实际记录及丢弃情况。
 
 ## 触发与报告解读
 
-原始 Safety 码变化到 2、4 或 -9 时触发，安全上报关闭仍有效；启动无输出、发布调用完成超时、输入回调断流或主 IMU/雷达 header 时间戳不推进的状态新出现时也触发。持续故障不会每 100 ms 重复创建事件。活跃且未关闭的事件可合并并延长，最长 60 秒；导出收尾或冷却中的新触发会被抑制并计数，不保证每次触发都有独立目录。
+原始 Safety 码变化到 2、4 或 -9 时均触发事件采集，不限于某种具体的 4/-9 原因；安全上报关闭仍有效。启动无输出、发布调用完成超时、输入回调断流或主 IMU/雷达 header 时间戳不推进的状态新出现时也触发。持续故障不会每 100 ms 重复创建事件。活跃且未关闭的事件可合并并延长，最长 60 秒；导出收尾或默认 10 秒冷却中的新触发会被抑制并计数，不保证每次触发都有独立目录。它与上述匹配失败快照的触发和保存条件分别判断。
 
 报告每个 stream 的 `first_relative_sec`、`last_relative_sec` 和 `written` 描述相对触发时间的首末记录及写入数；`callback_age_at_trigger`、`stamp_age_at_trigger` 描述触发时回调和时间戳推进的年龄，`-1` 表示未观测。采集器源码的并发修复将已观测时间戳晚于采样时刻的微小负年龄钳位为 0，避免误判为未观测及误触发启动无输出；修复需重新编译并重启后生效，旧版本事件可能受此问题影响。`omitted_messages` 是导出容量限制省略的消息；`collector_totals` 分别记录 busy、budget、oversize 丢弃及 suppressed、writer_errors。`capture_loss_seen` 表示本进程生命周期中曾发生采集丢弃，不限于当前事件；有累计丢弃时状态保守标记 partial。complete 只表示事件导出结束，不保证每个话题的触发前 30 秒完整。
 
@@ -150,11 +160,11 @@ v7 沿用 v6 的原始雷达输入组帧策略，以雷达输入持续无法满�
 
 目标窗口为触发前 30 秒、后 10 秒，容量不足时可能更短。默认 2 GiB 内存预算估算被保留的消息和记录，并非进程 RSS 上限；序列化单条消息、库缓冲和页缓存等另占资源。单条默认上限 64 MiB；单事件序列化硬上限 2 GiB。分段目标为 32 MiB 或约 2 秒关闭，单条消息可以超过分段目标。
 
-档案保留目标 `disk_mb` 为 8 GiB，最多保留 10 个事件，每个分段关闭时检查实际磁盘大小；最后分段、单条大消息及元数据可带来额外空间占用。新段前预留 `max(segment_mb, 本条大小) + 1 MiB` 和 `min_free_mb`（默认 2 GiB），其他进程仍可能同时写盘，因此不是绝对空闲空间保证。默认平均写速限制 20 MiB/s，不压缩；nice 10 降低 CPU 调度优先级，不保证 IO 调度优先级。调整窗口或预算后需结合现场数据速率、内存和磁盘实际验证。
+事件归档目录的默认保留目标 `disk_mb` 为 8 GiB，最多保留 10 个事件，每个分段关闭时检查实际磁盘大小；最后分段、单条大消息及元数据可带来额外空间占用。新默认位置下限额分别作用于每次运行的事件目录，不是所有运行合计的全局上限。新段前预留 `max(segment_mb, 本条大小) + 1 MiB` 和 `min_free_mb`（默认 2 GiB），其他进程仍可能同时写盘，因此不是绝对空闲空间保证。默认平均写速限制 20 MiB/s，不压缩；nice 10 降低 CPU 调度优先级，不保证 IO 调度优先级。调整窗口或预算后需结合现场数据速率、内存和磁盘实际验证。
 
 ## 重新编译后的现场验收
 
-现场验收应在重新编译并重启后执行：核对运行库编译标记与脚本合同一致，再分别检查有进程、无进程回退和指定事件包。核对 2、4、-9 的实际字段，以及关闭上报时原始故障仍可见；检查覆盖范围、缺口、导出和抑制提示，并确认分析进程避开 CPU 10、11。记录实际结果和版本，不能以旧运行结果代替新版本验收。
+现场验收应在重新编译并重启后执行：核对运行库编译标记与脚本合同一致，再分别检查有进程、无进程回退和指定事件包。核对 2、4、-9 的实际字段，以及关闭上报时原始故障仍可见；检查覆盖范围、缺口、导出和抑制提示，并确认分析进程避开 CPU 10、11。匹配拒绝场景还应核对跟踪及初始化日志中的实际判据、`--diagnose` 的解释、快照入队与后台保存结果，并分别验证有快照和缺失快照的报告。记录实际结果和版本，不能以旧运行结果代替新版本验收。
 
 采集器导出收尾或冷却期抑制新触发的行为尚未修复。并发年龄修复需在编译并重启后生效；旧格式与缺少构建标记的报告应按未验证处理。
 

@@ -618,7 +618,8 @@ wait_for_inputs || fail "required sensor deliveries are unavailable; see ${run_d
   echo "config_path=${config_path}"
   echo "map_path=${map_path:-<from-config>}"
   echo "run_dir=${run_dir}"
-  echo "match_failure_dir=${out_root}/match_failures"
+  echo "match_failure_dir=${run_dir}/match_failures"
+  echo "incident_dir=${run_dir}/results/incidents"
   echo "record_bag=${record_bag}"
   echo "enable_pose_vel_watchdog=${enable_pose_vel_watchdog}"
   echo "raw_lidar_topics=${lidar_topics[*]}"
@@ -695,12 +696,12 @@ fi
 
 # [sany-lidar-launch-arguments]
 # Older running installs safely ignore this until the new binary is activated.
-export SANY_MATCH_FAILURE_DIR="${out_root}/match_failures"
+export SANY_MATCH_FAILURE_DIR="${run_dir}/match_failures"
 algorithm_args=(
   ros2 run lightning_lm run_loc_online
   --config="${config_path}"
   --output_published_tum="${run_dir}/results/trajectory_published_rear_axle.tum"
-  --incident_dir="${out_root}/incidents"
+  --incident_dir="${run_dir}/results/incidents"
 )
 if [[ -n "${map_path}" ]]; then
   algorithm_args+=(--map="${map_path}")

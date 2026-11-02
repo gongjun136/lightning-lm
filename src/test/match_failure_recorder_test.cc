@@ -76,7 +76,12 @@ fs::path ExactSelection(const fs::path& root) {
     map.push_back({1000,1000,1000,0});
     auto o = Options(); o.max_scan_points = 4;
     const auto context = Context(root); R recorder(o,context,View(map));
-    Check(recorder.Start(),"exact capture start"); const auto frame = Frame(cloud);
+    Check(recorder.Start(),"exact capture start"); auto frame = Frame(cloud);
+    frame.ndt_metrics_available = true; frame.ndt_converged = false;
+    frame.ndt_transform_finite = frame.ndt_confidence_finite = true;
+    frame.ndt_max_iterations = frame.iterations = 20; frame.ndt_epsilon = .01;
+    frame.confidence = 2.91; frame.min_confidence = .4;
+    std::strcpy(frame.rejection_reason.data(),"ndt_not_converged");
     Check(recorder.Capture(View(cloud),frame),"first failure was not admitted");
     Check(!recorder.Capture(View(cloud),frame),"continuous failure bypassed cooldown"); recorder.Stop();
     Check(recorder.GetStats().saved == 1,"exact capture did not save");
@@ -84,6 +89,13 @@ fs::path ExactSelection(const fs::path& root) {
     const auto path = events.front(); const auto metadata = YAML::LoadFile((path/"summary.json").string());
     Check(metadata["status"].as<std::string>()=="complete","partial exposed");
     Check(metadata["run_dir"].as<std::string>()==root.string(),"run identity missing");
+    Check(metadata["rejection_reason"].as<std::string>()=="ndt_not_converged","specific rejection reason lost");
+    const auto registration = metadata["registration"];
+    Check(registration["ndt_metrics_available"].as<bool>() && !registration["ndt_converged"].as<bool>() &&
+          registration["ndt_budget_exhausted"].as<bool>(),"actual nonconvergence/budget evidence missing");
+    Check(registration["ndt_max_iterations"].as<int>()==20 && registration["iterations"].as<int>()==20 &&
+          std::abs(registration["ndt_epsilon"].as<double>()-.01)<1e-12 &&
+          std::abs(registration["min_confidence"].as<double>()-.4)<1e-12,"actual NDT thresholds missing");
     Check(metadata["map"]["local_points"].as<std::size_t>()==map.size()-1,"three-pose local map coverage wrong");
     Check(metadata["map"]["identity_sha256"].as<std::string>().size()==64,"map identity missing");
     const auto bytes=Read(path/"scan.bin"); Check(bytes.size()%24==0,"scan layout");
@@ -167,6 +179,9 @@ void EpisodeAndUnavailable() {
     Check(recorder.Capture(View(cloud),frame),"first startup failure missing"); WaitSaved(recorder,1);
     for (int i=0;i<120;++i) { ++frame.sensor_stamp_ns; Check(!recorder.Capture(View(cloud),frame),"same startup reason produced periodic capture"); }
     auto paths=Events(context.directory); auto meta=YAML::LoadFile((paths[0]/"summary.json").string());
+    Check(!meta["registration"]["ndt_metrics_available"].as<bool>() &&
+          meta["registration"]["ndt_converged"].IsNull() &&
+          meta["registration"]["ndt_budget_exhausted"].IsNull(),"unexecuted NDT fabricated a measured failure");
     Check(meta["schema"].as<int>()==2 && meta["poses"]["guess"].IsNull() && meta["poses"]["ndt"].IsNull() && meta["poses"]["check"].IsNull(),"unavailable poses fabricated");
     Check(fs::file_size(paths[0]/"map_local.bin")==0 && meta["map"]["coverage"].as<std::string>()=="unavailable_no_candidate","no-candidate map was fabricated");
     frame.phase=R::Phase::kGlobalRelocalization; frame.stage=R::Stage::kMapPrecheck;

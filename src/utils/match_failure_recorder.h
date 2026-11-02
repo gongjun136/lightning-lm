@@ -55,6 +55,10 @@ class MatchFailureRecorder {
         double nearest_neighbor_distance_m = .5, bounds_margin_m = .5;
         double confidence = 0, min_confidence = 0, raw_odom_delta = 0;
         int iterations = 0;
+        bool ndt_metrics_available = false, ndt_converged = false;
+        bool ndt_transform_finite = false, ndt_confidence_finite = false;
+        int ndt_max_iterations = 0;
+        double ndt_epsilon = 0;
         bool raw_odom_valid = false;
     };
     struct Options {
