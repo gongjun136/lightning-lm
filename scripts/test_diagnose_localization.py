@@ -84,6 +84,16 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(report['trajectory_recording']['sample_policy'], 'all_pose_vel')
         self.assertIn('逐条记录 pose_vel', d.render(report))
 
+    def test_delivery_evidence_does_not_certify_every_nominal_source_sample(self):
+        event = d.input_timing_event(dict(schema=1, kind='interval', topic='/imu',
+            source_stamp_sec=100.09, previous_source_stamp_sec=100,
+            source_gap_sec=.09, arrival_gap_sec=.2, threshold_sec=.1,
+            _time='now', _source='log'))
+        self.assertEqual(event['category'], 'delivery_delay')
+        self.assertTrue(event['source_within_threshold'])
+        self.assertAlmostEqual(event['relative_delivery_change_sec'], .11)
+        self.assertIn('不保证逐帧', event['title'])
+
     def test_frame_supply_policy_replaces_device_dtc_stop(self):
         limits = dict(radar_frame_warning_sec=.2, radar_frame_timeout_sec=.3, radar_frame_recovery_frames=3)
         row = dict(policy_version=d.FRAME_SUPPLY_POLICY, raw_runstate=2, published_runstate=2,

@@ -537,12 +537,14 @@ def input_timing_event(row, timezone=None):
         elif source_gap == 0:
             category, title = 'duplicate_source_stamp', '回调仍到达，但源时间戳重复'
         elif source_gap > threshold:
-            category, title = 'source_gap', '接收序列出现源时间缺口：停发、链路丢弃或跳时仍需上游证据区分'
+            category, title = 'source_gap', '源时间间隔超出取证阈值：停发、链路丢弃或跳时仍需上游证据区分'
         elif arrival_gap > threshold:
-            category, title = 'delivery_delay', '相邻源时间连续，回调交付间隔增大：存在延迟交付证据'
+            category, title = 'delivery_delay', '源间隔未超阈值而回调间隔超限：有延迟交付线索，不保证逐帧无缺样'
         else:
             category, title = 'interval', '输入相邻时间间隔记录'
         result.update(category=category, title=title)
+        result['source_within_threshold'] = source_gap is not None and 0 < source_gap <= threshold
+        result['relative_delivery_change_sec'] = arrival_gap - source_gap if category in ('delivery_delay', 'source_gap', 'interval') else None
     emitted, arrived = number(row.get('emitted_steady_sec')), number(row.get('arrival_steady_sec'))
     if row_ns(row) is not None and emitted is not None and arrived is not None and 0 < arrived <= emitted:
         result['observed_wall_ns'] = row_ns(row) - int((emitted - arrived) * 1e9)
