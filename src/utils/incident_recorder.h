@@ -44,6 +44,8 @@ class IncidentRecorder {
         double major_sigma = -1, lateral_sigma = -1, yaw_sigma = -1;
         int translation_condition = 0, yaw_condition = 0;
         bool confirmed_failure = false, unknown_tolerated = false, optional_can_unavailable = false;
+        bool confirmed_consistency_failure = false, confirmed_uncertainty_failure = false;
+        bool consistency_fault_reporting_enabled = false, uncertainty_fault_reporting_enabled = false;
         bool output_stale = false, localization_lost = false, radar_all_failed = false;
         bool non_sync_fault = false, non_sync_all_pass = false, bounded_policy_enabled = false;
         unsigned time_sync_fault_mask = 0, bounded_sync_warning_mask = 0;

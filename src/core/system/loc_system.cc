@@ -298,6 +298,10 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
         safety_fault_reporting_enabled_ = dtc && dtc["safety_fault_reporting_enabled"]
                                               ? dtc["safety_fault_reporting_enabled"].as<bool>()
                                               : true;
+        quality_fault_reporting_.consistency = dtc && dtc["consistency_fault_reporting_enabled"]
+            ? dtc["consistency_fault_reporting_enabled"].as<bool>() : false;
+        quality_fault_reporting_.uncertainty = dtc && dtc["uncertainty_fault_reporting_enabled"]
+            ? dtc["uncertainty_fault_reporting_enabled"].as<bool>() : false;
         radar_time_sync_shadow_enabled_ = dtc && dtc["radar_time_sync_shadow_enabled"]
                                              ? dtc["radar_time_sync_shadow_enabled"].as<bool>()
                                              : true;
@@ -337,6 +341,8 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     LOG(INFO) << "LOCALIZATION_DTC_CONFIG version=" << dtc_config_version_
               << " policy_version=" << loc::dtc::kSafetyPolicyVersion
               << " safety_fault_reporting_enabled=" << safety_fault_reporting_enabled_
+              << " consistency_fault_reporting_enabled=" << quality_fault_reporting_.consistency
+              << " uncertainty_fault_reporting_enabled=" << quality_fault_reporting_.uncertainty
               << " radar_fault_mask_enabled=" << radar_fault_mask_enabled_
               << " radar_bounded_sync_warning_enabled=" << radar_bounded_sync_warning_enabled_
               << " max_input_gap_sec=" << dtc_config.max_input_gap_sec
@@ -1465,7 +1471,8 @@ void LocSystem::PublishSafety() {
         radar.bounded_fault, radar.bounded_all_pass);
     // 阶段 2：按配置发布 Safety。
     // [dtc-safety-output-switches]
-    const auto decision = loc::dtc::EvaluateFrameSafetyDecision(localization, frames, safety_fault_reporting_enabled_);
+    const auto decision = loc::dtc::EvaluateFrameSafetyDecision(localization, frames,
+        safety_fault_reporting_enabled_, quality_fault_reporting_);
     msg.runstate = decision.published;
     if (incident_recorder_) {
         diagnostics::IncidentRecorder::Safety s;
@@ -1475,6 +1482,10 @@ void LocSystem::PublishSafety() {
         s.major_sigma = localization.major_sigma_m; s.lateral_sigma = localization.lateral_sigma_m; s.yaw_sigma = localization.yaw_sigma_rad;
         s.translation_condition = localization.translation_condition; s.yaw_condition = localization.yaw_condition;
         s.confirmed_failure = localization.confirmed_failure;
+        s.confirmed_consistency_failure = localization.confirmed_consistency_failure;
+        s.confirmed_uncertainty_failure = localization.confirmed_uncertainty_failure;
+        s.consistency_fault_reporting_enabled = quality_fault_reporting_.consistency;
+        s.uncertainty_fault_reporting_enabled = quality_fault_reporting_.uncertainty;
         s.unknown_tolerated = localization.consistency_unknown_tolerated;
         s.optional_can_unavailable = localization.optional_can_unavailable;
         s.output_stale = localization.output_stale; s.localization_lost = localization.localization_lost;
@@ -1504,10 +1515,11 @@ void LocSystem::PublishSafety() {
     // Always retain the pre-override decision, even with both reporting and
     // optional time-sync shadow logging disabled. Log every observed cause
     // transition and a one-second summary without high-rate file I/O.
-    const std::array<int, 27> diagnostic_state{{
+    const std::array<int, 29> diagnostic_state{{
         decision.raw, decision.selected, decision.published, strict,
         localization.observations[0].condition, localization.observations[1].condition,
-        localization.confirmed_failure, localization.output_stale, localization.localization_lost,
+        localization.confirmed_failure, localization.confirmed_consistency_failure,
+        localization.confirmed_uncertainty_failure, localization.output_stale, localization.localization_lost,
         localization.translation_condition, localization.yaw_condition,
         radar.all_failed, radar.fault_without_time_sync, radar.all_pass_without_time_sync,
         radar.time_sync_fault_mask, radar.bounded_sync_warning_mask,
@@ -1548,6 +1560,10 @@ void LocSystem::PublishSafety() {
                   << " lidar_frame_rejected=" << frames.rejected
                   << " event=" << (diagnostic_changed ? "transition" : "periodic")
                   << " reporting_enabled=" << safety_fault_reporting_enabled_
+                  << " consistency_fault_reporting_enabled=" << quality_fault_reporting_.consistency
+                  << " uncertainty_fault_reporting_enabled=" << quality_fault_reporting_.uncertainty
+                  << " confirmed_consistency_failure=" << localization.confirmed_consistency_failure
+                  << " confirmed_uncertainty_failure=" << localization.confirmed_uncertainty_failure
                   << " raw_runstate=" << int(decision.raw)
                   << " selected_runstate=" << int(decision.selected)
                   << " published_runstate=" << int(decision.published)

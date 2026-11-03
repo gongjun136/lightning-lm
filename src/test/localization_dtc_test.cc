@@ -174,7 +174,7 @@ void CheckConfirmedLossPolicy() {
             "reporting override preserves frame fault evidence");
     frames.fault = false;
     consequence = healthy; consequence.confirmed_failure = true;
-    Require(EvaluateFrameSafetyDecision(consequence, frames, true).published == 4,
+    Require(EvaluateFrameSafetyDecision(consequence, frames, true, {true, true}).published == 4,
             "frame health does not hide localization quality failure");
     consequence = healthy;
     consequence.startup_pending = consequence.startup_expired = consequence.severe = true;
@@ -263,6 +263,81 @@ void CheckConfirmedLossPolicy() {
     Require(!running.Evaluate(tracking, At(2040)).output_continuous,
             "a new pose epoch cannot borrow continuous output evidence from before relocalization");
 }
+void CheckQualityFaultSwitches() {
+    const QualityFaultReporting defaults;
+    Require(!defaults.consistency && !defaults.uncertainty, "quality stop switches default off");
+    Monitor monitor(Config{}, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(monitor, ms, Pose(ms * .001));
+    TrackingEvidence tracking;
+    tracking.initialized = tracking.output_gate_open = tracking.latest_match_valid = true;
+    const auto healthy = monitor.Evaluate(tracking, At(1000));
+    functional_safety::LidarFrameWatchdog::Snapshot frames;
+    frames.started = frames.seen = true;
+    for (bool consistency : {false, true}) for (bool uncertainty : {false, true}) {
+        const QualityFaultReporting quality{consistency, uncertainty};
+        for (int kind = 0; kind < 7; ++kind) {
+            auto state = healthy;
+            const bool consistency_failure = kind == 0 || kind == 1 || kind == 4 || kind == 6;
+            const bool uncertainty_failure = kind == 2 || kind == 5 || kind == 6;
+            state.confirmed_consistency_failure = consistency_failure;
+            state.confirmed_uncertainty_failure = uncertainty_failure;
+            state.confirmed_failure = consistency_failure || uncertainty_failure;
+            if (kind == 0 || kind == 6) state.translation_condition = state.observations[0].condition = kFail;
+            if (kind == 1) state.yaw_condition = state.observations[0].condition = kFail;
+            if (kind == 2 || kind == 6) state.observations[1].condition = kFail;
+            if (kind == 3 || kind == 5) state.observations[1].condition = kUnknown;
+            if (kind == 4) state.translation_condition = state.observations[0].condition = kUnknown;
+            const int expected = ((consistency && consistency_failure) ||
+                (uncertainty && (uncertainty_failure || kind == 3))) ? 4 : 0;
+            const auto decision = EvaluateFrameSafetyDecision(state, frames, true, quality);
+            Require(decision.raw == 4 && decision.selected == expected && decision.published == expected,
+                "independent quality switches select the correct current and latched category");
+            Require(state.confirmed_failure == (consistency_failure || uncertainty_failure),
+                "quality switches preserve original failure evidence");
+            const auto disabled = EvaluateFrameSafetyDecision(state, frames, false, quality);
+            Require(disabled.raw == 4 && disabled.selected == expected && disabled.published == 0,
+                "global reporting override does not erase either decision");
+        }
+        auto state = healthy;
+        state.output_stale = true;
+        Require(EvaluateFrameSafetyDecision(state, frames, true, quality).published == 4,
+            "quality switches never mask output timeout");
+        state = healthy; state.output_gate_open = false;
+        Require(EvaluateFrameSafetyDecision(state, frames, true, quality).published == 4,
+            "quality switches never mask closed match output gate");
+        state = healthy; state.startup_pending = true;
+        Require(EvaluateFrameSafetyDecision(state, frames, true, quality).published == 4,
+            "quality switches never mask initial localization wait");
+        state = healthy; state.severe = state.localization_lost = true;
+        frames.fault = true;
+        Require(EvaluateFrameSafetyDecision(state, frames, true, quality).published == -9,
+            "confirmed loss keeps priority over frame fault and quality switches");
+        Require(EvaluateFrameSafetyDecision(healthy, frames, true, quality).published == 2,
+            "quality switches never mask raw frame supply fault");
+        frames.fault = false;
+    }
+    Feed(monitor, 1020, Pose(3.02));
+    const auto failed = monitor.Evaluate(tracking, At(1020));
+    Require(failed.confirmed_consistency_failure && !failed.confirmed_uncertainty_failure,
+        "monitor exposes the actual consistency failure category");
+    for (int ms = 1040; ms <= 1400; ms += 20) FeedWithoutCan(monitor, ms, Pose(2 + ms * .001));
+    const auto latched = monitor.Evaluate(tracking, At(1400));
+    Require(latched.confirmed_consistency_failure && !latched.confirmed_uncertainty_failure &&
+        latched.observations[0].condition == kUnknown &&
+        EvaluateFrameSafetyDecision(latched, frames, true, {false, true}).published == 0 &&
+        EvaluateFrameSafetyDecision(latched, frames, true, {true, false}).published == 4,
+        "an actual consistency latch cannot leak into the uncertainty-only stop branch");
+    Monitor covariance(Config{}, At(0));
+    for (int ms = 0; ms <= 1000; ms += 20) Feed(covariance, ms, Pose(ms * .001));
+    const Mat6d large = Mat6d::Identity(), invalid = Mat6d::Zero();
+    Feed(covariance, 1020, Pose(1.02), 1, 0, 1, nullptr, &large);
+    Feed(covariance, 1040, Pose(1.04), 1, 0, 1, nullptr, &invalid);
+    const auto uncertain = covariance.Evaluate(tracking, At(1040));
+    Require(uncertain.confirmed_uncertainty_failure && !uncertain.confirmed_consistency_failure &&
+        EvaluateFrameSafetyDecision(uncertain, frames, true, {true, false}).published == 0 &&
+        EvaluateFrameSafetyDecision(uncertain, frames, true, {false, true}).published == 4,
+        "an actual covariance failure remains independently selectable after UNKNOWN");
+}
 void CheckMotionUnknownAdvisory() {
     for (double grace : {0.0, 0.15}) {
         for (double speed : {0.0, 5.0}) {
@@ -314,6 +389,9 @@ void CheckSanyUncertaintyConfig(const char* path) {
     cfg.longitudinal_m = diagnostics["longitudinal_tolerance_m"].as<double>();
     cfg.lateral_m = diagnostics["lateral_tolerance_m"].as<double>();
     cfg.yaw_rad = diagnostics["yaw_tolerance_deg"].as<double>() * M_PI / 180.0;
+    Require(!diagnostics["consistency_fault_reporting_enabled"].as<bool>() &&
+            !diagnostics["uncertainty_fault_reporting_enabled"].as<bool>(),
+            "SANY quality stop switches are explicitly disabled by default");
     Require(std::abs(cfg.yaw_rad * 180 / M_PI - 3) < 1e-12 &&
             diagnostics["angle_tolerance_ratio"].as<double>() == .1,
             "SANY yaw base is three degrees with the existing ten-percent turn term");
@@ -372,6 +450,7 @@ int main(int argc, char** argv) {
     }
     Config cfg;
     CheckConfirmedLossPolicy();
+    CheckQualityFaultSwitches();
     CheckMotionUnknownAdvisory();
     Monitor normal(cfg, At(0));
     Require(SafetyValue(normal.Evaluate(false, At(0)), false, false, true) == 4, "startup must not publish normal");

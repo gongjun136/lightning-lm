@@ -28,13 +28,15 @@ LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'consistency_unknown_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
           'motion_window_sec', 'evaluation_timeout_sec', 'config_version',
           'localization_output_max_lidar_age_sec', 'lost_frame_threshold', 'degraded_continuous_output_sec',
-          'radar_frame_warning_sec', 'radar_frame_timeout_sec', 'radar_frame_recovery_frames')
+          'radar_frame_warning_sec', 'radar_frame_timeout_sec', 'radar_frame_recovery_frames',
+          'consistency_fault_reporting_enabled', 'uncertainty_fault_reporting_enabled')
 FAULT_CODES = (2, 4, -9)
 CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
 FRAME_SUPPLY_POLICY = 'localization-dtc-v6-radar-input'
 MOTION_UNKNOWN_POLICY = 'localization-dtc-v7-motion-unknown'
 YAW_NATIVE_IMU_POLICY = 'localization-dtc-v8-yaw-native-imu'
-MOTION_UNKNOWN_POLICIES = (MOTION_UNKNOWN_POLICY, YAW_NATIVE_IMU_POLICY)
+QUALITY_SWITCH_POLICY = 'localization-dtc-v9-quality-switches'
+MOTION_UNKNOWN_POLICIES = (MOTION_UNKNOWN_POLICY, YAW_NATIVE_IMU_POLICY, QUALITY_SWITCH_POLICY)
 FRAME_SUPPLY_POLICIES = (FRAME_SUPPLY_POLICY, *MOTION_UNKNOWN_POLICIES)
 MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, *FRAME_SUPPLY_POLICIES)
 YAW_EVIDENCE_FIELDS = ('yaw_evidence_available', 'yaw_comparison', 'yaw_raw_independent',
@@ -773,6 +775,22 @@ def classify(row, limits):
                            advice=advice, confidence=confidence, time=row.get('_time'),
                            source=row.get('_source'), scope=row.get('_scope'),
                            published=row.get('published_runstate')))
+        category = ('consistency' if key in ('translation_condition', 'yaw_condition',
+                    'consistency_fail', 'latched_consistency_failure') else
+                    'uncertainty' if key in ('unobservable', 'major_sigma', 'lateral_sigma',
+                    'yaw_sigma_rad', 'uncertainty_unknown', 'uncertainty_fail', 'latched_uncertainty_failure') else None)
+        if row.get('policy_version') == QUALITY_SWITCH_POLICY and category:
+            flag = category + '_fault_reporting_enabled'
+            enabled = number(row.get(flag, limits.get(flag)))
+            causes[-1]['quality_category'] = category
+            causes[-1]['reporting_enabled'] = None if enabled is None else bool(enabled)
+            causes[-1]['suppressed_by_quality_switch'] = enabled == 0
+            values.update({k: row[k] for k in (flag, 'confirmed_consistency_failure',
+                          'confirmed_uncertainty_failure', 'raw_runstate', 'selected_runstate',
+                          'published_runstate') if k in row})
+            if enabled == 0:
+                label = '运动一致性' if category == 'consistency' else '不确定度'
+                causes[-1]['title'] = f'仅记录（{label}报 4 开关已关闭）：' + title
     modern = row.get('policy_version') in MODERN_POLICIES
     frame_policy = row.get('policy_version') in FRAME_SUPPLY_POLICIES
     motion_unknown_advisory = row.get('policy_version') in MOTION_UNKNOWN_POLICIES
@@ -885,7 +903,14 @@ def classify(row, limits):
         if row.get('localization_consistency') == 2 and row.get('yaw_condition') != 2 and row.get('translation_condition') != 2:
             add('consistency_fail', '运动一致性检查失败，缺少平移/航向细分状态', ['localization_consistency'], '需要同次运行的细分判据或完整事件。')
         latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
-        if latched:
+        if row.get('policy_version') == QUALITY_SWITCH_POLICY:
+            for category, label in [('consistency', '运动一致性'), ('uncertainty', '不确定度')]:
+                if (row.get('confirmed_' + category + '_failure') == 1 and
+                        row.get('localization_' + category) != 2):
+                    add('latched_' + category + '_failure', label + '先前确认的失败尚未重新通过',
+                        ['confirmed_failure', 'confirmed_' + category + '_failure'],
+                        '向前检查对应类别的首次 FAIL；UNKNOWN 不会清除原始失败锁存，最终上报还受该类别开关控制。')
+        elif latched:
             add('latched_failure', '先前确认的失败尚未重新通过', ['confirmed_failure', 'localization_consistency', 'localization_uncertainty'], '向前检查首次 FAIL；UNKNOWN 不会清除已确认失败。')
         if not motion_unknown_advisory and not latched and row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:
             add('consistency_unknown', '运动一致性证据不足，未满足 UNKNOWN 宽容条件',
@@ -1738,7 +1763,9 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
         warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
     dropped = [number(r.get('collector_dropped')) for r in rows]
     dropped = [v for v in dropped if v is not None]
-    current_findings = classify(latest, limits)
+    latest_causes = classify(latest, limits)
+    quality_suppressions = [f for f in latest_causes if f.get('suppressed_by_quality_switch')]
+    current_findings = [f for f in latest_causes if not f.get('suppressed_by_quality_switch')]
     for current in current_findings:
         retained = [f for f in findings if f['key'] == current['key'] and f['code'] == current['code'] and
                     f.get('last_ns') == row_ns(latest) and f.get('matching_rejection')]
@@ -1750,8 +1777,11 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
                        'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope',
                        'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
+                       'consistency_fault_reporting_enabled', 'uncertainty_fault_reporting_enabled',
+                       'confirmed_consistency_failure', 'confirmed_uncertainty_failure',
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
-                latest_age_sec=age, current_findings=current_findings, runtime_build=build,
+                latest_age_sec=age, current_findings=current_findings,
+                quality_suppressions=quality_suppressions, runtime_build=build,
                 match_snapshots=snapshots,
                 compute_profile=compute_profile, input_timing=input_timing, motion_evidence=motion_evidence(latest),
                 trajectory_recording=dict(logged_limits.get('_trajectory', {}),
@@ -1937,6 +1967,15 @@ def render(report, color=False, all_events=False):
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
+    if latest.get('policy_version') == QUALITY_SWITCH_POLICY:
+        def switch_name(key):
+            value = number(latest.get(key))
+            return '开启' if value == 1 else '关闭' if value == 0 else '未记录'
+        lines.append('故障 4 质量开关: 运动一致性=' + switch_name('consistency_fault_reporting_enabled') +
+                     '；不确定度=' + switch_name('uncertainty_fault_reporting_enabled') +
+                     f'；原始={latest["raw_runstate"]} → 选择={latest.get("selected_runstate")} → 上报={latest["published_runstate"]}')
+        for observation in report.get('quality_suppressions', []):
+            lines.append('  ' + observation['title'])
     if latest.get('policy_version') in FRAME_SUPPLY_POLICIES:
         lines.append('雷达输入组帧策略: 2 依据原始输入组帧中断/恢复确认；算法处理滞后不参与，雷达 DTC 仅作对照。')
         lines.append('  状态: ' + json.dumps({k: latest.get(k) for k in ('lidar_frame_started', 'lidar_frame_seen',

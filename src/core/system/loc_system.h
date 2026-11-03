@@ -348,8 +348,9 @@ class LocSystem {
     int incident_heartbeat_ = -1;
     std::unique_ptr<loc::dtc::Monitor> dtc_monitor_;
     std::unique_ptr<functional_safety::RadarDtcState> radar_dtc_state_;
-    std::string dtc_config_version_ = "localization-dtc-v3-optional-can";
+    std::string dtc_config_version_ = loc::dtc::kSafetyPolicyVersion;
     bool safety_fault_reporting_enabled_ = true;  ///< 关闭时 Safety.runstate 固定为正常值 0，源 DTC 不受影响。
+    loc::dtc::QualityFaultReporting quality_fault_reporting_;  ///< 默认只记录质量检查，不因其报 4。
     bool radar_time_sync_shadow_enabled_ = true;  ///< 仅记录反事实判定，不改变真实 Safety。
     bool radar_bounded_sync_warning_enabled_ = false;
     bool radar_fault_mask_enabled_ = false;
@@ -358,7 +359,7 @@ class LocSystem {
     int last_safety_strict_ = -128, last_safety_shadow_ = -128;
     uint8_t last_safety_sync_mask_ = 0;
     uint64_t safety_shadow_ticks_ = 0;
-    std::array<int, 27> last_safety_diagnostic_state_{};
+    std::array<int, 29> last_safety_diagnostic_state_{};
     bool safety_diagnostic_seen_ = false;
     uint64_t safety_diagnostic_ticks_ = 0, safety_diagnostic_sequence_ = 0;
     std::mutex dtc_publish_mutex_;

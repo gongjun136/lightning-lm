@@ -13,7 +13,7 @@ using Clock = std::chrono::steady_clock;
 enum Condition : uint8_t { kUnknown = 0, kPass = 1, kFail = 2 };
 constexpr uint32_t kConsistency = 0x30811813;
 constexpr uint32_t kUncertainty = 0x40450198;
-constexpr const char* kSafetyPolicyVersion = "localization-dtc-v8-yaw-native-imu";
+constexpr const char* kSafetyPolicyVersion = "localization-dtc-v9-quality-switches";
 struct Config {
     double window_sec = 0.5, max_input_gap_sec = 0.1;
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
@@ -50,6 +50,7 @@ struct Snapshot {
     std::array<Observation, 2> observations;
     bool severe = false;
     bool confirmed_failure = false;  ///< A definite failure remains active until the corresponding check passes again.
+    bool confirmed_consistency_failure = false, confirmed_uncertainty_failure = false;
     bool consistency_unknown_tolerated = false;  ///< Historical bounded-evidence flag, retained for diagnosis rather than the stop decision.
     bool optional_can_unavailable = false;  ///< Translation UNKNOWN alone does not stop when required yaw evidence passes.
     Condition translation_condition = kUnknown, yaw_condition = kUnknown;
@@ -114,11 +115,15 @@ struct SafetyDecision {
     int8_t raw = 0, selected = 0, published = 0;
     bool partial_radar_suppressed = false;
 };
+struct QualityFaultReporting {
+    bool consistency = false, uncertainty = false;
+};
 bool HealthyLocalizationForDegradedRadar(const Snapshot& localization);
 // Preserve the diagnosis before either commissioning override is applied.
 SafetyDecision EvaluateSafetyDecision(const Snapshot& localization, bool all_lidar_failed,
                                      bool radar_fault, bool radar_all_pass,
                                      bool reporting_enabled, bool mask_radar_fault);
 SafetyDecision EvaluateFrameSafetyDecision(const Snapshot& localization,
-    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled);
+    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled,
+    QualityFaultReporting quality = {});
 }
