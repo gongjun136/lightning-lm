@@ -68,9 +68,6 @@ void MaskedFaultAndReadback() {
     }
     Recorder::Safety fault; fault.raw = fault.selected = 4; fault.published = 0; fault.uncertainty = 2;
     fault.yaw_condition = 2; fault.confirmed_failure = true; fault.error_yaw_rad = .0428282;
-    fault.confirmed_consistency_failure = true;
-    fault.consistency_fault_reporting_enabled = false;
-    fault.uncertainty_fault_reporting_enabled = true;
     fault.policy_version = "localization-dtc-v5-confirmed-loss";
     fault.startup_age_sec = 12.5; fault.valid_match_age_sec = .51;
     fault.match_stale = true; fault.latest_match_valid = true;
@@ -104,11 +101,6 @@ void MaskedFaultAndReadback() {
     const auto match_column = std::find(header.begin(), header.end(), "valid_match_age_sec") - header.begin();
     const auto stale_column = std::find(header.begin(), header.end(), "match_stale") - header.begin();
     const auto suppression_column = std::find(header.begin(), header.end(), "partial_radar_suppressed") - header.begin();
-    const auto consistency_switch = std::find(header.begin(), header.end(), "consistency_fault_reporting_enabled") - header.begin();
-    const auto uncertainty_switch = std::find(header.begin(), header.end(), "uncertainty_fault_reporting_enabled") - header.begin();
-    const auto consistency_latch = std::find(header.begin(), header.end(), "confirmed_consistency_failure") - header.begin();
-    Check(consistency_switch < header.size() && uncertainty_switch < header.size() && consistency_latch < header.size(),
-          "quality switch and latch columns missing");
     Check(policy_column < header.size() && lost_column < header.size() && match_column < header.size() &&
           stale_column < header.size() && suppression_column < header.size(), "policy evidence columns missing");
     bool detailed_fault_seen = false;
@@ -116,8 +108,6 @@ void MaskedFaultAndReadback() {
         const auto values = columns(line);
         Check(values.size() == header.size(), "timeline header/row column mismatch");
         if (values[2] == "4") {
-            Check(values[consistency_switch] == "0" && values[uncertainty_switch] == "1" &&
-                  values[consistency_latch] == "1", "quality switches and raw latch evidence lost in archive");
             Check(values[yaw_column] == "2" && std::abs(std::stod(values[error_column]) - .0428282) < 1e-9,
                   "fault details assigned to wrong CSV columns");
             Check(values[policy_column] == "localization-dtc-v5-confirmed-loss" && values[lost_column] == "0" &&

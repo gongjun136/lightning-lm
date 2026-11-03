@@ -291,8 +291,6 @@ Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_p
     out.consistency_pass_age_sec = consistency_pass_seen_ ? Age(now, consistency_pass_time_) : missing;
     out.yaw_pass_age_sec = yaw_pass_seen_ ? Age(now, yaw_pass_time_) : missing;
     out.confirmed_failure = failed_checks_[0] || failed_checks_[1] || failed_checks_[2];
-    out.confirmed_consistency_failure = failed_checks_[0] || failed_checks_[1];
-    out.confirmed_uncertainty_failure = failed_checks_[2];
     for (auto& obs : out.observations) {
         obs.age_us = output_seen_ ? static_cast<uint64_t>(std::max(0.0, Age(now, evaluation_time_)) * 1e6) : std::numeric_limits<uint64_t>::max();
         if (obs.condition != kFail &&
@@ -356,28 +354,16 @@ bool HealthyLocalizationForDegradedRadar(const Snapshot& loc) {
         (loc.observations[0].condition == kPass || loc.optional_can_unavailable);
 }
 SafetyDecision EvaluateFrameSafetyDecision(const Snapshot& localization,
-    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled,
-    QualityFaultReporting quality) {
+    const functional_safety::LidarFrameWatchdog::Snapshot& frames, bool reporting_enabled) {
     SafetyDecision decision;
     // Confirmed loss keeps its severity. Missing eligible raw radar groups takes precedence
     // over consequent stale outputs/startup expiry; device DTCs are not inputs.
     // The localization monitor may start before the initial-pose request arms
     // the frame watchdog. Let the latter own the finite no-input startup grace.
-    const auto value = [&frames](const Snapshot& state) {
-        return state.localization_lost ? -9 : frames.fault ? 2 :
-            state.startup_expired && !frames.seen ? 4 :
-            SafetyValue(state, false, false, true, true);
-    };
-    decision.raw = value(localization);
-    // 仅在最终决策副本上应用开关，保留原始检查和各类别的失败锁存。
-    Snapshot selected = localization;
-    if (!quality.consistency) selected.observations[0].condition = kPass;
-    if (!quality.uncertainty) selected.observations[1].condition = kPass;
-    if (!quality.consistency || !quality.uncertainty)
-        selected.confirmed_failure =
-            (quality.consistency && localization.confirmed_consistency_failure) ||
-            (quality.uncertainty && localization.confirmed_uncertainty_failure);
-    decision.selected = value(selected);
+    decision.raw = localization.localization_lost ? -9 : frames.fault ? 2 :
+        localization.startup_expired && !frames.seen ? 4 :
+        SafetyValue(localization, false, false, true, true);
+    decision.selected = decision.raw;
     decision.published = reporting_enabled ? decision.selected : 0;
     return decision;
 }
