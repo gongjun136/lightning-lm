@@ -942,7 +942,8 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
                 ? sany_output::TransformPoseForOutput(result.unsmoothed_pose_ * right, fixed_map_transform_)
                 : map_rear_axle_pose;
             dtc_monitor_->ObservePose(result.timestamp_, map_rear_axle_pose, raw, covariance,
-                result.pose_covariance_valid_, result.pose_unobservable_, result.pose_epoch_);
+                result.pose_covariance_valid_, result.pose_unobservable_, result.pose_epoch_,
+                loc::dtc::Clock::now(), result.unsmoothed_pose_valid_);
         }
         heartbeat_->RecordWork();
         // [dtc-business-work-progress]
@@ -1562,6 +1563,21 @@ void LocSystem::PublishSafety() {
                   << " error_x=" << localization.error_longitudinal_m
                   << " error_y=" << localization.error_lateral_m
                   << " error_yaw_rad=" << localization.error_yaw_rad
+                  << std::setprecision(17)
+                  << " yaw_evidence_available=" << localization.yaw_evidence.available
+                  << " yaw_comparison=" << (localization.yaw_evidence.window ? "window" : "adjacent")
+                  << " yaw_raw_independent=" << localization.yaw_evidence.raw_independent
+                  << " yaw_gyro_delta_rad=" << localization.yaw_evidence.gyro_delta_rad
+                  << " yaw_gyro_turn_rad=" << localization.yaw_evidence.gyro_turn_rad
+                  << " yaw_limit_rad=" << localization.yaw_evidence.limit_rad
+                  << " yaw_published_delta_rad=" << localization.yaw_evidence.published_delta_rad
+                  << " yaw_raw_delta_rad=" << localization.yaw_evidence.raw_delta_rad
+                  << " yaw_published_error_rad=" << localization.yaw_evidence.published_error_rad
+                  << " yaw_raw_error_rad=" << localization.yaw_evidence.raw_error_rad
+                  << " yaw_imu_segments=" << localization.yaw_evidence.segments
+                  << " yaw_max_source_gap_sec=" << localization.yaw_evidence.max_source_gap_sec
+                  << " yaw_held_sec=" << localization.yaw_evidence.held_sec
+                  << std::setprecision(6)
                   << " major_sigma=" << localization.major_sigma_m
                   << " lateral_sigma=" << localization.lateral_sigma_m
                   << " yaw_sigma_rad=" << localization.yaw_sigma_rad
@@ -1579,6 +1595,9 @@ void LocSystem::PublishSafety() {
                   << " match_stale=" << localization.match_stale
                   << " lost_frames=" << publication_gate_.ConsecutiveLostFrames()
                   << " match_age_sec=" << publication_gate_.LidarMatchAgeSec(sensor_stamp)
+                  << std::setprecision(17)
+                  << " yaw_from_stamp=" << localization.yaw_evidence.from_stamp
+                  << " yaw_to_stamp=" << localization.yaw_evidence.to_stamp
                   << std::setprecision(16)
                   << " last_valid_match=" << publication_gate_.LastValidLidarMatchStamp()
                   << " last_published_pose=" << last_published_pose_stamp_.load()

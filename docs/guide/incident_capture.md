@@ -51,7 +51,7 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 关联日志受同源 Safety 恢复为 0 和观测缺口的边界约束，避免相邻故障时段串联；保留最近 1000 条普通日志及最早 128 条关键边界日志，去重并在超限时明确提示；保留首次局部匹配失败和禁用输出证据，避免长期重定位日志刷掉故障起点。独立 runtime 保护统计覆盖扫描范围或指定事件范围内的过期校正丢弃和自适应降载，不能作为 Safety 故障次数。匹配失败日志记录地图点数、XY 范围内点的比例、重力余弦及其阈值（`map_points`、`map_inside_xy`、`map_gravity_cos`、`map_min_inside_xy`、`map_min_overlap`、`map_min_gravity_cos`）；解析优先使用日志中的实际阈值，旧包配置值仅作线索。`map_checked=1` 或 overlap 不足不能证明车辆驶出地图。航向检查比较位姿航向增量与 IMU 机体系 z 角速度积分，CAN 参与平移检查；日志缺少积分累计转角或窗口分支时，不能重建确切动态阈值，也不能判定物理根因。首次输出或 epoch 重建后尚无 yaw PASS 时，应检查窗口建立与历史 IMU 覆盖，不能仅凭 UNKNOWN 区分这两种情况。启动阶段无有效输出时，优先核查初始化；摘要自动关联首次 -9 起点附近的 sensor queue lag 与过期 LIO 校正证据，区分首次 -9、门控关闭与解除、原始码恢复 0，并包含状态 2 的同步方位与恢复；lag 是最新入队与最新处理传感器时间之差，不能直接归因于 CPU 或 DDS。并存雷达条件仅作为对应历史 -9 记录的旁证，不虚报状态 2，也不能据此证明当前仍异常或认定故障因果。事件覆盖故障起点不等于覆盖整段故障。上述规则的现场验证以实际复验结果为准。
 
-诊断按日志的 `policy_version` 区分 v7 与历史 v6、v5。v7 的 `raw=0` 同时运动一致性 UNKNOWN 时，文本单独显示“运动证据提示”，JSON 的 `motion_evidence` 保留 `status` 和 `unknown_advisory`；该提示不计为故障段，也不把 UNKNOWN 描述为 PASS。v7 的 `raw=4` 若只有运动 UNKNOWN 而缺少其他支持判据，应报告判据缺失，不能声称 UNKNOWN 触发了 4；还需核查初始化、此前 FAIL 是否恢复、协方差、输出及匹配新鲜度与门控等证据。历史 v5/v6 日志继续按各自策略解释，不以 v7 的规则倒推旧记录。
+诊断按日志的 `policy_version` 区分 v8 与历史 v7、v6、v5。v8 和 v7 的 `raw=0` 同时运动一致性 UNKNOWN 时，文本单独显示“运动证据提示”，JSON 的 `motion_evidence` 保留 `status` 和 `unknown_advisory`；该提示不计为故障段，也不把 UNKNOWN 描述为 PASS。v8 或 v7 的 `raw=4` 若只有运动 UNKNOWN 而缺少其他支持判据，应报告判据缺失，不能声称 UNKNOWN 触发了 4；还需核查初始化、此前 FAIL 是否恢复、协方差、输出及匹配新鲜度与门控等证据。历史 v5/v6 日志继续按各自策略解释，不以 v8/v7 的规则倒推旧记录。
 
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
@@ -120,13 +120,38 @@ schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及�
 
 采集不增加 DDS 订阅或独立进程；两个预分配槽最多保存 50000 个展示点及 50000 个原 global 检查点，后台线程避开隔离核 10/11、nice 10，限速 10 MiB/s。单包上限 64 MiB，匹配快照归档目录的默认预算为 1 GiB，磁盘预留 2 GiB，保护期至少 7 天；保护期内空间不足时拒绝新包并报告丢弃原因。新默认位置下该预算分别作用于每次运行的匹配快照目录，不是所有运行合计的全局上限。功能需要部署后的新采集，不能恢复已轮转的 2026-10-30 16:29 原始点云；测试和现场验收以实际结果为准。
 
-## 运动证据与雷达输入组帧策略（v7）
+## 航向一致性检查与证据（v8）
 
-策略及配置版本为 `localization-dtc-v7-motion-unknown`。运动一致性证据不足时，DTC 保持 UNKNOWN；UNKNOWN 本身不再单独触发 Safety `runstate=4`。例如 IMU 150–208 ms 未更新可能使运动一致性证据不足，但须结合其他判据判断 Safety，不能由此推定定位已经通过运动一致性检查。此前的明确 FAIL 仍需相应 PASS 恢复，在无更高优先级状态时未恢复仍为 4；运动一致性明确 FAIL、协方差 FAIL/UNKNOWN、初始化未完成、输出或匹配过期及门控关闭仍按各自规则处理为 4 或 -9。输入源间隔和回调到达间隔继续记录，供排查使用。
+策略及配置版本为 `localization-dtc-v8-yaw-native-imu`。航向检查是定位之外的短窗口参考：用现有 IMU 到机体系的旋转转换主 IMU 角速度，再积分 z 分量，与位姿的航向增量比较；该旁路不扣除 ESKF 估计的陀螺零偏。定位发布路径本身使用三维 ESKF、逐输入时间步传播并扣除零偏，还受雷达、地图、PGO 和平滑修正影响；旁路 z 轴积分不是航向真值，与发布位姿之间出现差异并不自动说明定位错误。CAN 参与平移检查，不是航向参考。
 
-`consistency_unknown_grace_sec` 配置和 `unknown_tolerated` 日志字段继续保留历史观测兼容，但 v7 不再依赖有限宽容期判断运动 UNKNOWN 是否单独停车。必须按同次运行的版本、配置和原始判据解释历史日志；较早的 v6 运动 UNKNOWN 宽容判据以及下节 v5 的设备 DTC 判据仍仅适用于各自版本。
+v8 的航向参考按 IMU 原生样本的源时间戳分段，窗口两端落在样本之间时插值截取，逐段对角速度作梯形积分，不跳过中间样本；绝对转角按分段线性角速度曲线的绝对值面积计算，过零时分别计算两侧面积。平移参考仍沿用约 20 ms 中点采样积分。输入源间隔、最近有效回调的到达年龄和时间戳不推进等检查仍保留；无法取得有效覆盖时，运动证据不能按 PASS 处理。SANY 的 `motion_window_sec=0.5`、`max_input_gap_sec=0.1` 是可配置值；运动检查使用后者约束相邻源样本间隔和最近有效回调的到达年龄，严格超过时证据不足；重复或回退的源时间戳不能刷新有效性。积分末端超过最新 IMU 样本时，允许在该间隔内保持末值，保持时长见下表。这个门限不应与上文输入时序取证使用的 0.1 秒阈值混为一谈。v7 的航向参考使用约 20 ms 中点采样，遇到高频角速度振荡时可能产生混叠，历史日志应按当时的版本解释，不能当作 v8 重算结果。
 
-v7 沿用 v6 的原始雷达输入组帧策略，以雷达输入持续无法满足组帧条件作为 Safety `runstate=2` 的判据。定位 C++ 进程内现有的 20 ms Safety wall timer 使用 `steady_clock` 独立检查，不新增 Python 运行检测或服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒为预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒为故障；`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格输入组帧恢复。启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。上述阈值尚不能据此声称现场安全。
+对相邻位姿及约 0.5 秒窗口分别检查发布位姿和未平滑位姿；未平滑位姿不可用时该分支回退为发布位姿，并非独立观测。残差为 `abs(wrap(位姿航向增量 - IMU 积分转角))`，其中 `wrap` 将角差归到 -180° 至 180°，用于处理航向跨越 ±180° 的情况。任一已评估分支的残差严格大于实际阈值时为 FAIL；相邻检查可在窗口建立前发现 FAIL。相邻检查没有 FAIL（包括 UNKNOWN）时由窗口结果决定，因此窗口 PASS 可给出航向 PASS；窗口尚未建立时为 UNKNOWN。之前的航向 FAIL 在后续整次航向检查明确 PASS 时才解除。阈值为 `yaw_tolerance_deg + angle_tolerance_ratio × 绝对转角`，角度项须使用相同单位。SANY 现场 YAML 的 `yaw_tolerance_deg` 为 3.0 度，`angle_tolerance_ratio` 为 0.1；通用 `Config` 默认仍为 2.0 度和 0.1。实际运行值以配置快照和启动日志为准，检查旧记录时使用其当时的配置。
+
+运行日志的 `SAFETY_DIAGNOSTIC` 沿用约 1 Hz 及状态变化时的记录方式，追加下列航向证据，不保证记录每次位姿检查。角度字段单位为弧度，时间和时长字段单位为秒。
+
+| 字段 | 含义 |
+|---|---|
+| `yaw_evidence_available`、`yaw_comparison` | 前者为 1 表示有可解释的航向比较证据；后者为 `adjacent` 或 `window`，表示按相邻／窗口规则选中的比较。证据可用不等于 PASS；前者为 0 时，其余默认值不能当作实测结果。 |
+| `yaw_from_stamp`、`yaw_to_stamp` | 所选比较的两端位姿源时间戳，也是积分的起止时间。 |
+| `yaw_gyro_delta_rad`、`yaw_gyro_turn_rad`、`yaw_limit_rad` | 分别为 IMU 有符号积分转角、累计绝对转角和包含比例项后的实际航向阈值。 |
+| `yaw_published_delta_rad`、`yaw_raw_delta_rad` | 发布和未平滑位姿在所选比较中的航向增量。 |
+| `yaw_published_error_rad`、`yaw_raw_error_rad` | 发布和未平滑位姿分别相对 IMU 参考的包角绝对残差；与 `yaw_limit_rad` 比较可识别超限分支。 |
+| `yaw_raw_independent` | 为 0 时，两端中至少一端的未平滑位姿回退为发布位姿，不能将该分支视为独立证据；为 1 时两端均有未平滑位姿。 |
+| `yaw_imu_segments` | 积分分段数，包含裁剪的原生样本区间及末端保持段（若有），不等于 IMU 消息数。 |
+| `yaw_max_source_gap_sec`、`yaw_held_sec` | 前者为所用相邻原生样本的最大完整源时间间隔，即使区间被窗口端点截取也记录完整间隔；后者为使用最新角速度保持的时长。没有遇到相邻样本区间时前者可为 0，需结合分段数和保持时长解读。 |
+
+这些字段对应被选中的相邻或窗口比较；旧字段 `error_yaw_rad` 仍为本次已检查的分支和窗口中的最大残差，可能不同于所选比较的残差，不能混用两者与动态阈值。航向 FAIL 且证据可用时，`run_loc.sh --diagnose` 解释实际记录的数值和超限分支；JSON 也保留对应字段。事件时间线未记录这些新增字段时，应同时检查同次运行日志；历史日志缺失字段不代表数值为零，也不能据此重建精确阈值或断定物理根因。排查时还须对照同一时段的输入时序、匹配、输出和协方差证据。
+
+本次修改需重新编译并重启定位后采集，现场仍须检查运行库标记、实际配置、航向证据及触发和恢复情况。验收应覆盖高频振荡、源时间缺口和冻结、窗口边界及末端保持、两条位姿分支超限和 FAIL 后 PASS 恢复，并核对各自判据及实际上报码；旧运行不能用来证明新版本的行为或验收结果。
+
+## 运动证据与雷达输入组帧策略（v8，兼容 v7）
+
+v8 延续 v7 的运动 UNKNOWN 规则：运动一致性证据不足时，DTC 保持 UNKNOWN；UNKNOWN 本身不单独触发 Safety `runstate=4`。例如 IMU 150–208 ms 未更新可能使运动一致性证据不足，但须结合其他判据判断 Safety，不能由此推定定位已经通过运动一致性检查。此前的明确 FAIL 仍需相应检查明确 PASS 才能解除，UNKNOWN 不会解除；在无更高优先级状态时未恢复仍为 4。运动一致性明确 FAIL、协方差 FAIL/UNKNOWN、初始化未完成、输出或匹配过期及门控关闭仍按各自规则处理为 4 或 -9。输入源间隔和回调到达间隔继续记录，供排查使用。
+
+`consistency_unknown_grace_sec` 配置和 `unknown_tolerated` 日志字段继续保留历史观测兼容，但 v8 和 v7 不依赖有限宽容期判断运动 UNKNOWN 是否单独停车。必须按同次运行的版本、配置和原始判据解释历史日志；较早的 v6 运动 UNKNOWN 宽容判据以及下节 v5 的设备 DTC 判据仍仅适用于各自版本。
+
+v8 沿用 v7/v6 的原始雷达输入组帧策略，以雷达输入持续无法满足组帧条件作为 Safety `runstate=2` 的判据。定位 C++ 进程内现有的 20 ms Safety wall timer 使用 `steady_clock` 独立检查，不新增 Python 运行检测或服务。默认 `diagnostics.radar_frame_warning_sec=0.2` 秒为预警、`diagnostics.radar_frame_timeout_sec=0.3` 秒为故障；`diagnostics.radar_frame_recovery_frames=3` 要求连续三个新鲜合格输入组帧恢复。启动宽限复用 `diagnostics.startup_grace_sec`，默认 8 秒，从 `SetInitPose` 开始。上述阈值尚不能据此声称现场安全。
 
 检查位于 `LocSystem` 原始雷达订阅入口，在预处理、限流和 LIO 排队之前，复用组帧器的时间戳、来源及最低来源数规则，不合并点云、不执行算法计算。仅接受非空原始消息，要求主雷达；完成新鲜输入组帧条件检查时更新进度，原始主雷达接收索引用于防止旧输入缓存续命。算法排队、处理或地图匹配滞后不参与该计时和恢复，不能作为报 2 的原因。`cloud_publish_min_lidars=3` 仅控制对外点云发布，不是报 2 的门槛。200 ms 为两个 100 ms 时间桶周期，现场同桶容差为 20 ms、乱序窗口为 100 ms；20 ms 约束雷达之间的相对组帧时间跨度，不保证绝对授时或与 IMU 对齐。诊断应结合 frame age、seen、started、warning、fault 和 recovery count 判断，并检查实际运行配置与版本。
 

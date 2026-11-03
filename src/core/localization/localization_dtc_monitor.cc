@@ -62,10 +62,49 @@ bool Monitor::Interpolate(const std::deque<Sample>& q, double stamp, double& val
     value = lower->value + ratio * (upper->value - lower->value);
     return std::isfinite(value);
 }
-Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::time_point now) {
+Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::time_point now, bool window) {
     const double dt = to.stamp - from.stamp;
     if (dt <= 0 || dt > 2 * config_.window_sec + config_.max_input_gap_sec) return {};
-    double dx = 0, dy = 0, theta = 0, distance = 0, turn = 0;
+    // Integrate every source-time IMU segment. A coarse pose-rate quadrature can
+    // alias high-frequency vibration even when the IMU itself is continuous.
+    YawEvidence evidence;
+    evidence.window = window;
+    evidence.raw_independent = from.raw_independent && to.raw_independent;
+    evidence.from_stamp = from.stamp;
+    evidence.to_stamp = to.stamp;
+    double omega, last_omega;
+    if (!Interpolate(gyros_, from.stamp, omega, now) ||
+        !Interpolate(gyros_, to.stamp, last_omega, now)) return {};
+    auto next = std::upper_bound(gyros_.begin(), gyros_.end(), from.stamp,
+        [](double t, const Sample& sample) { return t < sample.stamp; });
+    for (double stamp = from.stamp; stamp < to.stamp;) {
+        const double end = next == gyros_.end() ? to.stamp : std::min(to.stamp, next->stamp);
+        const double step = end - stamp;
+        double end_omega = last_omega;
+        if (next != gyros_.end()) {
+            const double source_gap = next->stamp - std::prev(next)->stamp;
+            // Check the complete source interval, including clipped boundaries.
+            if (source_gap > config_.max_input_gap_sec) return {};
+            evidence.max_source_gap_sec = std::max(evidence.max_source_gap_sec, source_gap);
+            end_omega = omega + (next->value - omega) * step / (next->stamp - stamp);
+        } else {
+            evidence.held_sec += step;
+        }
+        evidence.gyro_delta_rad += 0.5 * (omega + end_omega) * step;
+        // Exact absolute area for the same linear segment, including zero crossings.
+        const double magnitude = std::abs(omega) + std::abs(end_omega);
+        evidence.gyro_turn_rad += omega * end_omega < 0
+            ? step * (omega * omega + end_omega * end_omega) / (2 * magnitude)
+            : 0.5 * magnitude * step;
+        ++evidence.segments;
+        stamp = end;
+        omega = end_omega;
+        if (next != gyros_.end()) ++next;
+    }
+    evidence.available = true;
+    evidence.limit_rad = config_.yaw_rad + config_.angle_ratio * evidence.gyro_turn_rad;
+    // Preserve the existing translation quadrature and its thresholds.
+    double dx = 0, dy = 0, translation_yaw = 0, distance = 0;
     bool translation_available = true;
     const int steps = std::max(1, static_cast<int>(std::ceil(dt / std::min(0.02, config_.max_input_gap_sec / 4))));
     const double step = dt / steps;
@@ -74,11 +113,10 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
         const double stamp = from.stamp + (i + 0.5) * step;
         if (!Interpolate(gyros_, stamp, omega, now)) return {};
         translation_available &= Interpolate(speeds_, stamp, speed, now);
-        dx += speed * step * std::cos(theta + omega * step / 2);
-        dy += speed * step * std::sin(theta + omega * step / 2);
-        theta += omega * step;
+        dx += speed * step * std::cos(translation_yaw + omega * step / 2);
+        dy += speed * step * std::sin(translation_yaw + omega * step / 2);
+        translation_yaw += omega * step;
         distance += std::abs(speed) * step;
-        turn += std::abs(omega) * step;
     }
     bool translation_fail = false, yaw_fail = false;
     for (bool raw : {false, true}) {
@@ -89,7 +127,10 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
         const double x = std::cos(yaw) * delta.x() + std::sin(yaw) * delta.y();
         const double y = -std::sin(yaw) * delta.x() + std::cos(yaw) * delta.y();
         const double ex = std::abs(x - dx), ey = std::abs(y - dy);
-        const double ea = std::abs(Wrap(Yaw(current) - yaw - theta));
+        const double delta_yaw = Wrap(Yaw(current) - yaw);
+        const double ea = std::abs(Wrap(delta_yaw - evidence.gyro_delta_rad));
+        (raw ? evidence.raw_delta_rad : evidence.published_delta_rad) = delta_yaw;
+        (raw ? evidence.raw_error_rad : evidence.published_error_rad) = ea;
         if (translation_available) {
             snapshot_.error_longitudinal_m = std::max(snapshot_.error_longitudinal_m, ex);
             snapshot_.error_lateral_m = std::max(snapshot_.error_lateral_m, ey);
@@ -97,10 +138,10 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
                                 ey > config_.lateral_m + config_.distance_ratio * distance;
         }
         snapshot_.error_yaw_rad = std::max(snapshot_.error_yaw_rad, ea);
-        yaw_fail |= ea > config_.yaw_rad + config_.angle_ratio * turn;
+        yaw_fail |= ea > evidence.limit_rad;
     }
     return {translation_available ? (translation_fail ? kFail : kPass) : kUnknown,
-            yaw_fail ? kFail : kPass};
+            yaw_fail ? kFail : kPass, evidence};
 }
 void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unobservable) {
     auto& condition = snapshot_.observations[1].condition;
@@ -138,7 +179,7 @@ void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unob
                 snapshot_.yaw_sigma_rad > config_.yaw_sigma_rad ? kFail : kPass;
 }
 void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const Mat6d& covariance,
-                          bool valid, bool unobservable, uint64_t epoch, Clock::time_point now) {
+                          bool valid, bool unobservable, uint64_t epoch, Clock::time_point now, bool raw_independent) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!std::isfinite(stamp) || stamp <= 0 || !pose.matrix().allFinite() || !raw.matrix().allFinite()) return;
     if (epoch != epoch_) {
@@ -165,22 +206,23 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
     snapshot_.error_longitudinal_m = snapshot_.error_lateral_m = snapshot_.error_yaw_rad = 0;
-    const Pose current{stamp, pose, raw};
+    const Pose current{stamp, pose, raw, raw_independent};
     MotionResult motion;
     // Check adjacent increments as well, so a jump is detected during window warmup.
-    if (!poses_.empty()) motion = Motion(poses_.back(), current, now);
+    if (!poses_.empty()) motion = Motion(poses_.back(), current, now, false);
     auto anchor = poses_.end();
     for (auto it = poses_.begin(); it != poses_.end() && it->stamp <= stamp - config_.window_sec; ++it) anchor = it;
     if (anchor != poses_.end()) {
-        const auto window = Motion(*anchor, current, now);
+        const auto window = Motion(*anchor, current, now, true);
         if (motion.translation != kFail) motion.translation = window.translation;
-        if (motion.yaw != kFail) motion.yaw = window.yaw;
+        if (motion.yaw != kFail) { motion.yaw = window.yaw; motion.evidence = window.evidence; }
     } else {
         if (motion.translation != kFail) motion.translation = kUnknown;
         if (motion.yaw != kFail) motion.yaw = kUnknown;
     }
     snapshot_.translation_condition = motion.translation;
     snapshot_.yaw_condition = motion.yaw;
+    snapshot_.yaw_evidence = motion.evidence;
     const Condition condition = Combined(motion.translation, motion.yaw);
     snapshot_.observations[0].condition = condition;
     Uncertainty(pose, covariance, valid, unobservable);

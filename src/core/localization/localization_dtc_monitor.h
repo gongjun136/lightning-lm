@@ -13,7 +13,7 @@ using Clock = std::chrono::steady_clock;
 enum Condition : uint8_t { kUnknown = 0, kPass = 1, kFail = 2 };
 constexpr uint32_t kConsistency = 0x30811813;
 constexpr uint32_t kUncertainty = 0x40450198;
-constexpr const char* kSafetyPolicyVersion = "localization-dtc-v7-motion-unknown";
+constexpr const char* kSafetyPolicyVersion = "localization-dtc-v8-yaw-native-imu";
 struct Config {
     double window_sec = 0.5, max_input_gap_sec = 0.1;
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
@@ -37,6 +37,15 @@ struct TrackingEvidence {
     bool output_gate_open = false, match_stale = false, latest_match_valid = false;
     double valid_match_age_sec = std::numeric_limits<double>::infinity();
 };
+struct YawEvidence {
+    bool available = false, window = false, raw_independent = false;
+    double from_stamp = 0, to_stamp = 0;
+    double gyro_delta_rad = 0, gyro_turn_rad = 0, limit_rad = 0;
+    double published_delta_rad = 0, raw_delta_rad = 0;
+    double published_error_rad = 0, raw_error_rad = 0;
+    double max_source_gap_sec = 0, held_sec = 0;
+    uint32_t segments = 0;
+};
 struct Snapshot {
     std::array<Observation, 2> observations;
     bool severe = false;
@@ -55,6 +64,7 @@ struct Snapshot {
     double valid_match_age_sec = std::numeric_limits<double>::infinity();
     bool output_continuous = false;  ///< Advancing output over the configured motion window without a timeout/epoch jump.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
+    YawEvidence yaw_evidence;  ///< The comparison selected by the adjacent/window rule, rather than a different maximum residual.
     bool covariance_valid = false, pose_unobservable = false;
     double major_sigma_m = std::numeric_limits<double>::quiet_NaN();
     double lateral_sigma_m = std::numeric_limits<double>::quiet_NaN();
@@ -70,16 +80,16 @@ class Monitor {
     void ObserveGyro(double stamp, double body_yaw_rate, Clock::time_point now = Clock::now());
     void ObservePose(double stamp, const SE3& rear_pose, const SE3& raw_rear_pose,
                      const Mat6d& covariance, bool covariance_valid, bool unobservable,
-                     uint64_t epoch, Clock::time_point now = Clock::now());
+                     uint64_t epoch, Clock::time_point now = Clock::now(), bool raw_independent = true);
     Snapshot Evaluate(bool lost, Clock::time_point now = Clock::now()) const;
     Snapshot Evaluate(const TrackingEvidence& tracking, Clock::time_point now = Clock::now()) const;
  private:
     struct Sample { double stamp, value; Clock::time_point arrival; };
-    struct Pose { double stamp; SE3 final, raw; };
-    struct MotionResult { Condition translation = kUnknown, yaw = kUnknown; };
+    struct Pose { double stamp; SE3 final, raw; bool raw_independent; };
+    struct MotionResult { Condition translation = kUnknown, yaw = kUnknown; YawEvidence evidence; };
     void Observe(std::deque<Sample>& queue, double stamp, double value, double limit, Clock::time_point now);
     bool Interpolate(const std::deque<Sample>& queue, double stamp, double& value, Clock::time_point now) const;
-    MotionResult Motion(const Pose& from, const Pose& to, Clock::time_point now);
+    MotionResult Motion(const Pose& from, const Pose& to, Clock::time_point now, bool window);
     void Uncertainty(const SE3& pose, const Mat6d& covariance, bool valid, bool unobservable);
     Snapshot EvaluateLocked(const TrackingEvidence& tracking, Clock::time_point now) const;
     Config config_;

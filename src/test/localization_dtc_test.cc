@@ -27,6 +27,93 @@ void FeedWithoutCan(Monitor& monitor, int ms, const SE3& pose, double gyro = 0,
     monitor.ObserveGyro(stamp, gyro, At(ms));
     monitor.ObservePose(stamp, pose, raw ? *raw : pose, SmallCov(), true, false, 1, At(ms));
 }
+void CheckNativeYawIntegration() {
+    Config cfg;  // Deliberately keep the original 2-degree base threshold.
+    Require(std::abs(cfg.yaw_rad * 180 / M_PI - 2) < 1e-12, "generic yaw threshold stays two degrees");
+    Monitor vibration(cfg, At(0));
+    double legacy_angle = 0, legacy_turn = 0;
+    for (int ms = 0; ms <= 500; ms += 5) {
+        const double omega = .7 * std::sin(2 * M_PI * 47 * ms * .001);
+        vibration.ObserveGyro(100 + ms * .001, omega, At(ms));
+        if (ms % 20 == 0) vibration.ObservePose(100 + ms * .001, Pose(0), Pose(0),
+            SmallCov(), true, false, 1, At(ms));
+        if (ms % 20 == 10) { legacy_angle += omega * .02; legacy_turn += std::abs(omega) * .02; }
+    }
+    Require(std::abs(legacy_angle) > cfg.yaw_rad + cfg.angle_ratio * legacy_turn,
+            "47 Hz / 200 Hz fixture reproduces the old 20 ms midpoint false failure");
+    const auto state = vibration.Evaluate(false, At(500));
+    const auto& e = state.yaw_evidence;
+    Require(state.yaw_condition == kPass && SafetyValue(state, false, false, true) == 0 &&
+            e.available && e.window && e.segments == 100 && e.held_sec == 0 &&
+            std::abs(e.gyro_delta_rad) < .005 && e.published_error_rad < .005,
+            "all 100 native segments reject the alias without relaxing the original threshold");
+
+    // Native source jitter and a pose cadence asynchronous to the IMU must not
+    // reintroduce pose-rate quadrature or skip the partial boundary segments.
+    for (int cadence : {17, 23}) {
+        Monitor asynchronous(cfg, At(0));
+        for (int ms = 0, sample = 0; ms <= 900; ++ms) {
+            if (ms == sample * 5 + sample % 2) {
+                asynchronous.ObserveGyro(100 + ms * .001,
+                    .7 * std::sin(2 * M_PI * 47 * ms * .001), At(ms));
+                ++sample;
+            }
+            if (ms % cadence == 0) {
+                asynchronous.ObservePose(100 + ms * .001, Pose(0), Pose(0), SmallCov(), true, false, 1, At(ms));
+                if (ms > 550) Require(asynchronous.Evaluate(false, At(ms)).yaw_condition == kPass,
+                    "jittered native IMU and asynchronous pose boundaries still pass");
+            }
+        }
+    }
+    Config short_cfg = cfg; short_cfg.window_sec = .02;
+    Monitor crossing(short_cfg, At(0));
+    crossing.ObserveGyro(100, 1, At(0));
+    crossing.ObservePose(100, Pose(0), Pose(0), SmallCov(), true, false, 1, At(0));
+    crossing.ObserveGyro(100.02, -1, At(20));
+    crossing.ObservePose(100.02, Pose(0), Pose(0), SmallCov(), true, false, 1, At(20));
+    const auto triangle = crossing.Evaluate(false, At(20)).yaw_evidence;
+    Require(triangle.available && std::abs(triangle.gyro_delta_rad) < 1e-12 &&
+            std::abs(triangle.gyro_turn_rad - .01) < 1e-12 &&
+            std::abs(triangle.limit_rad - cfg.yaw_rad - .001) < 1e-12,
+            "zero crossing uses the exact absolute linear area for the dynamic threshold");
+
+    Config gap_cfg = cfg; gap_cfg.window_sec = .2;
+    Monitor gap(gap_cfg, At(0));
+    gap.ObserveGyro(100, 0, At(0));
+    gap.ObservePose(100, Pose(0), Pose(0), SmallCov(), true, false, 1, At(0));
+    gap.ObserveGyro(100.2, 0, At(200));
+    gap.ObservePose(100.2, Pose(0), Pose(0), SmallCov(), true, false, 1, At(200));
+    Require(gap.Evaluate(false, At(200)).yaw_condition == kUnknown &&
+            !gap.Evaluate(false, At(200)).yaw_evidence.available,
+            "exact endpoint samples cannot conceal a source gap longer than 100 ms");
+
+    Config sany = cfg; sany.yaw_rad = 3 * M_PI / 180;
+    for (bool raw_only : {false, true}) {
+        Monitor real_jump(sany, At(0));
+        for (int ms = 0; ms <= 500; ms += 20) FeedWithoutCan(real_jump, ms, Pose(0));
+        const SE3 small = Pose(0, 0, 2.5 * M_PI / 180);
+        FeedWithoutCan(real_jump, 520, small);
+        Require(SafetyValue(real_jump.Evaluate(false, At(520)), false, false, true) == 0,
+                "SANY three-degree base tolerates a 2.5-degree zero-turn residual");
+        const SE3 jump = Pose(0, 0, 9 * M_PI / 180);
+        FeedWithoutCan(real_jump, 540, raw_only ? small : jump, 0, raw_only ? &jump : &small);
+        const auto failure = real_jump.Evaluate(false, At(540));
+        Require(failure.yaw_condition == kFail && failure.confirmed_failure &&
+                SafetyValue(failure, false, false, true) == 4 && !failure.yaw_evidence.window,
+                "published-only and raw-only jumps still stop immediately under the relaxed threshold");
+        Require((raw_only ? failure.yaw_evidence.raw_error_rad : failure.yaw_evidence.published_error_rad) >
+                    failure.yaw_evidence.limit_rad &&
+                (raw_only ? failure.yaw_evidence.published_error_rad : failure.yaw_evidence.raw_error_rad) < 1e-10,
+                "split evidence identifies the actual failed branch and comparison");
+    }
+    Monitor fallback(cfg, At(0));
+    fallback.ObserveGyro(100, 0, At(0));
+    fallback.ObservePose(100, Pose(0), Pose(0), SmallCov(), true, false, 1, At(0), false);
+    fallback.ObserveGyro(100.02, 0, At(20));
+    fallback.ObservePose(100.02, Pose(0), Pose(0), SmallCov(), true, false, 1, At(20));
+    Require(!fallback.Evaluate(false, At(20)).yaw_evidence.raw_independent,
+            "a fallback at either endpoint is not independent raw-branch evidence");
+}
 void CheckConfirmedLossPolicy() {
     Config cfg;
     Require(cfg.output_timeout_sec == .5 && cfg.evaluation_timeout_sec == .5,
@@ -213,6 +300,9 @@ void CheckSanyUncertaintyConfig(const char* path) {
     cfg.longitudinal_m = diagnostics["longitudinal_tolerance_m"].as<double>();
     cfg.lateral_m = diagnostics["lateral_tolerance_m"].as<double>();
     cfg.yaw_rad = diagnostics["yaw_tolerance_deg"].as<double>() * M_PI / 180.0;
+    Require(std::abs(cfg.yaw_rad * 180 / M_PI - 3) < 1e-12 &&
+            diagnostics["angle_tolerance_ratio"].as<double>() == .1,
+            "SANY yaw base is three degrees with the existing ten-percent turn term");
     // Logged sigma already includes the configured additive variance floors.
     // Construct input covariance for the desired final sigma at identity pose.
     const auto covariance_for = [&](double x_m, double y_m, double yaw_deg) {
@@ -261,6 +351,7 @@ void CheckSanyUncertaintyConfig(const char* path) {
 }
 }
 int main(int argc, char** argv) {
+    CheckNativeYawIntegration();
     if (argc == 2) {
         CheckSanyUncertaintyConfig(argv[1]);
         return 0;

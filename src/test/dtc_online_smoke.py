@@ -231,7 +231,7 @@ def main():
                          for line in log_text.splitlines() if 'SAFETY_DIAGNOSTIC ' in line]
                 assert audit, 'fault audit must be present independently of reporting and shadow switches'
                 assert {int(row['raw_runstate']) for row in audit} == {4, -9 if args.continuous_radar_input else 2}, 'retain distinct radar-input and localization-startup diagnoses'
-                assert all(row.get('policy_version') == 'localization-dtc-v7-motion-unknown' for row in audit)
+                assert all(row.get('policy_version') == 'localization-dtc-v8-yaw-native-imu' for row in audit)
                 assert all(row.get('radar_frame_observation_point') == 'raw_input_grouping' for row in audit)
                 if args.continuous_radar_input:
                     assert inputs_sent and any(row.get('lidar_frame_seen') == '1' for row in audit)
@@ -286,9 +286,9 @@ def main():
                         # Pre-trigger history may precede the first Safety tick;
                         # such an unobserved default row carries no policy yet.
                         if int(row['raw']) in (2, 4):
-                            assert row['policy_version'] == 'localization-dtc-v7-motion-unknown', row
+                            assert row['policy_version'] == 'localization-dtc-v8-yaw-native-imu', row
                         else:
-                            assert row['policy_version'] in ('', 'localization-dtc-v7-motion-unknown'), row
+                            assert row['policy_version'] in ('', 'localization-dtc-v8-yaw-native-imu'), row
                         assert all(key in row for key in ('lidar_frame_started', 'lidar_frame_seen',
                                    'lidar_frame_warning', 'lidar_frame_fault', 'lidar_frame_age_sec',
                                    'lidar_frame_recovery_count')), row

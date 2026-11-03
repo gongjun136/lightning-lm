@@ -33,8 +33,14 @@ FAULT_CODES = (2, 4, -9)
 CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
 FRAME_SUPPLY_POLICY = 'localization-dtc-v6-radar-input'
 MOTION_UNKNOWN_POLICY = 'localization-dtc-v7-motion-unknown'
-FRAME_SUPPLY_POLICIES = (FRAME_SUPPLY_POLICY, MOTION_UNKNOWN_POLICY)
+YAW_NATIVE_IMU_POLICY = 'localization-dtc-v8-yaw-native-imu'
+MOTION_UNKNOWN_POLICIES = (MOTION_UNKNOWN_POLICY, YAW_NATIVE_IMU_POLICY)
+FRAME_SUPPLY_POLICIES = (FRAME_SUPPLY_POLICY, *MOTION_UNKNOWN_POLICIES)
 MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, *FRAME_SUPPLY_POLICIES)
+YAW_EVIDENCE_FIELDS = ('yaw_evidence_available', 'yaw_comparison', 'yaw_raw_independent',
+    'yaw_from_stamp', 'yaw_to_stamp', 'yaw_gyro_delta_rad', 'yaw_gyro_turn_rad', 'yaw_limit_rad',
+    'yaw_published_delta_rad', 'yaw_raw_delta_rad', 'yaw_published_error_rad', 'yaw_raw_error_rad',
+    'yaw_imu_segments', 'yaw_max_source_gap_sec', 'yaw_held_sec')
 CONTRACT_PATH = Path(__file__).with_name('diagnose_contract.json')
 LAUNCH_LOGS = ('map_manifest.log', 'input_check.log', 'config_resolution.log',
                'launcher.log', 'launch.log', 'launch_compute_config.log')
@@ -769,7 +775,7 @@ def classify(row, limits):
                            published=row.get('published_runstate')))
     modern = row.get('policy_version') in MODERN_POLICIES
     frame_policy = row.get('policy_version') in FRAME_SUPPLY_POLICIES
-    motion_unknown_advisory = row.get('policy_version') == MOTION_UNKNOWN_POLICY
+    motion_unknown_advisory = row.get('policy_version') in MOTION_UNKNOWN_POLICIES
     if row.get('policy_version') not in (None, '', *MODERN_POLICIES) and code in FAULT_CODES:
         add('unsupported_policy', '未知 Safety 策略版本，不能沿用旧版故障含义', ['policy_version', 'raw_runstate'],
             '核对运行合同并同步诊断脚本；原始码保留，但不猜测该版本的具体判据。', '规则缺失')
@@ -853,6 +859,20 @@ def classify(row, limits):
                     causes[-1]['advice'] = '比较位姿航向增量与 IMU 机体系 z 角速度积分；CAN 用于平移检查。旧字段缺少累计转角 turn 及窗口/位姿分支，无法重建确切动态阈值；这不是协方差不确定度阈值。'
                     if number(row.get('error_yaw_rad')) is not None:
                         causes[-1]['evidence']['error_yaw_deg'] = row['error_yaw_rad'] * 180 / math.pi
+                    if row.get('yaw_evidence_available') == 1:
+                        detail = causes[-1]['evidence']
+                        detail.update({k: row[k] for k in YAW_EVIDENCE_FIELDS if k in row})
+                        for k in YAW_EVIDENCE_FIELDS:
+                            if k.endswith('_rad') and number(row.get(k)) is not None:
+                                detail[k[:-4] + '_deg'] = row[k] * 180 / math.pi
+                        boundary = number(row.get('yaw_limit_rad'))
+                        branches = [label for label, k in [('发布', 'yaw_published_error_rad'), ('未平滑', 'yaw_raw_error_rad')]
+                                    if boundary is not None and number(row.get(k)) is not None and row[k] > boundary]
+                        causes[-1]['advice'] = ('比较所选相邻/窗口两端位姿航向增量与原生源时间 IMU 机体系 z 角速度积分；'
+                            '逐段积分不扣 ESKF 零偏。实际阈值已含累计绝对转角的比例项，单位为弧度；CAN 用于平移检查。'
+                            + (' 超限分支：' + '、'.join(branches) + '。' if branches else ''))
+                        if row.get('yaw_raw_independent') == 0:
+                            causes[-1]['advice'] += ' 未平滑两端至少一端回退为发布位姿，不能视为独立分支证据。'
         if row.get('localization_consistency') == 2 and row.get('yaw_condition') != 2 and row.get('translation_condition') != 2:
             add('consistency_fail', '运动一致性检查失败，缺少平移/航向细分状态', ['localization_consistency'], '需要同次运行的细分判据或完整事件。')
         latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
@@ -1743,7 +1763,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
 def motion_evidence(row):
     condition = number(row.get('localization_consistency'))
     names = {0: 'UNKNOWN', 1: 'PASS', 2: 'FAIL'}
-    advisory = condition == 0 and row.get('policy_version') == MOTION_UNKNOWN_POLICY
+    advisory = condition == 0 and row.get('policy_version') in MOTION_UNKNOWN_POLICIES
     return dict(status=names.get(condition, 'unavailable'), unknown_advisory=advisory,
                 confirmed_failure=row.get('confirmed_failure'),
                 evidence={k: row[k] for k in ('policy_version', 'translation_condition', 'yaw_condition',

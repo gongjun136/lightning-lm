@@ -659,6 +659,40 @@ class DiagnosisTest(unittest.TestCase):
         self.assertIn('无法重建确切动态阈值', out[0]['advice'])
         self.assertNotIn('IMU/CAN 积分', out[0]['advice'])
 
+    def test_native_yaw_policy_keeps_unknown_advisory_and_frame_supply(self):
+        row = dict(policy_version=d.YAW_NATIVE_IMU_POLICY, raw_runstate=0,
+                   localization_consistency=0, yaw_condition=0, translation_condition=0,
+                   confirmed_failure=0)
+        self.assertTrue(d.motion_evidence(row)['unknown_advisory'])
+        self.assertEqual(d.classify(row, {}), [])
+        found = d.classify(dict(row, raw_runstate=2, lidar_frame_fault=1, lidar_frame_seen=1), {})
+        self.assertEqual([f['key'] for f in found], ['frame_supply'])
+        self.assertNotIn('unsupported_policy', [f['key'] for f in found])
+
+    def test_native_yaw_split_evidence_uses_selected_comparison(self):
+        self.log.write_text('I1103 15:00:00.000001 42] SAFETY_DIAGNOSTIC sequence=1 '
+            f'policy_version={d.YAW_NATIVE_IMU_POLICY} raw_runstate=4 published_runstate=4 '
+            'localization_consistency=2 localization_uncertainty=1 yaw_condition=2 '
+            'yaw_evidence_available=1 yaw_comparison=adjacent yaw_raw_independent=1 '
+            'yaw_from_stamp=1793676462.4 yaw_to_stamp=1793676462.42 '
+            'yaw_gyro_delta_rad=.001 yaw_gyro_turn_rad=.004 yaw_limit_rad=.0527599 '
+            'yaw_published_delta_rad=.081 yaw_raw_delta_rad=.002 '
+            'yaw_published_error_rad=.08 yaw_raw_error_rad=.001 '
+            'yaw_imu_segments=5 yaw_max_source_gap_sec=.006 yaw_held_sec=.001 error_yaw_rad=.1\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        finding = next(f for f in report['findings'] if f['key'] == 'yaw_condition')
+        detail = finding['evidence']
+        self.assertEqual(detail['yaw_comparison'], 'adjacent')
+        self.assertEqual(detail['yaw_imu_segments'], 5)
+        self.assertAlmostEqual(detail['yaw_published_error_deg'], .08 * 180 / 3.141592653589793)
+        self.assertAlmostEqual(detail['yaw_limit_deg'], .0527599 * 180 / 3.141592653589793)
+        self.assertIn('超限分支：发布。', finding['advice'])
+        self.assertNotIn('无法重建确切动态阈值', finding['advice'])
+        fallback = self.causes(policy_version=d.YAW_NATIVE_IMU_POLICY, localization_consistency=2,
+            yaw_condition=2, yaw_evidence_available=1, yaw_raw_independent=0, yaw_limit_rad=.05,
+            yaw_published_error_rad=.06, yaw_raw_error_rad=.06)
+        self.assertIn('至少一端回退为发布位姿', fallback[0]['advice'])
+
     def test_unknown_grace_expired_without_input_silence(self):
         out = self.causes(localization_consistency=0, yaw_condition=0, translation_condition=0,
                           unknown_tolerated=0, optional_can_unavailable=0, yaw_pass_age_sec=.156812,
