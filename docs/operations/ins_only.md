@@ -4,6 +4,15 @@
 
 `run_loc_online` 启动时读取 `system.localization_mode`：缺省或 `lidar` 沿用现有激光定位；`ins_only` 创建 `InsLocSystem`。切换必须重启。纯组合导航模式直接使用 CGI-430 的导航解，不创建 LIO、地图匹配、重定位或 PGO，不做传感器融合，也不依赖地图启动。
 
+`ins_only.output_reference` 有两条明确的输出合同：
+
+| 合同 | 输入和输出 | 使用边界 |
+|---|---|---|
+| `device_output`（默认） | 保留设备当前选择的位置点 O 和姿态；经纬高转换到固定 ENU，设备姿态角转换到 ENU，输出隔离的参考话题 | 不在线施加 O→后轴杆臂、不发布业务定位或点云。`output_point_id: unverified_cgi_output`、`output_reference_confirmed: false` 表示物理点尚未确认，不能当已标定后轴或正式评价参考。 |
+| `rear_axle`（兼容） | 设备必须实际输出后轴位置和后车体姿态，并显式确认，填写后轴点ID和frame | 保留后轴业务接口与可选点云；标签或确认开关不能替代现场证据。配置组合见下文。 |
+
+不再默默把旧配置当作后轴。旧现场配置须核实设备，再明确补齐参考点及姿态合同；不满足合同的旧配置报错，不能仅改标签绕过。正式 LiDAR 精度评价仍优先按 @ref lidar_ins_accuracy "旁路采集与离线评价" 保留 CGI 原始数据，不让 CGI 进入被评 LiDAR 算法。
+
 代码：@ref run_loc_online.cc "在线入口"、@ref ins_loc_system.cc "INS 系统"、@ref ins_navigation.cc "导航质量与插值"。坐标转换使用 GeographicLib，未引入 IC-GVINS/GLIO 的优化器或复制 GPL 实现；这些框架涉及的原始 GNSS/IMU 融合不属于本模式。
 
 下面三个问题把“启动配置正确”“导航字段可用”“已经发布”分开核对。数值例子均为手算，现场参数与验证入口仍见后文。
@@ -25,7 +34,7 @@
 
 @snippet{lineno} core/system/ins_loc_system.cc ins-new-navigation-fields
 
-`consumed` 只有五项，按 `Field` 枚举顺序对应纬度、经度、高度、姿态、速度；五者时间必须全部比上次消费值大。质量消息可以复用，但仍须通过九类字段共同的跨度、新鲜度检查。`bad` 非空时会先清空恢复状态，后续坐标转换只用于拒绝日志，不能据此进入业务输出。
+`consumed` 只有五项，按 `Field` 枚举顺序对应纬度、经度、高度、姿态、速度；五者时间必须全部比上次消费值大。质量消息可以复用，但仍须通过九类字段共同的跨度、新鲜度检查。`bad` 非空时会先清空恢复状态，后续坐标转换只用于拒绝日志，不能据此进入有效输出。
 
 <b>手算例子：</b>假设九类字段均有效、质量数值合格，`max_age=0.15 s`、`max_skew=0.02 s`；各 `time` 在 `[10.000,10.010]`，ROS 当前为 10.020，各 `arrival` 在 `[20.000,20.010]`，单调当前为 20.020。最大年龄和跨度均通过。若 `/clock` 停在 10.020 而单调时间走到 20.200，仍因 `steady-arrival>0.15` 拒绝。另设上一解已消费五项时间 10.000，只收到纬度 10.010，其他四项没推进，则直接返回，不增加恢复计数。
 
@@ -33,6 +42,8 @@
 
 @anchor ins_cloud_interpolation_reading
 # 2. 点云为什么要等导航覆盖，补偿后又落在哪个后轴时刻？
+
+本节仅适用于已确认后轴的 `rear_axle` 兼容分支。`device_output` 不发布点云，配置 `cloud.enabled: true` 会被拒绝；以下后轴公式和示例不适用于未知设备参考点。
 
 @ref lightning::ins::PoseBuffer::At "At()" 只在已有历史中查点或插值，超出首尾即失败；插值需要相邻有效位姿，平移线性插值、旋转用四元数 slerp：
 
@@ -55,7 +66,7 @@
 <b>边界与停止点：</b>默认调用要求 `global_valid=true`，恢复计数尚未通过的位姿不能用于这段补偿。无效点时间/坐标会拒绝整帧，末点超出 `end` 超过 `1e-7 s` 也失败。`DrainClouds()` 另外控制完整雷达集合、等待超时和两种点云发布；看到 `Deskew()` 返回 true 只证明本帧几何补偿完成。完整源码见 @ref ins_cloud.cc "Deskew()"、@ref lightning::ins::PoseBuffer::Covers "Covers()" 和 @ref ins_loc_system.cc "DrainClouds()"；能够算出点的采样时刻与扫描末后轴位置后即可停止。
 
 @anchor ins_output_validity_reading
-# 3. 连续三次回调通过，是否已经恢复业务输出？
+# 3. 连续三次回调通过，是否已经恢复输出？
 
 恢复计数统计的是<b>时间递增的新导航解</b>。下面以 `recovery_samples=3` 举例，实际缺省值是 10；上一节的五项推进条件先决定是否调用它：
 
@@ -65,7 +76,7 @@
 
 @snippet{lineno} core/system/ins_loc_system.cc ins-navigation-recovery
 
-恢复中的位姿也进入缓存，但 `global_valid=false`。因此第三条解变成 GOOD，并不让之前的恢复区间自动变成可用于点云的有效历史。真正的业务发布还有一层时间门槛：
+恢复中的位姿也进入缓存，但 `global_valid=false`。因此第三条解变成 GOOD，并不让之前的恢复区间自动变成可用于点云的有效历史。真正发布还有一层时间门槛：
 
 @snippet{lineno} core/system/ins_loc_system.cc ins-business-publish
 
@@ -75,19 +86,18 @@
 
 @snippet{lineno} core/system/ins_loc_system.cc ins-health-status
 
-<b>逐句核对：</b>首次发布前的非 GOOD 是 INITIALIZING，`ever_good` 仅在发布路径置真，此后失效才是 FAIL。`RecordWork()` 也在业务发布之后；独立心跳仍运行不能证明位姿持续更新。`LogSolution(...,true,...)` 位于 `Publish()` 之前，不能把 CSV 标记当作订阅端收到消息的证明。TUM 写入在 publish 调用之后，日志失败由健康检查发现后阻止后续输出，这段不是“先写盘成功才发布”的事务。
+<b>逐句核对：</b>首次发布前的非 GOOD 是 INITIALIZING，`ever_good` 仅在发布路径置真，此后失效才是 FAIL。后轴兼容分支的 `RecordWork()` 在业务发布之后；独立心跳仍运行不能证明位姿持续更新。设备输出参考分支不创建业务 Safety 心跳。`LogSolution(...,true,...)` 位于 `Publish()` 之前，不能把 CSV 标记当作订阅端收到消息的证明。TUM 写入在 publish 调用之后，日志失败由健康检查发现后阻止后续输出，这段不是“先写盘成功才发布”的事务。
 
-<b>停止位置：</b>能够指出计数何时复位、哪个 `return` 阻止发布、何处推进 `ever_good/RecordWork` 即可。完整路径见 @ref lightning::ins::RecoveryGate::Observe "RecoveryGate::Observe()"、@ref ins_loc_system.cc "Reject / Publish / Health"。ROS 调度和订阅端是否收到消息需要运行观测，本页片段不作这个保证。
+<b>停止位置：</b>能够指出计数何时复位、哪个 `return` 阻止发布、何处推进 `ever_good`，以及后轴兼容分支何处推进 `RecordWork` 即可。完整路径见 @ref lightning::ins::RecoveryGate::Observe "RecoveryGate::Observe()"、@ref ins_loc_system.cc "Reject / Publish / Health"。ROS 调度和订阅端是否收到消息需要运行观测，本页片段不作这个保证。
 
 # 坐标和参考点契约
 
-- CGI WebUI 的定位输出点必须是**后轴中心**，姿态必须是**后车体姿态**；本层不再补偿 GNSS/IMU 杆臂。
-- 输入纬度/经度单位为度。固定 `origin_llh` 顺序为纬度、经度、WGS84 椭球高（米）；每次启动使用同一个现场配置，不能取本次首帧作为原点。
-- 位置经过 WGS84 LLH → ECEF → 固定 ENU。`map` 的 x/y/z 是东/北/上，米。远离原点时，用 GeographicLib 的局部 ENU 到固定 ENU 旋转同步转换姿态和速度；默认拒绝离原点超过 20 km 的点。
+- 输入纬度/经度单位为度；固定 `origin_llh` 顺序为纬度、经度、WGS84 椭球高（米），每次启动使用同一经审核原点，不能取首帧。位置经 WGS84 LLH → ECEF → 固定 ENU；世界坐标 X东/Y北/Z上，转换不改变被报告的设备物理点。远离原点时同步旋转姿态和速度；默认拒绝距原点超过 20 km 的点。
+- 设备输出点由 WebUI 和实际固件决定，可能是天线、IMU 或厂家定义点；运行代码不读取 WebUI，也不施加 O→后轴杆臂。`device_output` 的 `output_point_id` 是调用者的声明；默认 `unverified_cgi_output` 及 `output_reference_confirmed: false` 明确表示尚未确认。
+- CHC 航向从北顺时针、俯仰抬头为正、横滚右倾为正。姿态角按 `Rz(90°-heading) Ry(-pitch) Rx(roll)` 转为固定 ENU 中的设备所选姿态；`attitude_reference: device_output` 本身不证明该姿态为后车体FLU。默认 `output_frame: cgi_output_flu` 是输出坐标标签，不是设备安装角或物理姿态已校准的证据。
+- `rear_axle` 分支必须确认设备实际输出后轴中心和后车体姿态，配置同时声明 `output_reference: rear_axle`、`output_reference_confirmed: true`、`attitude_reference: rear_body`、`output_point_id: rear_axle_center`、`output_frame: rear_axle`。该分支仍不在线补杆臂；业务消息的 roll/pitch/yaw 单位为度、yaw 从东逆时针，有符号速度按导航速度在后体前向的投影，倒车为负。
 - 高程必须核实：`ellipsoidal` 直接使用；`orthometric` 按 `h=H+N` 加入已知 `geoid_separation_m`。常数 N 只适用于经验证的现场范围，不是通用大地水准面模型。CGCS2000/ITRF 等输入不能仅改标签为 WGS84。
-- CHC 航向从北顺时针，俯仰抬头为正、横滚右倾为正。后体 FLU 到测量点 ENU 的旋转为 `Rz(90°-heading) Ry(-pitch) Rx(roll)`，再左乘测量点 ENU 到固定 ENU 的旋转。业务消息仍由原有 `sany_output` 构造：`roll`、`pitch`、`yaw` 单位为度，yaw 从东逆时针。
-- 有符号速度为导航速度在后体前向的投影；倒车为负，不取速度模长。
-- 点云另需实测的 `T_rear_primary`，作用是 `p_rear=R*p_primary+t`。这与设备内部的天线杆臂是两件事。禁止把原 LIO 初始化时的重力姿态当成已知固定安装旋转。
+- 后轴分支启用点云另需实测的 `T_rear_primary`，作用是 `p_rear=R*p_primary+t`；这与设备内部天线杆臂不同。禁止把原 LIO 初始化时的重力姿态当成已知固定安装旋转。固定点参考如需转换到后轴，先确认 O、后车体姿态和刚性关系，再按 @ref lidar_ins_accuracy "离线参考归一化" 使用测量杆臂；不得重复补偿。
 
 原始手册依据：知识库 `_附件/SANY无人装载机/CGI-430/CHC®+CGI-430厘米级组合导航系统用户手册-V2.2.3-20250110.pdf`，PDF 第 18–20、53、56、63 页。状态码、卫导模式参考点变化、WebUI 安装姿态与正负号需要结合阅读。CAN 手册没有充分明确当前设备高程配置；上线前必须核实实际设置。
 
@@ -110,27 +120,38 @@
 | 三轴姿态 sigma / 速度 sigma | ≤ 0.5° / 0.20 m/s |
 | 恢复 | 连续 10 条新解通过全部条件 |
 
-浮点状态 5、固定但未定向状态 8、纯惯导状态 3、卫导模式均不发布业务位姿。任何异常立即复位恢复计数并清空姿态插值历史；没有 DR 降级。业务位姿在回调检查中停止；50 ms 健康定时器检测静默并发布状态。主机单调时钟另外监视断流，因此暂停 `/clock` 也不会永久保持 GOOD。时钟回退后不会倒序发布；应恢复正确时钟或重启本模式。
+浮点状态 5、固定但未定向状态 8、纯惯导状态 3、卫导模式均不发布有效位姿。任何异常立即复位恢复计数并清空姿态插值历史；没有 DR 降级。位姿在回调检查中停止；50 ms 健康定时器检测静默并发布对应分支的状态。主机单调时钟另外监视断流，因此暂停 `/clock` 也不会永久保持 GOOD。时钟回退后不会倒序发布；应恢复正确时钟或重启本模式。
 
-`/localization/loc_status` 初始化为 INITIALIZING，通过恢复后 GOOD，首次发布后的失效为 FAIL；`fault_status` 不可用时 P0，`fault_type=2`。心跳与业务序列、日志故障检测的时机见 @ref ins_output_validity_reading "输出有效性导读"。该节点使用单线程 ROS 回调，点云处理耗时可能增加门控通知延迟；Orin 上需测量实际调度和最大延迟。
+状态初始化为 INITIALIZING，通过恢复后 GOOD，首次发布后的失效为 FAIL；故障状态不可用时 P0、`fault_type=2`。`device_output` 使用 `/localization/ins_reference/` 下的隔离状态，`rear_axle` 沿用 `/localization/loc_status` 与原故障接口。心跳与业务序列、日志故障检测的时机见 @ref ins_output_validity_reading "输出有效性导读"。该节点使用单线程 ROS 回调，后轴分支的点云处理耗时可能增加门控通知延迟；Orin 上需测量实际调度和最大延迟。
 
 # 业务与点云输出
 
+## 设备输出点参考分支
+
 | Topic | 约定 |
 |---|---|
-| `/slamPoseRaw_topic` | 同一后轴位姿 PoseStamped |
+| `/localization/ins_reference/pose` | 固定ENU中的设备输出点位置和设备所选姿态；不是自动归一化的后轴位姿 |
+| `/localization/ins_reference/status`、`/localization/ins_reference/fault_status` | 该参考源的状态和故障 |
+| `/localization/ins_reference/path`、`/localization/ins_reference/diagnostics` | 参考轨迹和诊断 |
+| `/tf` | 默认关闭；启用时父frame为 `output.map_frame`、子frame为 `output_frame`，不能冒充 `rear_axle`、`base_link` 或 `base_footprint` |
+
+此分支不创建 `/slamPoseRaw_topic`、`/PosRes`、`/localization/pose_vel`、常规定位状态/故障/path、业务 Safety 心跳或点云发布者；`cloud.enabled: true` 拒绝启动。未确认的 `unverified_cgi_output` 是醒目的未知点标签，不是标定。旧 TF/位姿可能仍在接收端缓存，应检查状态和时间戳。
+
+## 已确认后轴兼容分支
+
+| Topic | 约定 |
+|---|---|
+| `/slamPoseRaw_topic` | 后轴位姿 PoseStamped |
 | `/localization/pose_vel` | 后轴 ENU 位置、FLU 欧拉角（度）、带符号速度，VehiclePose 与 comm_header |
 | `/localization/loc_status`、`fault_status` | 原类型、独立于业务位姿发送 |
 | `/diagnostics/heartbeat/lightning_slam` | node_id=6，独立心跳线程 |
 | `/localization/ins_diagnostics` | `mode`、拒绝原因、点云丢弃数、待处理数 |
 | `/localization/path` | 最多 500 个历史有效位姿，GOOD 时发布 |
-| `/tf` | 可选 `map -> rear_axle`，只在有效发布时更新 |
+| `/tf` | 可选 `<output.map_frame> -> rear_axle`，只在有效发布时更新 |
 | `/LidarDataInv` | 扫描结束时刻后轴 FLU 点云，frame=`rear_axle` |
 | `/LidarDataInL` | 相同扫描在固定 ENU 中，frame=`map` |
 
-旧 TF/位姿可能仍在接收端缓存，下游必须同时检查状态和时间戳。该模式不生成 LIO/地图匹配统计，详细诊断使用 `ins_diagnostics`。
-
-点云复用现有 SANY Livox PointCloud2 预处理、多雷达外参和帧组装，合并到主雷达坐标后执行自车滤波。逐点插值、扫描末参考系和区间失败条件见 @ref ins_cloud_interpolation_reading "点云时间与坐标导读"。缺雷达、覆盖不完整、插值间隔过大或等待超时的帧会被丢弃；待发布队列上限 8 帧，默认等候 300 ms。导航失效时<b>两种点云都停发</b>，恢复后要重新积累完整扫描区间。
+后轴分支的点云复用现有 SANY Livox PointCloud2 预处理、多雷达外参和帧组装，合并到主雷达坐标后执行自车滤波。逐点插值、扫描末参考系和区间失败条件见 @ref ins_cloud_interpolation_reading "点云时间与坐标导读"。缺雷达、覆盖不完整、插值间隔过大或等待超时的帧会被丢弃；待发布队列上限 8 帧，默认等候 300 ms。导航失效时<b>两种点云都停发</b>，恢复后要重新积累完整扫描区间。
 
 # 构建和启动
 
@@ -148,17 +169,46 @@ bash src/lightning-lm/scripts/build_workspace.sh
 
 源码目录迁移引起缓存冲突时，可加 `--cmake-clean-cache`；该参数重置全部包的 CMake 缓存选项，详见 @ref build_and_run "构建与缓存修复"。脚本还会去掉旧外部 `cgi430_interfaces_DIR` 缓存。
 
-复制 `config/ins_only/sany_cgi430.yaml` 为现场配置，填入并确认原点、高程类型和主雷达到后轴的刚体外参。模板故意包含 null/confirmed:false，不能直接用于车辆。外部 `cloud.lidar_config` 相对**现场 YAML 所在目录**解析，移动配置后应改为正确绝对路径。纯位姿台架测试可设 `cloud.enabled:false`。
+复制 `config/ins_only/sany_cgi430.yaml` 为现场配置，填入并确认固定原点与高程类型；模板故意包含 null/confirmed:false，不能直接用于车辆。设备输出点参考模式的安全默认合同为：
+
+```yaml
+system:
+  localization_mode: ins_only
+  pub_tf: false
+output:
+  map_frame: ins_enu
+ins_only:
+  output_reference: device_output
+  attitude_reference: device_output
+  output_reference_confirmed: false
+  output_point_id: unverified_cgi_output
+  output_frame: cgi_output_flu
+cloud:
+  enabled: false
+```
+
+模板的 `output.map_frame: ins_enu` 是固定ENU世界坐标的名称，不代表它已经与LiDAR地图坐标配准。这是未确认设备输出点的参考模式，不自动成为有效后轴参考。确认当前 WebUI 输出点后须记录真实 `output_point_id` 和确认状态；`output_reference_confirmed: true` 与 `unverified_cgi_output` 不能同时使用。仍须独立确认姿态及刚性关系。仅已确认设备输出后轴及后车体姿态时，才能切换到以下兼容合同，须同时替换模板中默认的点ID和frame：
+
+```yaml
+ins_only:
+  output_reference: rear_axle
+  output_reference_confirmed: true
+  attitude_reference: rear_body
+  output_point_id: rear_axle_center
+  output_frame: rear_axle
+```
+
+后轴分支如启用点云，还须确认主雷达到后轴的完整刚体外参。外部 `cloud.lidar_config` 相对**现场 YAML 所在目录**解析，移动配置后应改为正确绝对路径。
 
 ```bash
 bash scripts/run_sany_ins_only.sh /absolute/site.yaml
 ```
 
-启动脚本只加载 ROS 与统一工作区安装环境，以仓库为 cwd；`ROS_DOMAIN_ID` 缺省 42，可显式覆盖。SDK 驱动和三雷达驱动分别启动。`LIGHTNING_LM_INSTALL_SETUP` 可覆盖 Lightning 安装环境脚本。支持 `--output_published_tum /new/file.tum`；拒绝 LIO/PGO 轨迹参数及内嵌 `--bag` 回放。
+启动脚本只加载 ROS 与统一工作区安装环境，以仓库为 cwd；`ROS_DOMAIN_ID` 缺省 42，可显式覆盖。CGI SDK 驱动另行启动；只有启用后轴点云时才需要雷达驱动。`LIGHTNING_LM_INSTALL_SETUP` 可覆盖 Lightning 安装环境脚本。支持 `--output_published_tum /new/file.tum`；拒绝 LIO/PGO 轨迹参数及内嵌 `--bag` 回放。
 
 # 记录、回放与精度评估
 
-节点每次创建 `audit_root/ins_only_<启动微秒时间>/`，保存配置快照（包括外部雷达配置）、`can_frames.csv`、`solutions.csv`、`events.csv` 和实际发布的 `published_rear_axle.tum`。raw CSV 保存九类 CAN 帧时间和字节；solutions 保存经纬高、姿态、速度、sigma、各字段时间、转换后 ENU 位姿及是否发布/拒绝原因。未通过质量条件的转换值仅供分析。TUM 拒绝覆盖已有文件。
+节点每次创建 `audit_root/ins_only_<启动微秒时间>/`，保存配置快照（适用时含外部雷达配置）、`can_frames.csv`、`solutions.csv` 和 `events.csv`。设备输出点参考分支保存实际发布的 `published_device_output.tum` 与 `reference_metadata.yaml`，记录点ID、确认状态、姿态参考、世界/输出frame和 `lever_arm_applied: false` 等语义；后轴兼容分支保留 `published_rear_axle.tum`。raw CSV 保存九类 CAN 帧时间和字节；solutions 保存经纬高、姿态、速度、sigma、各字段时间、转换后 ENU 位姿及是否发布/拒绝原因。未通过质量条件的转换值仅供分析。TUM 拒绝覆盖已有文件。
 
 录制/回放脚本要求调用终端已加载 ROS 和消息环境，并设置与节点相同的 domain。MCAP 存储插件应已安装：
 
@@ -170,13 +220,13 @@ bash scripts/run_sany_ins_only.sh /absolute/site_replay.yaml
 bash scripts/replay_ins_only.sh /absolute/site_replay.yaml /recorded/bag --rate 1
 ```
 
-记录脚本录制 CGI 输入、配置中的雷达输入、业务位姿、状态和心跳；节点 CSV 不代替原始 bag。回放暂以正常速度验收，慢速播放可能触发单调时钟断流门限；循环或回退播放应重启节点。停止/恢复原因同样保留。
+记录脚本按输出分支选择CGI输入和相应的参考或业务输出；后轴点云分支另录配置中的雷达输入。设备输出点分支没有业务心跳。节点 CSV 不代替原始 bag；正式纯LiDAR评价仍优先使用 @ref lidar_ins_accuracy "旁路采集" 保留原始CAN、typed字段和独立元数据。回放暂以正常速度验收，慢速播放可能触发单调时钟断流门限；循环或回退播放应重启节点。停止/恢复原因同样保留。
 
 实机精度评估需要独立真值，统一参考点、时钟、平面基准和高程基准，分别统计水平/高程/姿态/速度误差、P95、最大误差、可用率、断流检测与恢复时间。地图对齐使用的轨迹段不能再当作独立精度验收数据。
 
 # 旧地图与任务迁移
 
-`scripts/ins_georeference.py` 需要 numpy、scipy、PyYAML。fit 的两条 TUM 都必须是**后轴中心和后车体姿态**；source 属于旧地图，target 是本模式发布的固定 ENU。必须实测时间偏移，不自动以轨迹误差拟合时延。首 70% 配对用于刚体拟合，末 30% 留出验证；不估计尺度，拒绝近共线轨迹。阈值由项目验收要求显式给定，例如：
+`scripts/ins_georeference.py` 需要 numpy、scipy、PyYAML。fit 的两条 TUM 都必须是**后轴中心和后车体姿态**；source 属于旧地图，target 是固定 ENU 中已确认的后轴/后车体轨迹；设备输出点参考不能仅因发布在 ENU 就直接充当 target。必须实测时间偏移，不自动以轨迹误差拟合时延。首 70% 配对用于刚体拟合，末 30% 留出验证；不估计尺度，拒绝近共线轨迹。阈值由项目验收要求显式给定，例如：
 
 ```bash
 python3 scripts/ins_georeference.py fit --source old_rear.tum --target enu_rear.tum \
@@ -193,7 +243,7 @@ ros2 run lightning_lm georeference_map old_map.pcd /new/transform.yaml old_prima
 
 `georeference_map` 转换完整 PCD 并生成 `map.pcd`、`tiled/`、`georeference.yaml`；第四个输入轨迹的首位姿作为 tiled 起点，须是旧地图中**主雷达/原定位内部参考点**，不要误传后轴轨迹。起点可从原地图的建图轨迹取得。输出目录必须不存在。SOLiD/BTC 数据库须在新坐标系重新构建，不能复制旧数据库；不自动部署地图或修改任务系统。
 
-源地图、源轨迹和源任务必须属于相同的旧地图导出坐标系；如果旧地图做过地面高度归一化，不能混入归一化前的 SLAM 轨迹。物理迁移后的激光地图路径指向新 `tiled/`，其业务输出不能再次叠加相同的 `output.fixed_map_transform`。纯组合导航分支本身直接输出固定 ENU，不应用旧地图的输出变换。新建地图也须先与该固定 ENU 原点建立明确关联，不能只复用 `frame_id: map`。
+源地图、源轨迹和源任务必须属于相同的旧地图导出坐标系；如果旧地图做过地面高度归一化，不能混入归一化前的 SLAM 轨迹。物理迁移后的激光地图路径指向新 `tiled/`，其业务输出不能再次叠加相同的 `output.fixed_map_transform`。纯组合导航分支本身直接输出固定 ENU，不应用旧地图的输出变换；设备输出点模式仍需先按证据转为后轴后才能用于上述迁移。新建地图也须先与该固定 ENU 原点建立明确关联，不能只复用 `frame_id: map`。
 
 已有 PGM 在纯平移/航向变换时可用 `grid --source old/map.yaml --transform ... --output /new/grid --source-ground-z 0`，保留栅格值并转换原点/yaw。涉及倾斜的三维变换会拒绝，须利用转换后的扫描、轨迹与射线原点重新生成或重新建图。若下游只支持 yaw=0 的地图，也应重新栅格化。没有现场配对数据时，不能替现场填写变换。
 
@@ -204,6 +254,9 @@ ros2 run lightning_lm georeference_map old_map.pcd /new/transform.yaml old_prima
 ctest --test-dir ../lightning_lm_ws/build/lightning_lm -R ins_navigation_test --output-on-failure
 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONNOUSERSITE=1 python3 scripts/test_ins_only_ros.py \
   --binary ../lightning_lm_ws/build/lightning_lm/bin/run_loc_online --record
+RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONNOUSERSITE=1 python3 scripts/test_ins_device_output_ros.py \
+  --binary ../lightning_lm_ws/build/lightning_lm/bin/run_loc_online \
+  --output-root /tmp/ins_device_output_tests --record
 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONNOUSERSITE=1 python3 scripts/test_ins_only_replay.py \
   --binary ../lightning_lm_ws/build/lightning_lm/bin/run_loc_online --recorded-test runs/ins_ros_test_<生成的目录>
 python3 scripts/test_ins_georeference.py --map-binary ../lightning_lm_ws/build/lightning_lm/bin/georeference_map
@@ -213,7 +266,7 @@ python3 scripts/validate_ins_m3dgr.py \
   --projector ../lightning_lm_ws/build/lightning_lm/bin/ins_project_llh --output /new/m3dgr_validation
 ```
 
-测试脚本固定使用 domain 88 和 `ROS_LOCALHOST_ONLY=1`，只运行本机合成输入。`--record` 同时验证录包脚本；回放测试检查输出确实由新节点生成，并验证 `/clock` 停止后单调时钟仍触发 FAIL。此次 WSL 的 Fast DDS 2.6.10 连官方 talker/listener 也只能发现、不能接收业务消息；换用 Cyclone DDS 后独立对照正常，因此 ROS 验收使用 Cyclone DDS。这没有修改生产启动脚本的中间件选择。需要复现实验时安装 `ros-humble-rmw-cyclonedds-cpp`，并让测试所有进程使用相同 `RMW_IMPLEMENTATION`；Orin 上仍需验证实际生产中间件和网络。
+后轴回归和设备输出点回归分别固定使用 domain 88、89 和 `ROS_LOCALHOST_ONLY=1`，只运行本机合成输入。`--record` 同时验证对应分支的录包脚本；回放测试检查输出确实由新节点生成，并验证 `/clock` 停止后单调时钟仍触发 FAIL。历史 WSL 的 Fast DDS 2.6.10 曾出现发现正常但不能接收业务消息，换用 Cyclone DDS 后独立对照正常；此记录不表示后续版本的 Fast DDS 一定失败，也没有修改生产启动脚本的中间件选择。需要按上述命令复现实验时安装 `ros-humble-rmw-cyclonedds-cpp`，并让测试所有进程使用相同 `RMW_IMPLEMENTATION`；Orin 上仍需验证实际生产中间件和网络。
 
 若用户目录的 numpy 2 与 Ubuntu scipy 发生 ABI 冲突，可在坐标迁移脚本前设 `PYTHONNOUSERSITE=1` 使用配套的系统包；不要改动整个 ROS Python 环境。M3DGR 读取依赖 rosbags，可独立安装到数据分析环境。
 

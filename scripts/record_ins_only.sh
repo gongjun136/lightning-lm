@@ -5,9 +5,9 @@ set -euo pipefail
 dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 topic_text="$(python3 "$dir/ins_topics.py" "$1")"
 mapfile -t topics <<< "$topic_text"
+output_text="$(python3 "$dir/ins_topics.py" --outputs "$1")"
+mapfile -t outputs <<< "$output_text"
 # [ins-record-inputs]
 # [ins-record-launch]
-exec ros2 bag record -s mcap -o "$2" "${topics[@]}" /slamPoseRaw_topic \
-  /localization/pose_vel /localization/loc_status /localization/fault_status \
-  /localization/ins_diagnostics /diagnostics/heartbeat/lightning_slam
+exec ros2 bag record -s mcap -o "$2" "${topics[@]}" "${outputs[@]}"
 # [ins-record-launch]

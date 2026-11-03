@@ -51,8 +51,8 @@ int main() {
     Require(!gate.Observe(4,true),"duplicate not recovery progress");
     PoseBuffer buf(2,0.11);
     Pose a; a.stamp=1;a.global_valid=true;buf.Add(a);
-    Pose b=a;b.stamp=1.1;b.map_from_rear=SE3(SO3(),Vec3d(1,0,0));buf.Add(b);
-    Pose middle;Require(buf.At(1.05,middle)&&std::abs(middle.map_from_rear.translation().x()-0.5)<1e-12,"interpolation");
+    Pose b=a;b.stamp=1.1;b.map_from_output=SE3(SO3(),Vec3d(1,0,0));buf.Add(b);
+    Pose middle;Require(buf.At(1.05,middle)&&std::abs(middle.map_from_output.translation().x()-0.5)<1e-12,"interpolation");
     Require(!buf.At(1.11,middle)&&!buf.At(0.99,middle),"no extrapolation");
     CloudPtr points(new PointCloudType);PointType v;v.x=9;v.y=0;v.z=0;v.time=0;points->push_back(v);
     v.x=8;v.time=100;points->push_back(v);CloudPtr out;SE3 end;
@@ -61,7 +61,7 @@ int main() {
     PoseBuffer turn(2,0.11);
     Pose start;start.stamp=2;start.global_valid=true;turn.Add(start);
     Pose finish=start;finish.stamp=2.1;
-    finish.map_from_rear=SE3(SO3(Quatd(Eigen::AngleAxisd(M_PI/2,Vec3d::UnitZ()))),Vec3d::Zero());
+    finish.map_from_output=SE3(SO3(Quatd(Eigen::AngleAxisd(M_PI/2,Vec3d::UnitZ()))),Vec3d::Zero());
     turn.Add(finish);
     CloudPtr rotating(new PointCloudType);
     v.x=9;v.y=0;v.time=0;rotating->push_back(v);
@@ -71,8 +71,8 @@ int main() {
     Require(!Deskew(points,1,1.2,SE3(),buf,out,end),"uncovered scan rejected");
     b.stamp=1.4;buf.Add(b);Require(!buf.Covers(1,1.4),"interior gap rejected");
     buf.Clear();Require(!buf.At(1,middle),"quality reset clears motion history");
-    PoseBuffer wrap(2,1);a.stamp=1;a.map_from_rear=SE3(VehicleAttitude(359,0,0),Vec3d::Zero());
-    b=a;b.stamp=2;b.map_from_rear=SE3(VehicleAttitude(1,0,0),Vec3d::Zero());wrap.Add(a);wrap.Add(b);
-    Require(wrap.At(1.5,middle)&&(middle.map_from_rear.so3()*Vec3d::UnitX()-Vec3d::UnitY()).norm()<1e-10,"short quaternion path across north");
+    PoseBuffer wrap(2,1);a.stamp=1;a.map_from_output=SE3(VehicleAttitude(359,0,0),Vec3d::Zero());
+    b=a;b.stamp=2;b.map_from_output=SE3(VehicleAttitude(1,0,0),Vec3d::Zero());wrap.Add(a);wrap.Add(b);
+    Require(wrap.At(1.5,middle)&&(middle.map_from_output.so3()*Vec3d::UnitX()-Vec3d::UnitY()).norm()<1e-10,"short quaternion path across north");
     std::cout<<"ins_navigation_test passed\n";
 }

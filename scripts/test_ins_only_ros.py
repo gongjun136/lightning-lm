@@ -38,11 +38,15 @@ def main():
     out = Path(tempfile.mkdtemp(prefix='ins_ros_test_', dir=root))
     config = yaml.safe_load((Path(__file__).resolve().parents[1] / 'config/ins_only/sany_cgi430.yaml').read_text())
     ins = config['ins_only']
+    # This fixture explicitly models a verified device rear-axle output.
+    ins.update(output_reference='rear_axle', output_reference_confirmed=True,
+               output_point_id='rear_axle_center', output_frame='rear_axle', attitude_reference='rear_body')
+    config['output']['map_frame'] = 'map'
     ins['georeference'].update(confirmed=True, origin_llh=[0, 0, 0], input_height='ellipsoidal')
     ins['audit_root'] = str(out)
     ins['quality'].update(recovery_samples=3, max_age_sec=.3, max_skew_sec=.08)
     config['cloud'].pop('lidar_config')
-    config['cloud'].update(voxel_leaf_m=0, rear_from_primary=dict(confirmed=True, translation_m=[1, 0, 0], quaternion_xyzw=[0, 0, 0, 1]))
+    config['cloud'].update(enabled=True, voxel_leaf_m=0, rear_from_primary=dict(confirmed=True, translation_m=[1, 0, 0], quaternion_xyzw=[0, 0, 0, 1]))
     config['multi_lidar'] = dict(enabled=True, primary_lidar_id=0, frame_period=.1,
         match_tolerance=.002, reorder_window=.1, min_lidars=2,
         topics=dict(lidar_0='/test/lidar0', lidar_1='/test/lidar1'),
@@ -118,10 +122,6 @@ def main():
 
     report = []
     recorder, record_log = None, None
-    if args.record:
-        record_log = (out/'recorder.log').open('w')
-        recorder = subprocess.Popen(['bash',str(Path(__file__).with_name('record_ins_only.sh')),str(cfg),str(out/'input_bag')],
-                                    stdout=record_log,stderr=subprocess.STDOUT)
     log = (out/'node.log').open('w')
     process = subprocess.Popen([args.binary, '--config', str(cfg)], stdout=log, stderr=subprocess.STDOUT)
     try:
@@ -130,6 +130,12 @@ def main():
             if time.monotonic()>deadline:
                 raise AssertionError('CGI subscription discovery timeout')
             spin(.05)
+        # A recorder also subscribes to CGI inputs. Start it only after the
+        # actual navigation node is discovered, so it cannot satisfy readiness.
+        if args.record:
+            record_log = (out/'recorder.log').open('w')
+            recorder = subprocess.Popen(['bash',str(Path(__file__).with_name('record_ins_only.sh')),str(cfg),str(out/'input_bag')],
+                                        stdout=record_log,stderr=subprocess.STDOUT)
         spin(1)
         for i in range(300):
             cycle(cloud=i > 10 and i % 10 == 0)

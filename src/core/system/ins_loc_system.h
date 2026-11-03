@@ -3,8 +3,8 @@
 #include <string>
 
 namespace lightning {
-/** CGI rear-axle navigation, strict publication gating and INS-driven LiDAR deskew.
- * Owns a single-threaded ROS executor's node; heartbeat has its own worker.
+/** CGI device-output reference poses, or explicitly confirmed rear-axle navigation.
+ * Owns a single-threaded ROS executor; only rear-axle business mode has a Safety heartbeat.
  * Init validates the immutable site configuration and opens audit files.
  * Invalid configuration returns false; Spin runs until ROS shutdown.
  * See @ref ins_only_operation for input clocks, references and failure semantics.
@@ -16,7 +16,7 @@ class InsLocSystem {
     /**
      * @brief 校验纯 INS 定位配置，连接导航输入、业务输出和审计文件。
      * @par 主要流程
-     * 1. <b>校验坐标参考</b>：确认 WGS84、后轴参考点、ENU 原点及高度基准。
+     * 1. <b>校验坐标参考</b>：读取设备输出点和姿态声明、固定 ENU 及高程；后轴业务须额外确认。
      * 2. <b>配置质量门控</b>：读取时间偏移、质量阈值、恢复样本数和位姿插值间隔。
      * 3. <b>创建节点与心跳</b>：设置 ROS 时间和地图坐标系，启动独立心跳线程。
      * 4. <b>打开审计文件</b>：保存配置快照，打开原始字段、导航结果、事件和 TUM 文件。

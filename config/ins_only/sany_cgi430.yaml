@@ -3,13 +3,17 @@
 # or an uncalibrated primary-LiDAR rotation.
 system:
   localization_mode: ins_only
-  pub_tf: true
+  pub_tf: false
 output:
-  map_frame: map
+  map_frame: ins_enu
 ins_only:
   topic_prefix: /cgi430
-  output_reference: rear_axle
-  attitude_reference: rear_body
+  # Device output is preserved; unknown WebUI settings must not imply rear axle.
+  output_reference: device_output  # device_output or explicitly confirmed rear_axle
+  output_reference_confirmed: false
+  output_point_id: unverified_cgi_output
+  output_frame: cgi_output_flu
+  attitude_reference: device_output  # rear_body only when verified on the device
   use_sim_time: false
   receive_time_offset_sec: 0.0
   pose_interpolation_max_gap_sec: 0.05
@@ -33,7 +37,7 @@ ins_only:
     max_velocity_sigma_mps: 0.20
     recovery_samples: 10
 cloud:
-  enabled: true
+  enabled: false  # Only confirmed rear_axle/rear_body mode supports clouds.
   lidar_config: ../sany/localization.yaml
   rear_from_primary:
     confirmed: false

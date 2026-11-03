@@ -76,7 +76,9 @@ struct InsLocSystem::Impl {
     std::unique_ptr<ins::RecoveryGate> gate;  ///< 连续有效导航样本的恢复门控。
     std::unique_ptr<ins::PoseBuffer> poses;  ///< 为点云扫描时刻插值提供的后轴位姿历史。
     std::array<double,5> consumed{};  ///< 各主导航字段最近已消费的时间戳（s）。
-    std::string reason = "awaiting_navigation" /**< 当前导航不可用、恢复或有效状态的原因。 */, frame = "map" /**< 业务地图输出坐标系名称。 */, rear_frame = "rear_axle" /**< 后轴坐标系名称。 */;
+    std::string reason = "awaiting_navigation" /**< 当前导航不可用、恢复或有效状态的原因。 */, frame = "map" /**< 固定 ENU 输出坐标系名称。 */, output_frame = "cgi_output_flu" /**< 设备输出点及所报告姿态的参考系。 */;
+    std::string output_reference = "device_output", point_id = "unverified_cgi_output", attitude_reference = "device_output";
+    bool rear_output = false, reference_confirmed = false;
     double offset = 0 /**< CAN 接收时间戳到 ROS 时间域的校正偏移（s）。 */, geoid_separation = 0 /**< 将设备高度换算为椭球高使用的大地水准面差（m）。 */, latest_published = 0 /**< 最近记录发布后轴位姿的时间戳（s）。 */, cloud_wait = 0.3 /**< 等待导航位姿覆盖点云扫描区间的超时（s）。 */;
     double last_path_stamp = 0 /**< 最近一次可视化路径采样的时间戳（s）。 */, max_radius = 20000 /**< 允许发布的位姿到局部地图原点最大距离（m）。 */;
     bool clouds_enabled = false /**< 是否启用融合点云的后轴与地图投影发布。 */, ever_good = false /**< 导航是否曾通过质量与恢复门控。 */, recording_failed = false /**< 审计记录发生写入失败后的故障锁存标志。 */;
@@ -103,7 +105,7 @@ struct InsLocSystem::Impl {
             LOG(WARNING) << "INS_ONLY event=INS_UNAVAILABLE 纯惯导定位不可用 detail=" << why;
         }
         reason = why;
-        heartbeat->SetState(ever_good ? functional_safety::NodeState::kFault : functional_safety::NodeState::kNotReady);
+        if (heartbeat) heartbeat->SetState(ever_good ? functional_safety::NodeState::kFault : functional_safety::NodeState::kNotReady);
     }
 
     void Update(ins::Field field, const cgi430_interfaces::msg::CanFrame& f) {
@@ -135,8 +137,8 @@ struct InsLocSystem::Impl {
             for (int i=0;i<3;++i) solutions << ',' << (*v)[i];
         for (double t : sample.time) solutions << ',' << t;
         if (pose) {
-            const auto& p=pose->map_from_rear.translation();
-            const auto q=pose->map_from_rear.unit_quaternion();
+            const auto& p=pose->map_from_output.translation();
+            const auto q=pose->map_from_output.unit_quaternion();
             solutions << ',' << p.x() << ',' << p.y() << ',' << p.z() << ','
                       << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w();
             for (int i=0;i<3;++i) solutions << ',' << pose->map_velocity[i];
@@ -178,7 +180,7 @@ struct InsLocSystem::Impl {
         }
         // Rejected solutions remain available for evaluation, never for business output.
         if (!bad.empty()) { LogSolution(&pose,false,bad); return; }
-        if (pose.map_from_rear.translation().norm() > max_radius) {
+        if (pose.map_from_output.translation().norm() > max_radius) {
             Reject("outside_site_radius"); LogSolution(&pose,false,reason); return;
         }
         // 阶段 3：推进恢复门控与位姿历史。
@@ -196,7 +198,7 @@ struct InsLocSystem::Impl {
     }
 
     /**
-     * @brief 将通过门控的后轴导航解发布为业务位姿和速度。
+     * @brief 发布设备参考位姿；仅经确认的后轴配置发布车辆业务位姿。
      * @par 主要流程
      * 1. <b>检查门控并构造消息</b>：拒绝时间不递增或恢复门控未通过的位姿，填充消息与通信头。
      * 2. <b>发布并更新工作状态</b>：发送业务消息、尝试写 TUM，并推进心跳状态和工作计数。
@@ -207,21 +209,32 @@ struct InsLocSystem::Impl {
         // 阶段 1：检查门控并构造消息。
         // [ins-business-publish]
         if (p.stamp <= latest_published || !gate->Good()) return;
-        auto vehicle=sany_output::MakeVehiclePoseMessage(p.map_from_rear,p.SignedSpeed(),p.stamp,frame);
-        auto pose=sany_output::MakePoseMessage(vehicle);
-        vehicle.comm_header.source_id=heartbeat->NodeId();
-        vehicle.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(pose_seq);
-        vehicle.comm_header.stamp_us=functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
+        geometry_msgs::msg::PoseStamped pose;
+        if (rear_output) {
+            auto vehicle=sany_output::MakeVehiclePoseMessage(p.map_from_output,p.SignedSpeed(),p.stamp,frame);
+            pose=sany_output::MakePoseMessage(vehicle);
+            vehicle.comm_header.source_id=heartbeat->NodeId();
+            vehicle.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(pose_seq);
+            vehicle.comm_header.stamp_us=functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
+            pose_pub->publish(pose); vehicle_pub->publish(vehicle);
+        } else {
+            pose.header.stamp=rclcpp::Time(static_cast<std::int64_t>(std::llround(p.stamp*1e9))); pose.header.frame_id=frame;
+            const auto& position=p.map_from_output.translation();
+            const auto q=p.map_from_output.unit_quaternion();
+            pose.pose.position.x=position.x(); pose.pose.position.y=position.y(); pose.pose.position.z=position.z();
+            pose.pose.orientation.x=q.x(); pose.pose.orientation.y=q.y();
+            pose.pose.orientation.z=q.z(); pose.pose.orientation.w=q.w();
+            pose_pub->publish(pose);
+        }
         // 阶段 2：发布并更新工作状态。
-        pose_pub->publish(pose); vehicle_pub->publish(vehicle);
         sany_output::WriteTumPoseLine(tum,pose,latest_published);
-        heartbeat->SetState(functional_safety::NodeState::kRunning); heartbeat->RecordWork();
+        if (heartbeat) { heartbeat->SetState(functional_safety::NodeState::kRunning); heartbeat->RecordWork(); }
         ever_good=true;
         // [ins-business-publish]
         // 阶段 3：更新 TF 与轨迹。
         if (tf) {
             geometry_msgs::msg::TransformStamped m;
-            m.header=pose.header; m.child_frame_id=rear_frame;
+            m.header=pose.header; m.child_frame_id=output_frame;
             m.transform.translation.x=pose.pose.position.x; m.transform.translation.y=pose.pose.position.y;
             m.transform.translation.z=pose.pose.position.z; m.transform.rotation=pose.pose.orientation;
             tf->sendTransform(m);
@@ -299,7 +312,7 @@ struct InsLocSystem::Impl {
             }
             if (cloud_leaf>0) deskewed=DownsamplePreservingSource(deskewed,cloud_leaf);
             // 阶段 4：发布并移出队首。
-            inv_pub->publish(sany_output::MakeCloudMessage(deskewed,stats.begin_time,stats.end_time,SE3(),rear_frame));
+            inv_pub->publish(sany_output::MakeCloudMessage(deskewed,stats.begin_time,stats.end_time,SE3(),output_frame));
             if (cloud_count++ % map_every==0)
                 map_pub->publish(sany_output::MakeCloudMessage(deskewed,stats.begin_time,stats.end_time,map_from_rear,frame));
             pending.pop_front();
@@ -329,14 +342,17 @@ struct InsLocSystem::Impl {
         // [ins-health-status]
         // 阶段 2：发布故障与诊断快照。
         lightning::msg::FaultStatus f;
-        f.header=s.header; f.comm_header.source_id=heartbeat->NodeId();
+        f.header=s.header; f.comm_header.source_id=heartbeat ? heartbeat->NodeId() : 0;
         f.comm_header.seq=functional_safety::HeartbeatPublisher::Advance(fault_seq);
         f.comm_header.stamp_us=functional_safety::HeartbeatPublisher::UnixMicrosecondsNow();
         f.level=gate->Good() ? f.LEVEL_NO_FAULT : f.LEVEL_P0;
         f.fault_type=gate->Good() ? 0 : 2; f.description=gate->Good() ? "" : "ins_only: "+reason;
         fault_pub->publish(f);
         std_msgs::msg::String diagnostic;
-        diagnostic.data="mode=ins_only reason="+reason+" cloud_drops="+std::to_string(cloud_drops)+
+        diagnostic.data="mode=ins_only output_reference="+output_reference+" point_id="+point_id+
+                        " output_reference_confirmed="+std::to_string(reference_confirmed)+
+                        " attitude_reference="+attitude_reference+" output_frame="+output_frame+
+                        " reason="+reason+" cloud_drops="+std::to_string(cloud_drops)+
                         " incomplete_scan_drops="+std::to_string(assembler.InsufficientLidarDropCount())+
                         " pending_clouds="+std::to_string(pending.size());
         diagnostic_pub->publish(diagnostic);
@@ -405,8 +421,30 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
             throw std::invalid_argument("ins_only already outputs fixed ENU; disable legacy output.fixed_map_transform");
         if (!c || !geo["confirmed"].as<bool>()) throw std::invalid_argument("ins_only.georeference must be confirmed");
         if (geo["datum"].as<std::string>()!="WGS84") throw std::invalid_argument("this version requires verified WGS84 input; no implicit datum conversion");
-        if (c["output_reference"].as<std::string>()!="rear_axle" || c["attitude_reference"].as<std::string>()!="rear_body")
-            throw std::invalid_argument("CGI output must be configured for rear axle and rear body");
+        x.output_reference=c["output_reference"] ? c["output_reference"].as<std::string>() : "device_output";
+        x.attitude_reference=c["attitude_reference"] ? c["attitude_reference"].as<std::string>() : "device_output";
+        x.reference_confirmed=c["output_reference_confirmed"] && c["output_reference_confirmed"].as<bool>();
+        if (x.output_reference!="device_output" && x.output_reference!="rear_axle")
+            throw std::invalid_argument("ins_only.output_reference 必须为 device_output 或 rear_axle，不能推测设备参考点");
+        if (x.attitude_reference!="device_output" && x.attitude_reference!="rear_body")
+            throw std::invalid_argument("ins_only.attitude_reference 必须明确声明为 device_output 或 rear_body");
+        x.rear_output=x.output_reference=="rear_axle";
+        x.point_id=c["output_point_id"] ? c["output_point_id"].as<std::string>() :
+            (x.rear_output ? "rear_axle_center" : "unverified_cgi_output");
+        x.output_frame=c["output_frame"] ? c["output_frame"].as<std::string>() :
+            (x.rear_output ? "rear_axle" : "cgi_output_flu");
+        if (x.point_id.empty() || x.output_frame.empty() || x.output_frame.front()=='/' ||
+            x.output_frame.find_first_of(" \t\r\n")!=std::string::npos)
+            throw std::invalid_argument("INS 输出点标识和参考系名称不能为空，参考系不能包含空白或以斜杠开头");
+        if (x.reference_confirmed && x.point_id=="unverified_cgi_output")
+            throw std::invalid_argument("确认设备输出参考点后必须填写实际 output_point_id，不能保留 unverified_cgi_output");
+        if (x.rear_output && (!x.reference_confirmed || x.attitude_reference!="rear_body" ||
+                             x.point_id!="rear_axle_center" || x.output_frame!="rear_axle"))
+            throw std::invalid_argument("后轴业务输出必须明确确认 WebUI 已输出后轴中心及后车体姿态，并设置 output_reference_confirmed:true、output_point_id:rear_axle_center、output_frame:rear_axle；未知设置请使用 device_output");
+        if (!x.rear_output && (x.output_frame=="rear_axle" || x.output_frame=="base_link" || x.output_frame=="base_footprint"))
+            throw std::invalid_argument("device_output 参考位姿不能使用后轴或车辆业务参考系名称");
+        if (!x.rear_output && config["cloud"] && config["cloud"]["enabled"] && config["cloud"]["enabled"].as<bool>())
+            throw std::invalid_argument("device_output 保留设备输出点，请设置 cloud.enabled:false；未确认后轴关系时不发布后轴点云");
         const auto origin=geo["origin_llh"].as<std::vector<double>>();
         if (origin.size()!=3) throw std::invalid_argument("origin_llh requires latitude, longitude, ellipsoid height");
         x.reference=std::make_unique<ins::GeoReference>(origin[0],origin[1],origin[2]);
@@ -433,13 +471,15 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         x.gate=std::make_unique<ins::RecoveryGate>(x.policy.recovery_samples);
         x.poses=std::make_unique<ins::PoseBuffer>(2,Positive(c,"pose_interpolation_max_gap_sec",0.05));
         // 阶段 3：创建节点与心跳。
-        x.node=std::make_shared<rclcpp::Node>("lightning_slam");
+        x.node=std::make_shared<rclcpp::Node>(x.rear_output ? "lightning_slam" : "lightning_ins_reference");
         if (c["use_sim_time"]) x.node->set_parameter(rclcpp::Parameter("use_sim_time",c["use_sim_time"].as<bool>()));
         x.frame=config["output"] && config["output"]["map_frame"] ? config["output"]["map_frame"].as<std::string>() : "map";
-        if (x.frame.empty() || x.frame==x.rear_frame) throw std::invalid_argument("invalid map frame");
-        functional_safety::HeartbeatConfig hc;
-        hc.node_id=6; hc.topic="/diagnostics/heartbeat/lightning_slam";
-        x.heartbeat=std::make_unique<functional_safety::HeartbeatPublisher>(*x.node,hc);
+        if (x.frame.empty() || x.frame==x.output_frame) throw std::invalid_argument("invalid map frame");
+        if (x.rear_output) {
+            functional_safety::HeartbeatConfig hc;
+            hc.node_id=6; hc.topic="/diagnostics/heartbeat/lightning_slam";
+            x.heartbeat=std::make_unique<functional_safety::HeartbeatPublisher>(*x.node,hc);
+        }
         // 阶段 4：打开审计文件。
         const std::filesystem::path dir=std::filesystem::path(c["audit_root"] ? c["audit_root"].as<std::string>() : "runs")/
             ("ins_only_"+std::to_string(functional_safety::HeartbeatPublisher::UnixMicrosecondsNow()));
@@ -448,11 +488,21 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         std::ofstream snapshot(dir/"config.yaml"); snapshot << config;
         if (!snapshot) throw std::runtime_error("cannot save configuration snapshot");
         x.raw_log.open(dir/"can_frames.csv"); x.solutions.open(dir/"solutions.csv"); x.events.open(dir/"events.csv");
-        const auto tp=published_tum.empty() ? dir/"published_rear_axle.tum" : std::filesystem::path(published_tum);
+        const auto tp=published_tum.empty() ? dir/(x.rear_output ? "published_rear_axle.tum" : "published_device_output.tum") : std::filesystem::path(published_tum);
         if (std::filesystem::exists(tp)) throw std::invalid_argument("refusing to overwrite published TUM");
         if (!tp.parent_path().empty()) std::filesystem::create_directories(tp.parent_path());
         x.tum.open(tp);
         if (!x.raw_log || !x.solutions || !x.events || !x.tum) throw std::runtime_error("cannot open audit outputs");
+        YAML::Node metadata;
+        metadata["output_reference"]=x.output_reference; metadata["output_reference_confirmed"]=x.reference_confirmed;
+        metadata["output_point_id"]=x.point_id; metadata["attitude_reference"]=x.attitude_reference;
+        metadata["world_frame"]=x.frame; metadata["output_frame"]=x.output_frame;
+        metadata["lever_arm_applied"]=false; metadata["georeference"]=geo;
+        metadata["pose_topic"]=x.rear_output ? "/slamPoseRaw_topic" : "/localization/ins_reference/pose";
+        metadata["published_tum"]=tp.string();
+        std::ofstream reference_metadata(dir/"reference_metadata.yaml"); reference_metadata << metadata;
+        reference_metadata.close();
+        if (!reference_metadata) throw std::runtime_error("无法保存 INS 输出参考点元数据");
         x.raw_log << "raw_stamp,corrected_stamp,field,can_id,valid,dlc,b0,b1,b2,b3,b4,b5,b6,b7\n";
         x.solutions << "stamp,latitude,longitude,altitude,heading,pitch,roll,system_state,satellite_status,differential_age,"
                     "ve,vn,vu,sigma_e,sigma_n,sigma_u,sigma_heading,sigma_pitch,sigma_roll,sigma_ve,sigma_vn,sigma_vu,"
@@ -461,14 +511,17 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         x.events << "stamp,reason\n";
         // 阶段 5：创建输出通道。
         const auto qos=rclcpp::QoS(1000).best_effort();
-        x.pose_pub=x.node->create_publisher<geometry_msgs::msg::PoseStamped>("/slamPoseRaw_topic",qos);
-        x.vehicle_pub=x.node->create_publisher<lightning::msg::VehiclePose>("/localization/pose_vel",qos);
-        x.status_pub=x.node->create_publisher<lightning::msg::LocalizationStatus>("/localization/loc_status",rclcpp::QoS(10).best_effort());
-        x.fault_pub=x.node->create_publisher<lightning::msg::FaultStatus>("/localization/fault_status",rclcpp::QoS(10).best_effort());
-        x.path_pub=x.node->create_publisher<nav_msgs::msg::Path>("/localization/path",rclcpp::QoS(1).best_effort());
-        x.diagnostic_pub=x.node->create_publisher<std_msgs::msg::String>("/localization/ins_diagnostics",rclcpp::QoS(10).best_effort());
-        x.inv_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv",rclcpp::QoS(1).best_effort());
-        x.map_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL",rclcpp::QoS(1).best_effort());
+        const std::string prefix=x.rear_output ? "/localization" : "/localization/ins_reference";
+        x.pose_pub=x.node->create_publisher<geometry_msgs::msg::PoseStamped>(x.rear_output ? "/slamPoseRaw_topic" : prefix+"/pose",qos);
+        if (x.rear_output) x.vehicle_pub=x.node->create_publisher<lightning::msg::VehiclePose>("/localization/pose_vel",qos);
+        x.status_pub=x.node->create_publisher<lightning::msg::LocalizationStatus>(prefix+(x.rear_output ? "/loc_status" : "/status"),rclcpp::QoS(10).best_effort());
+        x.fault_pub=x.node->create_publisher<lightning::msg::FaultStatus>(prefix+"/fault_status",rclcpp::QoS(10).best_effort());
+        x.path_pub=x.node->create_publisher<nav_msgs::msg::Path>(prefix+"/path",rclcpp::QoS(1).best_effort());
+        x.diagnostic_pub=x.node->create_publisher<std_msgs::msg::String>(prefix+(x.rear_output ? "/ins_diagnostics" : "/diagnostics"),rclcpp::QoS(10).best_effort());
+        if (x.rear_output) {
+            x.inv_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInv",rclcpp::QoS(1).best_effort());
+            x.map_pub=x.node->create_publisher<sensor_msgs::msg::PointCloud2>("/LidarDataInL",rclcpp::QoS(1).best_effort());
+        }
         if (config["system"]["pub_tf"] && config["system"]["pub_tf"].as<bool>()) x.tf=std::make_unique<tf2_ros::TransformBroadcaster>(x.node);
         // 阶段 6：注册导航与点云输入。
         const auto ns=c["topic_prefix"] ? c["topic_prefix"].as<std::string>() : "/cgi430";
@@ -487,7 +540,8 @@ bool InsLocSystem::Init(const std::string& yaml, const std::string& published_tu
         // 阶段 7：启动健康检查。
         x.timer=x.node->create_wall_timer(std::chrono::milliseconds(50),[&x]{x.Health();});
         LOG(INFO) << "INS_ONLY event=INS_INITIALIZED 纯惯导定位初始化完成，固定 ENU 原点 origin=" << origin[0] << ',' << origin[1]
-                  << " audit=" << dir << " source=CGI_rear_axle no_LIO_no_map_matching";
+                  << " audit=" << dir << " output_reference=" << x.output_reference << " point_id=" << x.point_id
+                  << " attitude_reference=" << x.attitude_reference << " no_LIO_no_map_matching";
         return true;
     } catch (const std::exception& e) { LOG(ERROR) << "event=INS_INIT_FAILED 纯惯导定位初始化失败 detail=" << e.what(); return false; }
 }

@@ -8,8 +8,8 @@
 
 namespace lightning::ins {
 
-// All device outputs refer to the configured rear axle. Never apply the
-// GNSS/IMU lever arm again in this layer.
+// Position remains at the device's configured output point. This layer neither
+// identifies that physical point nor applies any GNSS/IMU or output lever arm.
 enum Field : std::size_t { Latitude, Longitude, Altitude, Attitude, Velocity,
                           PositionSigma, AttitudeSigma, Status, VelocitySigma, FieldCount };
 struct Sample {
@@ -65,15 +65,16 @@ class GeoReference {
 };
 
 // CHC: north-clockwise heading, nose-up pitch, right-down roll.
-// Result maps rear-body FLU axes to the local ENU axes at the measurement.
+// Result maps the reported attitude's FLU representation to measurement ENU.
+// It describes rear-body axes only when that device setting is confirmed.
 SO3 VehicleAttitude(double heading_deg, double pitch_deg, double roll_deg);
 
 struct Pose {
-    double stamp = 0;  ///< 后轴位姿对应的传感器时间戳（s）。
-    SE3 map_from_rear;  ///< 将后轴车体坐标变换到局部地图坐标的位姿。
+    double stamp = 0;  ///< 设备输出位姿对应的传感器时间戳（s）。
+    SE3 map_from_output;  ///< 设备输出点及所报告姿态在固定 ENU 中的位姿，不隐含后轴。
     Vec3d map_velocity = Vec3d::Zero();  ///< 局部地图坐标系中的速度（m/s）。
     bool global_valid = false;  ///< 该位姿是否通过设备质量与恢复门控。
-    double SignedSpeed() const { return (map_from_rear.so3().inverse() * map_velocity).x(); }
+    double SignedSpeed() const { return (map_from_output.so3().inverse() * map_velocity).x(); }
 };
 Pose Convert(const Sample& sample, const GeoReference& reference);
 
@@ -88,7 +89,7 @@ class PoseBuffer {
     bool Covers(double begin, double end, bool require_global = true) const;
     double Latest() const { return poses_.empty() ? 0 : poses_.back().stamp; }
  private:
-    std::deque<Pose> poses_;  ///< 按时间保存的有效 INS 后轴位姿历史。
+    std::deque<Pose> poses_;  ///< 按时间保存的有效 INS 输出点位姿历史。
     double horizon_ /**< 位姿历史保留时间窗口（s）。 */, max_gap_ /**< 允许进行位姿插值的最大样本时间间隔（s）。 */;
 };
 

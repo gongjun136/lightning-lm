@@ -10,7 +10,7 @@ bool Deskew(const CloudPtr& input, double begin, double end, const SE3& rear_fro
     if (!input || input->empty() || !poses.Covers(begin, end)) return false;
     Pose reference;
     if (!poses.At(end, reference)) return false;
-    map_from_rear = reference.map_from_rear;
+    map_from_rear = reference.map_from_output;
     const SE3 rear_end_from_map = map_from_rear.inverse();
     // [ins-deskew-reference]
     CloudPtr result(new PointCloudType);
@@ -24,7 +24,7 @@ bool Deskew(const CloudPtr& input, double begin, double end, const SE3& rear_fro
         if (stamp < begin || stamp > end + 1e-7) return false;
         Pose at;
         if (!poses.At(std::min(stamp,end), at)) return false;
-        const Vec3d p = rear_end_from_map * at.map_from_rear * rear_from_primary *
+        const Vec3d p = rear_end_from_map * at.map_from_output * rear_from_primary *
                         point.getVector3fMap().cast<double>();
         // [ins-deskew-point]
         PointType transformed = point;

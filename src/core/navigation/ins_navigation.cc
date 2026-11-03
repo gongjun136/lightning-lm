@@ -89,13 +89,13 @@ Pose Convert(const Sample& s, const GeoReference& ref) {
     const Vec3d p = ref.Forward(s.latitude, s.longitude, s.altitude, &rotation);
     Pose result;
     result.stamp = s.Stamp();
-    result.map_from_rear = SE3(SO3(rotation) * VehicleAttitude(s.heading, s.pitch, s.roll), p);
+    result.map_from_output = SE3(SO3(rotation) * VehicleAttitude(s.heading, s.pitch, s.roll), p);
     result.map_velocity = rotation * s.velocity;
     return result;
 }
 
 bool PoseBuffer::Add(const Pose& p) {
-    if (!PositiveFinite(p.stamp) || !p.map_from_rear.matrix().allFinite() ||
+    if (!PositiveFinite(p.stamp) || !p.map_from_output.matrix().allFinite() ||
         (!poses_.empty() && p.stamp <= poses_.back().stamp)) return false;
     poses_.push_back(p);
     while (poses_.size() > 2 && poses_[1].stamp < p.stamp - horizon_) poses_.pop_front();
@@ -116,8 +116,8 @@ bool PoseBuffer::At(double t, Pose& result, bool global) const {
     if (hi->stamp - lo.stamp > max_gap_ || (global && (!lo.global_valid || !hi->global_valid))) return false;
     const double alpha = (t - lo.stamp) / (hi->stamp - lo.stamp);
     result.stamp = t;
-    result.map_from_rear = SE3(lo.map_from_rear.unit_quaternion().slerp(alpha, hi->map_from_rear.unit_quaternion()),
-                               (1-alpha)*lo.map_from_rear.translation() + alpha*hi->map_from_rear.translation());
+    result.map_from_output = SE3(lo.map_from_output.unit_quaternion().slerp(alpha, hi->map_from_output.unit_quaternion()),
+                               (1-alpha)*lo.map_from_output.translation() + alpha*hi->map_from_output.translation());
     result.map_velocity = (1-alpha)*lo.map_velocity + alpha*hi->map_velocity;
     result.global_valid = lo.global_valid && hi->global_valid;
     return true;
