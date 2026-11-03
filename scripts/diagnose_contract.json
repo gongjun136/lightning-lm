@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "fead398d705e4d261d84a4826231f51c23e419012001ae8a6cc7a62c966181b0",
+  "contract_id": "cc0e11f9b847d94cd0f94cd088fa21abc928dc571e36ab1629a2bbffee2292e2",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -15,7 +15,7 @@
     "src/core/localization/lidar_loc/lidar_loc.cc": "7a4c55b7b607b5b7b128dc21b5f7cdb8e28f12d7f768c847c5e9a9a3436e7105",
     "src/core/localization/lidar_loc/lidar_loc.h": "da939d582f82b27e2f569fbf43d443e0ed92d349fb562a3c37272b91ffde1adf",
     "src/core/localization/solid_relocalizer.cc": "8f7d5c2b5b7e0abeb83414baee4aef2d1fd6e043d10b4a6ea8be64a5dc90dd06",
-    "src/core/localization/pose_graph/pgo.cc": "524218a2d11f7f195c7c0a0ffc36eb64c0e6ba3d263c06ab8c59a324a787442f",
+    "src/core/localization/pose_graph/pgo.cc": "d4b8e84dbee4b8b1e5249e1cb1083d6334cf088eda79d464558f78ea5ff97859",
     "src/core/localization/pose_graph/smoother.h": "27bdf52f92eb2ba71654671be17ccdb1ae65fcc6c9df05fd18543d7e00d6ab90",
     "src/core/localization/localization_dtc_monitor.cc": "80a6ff6d3ebe5ca8787deb83effb97f2bbaff1640bd957452ba85854122dd5f2",
     "src/core/localization/localization_dtc_monitor.h": "a0c5a276c1c89b26d183e474d5322b216b422331b5fe039d0ed81b34ce1cdd60",
@@ -33,11 +33,11 @@
     "src/utils/online_logging.cc": "8d4537cd4aafa37d3a5342bbac5650e21a00a43c24d4be055dfd47d00bb2e4ad",
     "src/utils/online_logging.h": "591b85ee197da2ae69b7fe3315823cd9f712f1faf49dc6e6bfc934615801d6a2",
     "scripts/compute_profile_report.py": "6ee3847d08faa59fb855a1188b01d71aa163002c05c68b0d66d9fc1532016f98",
-    "scripts/diagnose_localization.py": "455a5f32a39f6c66c53c990ac4adcf8b98d63a27bc131264fe6da72636359333",
-    "scripts/localization_log_events.py": "951a45bb194a704bf8075776458cf0cf377a35ec34885f31f9bc4f0b9e20638b",
+    "scripts/diagnose_localization.py": "04e1811f84712beb3f9e5858bffdfcd094130317c81ea3bd7b1afc133957c8db",
+    "scripts/localization_log_events.py": "cdcad7e7692e5d755e5a913054dec2c24139308d7689d19c9cf90629b1625bf9",
     "scripts/analyze_localization_health_log.py": "92a12e1e3046483ba03bbadf316ed05b79f723e90d59a06cea4f316ea8f4656f",
     "scripts/run_sany_lidar_loc.sh": "caef162d73ddcb001e6a0cd2ab5bf09c61c44004333e85097f720cf9ec0e8f1c",
-    "src/core/system/loc_system.cc": "354b735cdccd4fbcd9c1886ff8821eefedcc0dac6cb62c1a25f481246d21a421",
+    "src/core/system/loc_system.cc": "d49f3c6238d2bfa8a916d8327c5ffc26af243f1016948bb9f7e53161f8d83f29",
     "src/core/system/loc_system.h": "9c30f08382cfc9d4510e6dc08dbf2a115d7d914190353302c12b180fc3ec736a",
     "config/sany/localization.yaml#diagnostics": "e9954f42cf6cde587b14c019b27dfc5dff27b669c1af62a3a24555a792987c3a",
     "workspace.repos": "1013e851200593c7c105793711ce241d0534691ac41d19593e2aaf334f4c19e9"

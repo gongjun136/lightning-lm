@@ -854,7 +854,15 @@ void LocSystem::PublishLocalizationResult(const loc::LocalizationResult& result)
     // 阶段 1：校验结果与发布条件。
     // [output-result-publication-gates]
     // 结果有效、时间递增、地图匹配可用是三个独立条件；依次通过后才构造业务消息。
-    if (!result.valid_ || result.timestamp_ <= 0.0) return;
+    if (!result.valid_ || result.timestamp_ <= 0.0) {
+        LOG_EVERY_N(WARNING, 200) << "event=LOC_OUTPUT_RESULT_INVALID 无效定位结果未进入业务位姿发布"
+                                << " valid=" << result.valid_
+                                << std::setprecision(16) << " timestamp=" << result.timestamp_
+                                << " is_parking=" << result.is_parking_
+                                << " pose_epoch=" << result.pose_epoch_
+                                << " covariance_valid=" << result.pose_covariance_valid_;
+        return;
+    }
     const bool profiling_enabled = profiling::ComputeProfilingEnabled();
     profiling::Stopwatch outer_timer(profiling_enabled);
     std::unique_lock<std::mutex> publish_lock(pose_publish_mutex_);

@@ -799,7 +799,7 @@ def classify(row, limits):
         state_fields = ['policy_version', 'startup_pending', 'startup_expired', 'startup_age_sec',
                         'confirmed_tracking_lost', 'localization_lost', 'output_gate_open',
                         'output_stale', 'output_age_sec', 'match_stale', 'valid_match_age_sec',
-                        'latest_match_valid', 'lost_frames', 'radar_all_failed']
+                        'latest_match_valid', 'lost_frames', 'radar_all_failed', 'last_published_pose', 'last_valid_match']
         if code == -9:
             if row.get('startup_expired') == 1 and (not frame_policy or row.get('lidar_frame_seen') == 1):
                 add('startup_expired', '初始定位仍未成功，已超过启动等待期限', state_fields,
@@ -823,8 +823,17 @@ def classify(row, limits):
             causes[-1]['phase'] = 'startup'
             return causes
         if row.get('output_stale') == 1:
-            add('output_stale_degraded', '定位输出超过新鲜度期限，降级为 4', state_fields,
+            first_output_missing = (row.get('startup_pending') == 0 and
+                                    number(row.get('last_published_pose')) == 0 and
+                                    str(row.get('output_age_sec')).lower() == 'inf')
+            add('output_stale_degraded', '匹配已初始化，但尚未完成首次有效位姿发布' if first_output_missing else
+                '定位输出超过新鲜度期限，降级为 4', state_fields,
                 '检查输入、处理队列和发布阶段；输出超时尚不等于已确认失锁。')
+            if first_output_missing:
+                causes[-1]['evidence']['first_valid_output_missing'] = True
+                causes[-1]['advice'] = ('检查 PGO 静止输出缓存，以及 LOC_OUTPUT_RESULT_INVALID 的 valid、timestamp、is_parking；'
+                    '对照准备结果到 publish_begin 的链路。新日志的 PGO_STATIC_HOLD_SNAPSHOT_RECOVERED 表示已补全缺失缓存；'
+                    '匹配成功不等于业务位姿已经发布。')
         if row.get('match_stale') == 1:
             add('match_stale_degraded', '有效匹配结果陈旧，尚未确认失锁，降级为 4', state_fields,
                 '检查有效匹配年龄和处理积压；不能把陈旧结果直接解释成已确认失锁。')

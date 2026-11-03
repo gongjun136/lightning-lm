@@ -233,7 +233,10 @@ bool PGO::ProcessDR(const NavState& dr_result) {
     // 静止请求可能先于首个有效融合地图位姿到达；
     // 避免冻结未初始化的无效结果，阻碍 PGO 启动。
     is_parking_ = (dr_is_parking_ || lidar_loc_is_parking_) && impl_->result_.valid_;
-    if (is_parking_ && !was_parking && impl_->result_.valid_) {
+    // ProcessLidarLoc can set the shared parking flag before the next DR.
+    // That mode flag alone does not establish a valid stationary output cache.
+    const bool snapshot_missing = !parking_result_.valid_;
+    if (is_parking_ && (!was_parking || snapshot_missing)) {
         static_hold_start_stamp_ = dr_result.timestamp_;
         parking_result_ = impl_->result_;
         if (dr_extrapolation_enabled_) ExtrapolateLocResult(parking_result_);
@@ -244,6 +247,13 @@ bool PGO::ProcessDR(const NavState& dr_result) {
         parking_result_.unsmoothed_pose_valid_ = true;
         parking_result_.is_parking_ = true;
         parking_result_.vel_b_ = Vec3d::Zero();
+        if (was_parking && snapshot_missing) {
+            LOG(WARNING) << "event=PGO_STATIC_HOLD_SNAPSHOT_RECOVERED 静止标志已设置但输出缓存尚未初始化，已从有效融合位姿补全"
+                         << std::setprecision(16) << " dr_stamp=" << dr_result.timestamp_
+                         << " fused_stamp=" << impl_->result_.timestamp_
+                         << " pose_epoch=" << parking_result_.pose_epoch_
+                         << " covariance_valid=" << parking_result_.pose_covariance_valid_;
+        }
     } else if (!is_parking_ && was_parking) {
         // 静止期间，ProcessDR 按实时 IMU 时刻发布 parking_result_，
         // ProcessDR 不推进 impl_->result_ 的时间戳（新地图帧仍可更新它）。

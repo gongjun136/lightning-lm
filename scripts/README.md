@@ -140,6 +140,8 @@ run_frontend_offline.sh 输出文件说明：
 
 现场诊断按日志中的策略版本解释证据。`localization-dtc-v8-yaw-native-imu` 和历史 `localization-dtc-v7-motion-unknown` 下，运动一致性 UNKNOWN 保持原始 UNKNOWN，不单独触发 Safety 4；`raw=0` 时的“运动证据提示”不计入故障段，JSON 的 `motion_evidence` 提供 `status`（`UNKNOWN`、`PASS`、`FAIL` 或 `unavailable`）和 `unknown_advisory`。若 v8 或 v7 的 4 只有运动 UNKNOWN 而缺少其他判据，报告判据缺失；此前明确 FAIL 未恢复、协方差异常、初始化、输出/匹配过期或门控关闭等仍须分别检查。v6/v5 旧日志按对应历史规则解释，IMU 源间隔和回调到达间隔仍作为输入时序证据保留。
 
+匹配已初始化但 `output_stale=1`、`last_published_pose=0` 且 `output_age_sec=inf` 时，诊断提示尚未完成首次有效位姿发布；对照 `prepared_age`、`publish_begin_age` 和 `LOC_OUTPUT_RESULT_INVALID` 的结果字段，检查准备到发布的环节。`PGO_STATIC_HOLD_SNAPSHOT_RECOVERED` 表示已补全缺失的静止缓存，不代表已发布或 Safety 已恢复；TUM 为空也不能单独证明发布状态。事件字段及限频见 [进程内故障采集与快速排查](../docs/guide/incident_capture.md)。
+
 v8 航向一致性检查按原生 IMU 源时间分段积分机体系 z 轴角速度，平移检查仍沿用原有中点积分。航向端点覆盖不足时，该次航向检查为 UNKNOWN，平移仍按 CAN 与 IMU 中点证据判定；明确平移 FAIL 在无更高优先级状态时仍可报 4。新 `SAFETY_DIAGNOSTIC` 字段记录选中的相邻或窗口比较、两条位姿分支的转角及残差、IMU 积分和绝对转角、实际阈值、时间范围、积分段数和末端保持时长。`yaw_raw_independent=0` 表示未平滑位姿至少一端回退为发布位姿；`yaw_evidence_available=0` 时不能把默认值当作实测。旧字段 `error_yaw_rad` 是本次已检查分支和窗口的最大残差，可能与所选比较的残差不同。`--diagnose` 在航向 FAIL 且证据可用时解释新增字段；旧日志缺少字段时不能补作零或推断精确阈值。此积分是短窗口参考，不是航向真值。SANY 的航向基础容差为 3.0 度，动态比例仍为 0.1，通用默认仍为 2.0 度；应以同次运行的配置为准。新版本需重新编译、重启后采集并在现场验收。细节见 [航向一致性检查与证据](../docs/guide/incident_capture.md#航向一致性检查与证据v8)。
 
 遇到匹配拒绝后的 `4`，用 `bash ~/Sany/run_loc.sh --diagnose [路径]` 对照对应时间的 Safety 与 `LOC_MATCH_FAILED`、`LOC_INIT_MATCH_FAILED` 日志。诊断解释已记录的匹配拒绝判据及其数值，包括 NDT 是否执行和收敛、迭代预算、数值有效性及 confidence 阈值，也覆盖里程计差异与地图一致性判据。只记录 `iterations=20` 的旧日志不足以判断是否收敛；单帧拒绝也不等于确认失锁，缺失字段不是 `false`。

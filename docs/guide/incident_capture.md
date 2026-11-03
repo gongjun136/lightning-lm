@@ -53,6 +53,10 @@ bash ~/Sany/run_loc.sh --diagnose /路径/事件目录
 
 诊断按日志的 `policy_version` 区分 v8 与历史 v7、v6、v5。v8 和 v7 的 `raw=0` 同时运动一致性 UNKNOWN 时，文本单独显示“运动证据提示”，JSON 的 `motion_evidence` 保留 `status` 和 `unknown_advisory`；该提示不计为故障段，也不把 UNKNOWN 描述为 PASS。v8 或 v7 的 `raw=4` 若只有运动 UNKNOWN 而缺少其他支持判据，应报告判据缺失，不能声称 UNKNOWN 触发了 4；还需核查初始化、此前 FAIL 是否恢复、协方差、输出及匹配新鲜度与门控等证据。历史 v5/v6 日志继续按各自策略解释，不以 v8/v7 的规则倒推旧记录。
 
+已初始化后若 `output_stale=1`、`last_published_pose=0` 且 `output_age_sec=inf`，`--diagnose` 报告尚未完成首次有效位姿发布。对照事件时间线中的 `prepared_age` 和 `publish_begin_age`：前者是距结果进入发布校验的时间，不证明结果有效；后者为 `-1` 表示采集器尚未观测到业务发布开始，并不能单独确定原因。匹配成功、雷达组帧正常或 TUM 为空都不能单独证明发布状态；TUM 还受配置、缓冲刷新和采集完整性影响。航向 UNKNOWN 本身不单独触发 4。
+
+一种可能的代码时序是静止 DR 请求先到，随后地图结果在下一条 DR 前设置静止标志；旧版可能因标志已置位而跳过静止输出缓存初始化，导致返回无效结果。修复后，在静止且缓存无效时，下一条被接受的 DR 从有效融合位姿补全缓存，结果仍须通过有效性、时间戳递增及匹配质量门控。`event=LOC_OUTPUT_RESULT_INVALID` 表示结果无效或时间戳非正而未进入业务发布，每 200 次节流记录一次；字段 `valid`、`timestamp`、`is_parking`、`pose_epoch`、`covariance_valid` 描述该结果。`event=PGO_STATIC_HOLD_SNAPSHOT_RECOVERED` 表示静止标志已置位但缓存缺失时补全了缓存，字段 `dr_stamp`、`fused_stamp`、`pose_epoch`、`covariance_valid` 描述补全时刻和来源；时间戳单位为秒。缺少事件可能是运行版本、日志范围或节流所致；补全事件本身不证明业务发布、下游接收或 Safety 已恢复，仍需核对 `publish_begin_age`、`publish_end_age` 与 Safety 记录。
+
 报告对照运行库的 `LOCALIZATION_DIAGNOSTIC_BUILD` 标记与脚本合同；缺失或不匹配时为未验证。标记包含合同 ID、source revision、dirty 状态和构建时间；`run_metadata` 的 `git_commit` 不能证明运行二进制版本。
 
 ## IMU、雷达与 CAN 输入时序

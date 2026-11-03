@@ -16,9 +16,68 @@ void Require(bool condition, const char* message) {
     }
 }
 
+void CheckStationaryStartupWithDelayedMapFrames() {
+    using namespace lightning;
+    using namespace lightning::loc;
+    // Real startup can request parking before the first fused pose. Several
+    // delayed map frames may then be consumed before the next DR callback.
+    for (int map_frames : {1, 2, 4}) {
+        PGO pgo;
+        pgo.SetDebug(false);
+        pgo.SetDrSmoothingEnabled(false);
+        pgo.SetDrExtrapolationEnabled(false);
+        LocalizationResult live;
+        int live_count = 0, fused_count = 0;
+        pgo.SetHighFrequencyGlobalOutputHandleFunction([&](const LocalizationResult& result) {
+            live = result; ++live_count;
+        });
+        pgo.SetGlobalOutputHandleFunction([&](const LocalizationResult& result) {
+            Require(result.valid_, "delayed map frames establish a valid fused pose");
+            ++fused_count;
+        });
+        NavState stationary;
+        stationary.timestamp_ = 100.0;
+        stationary.pose_is_ok_ = stationary.lidar_odom_reliable_ = true;
+        stationary.is_parking_ = true;
+        Require(pgo.ProcessLidarOdom(stationary) && pgo.ProcessDR(stationary), "seed stationary startup");
+        stationary.timestamp_ = 100.2;
+        Require(pgo.ProcessLidarOdom(stationary) && pgo.ProcessDR(stationary), "bracket delayed map frames");
+        Require(live_count == 0, "parking request alone cannot fabricate a valid map pose");
+        LocalizationResult map;
+        map.pose_ = SE3(SO3::exp(Vec3d(0, 0, .6)), Vec3d(12, -18, 2.5));
+        map.lidar_loc_valid_ = map.lidar_loc_odom_error_normal_ = map.lidar_loc_smooth_flag_ = true;
+        map.confidence_ = 1.0;
+        map.status_ = LocalizationStatus::GOOD;
+        for (int i = 1; i <= map_frames; ++i) {
+            map.timestamp_ = 100.0 + .04 * i;
+            Require(pgo.ProcessLidarLoc(map), "accept delayed map before the next stationary DR");
+        }
+        Require(fused_count == map_frames && live_count == 0,
+                "older map timestamps wait for the live DR clock");
+        stationary.timestamp_ = 100.21;
+        Require(pgo.ProcessDR(stationary), "resume DR after a batch of delayed map frames");
+        Require(live_count == 1 && live.valid_ && live.is_parking_ && live.pose_covariance_valid_ &&
+                std::abs(live.timestamp_ - stationary.timestamp_) < 1e-9,
+                "first stationary live output must initialize from the valid fused pose even if map already set parking");
+        const SE3 held = live.pose_;
+        map.timestamp_ = 100.19;
+        map.pose_.translation().x() += .005;
+        Require(pgo.ProcessLidarLoc(map), "accept a fresh map observation during established hold");
+        stationary.timestamp_ = 100.22;
+        Require(pgo.ProcessDR(stationary) && live.valid_ && live.is_parking_ &&
+                (held.inverse() * live.pose_).log().norm() < 1e-9,
+                "an initialized stationary anchor stays fixed across map updates");
+        stationary.is_parking_ = false;
+        stationary.timestamp_ = 100.3;
+        Require(pgo.ProcessDR(stationary) && live.valid_ && !live.is_parking_ && live.timestamp_ > 100.22,
+                "stationary startup still supports a valid advancing transition to motion");
+    }
+}
+
 }  // namespace
 
 int main() {
+    CheckStationaryStartupWithDelayedMapFrames();
     using namespace lightning;
     using namespace lightning::loc;
 

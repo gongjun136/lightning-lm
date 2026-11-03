@@ -672,6 +672,37 @@ class DiagnosisTest(unittest.TestCase):
                             translation_condition=2, yaw_condition=0)
         self.assertEqual([f['key'] for f in found], ['translation_condition'])
 
+    def test_initialized_matching_without_first_valid_output(self):
+        fields = dict(policy_version=d.YAW_NATIVE_IMU_POLICY, startup_pending=0, output_stale=1,
+                      output_age_sec='inf', last_published_pose=0, last_valid_match=100.1,
+                      output_gate_open=1, latest_match_valid=1, match_stale=0)
+        found = self.causes(**fields)
+        self.assertEqual([f['key'] for f in found], ['output_stale_degraded'])
+        self.assertIn('尚未完成首次有效位姿发布', found[0]['title'])
+        self.assertTrue(found[0]['evidence']['first_valid_output_missing'])
+        self.assertIn('LOC_OUTPUT_RESULT_INVALID', found[0]['advice'])
+        self.assertEqual(found[0]['evidence']['last_published_pose'], 0)
+        fields.update(output_age_sec=.7, last_published_pose=99.4)
+        existing = self.causes(**fields)
+        self.assertIn('超过新鲜度期限', existing[0]['title'])
+        self.assertNotIn('first_valid_output_missing', existing[0]['evidence'])
+
+    def test_invalid_live_result_and_static_cache_event_are_retained_as_context(self):
+        self.log.write_text('I1103 16:47:04.000000 42] SAFETY_DIAGNOSTIC sequence=1 '
+            f'policy_version={d.YAW_NATIVE_IMU_POLICY} raw_runstate=4 published_runstate=4 '
+            'startup_pending=0 output_stale=1 output_age_sec=inf last_published_pose=0 '
+            'output_gate_open=1 latest_match_valid=1 match_stale=0\n'
+            'W1103 16:47:04.010000 44] event=LOC_OUTPUT_RESULT_INVALID 无效定位结果未进入业务位姿发布 '
+            'valid=0 timestamp=100.2 is_parking=1 pose_epoch=1 covariance_valid=0\n'
+            'W1103 16:47:04.020000 44] event=PGO_STATIC_HOLD_SNAPSHOT_RECOVERED 静止缓存已补全 '
+            'dr_stamp=100.21 fused_stamp=100.1 pose_epoch=1 covariance_valid=1\n')
+        report = d.analyze(self.run, None, '指定路径', [])
+        finding = next(f for f in report['findings'] if f['key'] == 'output_stale_degraded')
+        self.assertTrue(finding['evidence']['first_valid_output_missing'])
+        contexts = finding.get('context', []) + finding.get('onset_context', [])
+        self.assertTrue(any('LOC_OUTPUT_RESULT_INVALID' in item['text'] for item in contexts))
+        self.assertTrue(any('PGO_STATIC_HOLD_SNAPSHOT_RECOVERED' in item['text'] for item in contexts))
+
     def test_native_yaw_split_evidence_uses_selected_comparison(self):
         self.log.write_text('I1103 15:00:00.000001 42] SAFETY_DIAGNOSTIC sequence=1 '
             f'policy_version={d.YAW_NATIVE_IMU_POLICY} raw_runstate=4 published_runstate=4 '
