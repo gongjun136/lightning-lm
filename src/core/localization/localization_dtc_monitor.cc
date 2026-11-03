@@ -72,37 +72,41 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
     evidence.raw_independent = from.raw_independent && to.raw_independent;
     evidence.from_stamp = from.stamp;
     evidence.to_stamp = to.stamp;
-    double omega, last_omega;
-    if (!Interpolate(gyros_, from.stamp, omega, now) ||
-        !Interpolate(gyros_, to.stamp, last_omega, now)) return {};
-    auto next = std::upper_bound(gyros_.begin(), gyros_.end(), from.stamp,
-        [](double t, const Sample& sample) { return t < sample.stamp; });
-    for (double stamp = from.stamp; stamp < to.stamp;) {
-        const double end = next == gyros_.end() ? to.stamp : std::min(to.stamp, next->stamp);
-        const double step = end - stamp;
-        double end_omega = last_omega;
-        if (next != gyros_.end()) {
-            const double source_gap = next->stamp - std::prev(next)->stamp;
-            // Check the complete source interval, including clipped boundaries.
-            if (source_gap > config_.max_input_gap_sec) return {};
-            evidence.max_source_gap_sec = std::max(evidence.max_source_gap_sec, source_gap);
-            end_omega = omega + (next->value - omega) * step / (next->stamp - stamp);
-        } else {
-            evidence.held_sec += step;
+    const bool yaw_available = [&]() {
+        double omega, last_omega;
+        if (!Interpolate(gyros_, from.stamp, omega, now) ||
+            !Interpolate(gyros_, to.stamp, last_omega, now)) return false;
+        auto next = std::upper_bound(gyros_.begin(), gyros_.end(), from.stamp,
+            [](double t, const Sample& sample) { return t < sample.stamp; });
+        for (double stamp = from.stamp; stamp < to.stamp;) {
+            const double end = next == gyros_.end() ? to.stamp : std::min(to.stamp, next->stamp);
+            const double step = end - stamp;
+            double end_omega = last_omega;
+            if (next != gyros_.end()) {
+                const double source_gap = next->stamp - std::prev(next)->stamp;
+                // Check the complete source interval, including clipped boundaries.
+                if (source_gap > config_.max_input_gap_sec) return false;
+                evidence.max_source_gap_sec = std::max(evidence.max_source_gap_sec, source_gap);
+                end_omega = omega + (next->value - omega) * step / (next->stamp - stamp);
+            } else {
+                evidence.held_sec += step;
+            }
+            evidence.gyro_delta_rad += 0.5 * (omega + end_omega) * step;
+            // Exact absolute area for the same linear segment, including zero crossings.
+            const double magnitude = std::abs(omega) + std::abs(end_omega);
+            evidence.gyro_turn_rad += omega * end_omega < 0
+                ? step * (omega * omega + end_omega * end_omega) / (2 * magnitude)
+                : 0.5 * magnitude * step;
+            ++evidence.segments;
+            stamp = end;
+            omega = end_omega;
+            if (next != gyros_.end()) ++next;
         }
-        evidence.gyro_delta_rad += 0.5 * (omega + end_omega) * step;
-        // Exact absolute area for the same linear segment, including zero crossings.
-        const double magnitude = std::abs(omega) + std::abs(end_omega);
-        evidence.gyro_turn_rad += omega * end_omega < 0
-            ? step * (omega * omega + end_omega * end_omega) / (2 * magnitude)
-            : 0.5 * magnitude * step;
-        ++evidence.segments;
-        stamp = end;
-        omega = end_omega;
-        if (next != gyros_.end()) ++next;
-    }
-    evidence.available = true;
-    evidence.limit_rad = config_.yaw_rad + config_.angle_ratio * evidence.gyro_turn_rad;
+        return true;
+    }();
+    // A missing native yaw endpoint must not suppress the existing translation check.
+    evidence.available = yaw_available;
+    if (yaw_available) evidence.limit_rad = config_.yaw_rad + config_.angle_ratio * evidence.gyro_turn_rad;
     // Preserve the existing translation quadrature and its thresholds.
     double dx = 0, dy = 0, translation_yaw = 0, distance = 0;
     bool translation_available = true;
@@ -127,21 +131,23 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
         const double x = std::cos(yaw) * delta.x() + std::sin(yaw) * delta.y();
         const double y = -std::sin(yaw) * delta.x() + std::cos(yaw) * delta.y();
         const double ex = std::abs(x - dx), ey = std::abs(y - dy);
-        const double delta_yaw = Wrap(Yaw(current) - yaw);
-        const double ea = std::abs(Wrap(delta_yaw - evidence.gyro_delta_rad));
-        (raw ? evidence.raw_delta_rad : evidence.published_delta_rad) = delta_yaw;
-        (raw ? evidence.raw_error_rad : evidence.published_error_rad) = ea;
         if (translation_available) {
             snapshot_.error_longitudinal_m = std::max(snapshot_.error_longitudinal_m, ex);
             snapshot_.error_lateral_m = std::max(snapshot_.error_lateral_m, ey);
             translation_fail |= ex > config_.longitudinal_m + config_.distance_ratio * distance ||
                                 ey > config_.lateral_m + config_.distance_ratio * distance;
         }
-        snapshot_.error_yaw_rad = std::max(snapshot_.error_yaw_rad, ea);
-        yaw_fail |= ea > evidence.limit_rad;
+        if (yaw_available) {
+            const double delta_yaw = Wrap(Yaw(current) - yaw);
+            const double ea = std::abs(Wrap(delta_yaw - evidence.gyro_delta_rad));
+            (raw ? evidence.raw_delta_rad : evidence.published_delta_rad) = delta_yaw;
+            (raw ? evidence.raw_error_rad : evidence.published_error_rad) = ea;
+            snapshot_.error_yaw_rad = std::max(snapshot_.error_yaw_rad, ea);
+            yaw_fail |= ea > evidence.limit_rad;
+        }
     }
     return {translation_available ? (translation_fail ? kFail : kPass) : kUnknown,
-            yaw_fail ? kFail : kPass, evidence};
+            yaw_available ? (yaw_fail ? kFail : kPass) : kUnknown, evidence};
 }
 void Monitor::Uncertainty(const SE3& pose, const Mat6d& p, bool valid, bool unobservable) {
     auto& condition = snapshot_.observations[1].condition;

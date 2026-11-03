@@ -66,6 +66,20 @@ void CheckNativeYawIntegration() {
         }
     }
     Config short_cfg = cfg; short_cfg.window_sec = .02;
+    for (double x : {0.0, 1.0}) {
+        Monitor partial(short_cfg, At(0));
+        partial.ObserveSpeed(100, 0, At(0));
+        partial.ObservePose(100, Pose(0), Pose(0), SmallCov(), true, false, 1, At(0));
+        partial.ObserveGyro(100.001, 0, At(1));
+        partial.ObserveGyro(100.02, 0, At(20));
+        partial.ObserveSpeed(100.02, 0, At(20));
+        partial.ObservePose(100.02, Pose(x), Pose(x), SmallCov(), true, false, 1, At(20));
+        const auto unavailable = partial.Evaluate(false, At(20));
+        Require(unavailable.yaw_condition == kUnknown && !unavailable.yaw_evidence.available &&
+                unavailable.translation_condition == (x == 0 ? kPass : kFail) &&
+                SafetyValue(unavailable, false, false, true) == (x == 0 ? 0 : 4),
+                "missing native yaw endpoint must preserve the original independent translation decision");
+    }
     Monitor crossing(short_cfg, At(0));
     crossing.ObserveGyro(100, 1, At(0));
     crossing.ObservePose(100, Pose(0), Pose(0), SmallCov(), true, false, 1, At(0));

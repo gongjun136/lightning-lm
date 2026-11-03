@@ -668,6 +668,9 @@ class DiagnosisTest(unittest.TestCase):
         found = d.classify(dict(row, raw_runstate=2, lidar_frame_fault=1, lidar_frame_seen=1), {})
         self.assertEqual([f['key'] for f in found], ['frame_supply'])
         self.assertNotIn('unsupported_policy', [f['key'] for f in found])
+        found = self.causes(policy_version=d.YAW_NATIVE_IMU_POLICY, localization_consistency=2,
+                            translation_condition=2, yaw_condition=0)
+        self.assertEqual([f['key'] for f in found], ['translation_condition'])
 
     def test_native_yaw_split_evidence_uses_selected_comparison(self):
         self.log.write_text('I1103 15:00:00.000001 42] SAFETY_DIAGNOSTIC sequence=1 '
