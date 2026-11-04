@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Acquisition contracts: raw source selection and conservative quality reports."""
 import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace as NS
 import unittest
 
@@ -8,6 +10,25 @@ import record_localization_sensors as capture
 
 
 class CaptureTest(unittest.TestCase):
+    def test_sensor_only_session_uses_existing_site_dds_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory) / 'fastdds.xml'
+            environment = {}
+            capture.configure_transport_environment(environment, profile)
+            self.assertEqual(environment, {})
+            profile.write_text('<profiles/>')
+            capture.configure_transport_environment(environment, profile)
+            self.assertEqual(environment['FASTRTPS_DEFAULT_PROFILES_FILE'], str(profile))
+            self.assertEqual(environment['FASTRMW_DEFAULT_PROFILES_FILE'], str(profile))
+
+    def test_explicit_transport_and_other_rmw_are_preserved(self):
+        environment = {'FASTRMW_DEFAULT_PROFILES_FILE': '/operator/dds.xml'}
+        capture.configure_transport_environment(environment, Path('/unused'))
+        self.assertEqual(environment['FASTRTPS_DEFAULT_PROFILES_FILE'], '/operator/dds.xml')
+        environment = {'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp'}
+        capture.configure_transport_environment(environment, Path(__file__))
+        self.assertEqual(environment, {'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp'})
+
     def samples(self):
         values = {'latitude': [30.], 'longitude': [110.], 'altitude': [100.],
                   'attitude': [20., 0., 0.], 'velocity': [0., 0., 0.],
@@ -16,18 +37,28 @@ class CaptureTest(unittest.TestCase):
         return {k: (NS(frame=NS(valid=True), **dict(zip(attrs, values[k]))), 10., 1_000_000_000)
                 for k, (_, _, attrs) in capture.FIELDS.items()}
 
-    def test_plan_requires_every_configured_imu_and_raw_cgi(self):
+    def test_plan_requires_navigation_reference_and_keeps_auxiliary_inputs(self):
         cfg = {'multi_lidar': {'enabled': True, 'topics': {'lidar_0': '/cloud0', 'imu_0': '/imu0',
                  'lidar_1': '/cloud1', 'imu_1': '/imu1'}},
                'system': {'enable_wheel_speed_observation': True, 'wheel_speed_topic': '/wheel'}}
         p = capture.make_plan(cfg, '/reference', ['/steering'])
-        for topic in ['/cloud0', '/imu1', '/wheel', '/steering', '/reference/imu/acceleration_raw',
+        for topic in ['/cloud0', '/imu1', '/steering', '/reference/attitude/sigma',
                       '/reference/time', '/reference/driver_status']:
             self.assertIn(topic, p['required_topics'])
+        for topic in ['/wheel', '/reference/imu/acceleration_raw', '/reference/imu/angular_rate_raw',
+                      '/reference/vehicle/acceleration', '/reference/vehicle/angular_rate']:
+            self.assertIn(topic, p['optional_input_topics'])
+            self.assertNotIn(topic, p['required_topics'])
         matcher = capture.re.compile(p['topic_regex'])
         self.assertTrue(matcher.fullmatch('/reference/new_output'))
         self.assertTrue(matcher.fullmatch('/livox/imu_new_sensor'))
+        self.assertTrue(matcher.fullmatch('/wheel'))
+        self.assertTrue(matcher.fullmatch('/reference/imu/angular_rate_raw'))
         self.assertFalse(matcher.fullmatch('/camera/front/image'))
+        strict = capture.make_plan(cfg, '/reference', ['/wheel', '/reference/imu/acceleration_raw'])
+        self.assertIn('/wheel', strict['required_topics'])
+        self.assertIn('/reference/imu/acceleration_raw', strict['required_topics'])
+        self.assertNotIn('/wheel', strict['optional_input_topics'])
 
     def test_fixed_flag_alone_does_not_establish_quality(self):
         samples = self.samples()

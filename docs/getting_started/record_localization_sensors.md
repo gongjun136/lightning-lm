@@ -32,15 +32,29 @@ source "$HOME/.config/sany/workspace.bash"
 bash "$LIGHTNING_LM_REPO_DIR/scripts/record_localization_sensors.sh"
 ```
 
-脚本优先读取正在运行定位进程的有效配置与通信环境；没有运行配置时按车辆配置解析 SANY 模板。必需输入实际收到后才启动 MCAP 录制；结束时按一次 `Ctrl-C` 并等待写盘，屏幕会显示输出目录和退出码。
+脚本优先读取正在运行定位进程的有效配置与通信环境；没有运行配置时按车辆配置解析 SANY 模板，录制原始传感器无需先启动定位。若需要同时记录在线定位轨迹，须另行启动对应定位进程。必需输入实际收到后才启动 MCAP 录制；结束时按一次 `Ctrl-C` 并等待写盘，屏幕会显示输出目录和退出码。
 
-默认必须实际收到配置所需雷达和 IMU、启用的轮速、CGI 14 类解码字段与 `driver_status`；缺少必需项返回 2，不开始录包。默认不要求固定解，录制中参考失效的区间也保留。需要起录前严格固定解门禁时：
+无运行定位进程时，使用 Fast DDS 且未显式提供 DDS 配置文件时，若存在 `$HOME/Documents/ros2/fastdds.xml`，脚本采用该主机文件；已明确设置的配置优先，其他中间件不套用此回退。仍须用 `--check-only` 核验实际消息，不以 Topic 可见代替接收。
+
+默认必须实际收到配置所需雷达和对应 IMU，以及 CGI 九类导航/质量字段、`time` 和 `driver_status`，共11路CGI话题；缺少必需项返回 2，不开始录包。CGI 四路惯性消息和轮速默认可选，发现后仍录制；配置启用轮速时，其缺失会列在可选输入报告中。要复现使用轮速的辅助观测，应确认轮速发布端和实际消息。默认不要求固定解，录制中参考失效的区间也保留。
+
+四路可选 CGI 惯性话题为 `/cgi430/imu/angular_rate_raw`、`/cgi430/imu/acceleration_raw`、`/cgi430/vehicle/acceleration` 和 `/cgi430/vehicle/angular_rate`；轮速为 `/SpeThrCAN4_topic`。需要这些输入参与研究或复现时，先核对设备输出和轮速发布端。
+
+需要起录前严格固定解门禁时：
 
 ```bash
 bash "$LIGHTNING_LM_REPO_DIR/scripts/record_localization_sensors.sh" --require-fixed
 ```
 
 该选项要求九类质量时序、2/4状态、差分龄期及 sigma 门限，并有连续10条五个主字段全部推进的新解；不等于实车精度合格。
+
+例如，需要 CGI 原始角速度和轮速都实际到达时，可显式将两者升级为必需输入；未收到时返回 2：
+
+```bash
+bash "$LIGHTNING_LM_REPO_DIR/scripts/record_localization_sensors.sh" \
+  --extra-topic /cgi430/imu/angular_rate_raw \
+  --extra-topic /SpeThrCAN4_topic
+```
 
 ## 3. 检查与常用参数
 

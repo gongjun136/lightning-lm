@@ -32,6 +32,18 @@ EVIDENCE = ['/slamPoseRaw_topic', '/slamPose_topic', '/PosRes', '/slamState_topi
             '/Imu_BodyAcce_topic', '/phi_topic', '/domain_vcu/status', '/safety/throstle']
 
 
+def configure_transport_environment(environment, site_profile):
+    """Reuse the Orin DDS profile even when only sensor nodes are running."""
+    if environment.get('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp') != 'rmw_fastrtps_cpp':
+        return
+    profile = environment.get('FASTRTPS_DEFAULT_PROFILES_FILE') or environment.get('FASTRMW_DEFAULT_PROFILES_FILE')
+    if not profile and site_profile.is_file():
+        profile = str(site_profile)
+    if profile:
+        environment.setdefault('FASTRTPS_DEFAULT_PROFILES_FILE', profile)
+        environment.setdefault('FASTRMW_DEFAULT_PROFILES_FILE', profile)
+
+
 def active_localizers():
     """Read only this user's selected process settings, never arbitrary secrets."""
     result = []
@@ -61,11 +73,18 @@ def make_plan(config, prefix, extras):
     inputs = [t for t in inputs if t]
     if not inputs:
         raise ValueError('配置中没有雷达与 IMU 输入，不能创建空录制任务')
+    required_inputs = list(inputs)
+    reference = [prefix + '/' + field[0] for field in FIELDS.values()]
+    reference += [prefix + '/time', prefix + '/driver_status']
+    optional = [prefix + '/' + suffix for suffix in RAW_SUFFIXES if prefix + '/' + suffix not in reference]
     system = config.get('system', {})
     wheel = system.get('wheel_speed_topic', '/SpeThrCAN4_topic')
     if system.get('enable_wheel_speed_observation', False) or system.get('enable_wheel_speed_dr_observation', False):
         inputs.append(wheel)
-    required = sorted(set(inputs + [prefix + '/' + s for s in RAW_SUFFIXES + ['driver_status']] + extras))
+        # The localization launcher explicitly permits absent wheel samples.
+        # Preserve that contract; --extra-topic can make it mandatory for a run.
+        optional.append(wheel)
+    required = sorted(set(required_inputs + reference + extras))
     exact = sorted(set(required + EVIDENCE + [wheel]))
     if any(not re.fullmatch(r'/[A-Za-z0-9_/]+', t) for t in exact):
         raise ValueError('话题必须是绝对 ROS 名称，不能含空格或正则表达式')
@@ -74,6 +93,7 @@ def make_plan(config, prefix, extras):
         re.escape(prefix) + r'/.*', r'/livox/.*', r'/sensors/livox/.*',
         r'/localization/.*', r'/diagnostics(?:/.*)?']) + r')$'
     return {'required_topics': required, 'configured_inputs': sorted(set(inputs)),
+            'optional_input_topics': sorted(set(optional) - set(required)),
             'explicit_topics': exact, 'topic_regex': regex}
 
 
@@ -181,7 +201,9 @@ class Monitor:
             self.good = 0
         quality.update(consecutive_good=self.good, maximum_consecutive_good=self.maximum_good,
                        reference_ready=self.good >= 10 and quality['instant_quality_ok'])
-        return {'message_counts': dict(self.counts), 'missing_required': [t for t in self.plan['required_topics']
+        return {'message_counts': dict(self.counts), 'missing_optional_inputs': [t for t in self.plan['optional_input_topics']
+                if t not in self.last or now - self.last[t] > 2],
+                'missing_required': [t for t in self.plan['required_topics']
                 if t not in self.last or now - self.last[t] > 2], 'quality': quality,
                 'topic_types': self.graph, 'subscription_errors': self.errors}
 
@@ -246,6 +268,7 @@ def main(argv=None):
             raise ValueError(f'{k} 与运行定位器不一致：当前 {os.environ[k]}，定位器 {v}')
         os.environ.setdefault(k, v)
     os.environ.setdefault('ROS_DOMAIN_ID', '42')
+    configure_transport_environment(os.environ, Path.home() / 'Documents/ros2/fastdds.xml')
     config_path = (args.config or (Path(active[0]['config']) if active and active[0]['config'] else None)
                    or REPO / 'config/sany/localization.yaml').resolve()
     config = load(config_path)
