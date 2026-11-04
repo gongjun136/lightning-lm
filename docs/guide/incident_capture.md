@@ -116,7 +116,11 @@ event=LOC_MATCH_FAILED 激光定位匹配失败 score: 2.28, map_checked=1, map_
 
 普通 tracking 拒绝、启动 seed 和全局重定位候选均可采集接受前的扫描，以及当时可用的候选和局部地图，保存到本次运行的匹配快照目录。SANY 配置默认开启 `diagnostics.match_failure_capture`；启动器导出 `SANY_MATCH_FAILURE_DIR=$run_dir/match_failures` 并将原运行路径写入 `run_metadata.txt`。应用也支持 `--match_failure_dir`，未显式指定时使用输出 TUM 旁的目录。此采集器独立于 Safety 触发，不能保证每次 `4` 或 `-9` 都有对应的匹配快照。
 
-schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及原始、精修和实际检查位姿；只有实际可用的位姿有值，无候选为 null。tracking 包含 `summary.json`、配置、扫描及局部地图，可按三维最近邻原判据点复算分数。候选在地图范围外、局部地图为空时仍保存地图边界、扫描和实际位姿；单传感器坐标扫描图不伪叠加地图，也不能据此推定车辆在地图外。`run_loc.sh --diagnose [包路径]` 展示证据；支持 `--json` 和 `--no-match-image`。例如 `bash ~/Sany/run_loc.sh --diagnose /绝对路径/匹配失败包`；默认在包内 `birdseye/comparison.png`、`birdseye/index.html` 和 `birdseye/analysis.json` 输出图与分析。历史保存图的时间可能不同于最新 Safety，须按时间分别解释。红色未命中点不直接证明动态物体。
+schema 2 记录 phase、stage、rejection_reason、检索指标、候选以及原始、精修和实际检查位姿；只有实际可用的位姿有值，无候选为 null。匹配失败快照包含 `summary.json`、`scan.bin`、`map_local.bin` 和可用的配置快照，是 JSON/BIN 证据而非 rosbag；文件完整、原判据样本和所需位姿及参数有效时，tracking 可按三维最近邻原判据点复算重合率。候选在地图范围外且局部地图为空时仍保存地图边界、扫描和实际可用的位姿；单传感器坐标扫描图不伪叠加地图，也不能据此推定车辆在地图外。
+
+`run_loc.sh --diagnose [路径]` 可直接指定匹配失败快照目录，例如 `bash ~/Sany/run_loc.sh --diagnose /绝对路径/匹配失败快照目录/`；可用 `--json` 输出结构化诊断，用 `--no-match-image` 跳过俯视图绘制。默认尝试在该目录内的 `birdseye/comparison.png`、`birdseye/index.html` 和 `birdseye/analysis.json` 输出图与分析。历史保存图的时间可能不同于最新 Safety，须按时间分别解释。红色未命中点不直接证明动态物体。
+
+NDT 收敛和较高的地图重合率不等于重力检查通过。快照的 `criterion.evaluated=true` 且 `criterion.points>0`，并且 `gravity_cos` 与该快照的 `min_gravity_cos` 均为 [-1, 1] 内有限值时，文本诊断显示重力余弦、阈值以及换算的夹角和允许最大角；`--json` 保留原始 `criterion`。余弦须不小于阈值，相当于夹角不大于允许最大角；该比较不单独判定整帧是否通过，还需结合记录的拒绝原因。检查未执行或数据缺失、无效时，不能用默认值推断。该夹角比较地图与里程计坐标系的重力方向，不是 yaw，也不是车辆相对水平面的坡度。
 
 一次连续失败最多入队三包：尚无入队记录时可尝试记录失败；首包入队后，仅相对上一次入队记录出现阶段或原因变化、从无候选变为有候选，或候选显著改善才再次尝试。改善以本轮已入队记录的最佳有效重合率或检索分数为基准，分别要求增加至少 0.05 或 0.10；如果之前没有对应的有效值，首次取得有效值也可触发尝试。实际入队仍受空槽等条件限制。普通 tracking 的初始拒绝也计入本轮，连续成功 2 秒且相邻成功匹配通知间隔不超过 0.5 秒后才重置；停车复用旧位姿或少点时没有有效匹配，不算恢复，也不刷新匹配新鲜度。不会每 30 秒周期补包。旧 `cooldown_seconds` 键保留兼容，不再触发周期补包。其余轻量最新观测和状态继续更新。
 

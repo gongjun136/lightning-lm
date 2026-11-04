@@ -960,16 +960,21 @@ def classify(row, limits):
 def bag_rows(path, byte_limit, warnings):
     """Fallback for bare bags. Filter diagnostic topics, never deserialize clouds."""
     result = []
+    files = ([path] if path.is_file() and path.suffix in ('.mcap', '.db3') else
+             list(path.glob('*.mcap')) + list(path.glob('*.db3')) if path.is_dir() else [])
+    if not files:
+        if path.is_dir() and (path / 'metadata.yaml').is_file():
+            warnings.append('找到 rosbag 元数据但缺少 .mcap/.db3 数据文件，未打开存储插件。')
+        return result
+    if sum(p.stat().st_size for p in files) > byte_limit:
+        warnings.append(f'裸 bag 大于 {byte_limit // MIB} MiB 扫描预算；未扫描。可用 --bag-mb 增大，或提供事件/运行目录。')
+        return result
     try:
         import rosbag2_py
         from rclpy.serialization import deserialize_message
         from rosidl_runtime_py.utilities import get_message
     except ImportError as exc:
         warnings.append('裸 rosbag 需要 ROS 2 及消息环境；请使用 diagnose_localization.sh。' + str(exc))
-        return result
-    files = [path] if path.is_file() else list(path.glob('*.mcap')) + list(path.glob('*.db3'))
-    if sum(p.stat().st_size for p in files) > byte_limit:
-        warnings.append(f'裸 bag 大于 {byte_limit // MIB} MiB 扫描预算；未扫描。可用 --bag-mb 增大，或提供事件/运行目录。')
         return result
     try:
         storage = 'sqlite3' if any(p.suffix == '.db3' for p in files) else 'mcap'
@@ -1512,7 +1517,7 @@ def _match_failure_image(report, explicit=None, output_dir=None, enabled=True):
         return dict(status='unavailable', evidence=str(evidence), message='所选失败快照已不可读，文字诊断继续: ' + str(exc))
     failure_observation = {k: evidence_summary.get(k) for k in
         ('phase', 'stage', 'reason', 'rejection_reason', 'candidate_available', 'candidate_id',
-         'retrieval_score', 'refinement_backend', 'registration', 'query', 'plane_icp', 'episode', 'wall_ns', 'sensor_stamp_ns')}
+         'retrieval_score', 'refinement_backend', 'registration', 'criterion', 'query', 'plane_icp', 'episode', 'wall_ns', 'sensor_stamp_ns')}
     failure_observation['phase'] = evidence_summary.get('phase', 'tracking')
     failure_observation['stage'] = evidence_summary.get('stage', 'tracking_acceptance')
     if not enabled:
@@ -1628,7 +1633,8 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
             logdata = []
         if not logdata:
             warnings.append('未找到与指定事件时间窗口对应的详细运行日志；只使用包内证据。')
-    if not rows and not logdata and not launch_findings:
+    if (not rows and not logdata and not launch_findings and
+            summary.get('kind') != 'lightning_match_failure'):
         rows = bag_rows(path, int(bag_mb * MIB), warnings)
     if summary:
         if summary.get('status') != 'complete':
@@ -1876,6 +1882,23 @@ def render(report, color=False, all_events=False):
                              f'{registration.get("ndt_max_iterations")}；epsilon={registration.get("ndt_epsilon")}')
                 if registration.get('ndt_budget_exhausted'):
                     lines.append('  已耗尽本次迭代预算，仍未达到收敛条件。')
+            criterion = observation.get('criterion')
+            criterion = criterion if isinstance(criterion, dict) else {}
+            if criterion.get('evaluated') is True and (number(criterion.get('points')) or 0) > 0:
+                lines.append('  地图一致性原始判据: ' + json.dumps({k: criterion[k] for k in
+                    ('points', 'overlap', 'min_overlap', 'inside_xy', 'min_inside_xy', 'gravity_cos', 'min_gravity_cos')
+                    if k in criterion}, ensure_ascii=False))
+                gravity = number(criterion.get('gravity_cos'))
+                minimum = number(criterion.get('min_gravity_cos'))
+                if gravity is not None and minimum is not None and -1 <= gravity <= 1 and -1 <= minimum <= 1:
+                    angle, limit = math.degrees(math.acos(gravity)), math.degrees(math.acos(minimum))
+                    lines.append(f'  重力方向夹角（地图↔里程计）: {angle:.6g}°；允许最大 {limit:.6g}°；'
+                                 f'cos={gravity:.9g}，要求 >= {minimum:.9g}；通过={gravity >= minimum}')
+                    lines.append('  此角度不是 yaw，也不等同车辆相对水平面的坡度。')
+                elif reason == 'map_gravity':
+                    lines.append('  快照缺少有效重力余弦或门限，无法还原实际重力方向夹角。')
+            elif reason == 'map_gravity':
+                lines.append('  快照未记录已执行且含有效样本的地图检查，不能用默认数值还原重力拒绝依据。')
             if observation.get('query'):
                 lines.append('  查询规模/耗时: ' + json.dumps(observation['query'], ensure_ascii=False))
             if observation.get('plane_icp'):

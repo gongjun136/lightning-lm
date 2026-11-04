@@ -1715,6 +1715,77 @@ class MatchFailureSelectionTest(unittest.TestCase):
     def rendered(self):
         return subprocess.CompletedProcess([], 0, json.dumps(dict(status='generated', image='test.png')))
 
+    def test_direct_snapshot_diagnosis_never_falls_back_to_rosbag(self):
+        evidence, _ = self.fixture(self.frames, self.run, 2000)
+        for status in ('complete', 'capturing'):
+            value = json.loads((evidence / 'summary.json').read_text())
+            value['status'] = status
+            (evidence / 'summary.json').write_text(json.dumps(value))
+            with self.subTest(status=status), patch.object(d, 'bag_rows', return_value=[]) as bags:
+                report = d.analyze(evidence, None, '指定快照', [])
+            bags.assert_not_called()
+            self.assertEqual(report['has_match_evidence'], status == 'complete')
+        (evidence / 'unexpected.mcap').write_bytes(b'unrelated file')
+        with patch.object(d, 'bag_rows', return_value=[]) as bags:
+            d.analyze(evidence, None, '指定快照', [])
+        bags.assert_not_called()
+
+    def test_nonbag_paths_do_not_import_ros_storage(self):
+        import builtins
+        original = builtins.__import__
+        def reject_ros(name, *args, **kwargs):
+            if name in ('rosbag2_py', 'rclpy.serialization', 'rosidl_runtime_py.utilities'):
+                raise AssertionError('non-bag path must not import ROS storage')
+            return original(name, *args, **kwargs)
+        binary = self.run / 'scan.bin'
+        binary.write_bytes(b'not a rosbag')
+        with patch('builtins.__import__', side_effect=reject_ros):
+            self.assertEqual(d.bag_rows(self.run, 1024, []), [])
+            self.assertEqual(d.bag_rows(binary, 1024, []), [])
+
+    def test_actual_bag_directory_still_uses_bag_fallback(self):
+        (self.run / 'data.mcap').write_bytes(b'bag fixture')
+        with patch.object(d, 'bag_rows', return_value=[]) as bags:
+            d.analyze(self.run, None, '指定裸包', [])
+        bags.assert_called_once()
+        self.assertEqual(bags.call_args.args[0], self.run)
+
+    def test_snapshot_gravity_values_are_retained_without_drawing(self):
+        evidence, value = self.fixture(self.frames, self.run, 2000)
+        value.update(phase='tracking', stage='tracking_acceptance', rejection_reason='map_gravity',
+                     registration=dict(ndt_metrics_available=True, ndt_converged=True,
+                                       iterations=3, ndt_max_iterations=20))
+        value['criterion'].update(gravity_cos=.9, min_gravity_cos=.95)
+        (evidence / 'summary.json').write_text(json.dumps(value))
+        self.report.update(selected=str(evidence), process=None)
+        with patch.object(d.subprocess, 'run') as plotting:
+            image = d.match_failure_image(self.report, enabled=False)
+        plotting.assert_not_called()
+        self.assertEqual(image['failure_observation']['criterion']['gravity_cos'], .9)
+        text = d.render(dict(selection='指定快照', selected=str(evidence), process=None,
+                             has_match_evidence=True, match_failure_image=image))
+        self.assertIn('NDT 收敛=True；迭代=3/20', text)
+        self.assertIn('cos=0.9，要求 >= 0.95；通过=False', text)
+        self.assertIn('25.8419°；允许最大 18.1949°', text)
+        self.assertIn('不是 yaw', text)
+
+    def test_missing_or_invalid_gravity_evidence_is_not_a_measured_tilt(self):
+        evidence, value = self.fixture(self.frames, self.run, 2000)
+        value.update(phase='tracking', stage='tracking_acceptance', rejection_reason='map_gravity')
+        original = value['criterion']
+        for changes in ({'evaluated': False}, {'points': 0}, {'gravity_cos': None},
+                        {'gravity_cos': 1.1}, {'min_gravity_cos': -1.1}):
+            with self.subTest(changes=changes):
+                value['criterion'] = dict(original, gravity_cos=.9, min_gravity_cos=.95)
+                value['criterion'].update(changes)
+                (evidence / 'summary.json').write_text(json.dumps(value))
+                self.report.update(selected=str(evidence), process=None)
+                image = d.match_failure_image(self.report, enabled=False)
+                text = d.render(dict(selection='指定快照', selected=str(evidence), process=None,
+                                     has_match_evidence=True, match_failure_image=image))
+                self.assertNotIn('重力方向夹角（地图↔里程计）:', text)
+                self.assertIn('快照', text)
+
     def test_no_match_image_keeps_measured_rejection_metadata(self):
         path, value = self.fixture(self.frames, self.run, 2000)
         value.update(phase='tracking', stage='tracking_acceptance', rejection_reason='ndt_not_converged',

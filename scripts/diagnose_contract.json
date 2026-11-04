@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "cc0e11f9b847d94cd0f94cd088fa21abc928dc571e36ab1629a2bbffee2292e2",
+  "contract_id": "368e4ff3eb4d36bee31d093cda1f17cf229d851dd04d9702e3358a715ecb3aa1",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -33,7 +33,7 @@
     "src/utils/online_logging.cc": "8d4537cd4aafa37d3a5342bbac5650e21a00a43c24d4be055dfd47d00bb2e4ad",
     "src/utils/online_logging.h": "591b85ee197da2ae69b7fe3315823cd9f712f1faf49dc6e6bfc934615801d6a2",
     "scripts/compute_profile_report.py": "6ee3847d08faa59fb855a1188b01d71aa163002c05c68b0d66d9fc1532016f98",
-    "scripts/diagnose_localization.py": "04e1811f84712beb3f9e5858bffdfcd094130317c81ea3bd7b1afc133957c8db",
+    "scripts/diagnose_localization.py": "617d7d29c44e773e58566cfda2b7264c394d7991160e11586442bdaafb3b53da",
     "scripts/localization_log_events.py": "cdcad7e7692e5d755e5a913054dec2c24139308d7689d19c9cf90629b1625bf9",
     "scripts/analyze_localization_health_log.py": "92a12e1e3046483ba03bbadf316ed05b79f723e90d59a06cea4f316ea8f4656f",
     "scripts/run_sany_lidar_loc.sh": "caef162d73ddcb001e6a0cd2ab5bf09c61c44004333e85097f720cf9ec0e8f1c",
