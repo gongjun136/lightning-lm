@@ -254,7 +254,7 @@ public:
 
   // generate STDescs from a point cloud
   void GenerateSTDescs(pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-                       std::vector<STD> &stds_vec, int id);
+                       std::vector<STD> &stds_vec, int id, bool generate_triangles = true);
 
   // search result <candidate_id, plane icp score>. -1 for no loop
   void SearchLoop(std::vector<STD> &stds_vec,

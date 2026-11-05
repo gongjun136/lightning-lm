@@ -15,12 +15,13 @@
 
 namespace lightning::backend {
 
-enum class BackendMode { kLegacy, kBaBtcHba, kDisabled };
+enum class BackendMode { kLegacy, kBaBtcHba, kBaSolidHba, kDisabled };
 
 BackendMode ReadBackendMode(const std::string& yaml_path);
 const char* BackendModeName(BackendMode mode);
 
 struct BackendPipelineOptions {
+    BackendMode mode = BackendMode::kBaBtcHba;
     bool online_mode = false;  ///< 是否通过后台队列异步处理关键帧。
     bool verbose = true;  ///< 是否输出详细后端日志。
     int pose_graph_iterations = 20;  ///< 位姿图优化的迭代次数。
@@ -159,7 +160,7 @@ class BackendPipeline {
      * 3. <b>加入回环边并首次优化</b>：跳过端点缺失的约束，给回环边加鲁棒核后运行优化。
      * 4. <b>筛选内点并写回位姿</b>：按卡方阈值筛选回环；存在内点时再次优化，随后写回顶点估计。
      * 5. <b>更新统计并返回内点结果</b>：回写约束的内点标记，累计耗时，按是否存在内点返回。
-     * @note 零内点时也会写回首次优化的估计；返回 false 不等于关键帧位姿未改变。调用方负责串行化优化。
+     * @note 零内点时不提交首次优化的估计；调用方负责串行化优化。
      */
     bool OptimizePoseGraph();
     void UpdateMapToOdomAndNotify();

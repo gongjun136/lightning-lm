@@ -285,7 +285,8 @@ int main(int argc, char** argv) {
         with_backend ? backend::ReadBackendMode(FLAGS_config) : backend::BackendMode::kDisabled;
     std::shared_ptr<backend::BackendPipeline> new_backend;
     std::shared_ptr<LoopClosing> legacy_backend;
-    if (backend_mode == backend::BackendMode::kBaBtcHba) {
+    if (backend_mode == backend::BackendMode::kBaBtcHba ||
+        backend_mode == backend::BackendMode::kBaSolidHba) {
         new_backend = std::make_shared<backend::BackendPipeline>();
         if (!new_backend->Init(FLAGS_config, false)) {
             LOG(ERROR) << "failed to initialize ba_btc_hba backend";

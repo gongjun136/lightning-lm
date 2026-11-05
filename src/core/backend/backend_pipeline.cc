@@ -114,7 +114,14 @@ BackendPipelineOptions ReadOptions(const YAML::Node& root, bool online_mode) {
     options.loop_outlier_chi2 = ValueOr(graph, "loop_outlier_chi2", options.loop_outlier_chi2);
 
     options.local_ba = ReadBaOptions(backend["local_ba"], options.local_ba);
-    const YAML::Node btc = backend["btc"];
+    const bool solid = ValueOr<std::string>(backend, "mode", "ba_btc_hba") == "ba_solid_hba";
+    options.mode = solid ? BackendMode::kBaSolidHba : BackendMode::kBaBtcHba;
+    options.btc.retrieval = solid ? LoopRetrieval::kSolid : LoopRetrieval::kBtc;
+    if (solid) {
+        options.btc.min_loop_score = 0.55;
+        options.btc.degenerate_min_loop_score = 0.55;
+    }
+    const YAML::Node btc = backend[solid ? "solid" : "btc"];
     options.btc.enabled = ValueOr(btc, "enabled", options.btc.enabled);
     options.btc.descriptor_submap_size =
         ValueOr(btc, "descriptor_submap_size", options.btc.descriptor_submap_size);
@@ -162,7 +169,24 @@ BackendPipelineOptions ReadOptions(const YAML::Node& root, bool online_mode) {
         ValueOr(btc, "min_optimization_translation", options.btc.min_optimization_translation);
     options.btc.min_optimization_rotation_deg =
         ValueOr(btc, "min_optimization_rotation_deg", options.btc.min_optimization_rotation_deg);
-    options.btc.descriptor = ReadBtcDescriptorOptions(btc["descriptor"], options.btc.descriptor);
+    options.btc.descriptor = ReadBtcDescriptorOptions(
+        btc[solid ? "plane_extraction" : "descriptor"], options.btc.descriptor);
+    if (solid) {
+        options.btc.solid_top_k = ValueOr(btc, "top_k", options.btc.solid_top_k);
+        options.btc.solid_skip_near_descriptors = ValueOr(
+            btc, "skip_near_descriptors", options.btc.solid_skip_near_descriptors);
+        options.btc.solid_min_time_separation_sec = ValueOr(
+            btc, "min_time_separation_sec", options.btc.solid_min_time_separation_sec);
+        const YAML::Node descriptor = btc["descriptor"];
+        auto& settings = options.btc.solid_descriptor;
+        settings.range_bins = ValueOr(descriptor, "range_bins", settings.range_bins);
+        settings.angle_bins = ValueOr(descriptor, "angle_bins", settings.angle_bins);
+        settings.elevation_bins = ValueOr(descriptor, "elevation_bins", settings.elevation_bins);
+        settings.min_distance = ValueOr(descriptor, "min_distance", settings.min_distance);
+        settings.max_distance = ValueOr(descriptor, "max_distance", settings.max_distance);
+        settings.elevation_min_deg = ValueOr(descriptor, "elevation_min_deg", settings.elevation_min_deg);
+        settings.elevation_max_deg = ValueOr(descriptor, "elevation_max_deg", settings.elevation_max_deg);
+    }
 
     const YAML::Node hba = backend["hba"];
     options.hba.enabled = ValueOr(hba, "enabled", options.hba.enabled);
@@ -191,6 +215,7 @@ BackendMode ReadBackendMode(const std::string& yaml_path) {
         const YAML::Node root = YAML::LoadFile(yaml_path);
         const std::string mode = ValueOr<std::string>(root["backend"], "mode", "ba_btc_hba");
         if (mode == "legacy") return BackendMode::kLegacy;
+        if (mode == "ba_solid_hba") return BackendMode::kBaSolidHba;
         if (mode == "disabled" || mode == "none") return BackendMode::kDisabled;
         return BackendMode::kBaBtcHba;
     } catch (const YAML::Exception&) {
@@ -201,6 +226,7 @@ BackendMode ReadBackendMode(const std::string& yaml_path) {
 const char* BackendModeName(BackendMode mode) {
     if (mode == BackendMode::kLegacy) return "legacy";
     if (mode == BackendMode::kDisabled) return "disabled";
+    if (mode == BackendMode::kBaSolidHba) return "ba_solid_hba";
     return "ba_btc_hba";
 }
 
@@ -217,7 +243,7 @@ bool BackendPipeline::Init(const std::string& yaml_path, bool online_mode) {
         T_imu_lidar_ = SE3(Quatd(math::MatFromArray<double>(rotation)).normalized(),
                            math::VecFromArray<double>(translation));
     } catch (const YAML::Exception& error) {
-        LOG(ERROR) << "failed to read ba_btc_hba backend configuration: " << error.what();
+        LOG(ERROR) << "读取建图后端配置失败 detail=" << error.what();
         return false;
     }
 
@@ -231,8 +257,8 @@ bool BackendPipeline::Init(const std::string& yaml_path, bool online_mode) {
     if (options_.online_mode) worker_thread_ = std::thread(&BackendPipeline::WorkerLoop, this);
     if (options_.hba.enabled) hba_thread_ = std::thread(&BackendPipeline::HbaLoop, this);
     initialized_ = true;
-    LOG(INFO) << "backend initialized: mode=ba_btc_hba, online=" << options_.online_mode
-              << ", local_ba=" << options_.local_ba.enabled << ", btc=" << options_.btc.enabled
+    LOG(INFO) << "建图后端初始化完成 mode=" << BackendModeName(options_.mode) << ", online=" << options_.online_mode
+              << ", local_ba=" << options_.local_ba.enabled << ", loop=" << options_.btc.enabled
               << ", hba=" << options_.hba.enabled;
     return true;
 }
@@ -297,7 +323,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             loop_results_.push_back(*detection);
-            ++runtime_.btc_descriptors;
+            runtime_.btc_descriptors += detection->descriptor_generated ? 1 : 0;
             runtime_.btc_candidates += detection->candidate_found ? 1 : 0;
             runtime_.loops_accepted += accepted ? 1 : 0;
             runtime_.loops_applied += apply_constraint ? 1 : 0;
@@ -325,7 +351,7 @@ void BackendPipeline::HandleKeyframe(const Keyframe::Ptr& keyframe) {
         // gate must not launch an expensive point-level optimization that is
         // guaranteed to be rolled back by the transactional commit guard.
         if (apply_constraint) {
-            RequestHba(false, "accepted_btc_loop");
+            RequestHba(false, options_.mode == BackendMode::kBaSolidHba ? "accepted_solid_loop" : "accepted_btc_loop");
         }
         // [backend-loop-optimization-trigger]
     }
@@ -421,10 +447,12 @@ bool BackendPipeline::OptimizePoseGraph() {
     if (inliers > 0 && optimizer->InitializeOptimization(0)) {
         optimizer->Optimize(std::max(1, options_.pose_graph_outlier_iterations));
     }
-    // 零内点也会执行写回；末尾返回 false 不会回退第一次优化的位姿。
-    for (const auto& [id, keyframe] : keyframes_by_id) {
-        auto vertex = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer->GetVertex(static_cast<int>(id)));
-        if (vertex && keyframe) keyframe->SetOptPose(vertex->Estimate());
+    // 没有通过图验证的回环时，不提交首次优化对关键帧的修改。
+    if (inliers > 0) {
+        for (const auto& [id, keyframe] : keyframes_by_id) {
+            auto vertex = std::dynamic_pointer_cast<miao::VertexSE3>(optimizer->GetVertex(static_cast<int>(id)));
+            if (vertex && keyframe) keyframe->SetOptPose(vertex->Estimate());
+        }
     }
     // [backend-loop-graph-inliers]
 
@@ -438,7 +466,7 @@ bool BackendPipeline::OptimizePoseGraph() {
         runtime_.pose_graph_time_ms += ElapsedMs(begin);
     }
     if (options_.verbose) {
-        LOG(INFO) << "BTC pose graph optimized: keyframes=" << keyframes.size()
+        LOG(INFO) << "回环位姿图优化完成 keyframes=" << keyframes.size()
                   << ", loop_inliers=" << inliers << "/" << loop_edges.size();
     }
     return inliers > 0;
@@ -656,14 +684,16 @@ bool BackendPipeline::SaveDiagnostics(
     std::filesystem::create_directories(directory, error);
     if (error) return false;
 
-    std::ofstream loop_csv(std::filesystem::path(directory) / "btc_loop_candidates.csv");
+    const bool solid = options_.mode == BackendMode::kBaSolidHba;
+    std::ofstream loop_csv(std::filesystem::path(directory) /
+                           (solid ? "solid_loop_candidates.csv" : "btc_loop_candidates.csv"));
     if (!loop_csv.is_open()) return false;
     loop_csv << "current_descriptor,history_descriptor,current_keyframe,history_keyframe,current_timestamp,"
                 "history_timestamp,candidate,candidate_source,accepted,optimization_warranted,score,drift_translation,"
                 "drift_rotation_deg,journey_span,drift_ratio,odom_revisit_distance,observability,"
                 "plane_icp_matches,plane_icp_converged,degenerate_fallback,"
                 "confirmation_count,points,descriptors,"
-                "generation_ms,search_ms,reason\n";
+                "generation_ms,search_ms,reason,retrieval_candidates,geometry_candidates_tested\n";
     for (const auto& loop : loops) {
         loop_csv << loop.current_descriptor_id << ',' << loop.history_descriptor_id << ','
                  << loop.current_keyframe_id << ',' << loop.history_keyframe_id << ',' << std::setprecision(12)
@@ -675,24 +705,25 @@ bool BackendPipeline::SaveDiagnostics(
                  << loop.plane_icp_observability << ',' << loop.plane_icp_matches << ','
                  << loop.plane_icp_converged << ',' << loop.used_degenerate_plane_fallback << ','
                  << loop.confirmation_count << ',' << loop.point_count << ',' << loop.descriptor_count << ','
-                 << loop.generation_time_ms << ',' << loop.search_time_ms << ',' << loop.rejection_reason << '\n';
+                 << loop.generation_time_ms << ',' << loop.search_time_ms << ',' << loop.rejection_reason << ','
+                 << loop.retrieval_candidates << ',' << loop.geometry_candidates_tested << '\n';
     }
 
     std::ofstream summary(std::filesystem::path(directory) / "backend_summary.yaml");
     if (!summary.is_open()) return false;
-    summary << "mode: ba_btc_hba\n"
+    summary << "mode: " << BackendModeName(options_.mode) << '\n'
             << "keyframes: " << runtime.keyframes << '\n'
             << "local_ba_attempts: " << runtime.local_ba_attempts << '\n'
             << "local_ba_accepted: " << runtime.local_ba_accepted << '\n'
-            << "btc_descriptors: " << runtime.btc_descriptors << '\n'
-            << "btc_candidates: " << runtime.btc_candidates << '\n'
+            << (solid ? "solid_descriptors: " : "btc_descriptors: ") << runtime.btc_descriptors << '\n'
+            << (solid ? "solid_candidates: " : "btc_candidates: ") << runtime.btc_candidates << '\n'
             << "loops_accepted: " << runtime.loops_accepted << '\n'
             << "loops_applied: " << runtime.loops_applied << '\n'
             << "loops_graph_inliers: " << runtime.loops_graph_inliers << '\n'
             << "hba_runs: " << runtime.hba_runs << '\n'
             << "hba_accepted: " << runtime.hba_accepted << '\n'
             << "local_ba_time_ms: " << runtime.local_ba_time_ms << '\n'
-            << "btc_time_ms: " << runtime.btc_time_ms << '\n'
+            << (solid ? "solid_time_ms: " : "btc_time_ms: ") << runtime.btc_time_ms << '\n'
             << "pose_graph_time_ms: " << runtime.pose_graph_time_ms << '\n'
             << "hba_time_ms: " << runtime.hba_time_ms << '\n';
     if (map_metadata && map_metadata->normalized) {

@@ -41,11 +41,11 @@ class CaptureTest(unittest.TestCase):
         cfg = {'multi_lidar': {'enabled': True, 'topics': {'lidar_0': '/cloud0', 'imu_0': '/imu0',
                  'lidar_1': '/cloud1', 'imu_1': '/imu1'}},
                'system': {'enable_wheel_speed_observation': True, 'wheel_speed_topic': '/wheel'}}
-        p = capture.make_plan(cfg, '/reference', ['/steering'])
-        for topic in ['/cloud0', '/imu1', '/steering', '/reference/attitude/sigma',
+        p = capture.make_plan(cfg, '/reference', ['/steering'], mode='reference')
+        for topic in ['/cloud0', '/imu0', '/steering', '/reference/attitude/sigma',
                       '/reference/time', '/reference/driver_status']:
             self.assertIn(topic, p['required_topics'])
-        for topic in ['/wheel', '/reference/imu/acceleration_raw', '/reference/imu/angular_rate_raw',
+        for topic in ['/imu1', '/wheel', '/reference/imu/acceleration_raw', '/reference/imu/angular_rate_raw',
                       '/reference/vehicle/acceleration', '/reference/vehicle/angular_rate']:
             self.assertIn(topic, p['optional_input_topics'])
             self.assertNotIn(topic, p['required_topics'])
@@ -59,6 +59,46 @@ class CaptureTest(unittest.TestCase):
         self.assertIn('/wheel', strict['required_topics'])
         self.assertIn('/reference/imu/acceleration_raw', strict['required_topics'])
         self.assertNotIn('/wheel', strict['optional_input_topics'])
+
+    def test_basic_needs_primary_imu_but_not_reference_or_auxiliary_imu(self):
+        cfg = {'multi_lidar': {'enabled': True, 'primary_lidar_id': 1,
+               'topics': {'lidar_0': '/c0', 'lidar_1': '/c1', 'imu_0': '/i0', 'imu_1': '/i1'}}}
+        plan = capture.make_plan(cfg, '/cgi430', [])
+        self.assertEqual(plan['required_topics'], ['/c0', '/c1', '/i1'])
+        self.assertIn('/i0', plan['optional_input_topics'])
+        self.assertIn('/cgi430/time', plan['optional_input_topics'])
+        self.assertIn('/SpeThrCAN4_topic', plan['optional_input_topics'])
+        self.assertIsNotNone(capture.re.fullmatch(plan['topic_regex'], '/SpeThrCAN4_topic'))
+        for mode in ('basic', 'reference'):
+            strict = capture.make_plan(cfg, '/cgi430', [], mode, True)
+            self.assertIn('/SpeThrCAN4_topic', strict['required_topics'])
+            self.assertNotIn('/SpeThrCAN4_topic', strict['optional_input_topics'])
+
+    def test_missing_primary_imu_rejected(self):
+        with self.assertRaises(ValueError):
+            capture.make_plan({'common': {'lidar_topic': '/cloud'}}, '/cgi430', [])
+
+    def test_wheel_late_arrival_gap_recovery_and_tail(self):
+        wheel = capture.WheelContinuity(0)
+        self.assertEqual(wheel.report(5)['status'], 'not_received')
+        wheel.receive(5)
+        wheel.receive(5.1)
+        self.assertEqual(wheel.report(5.2)['status'], 'received')
+        self.assertEqual(wheel.report(5.2)['first_arrival_delay_sec'], 5)
+        wheel.receive(8)
+        self.assertEqual(wheel.report(8.1)['gap_count'], 1)
+        self.assertEqual(wheel.report(11)['gap_count'], 2)
+        wheel.receive(11)
+        self.assertEqual(wheel.report(11)['gap_count'], 2)
+        self.assertEqual(wheel.report(11)['status'], 'interrupted')
+
+    def test_invalid_mode_flags_fail_before_ros_or_session_creation(self):
+        for args in (['--mode', 'basic', '--require-fixed'],
+                     ['--check-only', '--output', '/must-not-create'],
+                     ['--duration-seconds', 'nan']):
+            with self.assertRaises(SystemExit) as error:
+                capture.main(args)
+            self.assertEqual(error.exception.code, 2)
 
     def test_fixed_flag_alone_does_not_establish_quality(self):
         samples = self.samples()

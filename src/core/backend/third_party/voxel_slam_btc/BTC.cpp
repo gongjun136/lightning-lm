@@ -95,7 +95,7 @@ void BTCOctoTree::init_plane() {
 
 void STDescManager::GenerateSTDescs(
     pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-    std::vector<STD> &stds_vec, int id)
+    std::vector<STD> &stds_vec, int id, bool generate_triangles)
 { // step1, voxelization and plane dection
   std::unordered_map<BTCVOXEL_LOC, BTCOctoTree *> voxel_map;
   init_voxel_map(input_cloud, voxel_map);
@@ -105,6 +105,13 @@ void STDescManager::GenerateSTDescs(
   // std::cout << "[Description] planes size:" << plane_cloud->size() << std::endl;
   plane_cloud->header.seq = id;
   plane_cloud_vec_.push_back(plane_cloud);
+
+  // SOLiD 仅复用体素平面提取，不生成、检索或存储 BTC 三角形描述子。
+  if (!generate_triangles) {
+    stds_vec.clear();
+    for (auto &entry : voxel_map) delete entry.second;
+    return;
+  }
 
   // step3, extraction binary descriptors
   std::vector<BTCPlane *> proj_plane_list;

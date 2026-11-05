@@ -68,7 +68,7 @@ bool SlamSystem::Init(const std::string& yaml_path) {
     if (options_.with_loop_closing_) {
         const backend::BackendMode mode = backend::ReadBackendMode(yaml_path);
         LOG(INFO) << "slam backend mode: " << backend::BackendModeName(mode);
-        if (mode == backend::BackendMode::kBaBtcHba) {
+        if (mode == backend::BackendMode::kBaBtcHba || mode == backend::BackendMode::kBaSolidHba) {
             backend_ = std::make_shared<backend::BackendPipeline>();
             if (!backend_->Init(yaml_path, options_.online_mode_)) return false;
         } else if (mode == backend::BackendMode::kLegacy) {

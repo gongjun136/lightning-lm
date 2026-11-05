@@ -10,10 +10,18 @@
 #include "common/keyframe.h"
 #include "core/backend/third_party/voxel_slam_btc/BTC.h"
 #include "core/maps/map_frame.h"
+#include "core/localization/solid_descriptor.h"
 
 namespace lightning::backend {
 
+enum class LoopRetrieval { kBtc, kSolid };
+
 struct BtcLoopDetectorOptions {
+    LoopRetrieval retrieval = LoopRetrieval::kBtc;  ///< 地点检索方法；其余几何和图优化门控共用。
+    loc::SolidDescriptorOptions solid_descriptor;
+    int solid_top_k = 10;
+    int solid_skip_near_descriptors = 30;
+    double solid_min_time_separation_sec = 30.0;
     bool enabled = true;  ///< 是否启用 BTC 回环检测。
     int descriptor_submap_size = 10;  ///< 组成一个描述子子地图的关键帧数。
     // Values <= 0 retain the legacy non-overlapping behavior.
@@ -85,7 +93,9 @@ struct BtcLoopResult {
     std::size_t descriptor_count = 0;  ///< 当前查询生成的描述子数量。
     double generation_time_ms = 0.0;  ///< 子地图与描述子生成耗时（ms）。
     double search_time_ms = 0.0;  ///< 回环检索与验证耗时（ms）。
-    std::string candidate_source = "none";  ///< 候选由 BTC 检索或里程计重访产生的来源标识。
+    int retrieval_candidates = 0;  ///< SOLiD 分值达标且满足时间排除的候选数。
+    int geometry_candidates_tested = 0;  ///< SOLiD Top-K 中实际进行点面验证的候选数。
+    std::string candidate_source = "none";  ///< 候选由 BTC、SOLiD 或里程计重访产生的来源标识。
     std::string rejection_reason;  ///< 候选被拒绝的原因。
     SE3 T_history_lidar_current_lidar;  ///< 将当前雷达坐标变换到历史雷达坐标的回环相对位姿。
 };
@@ -127,9 +137,16 @@ class BtcLoopDetector {
         const pcl::PointCloud<pcl::PointXYZINormal>::ConstPtr& history,
         Eigen::Matrix3d& rotation, Eigen::Vector3d& translation) const;
     int FindOdomRevisitCandidate(const BtcDescriptorEntry& current) const;
+    void SearchSolid(const std::optional<loc::SolidDescriptor>& query,
+                     const Mat3d& R_level_current_lidar, const BtcDescriptorEntry& current,
+                     const SE3& T_imu_lidar, std::pair<int, double>& match,
+                     std::pair<Vec3d, Mat3d>& transform, BtcLoopResult& result) const;
 
     BtcLoopDetectorOptions options_;  ///< 回环检索、几何验证与连续确认参数。
     STDescManager manager_;  ///< 管理 BTC 描述子数据库与候选检索。
+    loc::SolidDescriptorEngine solid_engine_;
+    std::vector<std::optional<loc::SolidDescriptor>> solid_descriptors_;
+    std::vector<Mat3d> solid_level_rotations_;
     std::deque<Keyframe::Ptr> pending_keyframes_;  ///< 等待组成描述子子地图的关键帧。
     std::vector<BtcDescriptorEntry> entries_;  ///< 描述子 ID 到子地图端点与行程的索引。
     std::vector<std::vector<Keyframe::Ptr>> descriptor_keyframes_;  ///< 每个描述子对应的关键帧组。

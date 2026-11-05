@@ -35,13 +35,15 @@ double ElapsedMilliseconds(const std::chrono::steady_clock::time_point& begin) {
 }  // namespace
 
 BtcLoopDetector::BtcLoopDetector(BtcLoopDetectorOptions options)
-    : options_(std::move(options)), manager_(options_.descriptor) {}
+    : options_(std::move(options)), manager_(options_.descriptor), solid_engine_(options_.solid_descriptor) {}
 
 void BtcLoopDetector::Reset() {
     manager_ = STDescManager(options_.descriptor);
     pending_keyframes_.clear();
     entries_.clear();
     descriptor_keyframes_.clear();
+    solid_descriptors_.clear();
+    solid_level_rotations_.clear();
     last_keyframe_.reset();
     journey_ = 0.0;
     last_confirmation_current_ = -1;
@@ -222,6 +224,59 @@ int BtcLoopDetector::FindOdomRevisitCandidate(const BtcDescriptorEntry& current)
     return best_index;
 }
 
+void BtcLoopDetector::SearchSolid(
+    const std::optional<loc::SolidDescriptor>& query, const Mat3d& R_level_current_lidar,
+    const BtcDescriptorEntry& current, const SE3& T_imu_lidar,
+    std::pair<int, double>& match, std::pair<Vec3d, Mat3d>& transform,
+    BtcLoopResult& result) const {
+    if (!query) return;
+    std::vector<std::pair<int, double>> ranked;
+    for (std::size_t index = 0; index < entries_.size(); ++index) {
+        const auto& history = entries_[index];
+        if (!solid_descriptors_[index] || !history.endpoint ||
+            current.descriptor_id - history.descriptor_id <= options_.solid_skip_near_descriptors ||
+            history.last_keyframe_id >= current.first_keyframe_id ||
+            current.timestamp - history.timestamp < options_.solid_min_time_separation_sec) continue;
+        const double score = loc::SolidDescriptorEngine::Similarity(*query, *solid_descriptors_[index]);
+        if (std::isfinite(score) && score >= options_.min_loop_score)
+            ranked.emplace_back(static_cast<int>(index), score);
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        return a.second != b.second ? a.second > b.second : a.first < b.first;
+    });
+    result.retrieval_candidates = static_cast<int>(ranked.size());
+    const std::size_t limit = std::min(ranked.size(), static_cast<std::size_t>(std::max(1, options_.solid_top_k)));
+    for (std::size_t rank = 0; rank < limit; ++rank) {
+        const auto& candidate = ranked[rank];
+        const int index = candidate.first;
+        const auto yaw = loc::SolidDescriptorEngine::EstimateCandidateFromQueryYaw(
+            *query, *solid_descriptors_[index]);
+        if (!yaw) continue;
+        const SE3 T_history_current =
+            (entries_[index].endpoint->GetOptPose() * T_imu_lidar).inverse() *
+            (current.endpoint->GetOptPose() * T_imu_lidar);
+        Mat3d rotation = solid_level_rotations_[index].transpose() *
+                        AngAxisd(*yaw, Vec3d::UnitZ()).toRotationMatrix() * R_level_current_lidar;
+        Vec3d translation = T_history_current.translation();
+        // 平移初值来自内部 LIO；CGI 不参与检索、配准或优化。
+        ++result.geometry_candidates_tested;
+        RefineSummary refine;
+        if (options_.refine_with_plane_icp)
+            refine = RefinePlaneTransform(manager_.plane_cloud_vec_.back(),
+                                          manager_.plane_cloud_vec_[index], rotation, translation);
+        const bool verified = !options_.refine_with_plane_icp || refine.accepted ||
+            (options_.allow_degenerate_plane_icp && refine.converged &&
+             refine.matches >= options_.degenerate_min_matches &&
+             candidate.second >= options_.degenerate_min_loop_score);
+        // 保留首个候选供公共验证器记录拒绝原因；优先选取几何验证通过的候选。
+        if (match.first < 0 || verified) {
+            match = candidate;
+            transform = {translation, rotation};
+        }
+        if (verified) break;
+    }
+}
+
 BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& keyframes,
                                              const SE3& T_imu_lidar) {
     BtcLoopResult result;
@@ -250,16 +305,34 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
     // BTC returns the frame_number_ stored in each descriptor.  Entries are
     // indexed by descriptor submap, not by the (usually much larger)
     // keyframe id, so these ids must stay dense and identical to entries_.
-    manager_.GenerateSTDescs(cloud, descriptors, result.current_descriptor_id);
+    const bool solid = options_.retrieval == LoopRetrieval::kSolid;
+    manager_.GenerateSTDescs(cloud, descriptors, result.current_descriptor_id, !solid);
+    const Mat3d R_world_lidar = (current_endpoint->GetLIOPose() * T_imu_lidar).rotationMatrix();
+    const double yaw_world_lidar = std::atan2(R_world_lidar(1, 0), R_world_lidar(0, 0));
+    const Mat3d R_level_lidar =
+        AngAxisd(-yaw_world_lidar, Vec3d::UnitZ()).toRotationMatrix() * R_world_lidar;
+    std::optional<loc::SolidDescriptor> solid_descriptor;
+    if (solid) {
+        PointCloudType level_cloud;
+        level_cloud.reserve(cloud->size());
+        for (const auto& point : cloud->points) {
+            const Vec3d level = R_level_lidar * Vec3d(point.x, point.y, point.z);
+            PointType target;
+            target.x = level.x(); target.y = level.y(); target.z = level.z();
+            target.intensity = point.intensity;
+            level_cloud.push_back(target);
+        }
+        solid_descriptor = solid_engine_.Compute(level_cloud);
+    }
     result.generation_time_ms = ElapsedMilliseconds(generation_begin);
-    result.descriptor_generated = true;
-    result.descriptor_count = descriptors.size();
+    result.descriptor_generated = solid ? solid_descriptor.has_value() : !descriptors.empty();
+    result.descriptor_count = solid ? (solid_descriptor ? 1 : 0) : descriptors.size();
 
     std::pair<int, double> search_result(-1, 0.0);
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> transform;
     std::vector<std::pair<STD, STD>> matches;
     const auto search_begin = std::chrono::steady_clock::now();
-    if (!entries_.empty() && !manager_.plane_cloud_vec_.empty()) {
+    if (!solid && !entries_.empty() && !manager_.plane_cloud_vec_.empty()) {
         manager_.SearchLoop(descriptors, search_result, transform, matches, manager_.plane_cloud_vec_.back());
     }
     result.search_time_ms = ElapsedMilliseconds(search_begin);
@@ -272,10 +345,14 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
     current_entry.journey = journey_;
     current_entry.endpoint = current_endpoint;
 
+    if (solid) SearchSolid(solid_descriptor, R_level_lidar, current_entry, T_imu_lidar,
+                           search_result, transform, result);
+    result.search_time_ms = ElapsedMilliseconds(search_begin);
+
     // An odometry-neighbour candidate has a stronger locality prior than a
     // weak/ambiguous descriptor result. It still passes through plane ICP and
     // every acceptance gate below.
-    const int odom_candidate = FindOdomRevisitCandidate(current_entry);
+    const int odom_candidate = solid ? -1 : FindOdomRevisitCandidate(current_entry);
     if (odom_candidate >= 0) {
         search_result = {odom_candidate, 0.0};
         const SE3 T_world_history_lidar =
@@ -287,7 +364,7 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
         transform.second = T_history_lidar_current_lidar.rotationMatrix();
         result.candidate_source = "odom_revisit";
     } else if (search_result.first >= 0) {
-        result.candidate_source = "btc";
+        result.candidate_source = solid ? "solid" : "btc";
     }
 
     if (search_result.first >= 0 && search_result.first < static_cast<int>(entries_.size())) {
@@ -398,10 +475,14 @@ BtcLoopResult BtcLoopDetector::ProcessSubmap(const std::vector<Keyframe::Ptr>& k
             }
         }
     } else {
-        result.rejection_reason = descriptors.empty() ? "no_descriptors" : "no_candidate";
+        result.rejection_reason = result.descriptor_generated ? "no_candidate" : "no_descriptors";
     }
 
-    manager_.AddSTDescs(descriptors);
+    if (!solid) manager_.AddSTDescs(descriptors);
+    if (solid) {
+        solid_descriptors_.push_back(std::move(solid_descriptor));
+        solid_level_rotations_.push_back(R_level_lidar);
+    }
     entries_.push_back(std::move(current_entry));
     descriptor_keyframes_.push_back(keyframes);
     return result;

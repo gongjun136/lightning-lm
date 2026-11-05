@@ -65,36 +65,68 @@ def active_localizers():
     return result
 
 
-def make_plan(config, prefix, extras):
+def make_plan(config, prefix, extras, mode='basic', require_wheel=False):
+    if mode not in ('basic', 'reference'):
+        raise ValueError('采集模式必须为 basic 或 reference')
     multi = config.get('multi_lidar', {})
-    inputs = list(multi.get('topics', {}).values()) if multi.get('enabled') else [
-        config.get('common', {}).get('livox_lidar_topic') or config.get('common', {}).get('lidar_topic'),
-        config.get('common', {}).get('imu_topic')]
-    inputs = [t for t in inputs if t]
-    if not inputs:
-        raise ValueError('配置中没有雷达与 IMU 输入，不能创建空录制任务')
-    required_inputs = list(inputs)
+    common = config.get('common', {})
+    if multi.get('enabled'):
+        topics = multi.get('topics', {})
+        lidars = [t for key, t in topics.items() if key.startswith('lidar_') and t]
+        primary_imu = topics.get('imu_' + str(multi.get('primary_lidar_id', 0))) or common.get('imu_topic')
+        auxiliary = [t for key, t in topics.items() if key.startswith('imu_') and t and t != primary_imu]
+    else:
+        lidars = [common.get('livox_lidar_topic') or common.get('lidar_topic')]
+        primary_imu = common.get('imu_topic')
+        auxiliary = []
+    if not lidars or not all(lidars) or not primary_imu:
+        raise ValueError('配置缺少雷达或主 IMU 输入，不能创建录制任务')
+    inputs = lidars + [primary_imu]
     reference = [prefix + '/' + field[0] for field in FIELDS.values()]
     reference += [prefix + '/time', prefix + '/driver_status']
-    optional = [prefix + '/' + suffix for suffix in RAW_SUFFIXES if prefix + '/' + suffix not in reference]
-    system = config.get('system', {})
-    wheel = system.get('wheel_speed_topic', '/SpeThrCAN4_topic')
-    if system.get('enable_wheel_speed_observation', False) or system.get('enable_wheel_speed_dr_observation', False):
-        inputs.append(wheel)
-        # The localization launcher explicitly permits absent wheel samples.
-        # Preserve that contract; --extra-topic can make it mandatory for a run.
-        optional.append(wheel)
-    required = sorted(set(required_inputs + reference + extras))
-    exact = sorted(set(required + EVIDENCE + [wheel]))
+    wheel = config.get('system', {}).get('wheel_speed_topic') or '/SpeThrCAN4_topic'
+    optional = auxiliary + reference + [prefix + '/' + suffix for suffix in RAW_SUFFIXES] + [wheel]
+    required = sorted(set(inputs + extras + (reference if mode == 'reference' else []) +
+                          ([wheel] if require_wheel else [])))
+    exact = sorted(set(required + optional + EVIDENCE))
     if any(not re.fullmatch(r'/[A-Za-z0-9_/]+', t) for t in exact):
         raise ValueError('话题必须是绝对 ROS 名称，不能含空格或正则表达式')
-    # Dynamic discovery also records CGI outputs/Livox streams that start later.
     regex = r'^(?:' + '|'.join([re.escape(t) for t in exact] + [
         re.escape(prefix) + r'/.*', r'/livox/.*', r'/sensors/livox/.*',
         r'/localization/.*', r'/diagnostics(?:/.*)?']) + r')$'
-    return {'required_topics': required, 'configured_inputs': sorted(set(inputs)),
+    return {'mode': mode, 'wheel_topic': wheel, 'require_wheel': require_wheel,
+            'required_topics': required, 'configured_inputs': sorted(set(inputs + auxiliary)),
             'optional_input_topics': sorted(set(optional) - set(required)),
             'explicit_topics': exact, 'topic_regex': regex}
+
+
+class WheelContinuity:
+    """Arrival-time evidence; a gap is not proof of a lost source message."""
+    def __init__(self, started, gap_seconds=2.0):
+        self.started, self.gap_seconds = started, gap_seconds
+        self.first = self.last = None
+        self.count = self.gaps = 0
+        self.maximum_gap = 0.0
+
+    def receive(self, now):
+        if self.last is not None:
+            gap = now - self.last
+            self.maximum_gap = max(self.maximum_gap, gap)
+            self.gaps += gap > self.gap_seconds
+        else:
+            self.first = now
+        self.last = now
+        self.count += 1
+
+    def report(self, now):
+        tail = now - self.last if self.last is not None else 0.0
+        gaps = self.gaps + int(tail > self.gap_seconds)
+        return {'status': 'not_received' if not self.count else 'interrupted' if gaps else 'received',
+                'observed_messages': self.count, 'gap_count': gaps,
+                'gap_threshold_sec': self.gap_seconds,
+                'maximum_gap_sec': max(self.maximum_gap, tail),
+                'first_arrival_delay_sec': None if self.first is None else self.first - self.started,
+                'arrival_age_sec': None if self.last is None else tail}
 
 
 def quality_report(samples, now_ns, now_mono):
@@ -147,6 +179,7 @@ class Monitor:
         self.maximum_good = 0
         self.matcher = re.compile(plan['topic_regex'])
         self.graph = {}
+        self.wheel = WheelContinuity(time.monotonic())
 
     def discover(self):
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
@@ -177,6 +210,8 @@ class Monitor:
         at = time.monotonic()
         self.counts[topic] += 1
         self.last[topic] = at
+        if topic == self.plan['wheel_topic']:
+            self.wheel.receive(at)
         field = next((k for k, (suffix, _, _) in FIELDS.items() if topic == self.prefix + '/' + suffix), None)
         if not field:
             return
@@ -201,7 +236,7 @@ class Monitor:
             self.good = 0
         quality.update(consecutive_good=self.good, maximum_consecutive_good=self.maximum_good,
                        reference_ready=self.good >= 10 and quality['instant_quality_ok'])
-        return {'message_counts': dict(self.counts), 'missing_optional_inputs': [t for t in self.plan['optional_input_topics']
+        return {'wheel': self.wheel.report(now), 'message_counts': dict(self.counts), 'missing_optional_inputs': [t for t in self.plan['optional_input_topics']
                 if t not in self.last or now - self.last[t] > 2],
                 'missing_required': [t for t in self.plan['required_topics']
                 if t not in self.last or now - self.last[t] > 2], 'quality': quality,
@@ -209,8 +244,16 @@ class Monitor:
 
 
 def snapshot(out, config_path, config, plan, active):
-    files = [config_path, REPO / 'workspace.repos', REPO / 'config/sany/calibrations.yaml',
-             Path(os.environ.get('SANY_VEHICLE_CONFIG', '/opt/conf/vehicle_config.yaml'))]
+    vehicle = config.get('vehicle_configuration', {})
+    files = [config_path, REPO / 'workspace.repos']
+    for path_key, hash_key, fallback in (
+            ('vehicle_config_path', 'vehicle_config_sha256', Path(os.environ.get('SANY_VEHICLE_CONFIG', '/opt/conf/vehicle_config.yaml'))),
+            ('calibrations_path', 'calibrations_sha256', REPO / 'config/sany/calibrations.yaml')):
+        source = Path(vehicle.get(path_key) or fallback)
+        expected = vehicle.get(hash_key)
+        if expected and (not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest() != expected):
+            raise ValueError(f'配置引用的采集快照缺失或已变化：{source}')
+        files.append(source)
     manifest = config.get('map_package', {}).get('manifest')
     if manifest:
         files.append(Path(manifest))
@@ -243,6 +286,8 @@ def snapshot(out, config_path, config, plan, active):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='主 Orin 原始传感器录制；保留设备点，离线补杆臂')
+    parser.add_argument('--mode', choices=('basic', 'reference'), default='basic', help='basic 基础采集（默认）；reference 强制 CGI 参考输入')
+    parser.add_argument('--require-wheel', action='store_true', help='要求轮速话题有实际消息；默认可选')
     parser.add_argument('--output', type=Path, help='新的输出目录，不能已存在')
     parser.add_argument('--config', type=Path, help='定位实际使用的 YAML；默认从运行进程读取')
     parser.add_argument('--cgi-prefix', default='/cgi430')
@@ -252,7 +297,11 @@ def main(argv=None):
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--require-fixed', action='store_true', help='开始前要求连续 10 条通过工程门限的新解')
     args = parser.parse_args(argv)
-    if args.duration_seconds < 0 or not 0 < args.wait_seconds <= 300:
+    if args.require_fixed and args.mode != 'reference':
+        parser.error('--require-fixed 仅用于 --mode reference')
+    if args.check_only and args.output:
+        parser.error('--check-only 不创建会话目录，请勿同时指定 --output')
+    if not math.isfinite(args.duration_seconds) or not math.isfinite(args.wait_seconds) or args.duration_seconds < 0 or not 0 < args.wait_seconds <= 300:
         parser.error('录制时长须非负，等待时长须在 (0, 300] 秒内')
     if not re.fullmatch(r'/[A-Za-z0-9_/]+', args.cgi_prefix) or args.cgi_prefix.endswith('/'):
         parser.error('CGI 前缀必须是无尾斜线的绝对命名空间')
@@ -274,11 +323,11 @@ def main(argv=None):
     config = load(config_path)
     if 'sany_vehicle_config' in config:
         config = resolve(config_path, os.environ.get('SANY_VEHICLE_CONFIG', '/opt/conf/vehicle_config.yaml'))
-    plan = make_plan(config, args.cgi_prefix, args.extra_topic)
+    plan = make_plan(config, args.cgi_prefix, args.extra_topic, args.mode, args.require_wheel)
     out = args.output or (Path(os.environ.get('LIGHTNING_LM_OUT_ROOT', REPO.parent.parent / 'runs')) /
                           time.strftime('sensors_%Y%m%d_%H%M%S'))
     out = out.resolve()
-    if not args.check_only or args.output:
+    if not args.check_only:
         out.mkdir(parents=True, exist_ok=False)
         metadata = snapshot(out, config_path, config, plan, active)
         write_json(out / 'capture.metadata.json', metadata)
@@ -331,6 +380,7 @@ def main(argv=None):
                '--max-bag-size', str(4 * 1024**3), '--max-cache-size', str(256 * 1024**2)]
         metadata.update(recorder_command=cmd, capture_start_ns=time.time_ns(), capture_start_monotonic_ns=time.monotonic_ns())
         write_json(out / 'capture.metadata.json', metadata)
+        monitor.wheel = WheelContinuity(time.monotonic())
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         start, next_audit, next_clock = time.monotonic(), 0, time.monotonic() + 30
         ready = None
@@ -395,13 +445,18 @@ def main(argv=None):
             counts = {t['topic_metadata']['name']: t['message_count']
                       for t in bag_meta.get('rosbag2_bagfile_information', {}).get('topics_with_message_count', [])}
             missing = [t for t in plan['required_topics'] if not counts.get(t)]
-            metadata.update(bag_message_counts=counts, missing_required_in_bag=missing)
+            wheel = monitor.wheel.report(time.monotonic())
+            wheel.update(topic=plan['wheel_topic'], bag_messages=counts.get(plan['wheel_topic'], 0))
+            if not wheel['bag_messages']:
+                wheel['status'] = 'not_recorded' if wheel['observed_messages'] else 'not_received'
+            metadata.update(bag_message_counts=counts, missing_required_in_bag=missing, wheel_summary=wheel)
+            print('轮速录制结果：' + json.dumps(wheel, ensure_ascii=False), flush=True)
             metadata['discovered_topics_without_bag_messages'] = sorted(t for t in monitor.graph if not counts.get(t))
             if forced or proc.returncode not in (0, 130, -signal.SIGINT) or missing:
                 exit_code = 3
             print(f'录制结束，返回码={exit_code}，必需话题缺失={missing}，目录={out}', flush=True)
         metadata.update(exit_code=exit_code, final_observation=monitor.report())
-        if out.is_dir() and metadata:
+        if not args.check_only and out.is_dir() and metadata:
             metadata['clock_end'] = audit_clock()
             write_json(out / 'capture.metadata.json', metadata)
         node.destroy_node()
