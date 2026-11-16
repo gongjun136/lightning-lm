@@ -3,8 +3,12 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace as NS
 import unittest
+from unittest import mock
+
+import accuracy_export_bag as exporter
 
 import record_localization_sensors as capture
 
@@ -28,6 +32,64 @@ class CaptureTest(unittest.TestCase):
         environment = {'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp'}
         capture.configure_transport_environment(environment, Path(__file__))
         self.assertEqual(environment, {'RMW_IMPLEMENTATION': 'rmw_cyclonedds_cpp'})
+
+    def test_clock_queries_disable_name_resolution_and_keep_timeout_evidence(self):
+        def command(args, **kwargs):
+            if args[0] == 'chronyc':
+                raise capture.subprocess.TimeoutExpired(args, kwargs['timeout'])
+            return NS(returncode=0, stdout='ok', stderr='')
+        with mock.patch.object(exporter.subprocess, 'run', side_effect=command) as run:
+            result = exporter.audit_clock()
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[:2], [['chronyc', '-n', 'tracking'], ['chronyc', '-n', 'sources', '-v']])
+        self.assertIn('timed out', result['chrony_tracking']['unavailable'])
+        self.assertIn('timed out', result['chrony_sources']['unavailable'])
+        self.assertEqual(result['kernel']['returncode'], 0)
+
+    def test_blocked_clock_sampling_does_not_stall_fresh_sensor_monitoring(self):
+        entered, release = threading.Event(), threading.Event()
+        evidence = {'chrony_tracking': {'unavailable': 'simulated timeout'}}
+        def blocked():
+            entered.set()
+            release.wait(2)
+            return evidence
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(capture, 'audit_clock', side_effect=blocked) as sample:
+            path = Path(directory) / 'clock.jsonl'
+            worker = capture.ClockAuditWorker(path, interval_seconds=.01)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                for _ in range(100):
+                    samples = self.samples()
+                    self.assertTrue(capture.quality_report(samples, 1_010_000_000, 10.01)['instant_quality_ok'])
+                self.assertEqual(sample.call_count, 1)
+                # A stalled optional command also cannot hold shutdown forever.
+                status = worker.stop(timeout=.01)
+                self.assertFalse(status['stopped'])
+            finally:
+                release.set()
+                status = worker.stop(timeout=2)
+            self.assertTrue(status['stopped'])
+            self.assertEqual(status['samples_written'], 1)
+            self.assertIsNone(status['error'])
+            self.assertEqual([json.loads(s) for s in path.read_text().splitlines()], [evidence])
+
+    def test_stopping_idle_clock_worker_cancels_pending_sample(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(capture, 'audit_clock') as sample:
+            worker = capture.ClockAuditWorker(Path(directory) / 'clock.jsonl', interval_seconds=60)
+            worker.start()
+            status = worker.stop(timeout=1)
+            self.assertTrue(status['stopped'])
+            self.assertEqual(status['samples_written'], 0)
+            sample.assert_not_called()
+
+    def test_clock_output_failure_is_reported_without_raising_in_recorder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            worker = capture.ClockAuditWorker(Path(directory) / 'missing' / 'clock.jsonl')
+            worker.start()
+            status = worker.stop(timeout=1)
+            self.assertTrue(status['stopped'])
+            self.assertIsNotNone(status['error'])
 
     def samples(self):
         values = {'latitude': [30.], 'longitude': [110.], 'altitude': [100.],

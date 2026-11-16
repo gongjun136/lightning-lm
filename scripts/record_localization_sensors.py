@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import yaml
@@ -98,6 +99,42 @@ def make_plan(config, prefix, extras, mode='basic', require_wheel=False):
             'required_topics': required, 'configured_inputs': sorted(set(inputs + auxiliary)),
             'optional_input_topics': sorted(set(optional) - set(required)),
             'explicit_topics': exact, 'topic_regex': regex}
+
+
+class ClockAuditWorker:
+    """One bounded worker; slow clock commands never run in the ROS spin loop."""
+    def __init__(self, path, interval_seconds=30.0):
+        self.path = path
+        self.interval_seconds = interval_seconds
+        self.samples_written = 0
+        self.error = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='capture-clock-audit', daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        try:
+            with self.path.open('a', encoding='utf-8') as stream:
+                next_sample = time.monotonic() + self.interval_seconds
+                while not self._stop.wait(max(0.0, next_sample - time.monotonic())):
+                    next_sample = time.monotonic() + self.interval_seconds
+                    result = audit_clock()
+                    stream.write(json.dumps(result, ensure_ascii=False, allow_nan=False) + '\n')
+                    stream.flush()
+                    self.samples_written += 1
+        except Exception as exc:
+            # Optional evidence must not stop the independent raw recorder.
+            self.error = str(exc)
+
+    def stop(self, timeout=25.0):
+        self._stop.set()
+        # audit_clock has four commands, each with a five-second timeout.
+        # Join only after rosbag has stopped/flushed; abnormal I/O stays bounded.
+        self._thread.join(timeout)
+        return {'stopped': not self._thread.is_alive(),
+                'samples_written': self.samples_written, 'error': self.error}
 
 
 class WheelContinuity:
@@ -346,7 +383,7 @@ def main(argv=None):
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, stop)
-    proc, log, audit = None, None, None
+    proc, log, audit, clock_worker = None, None, None, None
     exit_code, forced = 2, False
     try:
         print(f'检查实际输入，ROS_DOMAIN_ID={os.environ["ROS_DOMAIN_ID"]}，配置={config_path}', flush=True)
@@ -382,7 +419,9 @@ def main(argv=None):
         write_json(out / 'capture.metadata.json', metadata)
         monitor.wheel = WheelContinuity(time.monotonic())
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        start, next_audit, next_clock = time.monotonic(), 0, time.monotonic() + 30
+        clock_worker = ClockAuditWorker(out / 'clock.jsonl')
+        clock_worker.start()
+        start, next_audit = time.monotonic(), 0
         ready = None
         print(f'正在启动录制器：{out}；按一次 Ctrl-C 后等待写盘。', flush=True)
         exit_code = 0
@@ -414,10 +453,6 @@ def main(argv=None):
                     print('剩余空间不足 2 GiB，停止录制并保存已有数据。', file=sys.stderr)
                     exit_code = 3
                     break
-            if now >= next_clock:
-                with (out / 'clock.jsonl').open('a', encoding='utf-8') as f:
-                    f.write(json.dumps(audit_clock(), ensure_ascii=False) + '\n')
-                next_clock = now + 30
             if args.duration_seconds and ready is not None and now - ready >= args.duration_seconds:
                 break
     finally:
@@ -456,6 +491,10 @@ def main(argv=None):
                 exit_code = 3
             print(f'录制结束，返回码={exit_code}，必需话题缺失={missing}，目录={out}', flush=True)
         metadata.update(exit_code=exit_code, final_observation=monitor.report())
+        if clock_worker:
+            metadata['clock_audit_worker'] = clock_worker.stop()
+            if not metadata['clock_audit_worker']['stopped'] or metadata['clock_audit_worker']['error']:
+                print('时钟后台采样未完整结束：' + json.dumps(metadata['clock_audit_worker'], ensure_ascii=False), file=sys.stderr)
         if not args.check_only and out.is_dir() and metadata:
             metadata['clock_end'] = audit_clock()
             write_json(out / 'capture.metadata.json', metadata)

@@ -435,7 +435,7 @@ def write_json(path, value):
 
 def audit_clock():
     result = {"realtime_ns": time.time_ns(), "monotonic_ns": time.monotonic_ns(), "hostname": platform.node()}
-    for name, command in {"chrony_tracking": ["chronyc", "tracking"], "chrony_sources": ["chronyc", "sources", "-v"],
+    for name, command in {"chrony_tracking": ["chronyc", "-n", "tracking"], "chrony_sources": ["chronyc", "-n", "sources", "-v"],
                           "timedatectl": ["timedatectl", "show"], "kernel": ["uname", "-a"]}.items():
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
