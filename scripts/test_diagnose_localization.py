@@ -1329,11 +1329,11 @@ class DiagnosisTest(unittest.TestCase):
         with (self.run / 'config.yaml').open('a') as config:
             config.write('relocalization:\n  backend: solid_kiss\n  map_min_overlap_ratio: 0.92\n'
                          '  kiss_matcher:\n    map_min_overlap_ratio: 0.99\n'
-                         '  solid_kiss:\n    map_min_overlap_ratio: 0.75\n')
+                         '  solid_kiss:\n    map_min_overlap_ratio: 0.6\n')
         lines = [
             'I1028 12:00:00.000000 42] SAFETY_DIAGNOSTIC sequence=1 raw_runstate=4 localization_uncertainty=0 output_age_sec=inf',
             'I1028 12:00:01.000000 42] SAFETY_DIAGNOSTIC sequence=2 raw_runstate=0',
-            'I1028 12:00:02.000000 42] localization failed! score: 2.28838, map_checked=1 map_overlap=0.728835 raw_odom_valid=1',
+            'I1028 12:00:02.000000 42] localization failed! score: 2.28838, map_checked=1 map_overlap=0.588835 raw_odom_valid=1',
             'I1028 12:00:02.010000 42] SAFETY_DIAGNOSTIC sequence=3 raw_runstate=-9 localization_lost=1 output_age_sec=0.005',
             'I1028 12:00:02.020000 42] localization pose and map outputs disabled',
             'I1028 12:00:02.300000 42] SOLID_KISS_REJECT candidate=91 inliers=9 reason=too_few_robust_inliers',
@@ -1347,7 +1347,7 @@ class DiagnosisTest(unittest.TestCase):
         summary = '\n'.join(item['text'] for item in report['priority_summary'])
         self.assertIn('启动无有效定位输出', summary)
         self.assertIn('首次已观测门控关闭: 10-28 12:00:02.010000', summary)
-        self.assertIn('map_overlap=0.728835 < relocalization.solid_kiss.map_min_overlap_ratio=0.75', summary)
+        self.assertIn('map_overlap=0.588835 < relocalization.solid_kiss.map_min_overlap_ratio=0.6', summary)
         self.assertIn('运行配置判据', summary)
         self.assertIn('已证实未满足项: map_overlap', summary)
         self.assertNotIn('0.92', summary)
