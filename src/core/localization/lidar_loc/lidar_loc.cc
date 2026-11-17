@@ -528,6 +528,10 @@ bool LidarLoc::Init(const std::string& config_path) {
 }
 
 bool LidarLoc::ProcessCloud(CloudPtr cloud_input) {
+    {
+        UL lock_res(result_mutex_);
+        localization_result_.transient_match_rejection_ = false;
+    }
     current_match_started_steady_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     // 阶段 1：检查定位点云。
@@ -795,6 +799,7 @@ bool LidarLoc::InitWithFP(CloudPtr input, const SE3& fp_pose) {
                   << " min_confidence=" << last_match_stats_.min_confidence
                   << " ndt_metrics_available=" << last_match_stats_.ndt_metrics_available
                   << " ndt_converged=" << last_match_stats_.ndt_converged
+                  << " ndt_numerical_failure=" << last_match_stats_.ndt_numerical_failure
                   << " ndt_max_iterations=" << last_match_stats_.ndt_max_iterations
                   << " ndt_epsilon=" << last_match_stats_.ndt_epsilon
                   << " ndt_budget_exhausted=" << last_match_stats_.NdtBudgetExhausted()
@@ -839,6 +844,7 @@ diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
     frame.iterations = stats.iterations;
     frame.ndt_metrics_available = stats.ndt_metrics_available;
     frame.ndt_converged = stats.ndt_converged;
+    frame.ndt_numerical_failure = stats.ndt_numerical_failure;
     frame.ndt_transform_finite = stats.ndt_transform_finite;
     frame.ndt_confidence_finite = stats.ndt_confidence_finite;
     frame.ndt_max_iterations = stats.ndt_max_iterations;
@@ -2092,6 +2098,7 @@ void LidarLoc::Align(const CloudPtr& input) {
             frame.iterations = last_match_stats_.iterations;
             frame.ndt_metrics_available = last_match_stats_.ndt_metrics_available;
             frame.ndt_converged = last_match_stats_.ndt_converged;
+            frame.ndt_numerical_failure = last_match_stats_.ndt_numerical_failure;
             frame.ndt_transform_finite = last_match_stats_.ndt_transform_finite;
             frame.ndt_confidence_finite = last_match_stats_.ndt_confidence_finite;
             frame.ndt_max_iterations = last_match_stats_.ndt_max_iterations;
@@ -2117,6 +2124,7 @@ void LidarLoc::Align(const CloudPtr& input) {
                      << ", min_confidence=" << last_match_stats_.min_confidence
                      << ", ndt_metrics_available=" << last_match_stats_.ndt_metrics_available
                      << ", ndt_converged=" << last_match_stats_.ndt_converged
+                  << " ndt_numerical_failure=" << last_match_stats_.ndt_numerical_failure
                      << ", ndt_max_iterations=" << last_match_stats_.ndt_max_iterations
                      << ", ndt_epsilon=" << last_match_stats_.ndt_epsilon
                      << ", ndt_budget_exhausted=" << last_match_stats_.NdtBudgetExhausted()
@@ -2200,6 +2208,12 @@ void LidarLoc::Align(const CloudPtr& input) {
         } else {
             localization_result_.lidar_loc_valid_ = false;
             localization_result_.status_ = LocalizationStatus::FOLLOWING_DR;
+            localization_result_.transient_match_rejection_ = !loc_success &&
+                last_match_stats_.NdtBudgetExhausted() && last_match_stats_.ndt_transform_finite &&
+                last_match_stats_.ndt_confidence_finite && std::isfinite(fitness_score) &&
+                fitness_score >= options_.min_tracking_confidence_ &&
+                last_match_stats_.registration_reason != nullptr &&
+                std::string(last_match_stats_.registration_reason) == "ndt_not_converged";
         }
         // [loc-tracking-status]
 
@@ -2357,6 +2371,7 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     last_match_stats_.iterations = ndt->getFinalNumIteration();
     last_match_stats_.ndt_metrics_available = true;
     last_match_stats_.ndt_converged = ndt->hasConverged();
+    last_match_stats_.ndt_numerical_failure = ndt->hasNumericalFailure();
     last_match_stats_.ndt_transform_finite = trans.allFinite();
     last_match_stats_.ndt_confidence_finite = std::isfinite(confidence);
     last_match_stats_.ndt_max_iterations = ndt->getMaximumIterations();
@@ -2365,9 +2380,10 @@ bool LidarLoc::Localize(SE3& pose, double& confidence, CloudPtr input, CloudPtr 
     // [loc-ndt-acceptance]
     const double confidence_threshold =
         loc_inited_ ? options_.min_tracking_confidence_ : options_.min_init_confidence_;
-    loc_success = ndt->hasConverged() && std::isfinite(confidence) && trans.allFinite() &&
+    loc_success = !ndt->hasNumericalFailure() && ndt->hasConverged() && std::isfinite(confidence) && trans.allFinite() &&
                   confidence >= confidence_threshold;
-    last_match_stats_.registration_reason = !trans.allFinite() ? "ndt_transform_nonfinite" :
+    last_match_stats_.registration_reason = ndt->hasNumericalFailure() ? "ndt_numerical_failure" :
+        !trans.allFinite() ? "ndt_transform_nonfinite" :
         !std::isfinite(confidence) ? "ndt_confidence_nonfinite" :
         !ndt->hasConverged() ? "ndt_not_converged" :
         confidence < confidence_threshold ? "ndt_confidence_below_threshold" : "accepted";

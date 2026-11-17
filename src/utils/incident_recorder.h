@@ -55,6 +55,8 @@ class IncidentRecorder {
         double startup_age_sec = -1, valid_match_age_sec = -1;
         bool output_gate_open = false, match_stale = false, latest_match_valid = false, output_continuous = false;
         bool localization_healthy_for_degraded = false, partial_radar_suppressed = false;
+        bool match_failure_grace_active = false, match_failure_grace_suppressed = false;
+        double match_failure_grace_age_sec = std::numeric_limits<double>::infinity();
         bool lidar_frame_started = false, lidar_frame_seen = false;
         bool lidar_frame_warning = false, lidar_frame_fault = false;
         double lidar_frame_age_sec = -1;

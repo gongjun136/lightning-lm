@@ -297,7 +297,7 @@ diagnostics:
     input_timeout_seconds: 0.5
     cooldown_seconds: 10.0
   # Bench defaults. Freeze config_version after coverage/false-alarm calibration.
-  config_version: localization-dtc-v8-yaw-native-imu
+  config_version: localization-dtc-v9-match-grace
   safety_topic: /safety/throstle
   # false: always publish normal Safety.runstate=0; source DTC reporting is unchanged.
   safety_fault_reporting_enabled: true
@@ -334,6 +334,7 @@ diagnostics:
   evaluation_timeout_sec: 0.5
   # 保留历史 UNKNOWN 宽容观测字段；当前策略不再因运动 UNKNOWN 超过此值单独报 4。
   # UNKNOWN 不等于 PASS，也不能清除先前已确认且尚未恢复的 FAIL。
+  match_failure_grace_sec: 0.2  # 单个 NDT 预算耗尽拒绝的上报容忍；位姿仍暂停，第二帧或到期立即恢复报错。
   consistency_unknown_grace_sec: 0.15
   startup_grace_sec: 8.0
   radar_frame_warning_sec: 0.2

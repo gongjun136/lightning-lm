@@ -29,6 +29,9 @@ Monitor::Monitor(Config config, Clock::time_point now) : config_(config), start_
         !std::isfinite(config.position_sigma_floor_m) || config.position_sigma_floor_m < 0 ||
         !std::isfinite(config.angle_sigma_floor_rad) || config.angle_sigma_floor_rad < 0)
         throw std::invalid_argument("invalid DTC uncertainty scale or tolerance");
+    if (!std::isfinite(config.match_failure_grace_sec) || config.match_failure_grace_sec < 0.0 ||
+        config.match_failure_grace_sec > kMaxMatchFailureGraceSec)
+        throw std::invalid_argument("match_failure_grace_sec 必须为 [0, 0.2] 内的有限值");
     snapshot_.observations[0].code = kConsistency;
     snapshot_.observations[1].code = kUncertainty;
 }
@@ -262,6 +265,17 @@ Snapshot Monitor::Evaluate(const TrackingEvidence& tracking, Clock::time_point n
     std::lock_guard<std::mutex> lock(mutex_);
     return EvaluateLocked(tracking, now);
 }
+// Independent health required for the reporting grace. Shared by the snapshot flag and the frame
+// decision so a hand-built snapshot cannot bypass the hard 0.2 s bound or the quality conditions.
+static bool MatchFailureGraceHealthy(const Snapshot& s) {
+    return s.match_evidence_available && !s.output_gate_open && !s.latest_match_valid && !s.match_stale &&
+        !s.severe && !s.localization_lost && !s.startup_pending && !s.startup_expired && !s.output_stale &&
+        !s.confirmed_failure && s.observations[0].condition != kFail &&
+        s.observations[1].condition == kPass && s.covariance_valid && !s.pose_unobservable &&
+        s.yaw_condition == kPass && std::isfinite(s.valid_match_age_sec) &&
+        std::isfinite(s.match_failure_grace_age_sec) && s.match_failure_grace_age_sec >= 0.0 &&
+        s.match_failure_grace_age_sec < kMaxMatchFailureGraceSec;
+}
 Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_point now) const {
     Snapshot out = snapshot_;
     const bool lost = tracking.confirmed_lost;
@@ -282,6 +296,8 @@ Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_p
     out.match_stale = tracking.match_stale;
     out.latest_match_valid = tracking.latest_match_valid;
     out.valid_match_age_sec = tracking.valid_match_age_sec;
+    out.match_failure_grace_active = false;
+    out.match_failure_grace_age_sec = tracking.transient_rejection_age_sec;
     out.output_continuous = output_seen_ && !stale && Age(output_time_, continuous_output_start_) >= config_.window_sec;
     // [dtc-output-severity]
     const double missing = std::numeric_limits<double>::infinity();
@@ -330,6 +346,13 @@ Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_p
         out.yaw_condition == kUnknown &&
         std::abs(out.gyro_stamp_lag_sec) <= grace;
     // [dtc-unknown-evidence-age]
+    // Bounded single-frame reporting grace, evaluated after every independent condition above.
+    const double match_grace_limit = config_.match_failure_grace_sec;
+    out.match_failure_grace_active = std::isfinite(match_grace_limit) && match_grace_limit > 0.0 &&
+        tracking.available && tracking.initialized && !tracking.confirmed_lost &&
+        tracking.transient_rejection_candidate && tracking.rejected_frames_since_match == 1 &&
+        out.match_failure_grace_age_sec < std::min(match_grace_limit, kMaxMatchFailureGraceSec) &&
+        MatchFailureGraceHealthy(out);
     return out;
 }
 // [dtc-safety-priority]
@@ -364,6 +387,17 @@ SafetyDecision EvaluateFrameSafetyDecision(const Snapshot& localization,
         localization.startup_expired && !frames.seen ? 4 :
         SafetyValue(localization, false, false, true, true);
     decision.selected = decision.raw;
+    // Reporting grace: raw stays 4. Suppress only when the closed publication gate is the sole
+    // cause, i.e. the unchanged priority function returns 0 once that single input is flipped.
+    if (decision.raw == 4 && !frames.fault && frames.seen && localization.match_failure_grace_active &&
+        MatchFailureGraceHealthy(localization)) {
+        Snapshot gate_only = localization;
+        gate_only.output_gate_open = true;
+        if (SafetyValue(gate_only, false, false, true, true) == 0) {
+            decision.match_failure_grace_suppressed = true;
+            decision.selected = 0;
+        }
+    }
     decision.published = reporting_enabled ? decision.selected : 0;
     return decision;
 }

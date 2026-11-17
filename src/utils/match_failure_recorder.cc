@@ -64,11 +64,12 @@ std::string Registration(const Recorder::Frame& f) {
         << ",\"raw_odom_delta\":" << Number(f.raw_odom_delta)
         << ",\"ndt_metrics_available\":" << (available ? "true" : "false")
         << ",\"ndt_converged\":" << flag(f.ndt_converged)
+        << ",\"ndt_numerical_failure\":" << flag(f.ndt_numerical_failure)
         << ",\"ndt_transform_finite\":" << flag(f.ndt_transform_finite)
         << ",\"ndt_confidence_finite\":" << flag(f.ndt_confidence_finite)
         << ",\"ndt_max_iterations\":" << (available ? std::to_string(f.ndt_max_iterations) : "null")
         << ",\"ndt_epsilon\":" << (available ? Number(f.ndt_epsilon) : "null")
-        << ",\"ndt_budget_exhausted\":" << flag(!f.ndt_converged && f.ndt_max_iterations > 0 && f.iterations >= f.ndt_max_iterations)
+        << ",\"ndt_budget_exhausted\":" << flag(!f.ndt_numerical_failure && !f.ndt_converged && f.ndt_max_iterations > 0 && f.iterations >= f.ndt_max_iterations)
         << '}';
     return out.str();
 }

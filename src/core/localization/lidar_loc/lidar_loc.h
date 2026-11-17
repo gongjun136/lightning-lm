@@ -111,11 +111,13 @@ class LidarLoc {
         double confidence = 0.0;  ///< 最近精配分数：NDT 变换分数或平面 ICP 的 1/(1+RMSE)，不是统一标定的概率。
         int iterations = 0;  ///< 本次匹配使用的迭代次数。
         bool ndt_metrics_available = false, ndt_converged = false;
+        bool ndt_numerical_failure = false;
         bool ndt_transform_finite = false, ndt_confidence_finite = false;
         int ndt_max_iterations = 0;
         double ndt_epsilon = 0, min_confidence = 0;
         bool NdtBudgetExhausted() const {
-            return ndt_metrics_available && !ndt_converged && ndt_max_iterations > 0 && iterations >= ndt_max_iterations;
+            return ndt_metrics_available && !ndt_numerical_failure && !ndt_converged &&
+                ndt_max_iterations > 0 && iterations >= ndt_max_iterations;
         }
         bool success = false;  ///< 最近局部配准及后续门控结果；并非每次 ProcessCloud() 都刷新。
         bool registration_pose_available = false;  ///< 本次精配确实产生了有限位姿，不能将初值伪装成匹配结果。

@@ -56,6 +56,7 @@ class MatchFailureRecorder {
         double confidence = 0, min_confidence = 0, raw_odom_delta = 0;
         int iterations = 0;
         bool ndt_metrics_available = false, ndt_converged = false;
+        bool ndt_numerical_failure = false;
         bool ndt_transform_finite = false, ndt_confidence_finite = false;
         int ndt_max_iterations = 0;
         double ndt_epsilon = 0;

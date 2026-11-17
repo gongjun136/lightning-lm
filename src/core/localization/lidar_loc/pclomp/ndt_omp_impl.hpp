@@ -1,4 +1,5 @@
 #include "ndt_omp.h"
+#include <limits>
 /*
  * Software License Agreement (BSD License)
  *
@@ -111,6 +112,13 @@ void pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTran
     PointCloudSource &output, const Eigen::Matrix4f &guess) {
   nr_iterations_ = 0;
   converged_     = false;
+  numerical_failure_ = false;
+  hessian_matrix_.setZero();
+  trans_probability_ = std::numeric_limits<double>::quiet_NaN();
+  if (!guess.allFinite()) {
+    numerical_failure_ = true;
+    return;
+  }
 
   double gauss_c1, gauss_c2;
 
@@ -120,6 +128,11 @@ void pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTran
   gauss_d3_ = -log(gauss_c2);
   gauss_d1_ = -log(gauss_c1 + gauss_c2) - gauss_d3_;
   gauss_d2_ = -2 * log((-log(gauss_c1 * exp(-0.5) + gauss_c2) - gauss_d3_) / gauss_d1_);
+
+  if (!std::isfinite(gauss_d1_) || !std::isfinite(gauss_d2_) || !std::isfinite(gauss_d3_)) {
+    numerical_failure_ = true;
+    return;
+  }
 
   if (guess != Eigen::Matrix4f::Identity()) {
     // Initialise final transformation to the guessed one
@@ -146,6 +159,19 @@ void pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTran
   // Calculate derivates of initial transform vector, subsequent derivative calculations are done in the step length
   // determination.
   score = computeDerivatives(score_gradient, hessian, output, p);
+
+  // Keep the measured score/candidate for diagnostics; the explicit failure flag prevents
+  // a finite score on the final allowed iteration from becoming a budget-only rejection.
+  const auto reject_numerical_failure = [&]() {
+    numerical_failure_ = true;
+    converged_ = false;
+    hessian_matrix_ = hessian;
+    trans_probability_ = score / static_cast<double>(input_->points.size());
+  };
+  if (!std::isfinite(score) || !score_gradient.allFinite() || !hessian.allFinite()) {
+    reject_numerical_failure();
+    return;
+  }
 
   while (!converged_) {
     // Store previous transformation
@@ -206,15 +232,26 @@ void pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeTran
     //					<< " , pitch = " << delta_p(4)
     //					<< " , yaw = " << delta_p(5) << std::endl;
 
-    if (delta_p_norm == 0 || delta_p_norm != delta_p_norm) {
+    if (!std::isfinite(delta_p_norm) || !delta_p.allFinite()) {
+      ++nr_iterations_;
+      reject_numerical_failure();
+      return;
+    }
+    if (delta_p_norm == 0) {
       trans_probability_ = score / static_cast<double>(input_->points.size());
-      converged_         = delta_p_norm == delta_p_norm;
+      hessian_matrix_ = hessian;
+      converged_ = true;
       return;
     }
 
     delta_p.normalize();
     delta_p_norm = computeStepLengthMT(p, delta_p, delta_p_norm, step_size_, transformation_epsilon_ / 2, score,
                                        score_gradient, hessian, output);
+    if (!std::isfinite(delta_p_norm)) {
+      ++nr_iterations_;
+      reject_numerical_failure();
+      return;
+    }
     delta_p *= delta_p_norm;
 
     transformation_ = (Eigen::Translation<float, 3>(static_cast<float>(delta_p(0)), static_cast<float>(delta_p(1)),
@@ -822,6 +859,12 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
 
   Eigen::Matrix<double, 6, 1> x_t;
 
+  // Nonfinite inputs cannot be searched. Signal failure with NaN (never a zero or finite step)
+  // before any evaluation, leaving score, derivatives and trans_cloud untouched.
+  if (!std::isfinite(phi_0) || !std::isfinite(d_phi_0) || !x.allFinite() || !step_dir.allFinite()) {
+    return (std::numeric_limits<double>::quiet_NaN());
+  }
+
   if (d_phi_0 >= 0) {
     // Not a decent direction
     if (d_phi_0 == 0)
@@ -854,7 +897,7 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
   double g_u = auxilaryFunction_dPsiMT(d_phi_0, d_phi_0, mu);
 
   // Check used to allow More-Thuente step length calculation to be skipped by making step_min == step_max
-  bool interval_converged = (step_max - step_min) > 0, open_interval = true;
+  bool interval_converged = (step_max - step_min) < 0, open_interval = true;
 
   double a_t = step_init;
   a_t        = std::min(a_t, step_max);
@@ -891,15 +934,38 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
   // Equation 1.1, and curvature condition, Equation 1.2 [More, Thuente 1994]
   while (!interval_converged && step_iterations < max_step_iterations &&
          !(psi_t <= 0 /*Sufficient Decrease*/ && d_phi_t <= -nu * d_phi_0 /*Curvature Condition*/)) {
-    // Use auxilary function if interval I is not closed
-    if (open_interval) {
-      a_t = trialValueSelectionMT(a_l, f_l, g_l, a_u, f_u, g_u, a_t, psi_t, d_psi_t);
-    } else {
-      a_t = trialValueSelectionMT(a_l, f_l, g_l, a_u, f_u, g_u, a_t, phi_t, d_phi_t);
+    // A nonfinite evaluation cannot drive interpolation; stop here (rejected after the loop).
+    if (!std::isfinite(phi_t) || !std::isfinite(d_phi_t)) {
+      break;
     }
 
-    a_t = std::min(a_t, step_max);
-    a_t = std::max(a_t, step_min);
+    // Proposed next step. a_t is only overwritten once the proposal is known to be usable, so
+    // a_t, x_t, trans_cloud, score and derivatives always describe the last evaluated candidate.
+    double a_t_candidate;
+
+    // Use auxilary function if interval I is not closed
+    if (open_interval) {
+      a_t_candidate = trialValueSelectionMT(a_l, f_l, g_l, a_u, f_u, g_u, a_t, psi_t, d_psi_t);
+    } else {
+      a_t_candidate = trialValueSelectionMT(a_l, f_l, g_l, a_u, f_u, g_u, a_t, phi_t, d_phi_t);
+    }
+
+    // Degenerate interpolation (zero denominator, negative discriminant): keep the last evaluated
+    // candidate. Checked before clamping so an infinite proposal is not turned into a bound.
+    if (!std::isfinite(a_t_candidate)) {
+      break;
+    }
+
+    a_t_candidate = std::min(a_t_candidate, step_max);
+    a_t_candidate = std::max(a_t_candidate, step_min);
+
+    // No representable progress (e.g. clamped back onto the evaluated step): re-evaluating the
+    // same pose cannot help and would make the next interpolation use identical endpoints.
+    if (a_t_candidate == a_t || ((x + step_dir * a_t_candidate).array() == x_t.array()).all()) {
+      break;
+    }
+
+    a_t = a_t_candidate;
 
     x_t = x + step_dir * a_t;
 
@@ -954,8 +1020,19 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
   // If inner loop was run then hessian needs to be calculated.
   // Hessian is unnessisary for step length determination but gradients are required
   // so derivative and transform data is stored for the next iteration.
-  // if (step_iterations)
-  //   computeHessian (hessian, trans_cloud, x_t);
+  // If the inner loop was run, the last trial used computeDerivatives(..., false), which leaves a
+  // zeroed Hessian. Recompute score, gradient and Hessian once at the final x_t (trans_cloud and
+  // final_transformation_ already correspond to x_t). computeHessian has no implementation in
+  // this variant, so the existing computeDerivatives(..., true) is used instead.
+  if (step_iterations) {
+    score = computeDerivatives(score_gradient, hessian, trans_cloud, x_t, true);
+  }
+
+  // Never report a finite step for a nonfinite evaluation: propagate NaN so the caller's
+  // existing nonfinite rejection applies instead of a small-step convergence.
+  if (!std::isfinite(score) || !score_gradient.allFinite() || !hessian.allFinite()) {
+    return (std::numeric_limits<double>::quiet_NaN());
+  }
 
   return (a_t);
 }

@@ -77,7 +77,8 @@ class LocalizationPublicationGate {
                            Clock::time_point now = Clock::now(),
                            loc::LocalizationStatus status = loc::LocalizationStatus::IDLE,
                            double accepted_match_stamp = std::numeric_limits<double>::quiet_NaN(),
-                           std::int64_t match_started_steady_ns = 0);
+                           std::int64_t match_started_steady_ns = 0,
+                           bool transient_rejection_eligible = false);
     bool ObserveRelocalizationRequested();  ///< Close outputs immediately; return whether runtime tracking existed.
     void CompleteRelocalizationRequest(Clock::time_point now = Clock::now());
     loc::dtc::TrackingEvidence TrackingState(double current_sensor_stamp = 0.0,
@@ -108,6 +109,10 @@ class LocalizationPublicationGate {
     double last_valid_lidar_match_stamp_ = 0.0;  ///< 最近有效地图匹配的传感器时间戳（s）。
     mutable double latest_sensor_stamp_ = 0.0;  ///< 门控已观察到的最新传感器时间戳（s）。
     Clock::time_point last_valid_match_arrival_{};  ///< 最近有效匹配到达的单调时钟时刻。
+    bool transient_rejection_candidate_ = false;  ///< First unique rejection after an accepted match was grace-eligible.
+    double transient_rejection_stamp_ = 0.0;  ///< Sensor stamp of that first rejected frame (s).
+    Clock::time_point transient_rejection_arrival_{};  ///< Monotonic arrival of that first rejected frame.
+    mutable double transient_rejection_peak_age_sec_ = 0.0;  ///< Latched maximum age; never decreases within one rejection run.
     mutable bool stale_latched_ = false;  ///< 地图匹配过期后保持的失效状态。
 };
 

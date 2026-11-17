@@ -118,6 +118,18 @@ int main() {
     Require(ndt->getFinalTransformation().block<3, 1>(0, 3).norm() < 0.05,
             "converged registration recovers the map pose");
 
+    ndt->setOulierRatio(std::numeric_limits<double>::quiet_NaN());
+    Require(!loc.Localize(candidate, confidence, map, aligned), "数值异常必须拒绝配准");
+    stats = loc.GetLastMatchStats();
+    Require(stats.ndt_numerical_failure && !stats.ndt_converged && !stats.NdtBudgetExhausted() &&
+            std::string(stats.registration_reason) == "ndt_numerical_failure", "数值异常未正确传递到定位拒绝原因");
+    stats.iterations = stats.ndt_max_iterations;
+    Require(!stats.NdtBudgetExhausted(), "最后一次迭代的数值异常不能进入预算耗尽容忍");
+    ndt->setOulierRatio(.45);
+    candidate = SE3(SO3(), Vec3d(.12, 0, 0));
+    Require(loc.Localize(candidate, confidence, map, aligned) && !loc.GetLastMatchStats().ndt_numerical_failure,
+            "新的正常配准应清除数值异常标记");
+
     Access::SetMap(loc, map);
     Require(Access::MapAgrees(loc, map, SE3()), "whole-scan map validation accepts correct alignment");
     Require(std::string(Access::MapReason(loc, map, SE3())) == "accepted", "accepted map reason");

@@ -67,7 +67,7 @@ void FakeOwned(const fs::path& root, const std::string& name, std::int64_t wall,
     { std::ofstream file(root/name/"data"); file.seekp(size-1); file.put('x'); }
 }
 
-fs::path ExactSelection(const fs::path& root) {
+fs::path ExactSelection(const fs::path& root, bool numerical_failure = false) {
     Cloud cloud;
     for (unsigned i=0;i<6503;++i) cloud.push_back({float(i%100)*.1f,float(i/100)*.1f,float(i%7)*.1f,i%3});
     cloud[3].x = cloud[7].x = std::numeric_limits<float>::quiet_NaN();
@@ -78,10 +78,11 @@ fs::path ExactSelection(const fs::path& root) {
     const auto context = Context(root); R recorder(o,context,View(map));
     Check(recorder.Start(),"exact capture start"); auto frame = Frame(cloud);
     frame.ndt_metrics_available = true; frame.ndt_converged = false;
+    frame.ndt_numerical_failure = numerical_failure;
     frame.ndt_transform_finite = frame.ndt_confidence_finite = true;
     frame.ndt_max_iterations = frame.iterations = 20; frame.ndt_epsilon = .01;
     frame.confidence = 2.91; frame.min_confidence = .4;
-    std::strcpy(frame.rejection_reason.data(),"ndt_not_converged");
+    std::strcpy(frame.rejection_reason.data(), numerical_failure ? "ndt_numerical_failure" : "ndt_not_converged");
     Check(recorder.Capture(View(cloud),frame),"first failure was not admitted");
     Check(!recorder.Capture(View(cloud),frame),"continuous failure bypassed cooldown"); recorder.Stop();
     Check(recorder.GetStats().saved == 1,"exact capture did not save");
@@ -89,10 +90,12 @@ fs::path ExactSelection(const fs::path& root) {
     const auto path = events.front(); const auto metadata = YAML::LoadFile((path/"summary.json").string());
     Check(metadata["status"].as<std::string>()=="complete","partial exposed");
     Check(metadata["run_dir"].as<std::string>()==root.string(),"run identity missing");
-    Check(metadata["rejection_reason"].as<std::string>()=="ndt_not_converged","specific rejection reason lost");
+    Check(metadata["rejection_reason"].as<std::string>() == (numerical_failure ? "ndt_numerical_failure" : "ndt_not_converged"),"specific rejection reason lost");
     const auto registration = metadata["registration"];
     Check(registration["ndt_metrics_available"].as<bool>() && !registration["ndt_converged"].as<bool>() &&
-          registration["ndt_budget_exhausted"].as<bool>(),"actual nonconvergence/budget evidence missing");
+          registration["ndt_budget_exhausted"].as<bool>() == !numerical_failure &&
+          registration["ndt_numerical_failure"].as<bool>() == numerical_failure,
+          "数值异常与预算耗尽必须分别保存");
     Check(registration["ndt_max_iterations"].as<int>()==20 && registration["iterations"].as<int>()==20 &&
           std::abs(registration["ndt_epsilon"].as<double>()-.01)<1e-12 &&
           std::abs(registration["min_confidence"].as<double>()-.4)<1e-12,"actual NDT thresholds missing");
@@ -181,7 +184,8 @@ void EpisodeAndUnavailable() {
     auto paths=Events(context.directory); auto meta=YAML::LoadFile((paths[0]/"summary.json").string());
     Check(!meta["registration"]["ndt_metrics_available"].as<bool>() &&
           meta["registration"]["ndt_converged"].IsNull() &&
-          meta["registration"]["ndt_budget_exhausted"].IsNull(),"unexecuted NDT fabricated a measured failure");
+          meta["registration"]["ndt_budget_exhausted"].IsNull() &&
+          meta["registration"]["ndt_numerical_failure"].IsNull(),"unexecuted NDT fabricated a measured failure");
     Check(meta["schema"].as<int>()==2 && meta["poses"]["guess"].IsNull() && meta["poses"]["ndt"].IsNull() && meta["poses"]["check"].IsNull(),"unavailable poses fabricated");
     Check(fs::file_size(paths[0]/"map_local.bin")==0 && meta["map"]["coverage"].as<std::string>()=="unavailable_no_candidate","no-candidate map was fabricated");
     frame.phase=R::Phase::kGlobalRelocalization; frame.stage=R::Stage::kMapPrecheck;
@@ -306,7 +310,8 @@ int main(int argc,char** argv) {
             else std::cout<<ExportFixture(root)<<'\n';
             return 0;
         }
-        Fixture f; ExactSelection(f.root); ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota(); EpisodeAndUnavailable(); FullGlobalSamples();
+        Fixture f, numerical; ExactSelection(f.root); ExactSelection(numerical.root, true);
+        ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota(); EpisodeAndUnavailable(); FullGlobalSamples();
         std::cout<<"match_failure_recorder_test passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

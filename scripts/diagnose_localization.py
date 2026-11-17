@@ -25,7 +25,7 @@ ALIASES = dict(raw='raw_runstate', published='published_runstate',
 LIMITS = ('major_sigma_limit_m', 'lateral_sigma_limit_m', 'yaw_sigma_limit_deg',
           'longitudinal_tolerance_m', 'lateral_tolerance_m', 'yaw_tolerance_deg',
           'distance_tolerance_ratio', 'angle_tolerance_ratio', 'max_input_gap_sec',
-          'consistency_unknown_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
+          'consistency_unknown_grace_sec', 'match_failure_grace_sec', 'output_timeout_sec', 'startup_grace_sec',
           'motion_window_sec', 'evaluation_timeout_sec', 'config_version',
           'localization_output_max_lidar_age_sec', 'lost_frame_threshold', 'degraded_continuous_output_sec',
           'radar_frame_warning_sec', 'radar_frame_timeout_sec', 'radar_frame_recovery_frames')
@@ -34,7 +34,8 @@ CONFIRMED_LOSS_POLICY = 'localization-dtc-v5-confirmed-loss'
 FRAME_SUPPLY_POLICY = 'localization-dtc-v6-radar-input'
 MOTION_UNKNOWN_POLICY = 'localization-dtc-v7-motion-unknown'
 YAW_NATIVE_IMU_POLICY = 'localization-dtc-v8-yaw-native-imu'
-MOTION_UNKNOWN_POLICIES = (MOTION_UNKNOWN_POLICY, YAW_NATIVE_IMU_POLICY)
+MATCH_FAILURE_GRACE_POLICY = 'localization-dtc-v9-match-grace'
+MOTION_UNKNOWN_POLICIES = (MOTION_UNKNOWN_POLICY, YAW_NATIVE_IMU_POLICY, MATCH_FAILURE_GRACE_POLICY)
 FRAME_SUPPLY_POLICIES = (FRAME_SUPPLY_POLICY, *MOTION_UNKNOWN_POLICIES)
 MODERN_POLICIES = (CONFIRMED_LOSS_POLICY, *FRAME_SUPPLY_POLICIES)
 YAW_EVIDENCE_FIELDS = ('yaw_evidence_available', 'yaw_comparison', 'yaw_raw_independent',
@@ -747,6 +748,32 @@ def wall_time(ns):
         return '时间未知'
 
 
+import math
+
+_TRUE = (True, 1, '1', 'true', 'True')
+
+def _flag(fields, key):
+    return fields.get(key) in _TRUE
+
+def _num(fields, key):
+    try:
+        return float(fields.get(key))  # accepts 'inf' / 'nan'
+    except (TypeError, ValueError):
+        return float('nan')
+
+def classify_match_failure_grace(fields):
+    if not _flag(fields, 'match_failure_grace_suppressed'):
+        return None  # existing classification applies, including match_rejected_unconfirmed
+    age = _num(fields, 'match_failure_grace_age_sec')
+    consistent = (
+        _num(fields, 'raw_runstate') == 4 and _num(fields, 'selected_runstate') == 0 and _num(fields, 'published_runstate') == 0
+        and _flag(fields, 'match_failure_grace_active')
+        and _num(fields, 'output_gate_open') == 0
+        and _num(fields, 'latest_match_valid') == 0
+        and not _flag(fields, 'partial_radar_suppressed')
+        and math.isfinite(age) and 0.0 <= age < 0.2)
+    return 'match_rejected_grace_suppressed' if consistent else 'match_failure_grace_inconsistent'
+
 def recent_context_clues(clues, limit):
     selected = []
     for marker in ('SOLID_KISS_REJECT', 'GLOBAL_RELOCALIZATION['):
@@ -780,6 +807,14 @@ def classify(row, limits):
         add('unsupported_policy', '未知 Safety 策略版本，不能沿用旧版故障含义', ['policy_version', 'raw_runstate'],
             '核对运行合同并同步诊断脚本；原始码保留，但不猜测该版本的具体判据。', '规则缺失')
         return causes
+    grace_class = classify_match_failure_grace(row)
+    if grace_class is not None:
+        add(grace_class, '单帧匹配被拒绝，200 ms 内暂缓对外报4' if grace_class == 'match_rejected_grace_suppressed' else
+            '短暂拒绝容忍字段不一致，不能视为匹配恢复',
+            ['raw_runstate', 'selected_runstate', 'published_runstate', 'output_gate_open', 'latest_match_valid',
+             'match_failure_grace_active', 'match_failure_grace_age_sec', 'match_failure_grace_suppressed'],
+            '原始拒绝和失败快照仍保留；位姿输出暂停。第二个拒绝帧、到期或独立故障立即停止容忍。')
+        causes[-1]['phase'] = 'runtime'
     if frame_policy and code == 2:
         evidence = ['lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
                     'lidar_frame_age_sec', 'lidar_frame_recovery_count', 'lidar_frame_accepted', 'lidar_frame_rejected']
@@ -1086,6 +1121,7 @@ MATCH_REJECTION_TITLES = {
     'ndt_transform_nonfinite': 'NDT 变换包含非有限数值',
     'ndt_confidence_nonfinite': 'NDT 分数不是有限数值',
     'ndt_not_converged': 'NDT 未达到收敛条件',
+    'ndt_numerical_failure': 'NDT 数值计算异常，已中止本次配准',
     'ndt_confidence_below_threshold': 'NDT 分数低于接受阈值',
     'ndt_rotation_invalid': '配准旋转无效',
     'raw_odometry_disagreement': '原始配准与激光里程计增量差超限',
@@ -1112,7 +1148,7 @@ def matching_rejection(clue):
                 confidence=number(score[1]) if score else None,
                 evidence={k: values[k] for k in ('registration_reason', 'min_confidence', 'iterations',
                           'ndt_metrics_available', 'ndt_converged', 'ndt_max_iterations', 'ndt_epsilon',
-                          'ndt_budget_exhausted', 'ndt_transform_finite', 'ndt_confidence_finite',
+                          'ndt_budget_exhausted', 'ndt_numerical_failure', 'ndt_transform_finite', 'ndt_confidence_finite',
                           'raw_odom_valid', 'raw_odom_delta', 'raw_odom_limit',
                           'consecutive_rejected_matches', 'lost_frame_threshold',
                           'snapshot_recorder_present', 'snapshot_capture_admitted') if k in values},
@@ -1177,7 +1213,9 @@ def matching_summary(clue, matching, prefix='首次失锁前匹配记录'):
         text += (f' NDT 收敛={values.get("ndt_converged", "未知")}，迭代={values.get("iterations", "未知")}/'
                  f'{values.get("ndt_max_iterations", "未知")}，epsilon={values.get("ndt_epsilon", "未知")}；'
                  f'分数={rejection["confidence"]}，接受阈值={values.get("min_confidence", "未知")}。')
-        if values.get('ndt_budget_exhausted') == 1:
+        if values.get('ndt_numerical_failure') == 1:
+            text += ' 数值异常不属于迭代预算耗尽，不进入单帧上报容忍。'
+        elif values.get('ndt_budget_exhausted') == 1:
             text += ' 已耗尽本次迭代预算，仍未达到收敛条件。'
     elif values.get('ndt_metrics_available') == 0:
         text += ' 本次未执行 NDT，不将默认的收敛标志解释为未收敛。'

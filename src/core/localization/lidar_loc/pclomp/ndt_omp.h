@@ -159,6 +159,9 @@ class NormalDistributionsTransform : public pcl::Registration<PointSource, Point
    */
   inline int getFinalNumIteration() const { return (nr_iterations_); }
 
+  /** Numerical failure is distinct from exhausting a finite iteration budget. */
+  inline bool hasNumericalFailure() const { return numerical_failure_; }
+
   inline TargetGrid &getTargetGrid() { return (target_cells_); }
 
   /** \brief Convert 6 element transformation vector to affine transformation.
@@ -443,6 +446,7 @@ class NormalDistributionsTransform : public pcl::Registration<PointSource, Point
   /** \brief The probability score of the transform applied to the input cloud, Equation 6.9 and 6.10 [Magnusson
    * 2009]. */
   double trans_probability_;
+  bool numerical_failure_ = false;
 
   /** \brief Precomputed Angular Gradient
    *

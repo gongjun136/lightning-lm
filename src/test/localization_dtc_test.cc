@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <cmath>
+#include <functional>
+#include <stdexcept>
 #include <yaml-cpp/yaml.h>
 
 using namespace lightning;
@@ -364,7 +366,154 @@ void CheckSanyUncertaintyConfig(const char* path) {
             "SANY relaxed uncertainty does not mask a confirmed position jump");
 }
 }
+Snapshot MatchFailureGraceSnapshot() {
+    Snapshot s;
+    s.startup_pending = false;
+    s.match_evidence_available = true;
+    s.output_gate_open = false;
+    s.latest_match_valid = false;
+    s.valid_match_age_sec = 0.15;
+    s.output_continuous = true;
+    s.output_age_sec = 0.15;
+    s.covariance_valid = true;
+    s.translation_condition = kPass;
+    s.yaw_condition = kPass;
+    s.observations[0].condition = kPass;
+    s.observations[1].condition = kPass;
+    s.match_failure_grace_active = true;
+    s.match_failure_grace_age_sec = 0.05;
+    return s;
+}
+
+void TestMatchFailureGraceDecision() {
+    functional_safety::LidarFrameWatchdog::Snapshot frames;
+    frames.seen = true;
+    frames.fault = false;
+    const Snapshot base = MatchFailureGraceSnapshot();
+    {
+        const SafetyDecision d = EvaluateFrameSafetyDecision(base, frames, true);
+        Require(d.raw == 4 && d.selected == 0 && d.published == 0 && d.match_failure_grace_suppressed, "grace: closed gate only -> raw 4, selected/published 0");
+        Require(!base.output_gate_open && !base.latest_match_valid, "grace: snapshot evidence stays honest");
+        Require(SafetyValue(base, false, false, true, true) == 4, "grace: standalone SafetyValue unchanged");
+        const SafetyDecision off = EvaluateFrameSafetyDecision(base, frames, false);
+        Require(off.raw == 4 && off.selected == 0 && off.published == 0, "grace: reporting disabled keeps raw");
+        Snapshot can = base;
+        can.translation_condition = kUnknown;
+        can.observations[0].condition = kUnknown;
+        Require(EvaluateFrameSafetyDecision(can, frames, true).selected == 0, "grace: optional CAN absence is not a new cause");
+    }
+    const auto bypass = [&](Snapshot s, functional_safety::LidarFrameWatchdog::Snapshot f, int raw, const char* what) {
+        const SafetyDecision d = EvaluateFrameSafetyDecision(s, f, true);
+        Require(d.raw == raw && d.selected == raw && d.published == raw && !d.match_failure_grace_suppressed, what);
+    };
+    Snapshot s = base; s.match_failure_grace_active = false; bypass(s, frames, 4, "grace: inactive -> 4");
+    s = base; s.match_failure_grace_age_sec = 0.2; bypass(s, frames, 4, "grace: age exactly 0.2 -> 4");
+    s = base; s.match_failure_grace_age_sec = 0.25; bypass(s, frames, 4, "grace: age above 0.2 -> 4");
+    s = base; s.match_failure_grace_age_sec = std::numeric_limits<double>::infinity(); bypass(s, frames, 4, "grace: infinite age -> 4");
+    s = base; s.match_failure_grace_age_sec = std::numeric_limits<double>::quiet_NaN(); bypass(s, frames, 4, "grace: NaN age -> 4");
+    s = base; s.match_failure_grace_age_sec = -0.01; bypass(s, frames, 4, "grace: negative age -> 4");
+    auto f = frames; f.fault = true; bypass(base, f, 2, "grace: frame fault keeps 2");
+    f = frames; f.seen = false; bypass(base, f, 4, "grace: missing input bypasses");
+    s = base; s.severe = true; bypass(s, frames, -9, "grace: severe keeps -9");
+    s = base; s.localization_lost = true; s.severe = true; bypass(s, frames, -9, "grace: confirmed loss keeps -9");
+    s = base; s.confirmed_failure = true; bypass(s, frames, 4, "grace: quality failure bypasses");
+    s = base; s.observations[0].condition = kFail; bypass(s, frames, 4, "grace: consistency fail bypasses");
+    s = base; s.observations[1].condition = kUnknown; bypass(s, frames, 4, "grace: unknown covariance bypasses");
+    s = base; s.observations[1].condition = kFail; bypass(s, frames, 4, "grace: bad covariance bypasses");
+    s = base; s.covariance_valid = false; bypass(s, frames, 4, "grace: invalid covariance bypasses");
+    s = base; s.pose_unobservable = true; bypass(s, frames, 4, "grace: unobservable pose bypasses");
+    s = base; s.yaw_condition = kUnknown; bypass(s, frames, 4, "grace: missing/stale yaw evidence bypasses");
+    s = base; s.yaw_condition = kFail; bypass(s, frames, 4, "grace: yaw failure bypasses");
+    s = base; s.output_stale = true; bypass(s, frames, 4, "grace: output stale bypasses");
+    s = base; s.startup_pending = true; bypass(s, frames, 4, "grace: startup bypasses");
+    s = base; s.startup_pending = true; s.startup_expired = true; bypass(s, frames, 4, "grace: expired startup bypasses");
+    s = base; s.match_stale = true; bypass(s, frames, 4, "grace: stale match bypasses");
+    s = base; s.latest_match_valid = true; bypass(s, frames, 4, "grace: inconsistent evidence bypasses");
+    s = base; s.match_evidence_available = false; bypass(s, frames, 0, "grace: no match evidence -> nothing to suppress");
+    {   // Partial-radar suppression gains nothing; the standalone caller is unchanged.
+        Require(!HealthyLocalizationForDegradedRadar(base), "grace: not positive matching evidence");
+        const SafetyDecision d = EvaluateSafetyDecision(base, false, true, false, true, false);
+        Require(d.raw == 4 && d.selected == 4 && d.published == 4 && !d.partial_radar_suppressed && !d.match_failure_grace_suppressed, "grace: EvaluateSafetyDecision unchanged");
+    }
+}
+
+// feed_healthy must drive the monitor (speed/gyro/pose) exactly as the existing healthy-path test does
+// and advance `now` to the last observation time.
+void TestMatchFailureGraceMonitor(const std::function<void(Monitor&, Clock::time_point&)>& feed_healthy) {
+    const auto t0 = Clock::time_point{} + std::chrono::seconds(100);
+    functional_safety::LidarFrameWatchdog::Snapshot frames;
+    frames.seen = true;
+    frames.fault = false;
+    TrackingEvidence open;
+    open.initialized = true; open.output_gate_open = true; open.latest_match_valid = true; open.valid_match_age_sec = 0.05;
+    TrackingEvidence rejected = open;
+    rejected.output_gate_open = false; rejected.latest_match_valid = false; rejected.valid_match_age_sec = 0.15;
+    rejected.transient_rejection_candidate = true; rejected.rejected_frames_since_match = 1; rejected.transient_rejection_age_sec = 0.05;
+    Config config;
+    config.match_failure_grace_sec = 0.2;
+    {
+        Monitor m(config, t0);
+        auto now = t0;
+        feed_healthy(m, now);
+        Require(HealthyLocalizationForDegradedRadar(m.Evaluate(open, now)), "grace fixture: monitor must be healthy");
+        Snapshot s = m.Evaluate(rejected, now);
+        SafetyDecision d = EvaluateFrameSafetyDecision(s, frames, true);
+        Require(s.match_failure_grace_active && s.match_failure_grace_age_sec == 0.05, "grace: monitor reports active with age");
+        Require(!s.output_gate_open && !s.latest_match_valid && !HealthyLocalizationForDegradedRadar(s), "grace: monitor evidence honest");
+        Require(d.raw == 4 && d.selected == 0 && d.published == 0 && d.match_failure_grace_suppressed, "grace: monitor path suppresses only selection");
+        const auto denied = [&](TrackingEvidence t, int raw, const char* what) {
+            const Snapshot x = m.Evaluate(t, now);
+            const SafetyDecision y = EvaluateFrameSafetyDecision(x, frames, true);
+            Require(!x.match_failure_grace_active && y.raw == raw && y.selected == raw && !y.match_failure_grace_suppressed, what);
+        };
+        TrackingEvidence t = rejected; t.transient_rejection_age_sec = 0.2; denied(t, 4, "grace: monitor boundary 0.2 is outside");
+        t = rejected; t.rejected_frames_since_match = 2; denied(t, 4, "grace: second failure bypasses");
+        t = rejected; t.transient_rejection_candidate = false; denied(t, 4, "grace: ineligible rejection bypasses");
+        t = rejected; t.match_stale = true; denied(t, 4, "grace: stale match bypasses");
+        t = rejected; t.rejected_frames_since_match = 5; t.confirmed_lost = true; denied(t, -9, "grace: five failures still -9");
+        t = rejected; t.available = false; denied(t, 0, "grace: standalone evaluation has no grace");
+        // Mandatory gyro evidence older than max_input_gap_sec while still inside the window.
+        t = rejected; t.transient_rejection_age_sec = 0.15;
+        const Snapshot late = m.Evaluate(t, now + std::chrono::milliseconds(150));
+        Require(!late.match_failure_grace_active && EvaluateFrameSafetyDecision(late, frames, true).selected == 4, "grace: stale gyro bypasses");
+    }
+    {
+        Config disabled;
+        Monitor m(disabled, t0);
+        auto now = t0;
+        feed_healthy(m, now);
+        const Snapshot s = m.Evaluate(rejected, now);
+        Require(!s.match_failure_grace_active && EvaluateFrameSafetyDecision(s, frames, true).selected == 4, "grace: default 0 disables");
+        Config shorter;
+        shorter.match_failure_grace_sec = 0.1;
+        Monitor n(shorter, t0);
+        now = t0;
+        feed_healthy(n, now);
+        TrackingEvidence t = rejected; t.transient_rejection_age_sec = 0.15;
+        Require(!n.Evaluate(t, now).match_failure_grace_active, "grace: smaller configured bound enforced");
+    }
+    {   // Startup: never initialized, nothing fed.
+        Monitor m(config, t0);
+        TrackingEvidence t = rejected; t.initialized = false;
+        const Snapshot s = m.Evaluate(t, t0);
+        Require(!s.match_failure_grace_active && EvaluateFrameSafetyDecision(s, frames, true).selected == 4, "grace: startup bypasses");
+    }
+    const auto throws = [&](double v) {
+        Config c;
+        c.match_failure_grace_sec = v;
+        try { Monitor m(c, t0); } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    Require(!throws(0.0) && !throws(0.2), "grace: 0 and 0.2 accepted");
+    Require(throws(-0.01) && throws(0.2000001) && throws(std::numeric_limits<double>::quiet_NaN()) && throws(std::numeric_limits<double>::infinity()), "grace: out-of-range or nonfinite config rejected");
+}
+
 int main(int argc, char** argv) {
+    TestMatchFailureGraceDecision();
+    TestMatchFailureGraceMonitor([](Monitor& monitor, Clock::time_point& now) {
+        for (int ms = 0; ms <= 600; ms += 20) Feed(monitor, 100000 + ms, Pose(ms * .001));
+        now = At(100600);
+    });
     CheckNativeYawIntegration();
     if (argc == 2) {
         CheckSanyUncertaintyConfig(argv[1]);

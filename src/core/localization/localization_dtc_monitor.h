@@ -13,7 +13,8 @@ using Clock = std::chrono::steady_clock;
 enum Condition : uint8_t { kUnknown = 0, kPass = 1, kFail = 2 };
 constexpr uint32_t kConsistency = 0x30811813;
 constexpr uint32_t kUncertainty = 0x40450198;
-constexpr const char* kSafetyPolicyVersion = "localization-dtc-v8-yaw-native-imu";
+constexpr double kMaxMatchFailureGraceSec = 0.2;  ///< Hard upper bound; the window is always one frame.
+constexpr const char* kSafetyPolicyVersion = "localization-dtc-v9-match-grace";
 struct Config {
     double window_sec = 0.5, max_input_gap_sec = 0.1;
     double longitudinal_m = 0.5, lateral_m = 0.3, yaw_rad = 2.0 * M_PI / 180.0;
@@ -24,6 +25,7 @@ struct Config {
     double output_timeout_sec = 0.5, evaluation_timeout_sec = 0.5, startup_grace_sec = 8.0;
     double consistency_unknown_grace_sec = 0.0;  ///< Historical evidence-age diagnostic; motion UNKNOWN no longer independently stops.
     double max_speed_mps = 30.0, max_yaw_rate_radps = 3.0;
+    double match_failure_grace_sec = 0.0;  ///< Reporting-only grace for one rejected frame; 0 disables, at most 0.2.
 };
 struct Observation {
     uint32_t code = 0, sequence = 0;
@@ -35,6 +37,9 @@ struct TrackingEvidence {
     bool initialized = false;  ///< At least one accepted map match, independent of pose publication.
     bool confirmed_lost = false;  ///< Explicit tracking failure/relocalization, never freshness alone.
     bool output_gate_open = false, match_stale = false, latest_match_valid = false;
+    bool transient_rejection_candidate = false;  ///< Exactly one eligible rejected frame since the last accepted match.
+    uint32_t rejected_frames_since_match = 0;  ///< Unique rejected frames since the last accepted match.
+    double transient_rejection_age_sec = std::numeric_limits<double>::infinity();  ///< max(sensor progress, steady elapsed) since the first rejected frame.
     double valid_match_age_sec = std::numeric_limits<double>::infinity();
 };
 struct YawEvidence {
@@ -61,6 +66,8 @@ struct Snapshot {
     bool startup_pending = true, startup_expired = false;
     double startup_age_sec = 0.0;
     bool match_evidence_available = false, output_gate_open = false, match_stale = false, latest_match_valid = false;
+    bool match_failure_grace_active = false;  ///< Bounded reporting grace applies; never positive matching evidence.
+    double match_failure_grace_age_sec = std::numeric_limits<double>::infinity();  ///< Age of the current rejection run; infinity if none.
     double valid_match_age_sec = std::numeric_limits<double>::infinity();
     bool output_continuous = false;  ///< Advancing output over the configured motion window without a timeout/epoch jump.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
@@ -113,6 +120,7 @@ int8_t SafetyValue(const Snapshot& localization, bool all_lidar_failed,
 struct SafetyDecision {
     int8_t raw = 0, selected = 0, published = 0;
     bool partial_radar_suppressed = false;
+    bool match_failure_grace_suppressed = false;  ///< raw=4 from the closed publication gate only; selected=0 within the grace.
 };
 bool HealthyLocalizationForDegradedRadar(const Snapshot& localization);
 // Preserve the diagnosis before either commissioning override is applied.

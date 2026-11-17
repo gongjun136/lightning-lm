@@ -37,6 +37,7 @@ struct LocalizationResult {
     double absolute_observation_stamp_ = 0.0;
     SE3 unsmoothed_pose_;  // independent consistency check also sees pre-smoothing output
     bool unsmoothed_pose_valid_ = false;
+    bool transient_match_rejection_ = false;  ///< NDT 预算耗尽的短暂拒绝；只用于故障上报容忍，不代表匹配有效。
     bool lidar_loc_valid_ = false;        // 该时刻lidarLoc是否有效
     double lidar_match_stamp_ = 0.0;     ///< 最近一次真实接受的地图匹配时间；停车复用/无匹配不推进。
     std::int64_t lidar_match_started_steady_ns_ = 0;  ///< 上述匹配开始的单调时钟；拒绝外部重定位请求前的在途结果。

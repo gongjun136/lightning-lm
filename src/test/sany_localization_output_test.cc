@@ -28,7 +28,124 @@ bool Near(double left, double right, double tolerance = 1e-6) {
 
 }  // namespace
 
+void TestMatchFailureGraceGate() {
+    using namespace lightning;
+    using namespace lightning::sany_output;
+    using Gate = LocalizationPublicationGate;
+    using GClock = Gate::Clock;
+    const auto t0 = GClock::time_point{} + std::chrono::seconds(100);
+    const auto ms = [](int v) { return std::chrono::milliseconds(v); };
+    const double none = std::numeric_limits<double>::quiet_NaN();
+    const auto idle = loc::LocalizationStatus::IDLE;
+    const auto reject = [&](Gate& g, double stamp, GClock::time_point now, bool eligible) {
+        return g.ObserveLidarMatch(false, stamp, now, idle, none, 0, eligible);
+    };
+    const auto fresh = [&](Gate& g) {
+        g.SetMaxLidarMatchAge(0.5);
+        g.ObserveLidarMatch(true, 0.1, t0);
+    };
+    {   // One rejection, then recovery; pose outputs stay closed during the rejection.
+        Gate g(5); fresh(g);
+        Require(g.PoseOutputsEnabled(0.1, t0), "grace: accepted match opens outputs");
+        Require(reject(g, 0.2, t0 + ms(100), true), "grace: unique rejection consumed");
+        auto s = g.TrackingState(0.2, t0 + ms(100));
+        Require(s.transient_rejection_candidate && s.rejected_frames_since_match == 1, "grace: candidate after one eligible rejection");
+        Require(s.transient_rejection_age_sec == 0.0, "grace: deadline starts at rejected frame arrival");
+        Require(!s.output_gate_open && !s.latest_match_valid && !s.confirmed_lost, "grace: raw evidence stays honest");
+        Require(!g.PoseOutputsEnabled(0.2, t0 + ms(100)) && !g.MapOutputsEnabled(0.2, t0 + ms(100)), "grace: no pose/map publication");
+        Require(g.ObserveLidarMatch(true, 0.3, t0 + ms(200)), "grace: new accepted match consumed");
+        s = g.TrackingState(0.3, t0 + ms(200));
+        Require(!s.transient_rejection_candidate && s.rejected_frames_since_match == 0 && !std::isfinite(s.transient_rejection_age_sec), "grace: accepted match resets window");
+        Require(s.output_gate_open && g.PoseOutputsEnabled(0.3, t0 + ms(200)), "grace: outputs reopen on accepted match");
+        Require(reject(g, 0.4, t0 + ms(300), true) && g.TrackingState(0.4, t0 + ms(300)).transient_rejection_candidate, "grace: window re-arms only after accepted match");
+    }
+    {   // Monotonic expiry without sensor progress, exact boundary, and peak latch.
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), true);
+        Require(g.TrackingState(0.2, t0 + ms(299)).transient_rejection_age_sec < 0.2, "grace: 199 ms steady is inside");
+        Require(g.TrackingState(0.2, t0 + ms(300)).transient_rejection_age_sec >= 0.2, "grace: exactly 200 ms steady is outside");
+        Require(g.TrackingState(0.2, t0 + ms(150)).transient_rejection_age_sec >= 0.2, "grace: age never decreases");
+    }
+    {   // Sensor-time expiry without monotonic progress (0.4 - 0.2 == 0.2 exactly in binary64).
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), true);
+        Require(g.TrackingState(0.3, t0 + ms(101)).transient_rejection_age_sec < 0.2, "grace: 0.1 s sensor progress is inside");
+        const auto s = g.TrackingState(0.4, t0 + ms(101));
+        Require(s.transient_rejection_age_sec >= 0.2 && !s.match_stale, "grace: exactly 0.2 s sensor progress is outside while match still fresh");
+    }
+    {   // Duplicate, rollback and cached GOOD do not renew or clear the window.
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), true);
+        Require(!reject(g, 0.2, t0 + ms(180), true), "grace: duplicate ignored");
+        Require(!reject(g, 0.15, t0 + ms(180), true), "grace: rollback ignored");
+        Require(!g.ObserveLidarMatch(true, 0.25, t0 + ms(180), idle, 0.1), "grace: cached GOOD is not a new match");
+        const auto s = g.TrackingState(0.25, t0 + ms(180));
+        Require(s.transient_rejection_candidate && s.rejected_frames_since_match == 1, "grace: still the same single rejected frame");
+        Require(s.transient_rejection_age_sec > 0.07 && s.transient_rejection_age_sec < 0.2, "grace: age measured from first rejection, not renewed");
+        Require(!s.output_gate_open && !s.latest_match_valid && !g.PoseOutputsEnabled(0.25, t0 + ms(180)), "grace: cached GOOD does not reopen outputs");
+    }
+    {   // Second unique rejection ends it; five rejections are still confirmed loss.
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), true);
+        reject(g, 0.25, t0 + ms(150), true);
+        auto s = g.TrackingState(0.25, t0 + ms(150));
+        Require(!s.transient_rejection_candidate && s.rejected_frames_since_match == 2 && !s.confirmed_lost, "grace: second rejection terminates immediately");
+        reject(g, 0.3, t0 + ms(200), true);
+        reject(g, 0.35, t0 + ms(250), true);
+        reject(g, 0.4, t0 + ms(300), true);
+        s = g.TrackingState(0.4, t0 + ms(300));
+        Require(s.confirmed_lost && !s.transient_rejection_candidate && g.ConsecutiveLostFrames() == 5, "grace: five failures remain confirmed loss");
+    }
+    {   // Ineligible rejection (map/odometry/low-score/nonfinite arrive with eligible=false) and legacy call.
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), false);
+        Require(!g.TrackingState(0.2, t0 + ms(100)).transient_rejection_candidate, "grace: ineligible rejection gets none");
+        Gate h(5); fresh(h);
+        h.ObserveLidarMatch(false, 0.2, t0 + ms(100));
+        Require(!h.TrackingState(0.2, t0 + ms(100)).transient_rejection_candidate, "grace: default argument keeps old behaviour");
+    }
+    {   // Explicit loss, startup, unstamped frame, threshold 1.
+        Gate g(5); fresh(g);
+        g.ObserveLidarMatch(false, 0.2, t0 + ms(100), loc::LocalizationStatus::FAIL, none, 0, true);
+        auto s = g.TrackingState(0.2, t0 + ms(100));
+        Require(s.confirmed_lost && !s.transient_rejection_candidate, "grace: explicit failure bypasses");
+        Gate u(5); u.SetMaxLidarMatchAge(0.5);
+        reject(u, 0.2, t0, true);
+        s = u.TrackingState(0.2, t0);
+        Require(!s.initialized && !s.transient_rejection_candidate && s.rejected_frames_since_match == 0, "grace: none during startup");
+        Gate z(5); fresh(z);
+        reject(z, 0.0, t0 + ms(100), true);
+        Require(!z.TrackingState(0.0, t0 + ms(100)).transient_rejection_candidate, "grace: unstamped frame gets none");
+        Gate one(1); fresh(one);
+        reject(one, 0.2, t0 + ms(100), true);
+        s = one.TrackingState(0.2, t0 + ms(100));
+        Require(s.confirmed_lost && !s.transient_rejection_candidate, "grace: confirmed loss is immediate");
+    }
+    {   // Stale accepted match (sensor and steady) bypasses.
+        Gate g(5); fresh(g);
+        reject(g, 0.7, t0 + ms(100), true);
+        auto s = g.TrackingState(0.7, t0 + ms(100));
+        Require(s.match_stale && !s.transient_rejection_candidate, "grace: sensor-stale match bypasses");
+        Gate h(5); fresh(h);
+        reject(h, 0.2, t0 + ms(100), true);
+        s = h.TrackingState(0.2, t0 + ms(501));
+        Require(s.match_stale && !s.transient_rejection_candidate, "grace: steady-stale match bypasses");
+    }
+    {   // Relocalization closes it at once; a stale completion does not revive it.
+        Gate g(5); fresh(g);
+        reject(g, 0.2, t0 + ms(100), true);
+        g.ObserveRelocalizationRequested();
+        auto s = g.TrackingState(0.2, t0 + ms(110));
+        Require(s.confirmed_lost && !s.transient_rejection_candidate, "grace: relocalization bypasses");
+        g.CompleteRelocalizationRequest(t0 + ms(150));
+        Require(!g.ObserveLidarMatch(true, 0.3, t0 + ms(160), idle, none, 0), "grace: stale completion rejected");
+        s = g.TrackingState(0.3, t0 + ms(160));
+        Require(!s.transient_rejection_candidate && !g.PoseOutputsEnabled(0.3, t0 + ms(160)), "grace: stale completion does not renew");
+    }
+}
+
 int main() {
+    TestMatchFailureGraceGate();
     using Shadow = lightning::sany_output::SpeedSmoothingShadow;
     Require(Shadow::Enabled("diagnostic", "1", false), "shadow explicit diagnostic opt-in");
     Require(!Shadow::Enabled("production", "1", false), "production blocks shadow");

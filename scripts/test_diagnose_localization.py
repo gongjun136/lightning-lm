@@ -18,6 +18,27 @@ import check_diagnostic_contract as contract
 
 
 class DiagnosisTest(unittest.TestCase):
+    def test_match_failure_grace_preserves_rejection(self):
+        fixtures = [{'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_rejected_grace_suppressed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.25', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed (old logs without the new fields)'}, {'fields': {'raw': 0, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (accepted, unchanged)'}, {'fields': {'raw': -9, 'selected': -9, 'published': -9, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.4', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (confirmed loss, unchanged)'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.2', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}]
+        aliases = {'raw': 'raw_runstate', 'selected': 'selected_runstate',
+                   'published': 'published_runstate', 'match_valid': 'latest_match_valid'}
+        for fixture in fixtures:
+            fields = {aliases.get(k, k): v for k, v in fixture['fields'].items()}
+            expected = fixture['expected'] if not fixture['expected'].startswith('None') else None
+            with self.subTest(fields=fields):
+                self.assertEqual(d.classify_match_failure_grace(fields), expected)
+        row = dict(policy_version=d.MATCH_FAILURE_GRACE_POLICY, raw_runstate=4,
+                   selected_runstate=0, published_runstate=0, output_gate_open=0, latest_match_valid=0,
+                   confirmed_tracking_lost=0, match_failure_grace_active=1,
+                   match_failure_grace_suppressed=1, match_failure_grace_age_sec=.05)
+        causes = d.classify(row, {})
+        keys = {c['key'] for c in causes}
+        self.assertIn('match_rejected_grace_suppressed', keys)
+        self.assertIn('match_rejected_unconfirmed', keys)
+        del row['latest_match_valid']
+        self.assertEqual(d.classify_match_failure_grace(row), 'match_failure_grace_inconsistent')
+
+
     def test_input_timing_distinguishes_source_and_delivery_intervals(self):
         base = dict(schema=1, kind='interval', topic='/imu', stream='imu', sample_seq=2,
                     source_stamp_sec=100.005, previous_source_stamp_sec=100,
@@ -168,6 +189,20 @@ class DiagnosisTest(unittest.TestCase):
         self.assertIn('接受阈值=0.4', text)
         self.assertIn('快照已入队', text)
         self.assertIn('地图一致性未确认执行', text)
+
+    def test_numerical_failure_is_not_iteration_budget_grace(self):
+        clue = dict(time='t', text='event=LOC_MATCH_FAILED 匹配失败 score: 2.91 '
+            'rejection_reason=ndt_numerical_failure registration_reason=ndt_numerical_failure '
+            'ndt_metrics_available=1 ndt_converged=0 ndt_numerical_failure=1 '
+            'iterations=20 ndt_max_iterations=20 ndt_epsilon=.01 ndt_budget_exhausted=0 '
+            'min_confidence=.4 ndt_transform_finite=1 ndt_confidence_finite=1 map_checked=0')
+        detail = d.matching_rejection(clue)
+        self.assertEqual(detail['confidence'], 2.91)
+        self.assertEqual(detail['evidence']['ndt_numerical_failure'], 1)
+        text, _ = d.matching_summary(clue, {})
+        self.assertIn('数值异常', text)
+        self.assertIn('不进入单帧上报容忍', text)
+        self.assertNotIn('已耗尽本次迭代预算', text)
 
     def test_legacy_iteration_count_does_not_invent_nonconvergence(self):
         text, _ = d.matching_summary(dict(time='t', text='localization failed! score: 2.91 iterations=20 map_checked=0'), {})

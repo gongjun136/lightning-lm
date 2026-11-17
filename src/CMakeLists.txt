@@ -110,6 +110,18 @@ install(TARGETS ${PROJECT_NAME}.libs miao.core miao.utils
         DESTINATION lib)
 
 if(BUILD_TESTING)
+    add_executable(ndt_line_search_test test/ndt_line_search_test.cc)
+    target_compile_features(ndt_line_search_test PRIVATE cxx_std_17)
+    target_include_directories(ndt_line_search_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/localization/lidar_loc/pclomp)
+    target_link_libraries(ndt_line_search_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME ndt_line_search_test COMMAND ndt_line_search_test)
+
+    add_executable(ndt_numerical_failure_test test/ndt_numerical_failure_test.cc)
+    target_compile_features(ndt_numerical_failure_test PRIVATE cxx_std_17)
+    target_include_directories(ndt_numerical_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/localization/lidar_loc/pclomp)
+    target_link_libraries(ndt_numerical_failure_test ${PROJECT_NAME}.libs ${third_party_libs})
+    add_test(NAME ndt_numerical_failure_test COMMAND ndt_numerical_failure_test)
+
     add_executable(input_timing_monitor_test test/input_timing_monitor_test.cc)
     add_test(NAME input_timing_monitor_test COMMAND $<TARGET_FILE:input_timing_monitor_test>)
     add_executable(lidar_frame_watchdog_test test/lidar_frame_watchdog_test.cc)

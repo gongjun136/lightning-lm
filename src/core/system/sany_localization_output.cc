@@ -269,6 +269,10 @@ void LocalizationPublicationGate::SetLostFrameThreshold(std::size_t lost_frame_t
     last_valid_lidar_match_stamp_ = 0.0;
     latest_sensor_stamp_ = 0.0;
     last_valid_match_arrival_ = Clock::time_point{};
+    transient_rejection_candidate_ = false;
+    transient_rejection_stamp_ = 0.0;
+    transient_rejection_arrival_ = Clock::time_point{};
+    transient_rejection_peak_age_sec_ = 0.0;
     stale_latched_ = false;
 }
 
@@ -279,7 +283,8 @@ void LocalizationPublicationGate::SetMaxLidarMatchAge(double max_age_sec) {
 
 bool LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_stamp,
                                                     Clock::time_point now, loc::LocalizationStatus status,
-                                                    double accepted_match_stamp, std::int64_t match_started_steady_ns) {
+                                                    double accepted_match_stamp, std::int64_t match_started_steady_ns,
+                                                    bool transient_rejection_eligible) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!std::isfinite(sensor_stamp) ||
         (sensor_stamp > 0.0 && sensor_stamp < last_result_stamp_)) return false;
@@ -307,12 +312,29 @@ bool LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
         consecutive_lost_frames_ = 0;
         stale_latched_ = false;
         last_valid_match_arrival_ = now;
+        // Only a newly accepted match ends a rejection run and re-arms the single-frame window.
+        transient_rejection_candidate_ = false;
+        transient_rejection_stamp_ = 0.0;
+        transient_rejection_peak_age_sec_ = 0.0;
         if (match_stamp > 0.0) {
             last_valid_lidar_match_stamp_ =
                 std::max(last_valid_lidar_match_stamp_, match_stamp);
         }
     } else if (has_valid_match_) {
         ++consecutive_lost_frames_;
+        if (consecutive_lost_frames_ == 1) {
+            // The deadline is never renewed. Steady clock: starts at this observation. Sensor clock: starts at the
+            // rejected cloud's own stamp (earlier by the registration latency), so the usable window is shorter
+            // than the configured value. Duplicates, rollback, explicitly-stamped cached GOOD and
+            // stale completions return before this block; a second unique rejection clears it below.
+            transient_rejection_candidate_ = transient_rejection_eligible && !explicit_loss &&
+                !confirmed_lost_ && !relocalization_request_pending_ && !stale_latched_ && sensor_stamp > 0.0;
+            transient_rejection_stamp_ = sensor_stamp;
+            transient_rejection_arrival_ = now;
+            transient_rejection_peak_age_sec_ = 0.0;
+        } else {
+            transient_rejection_candidate_ = false;
+        }
         if (consecutive_lost_frames_ >= lost_frame_threshold_)
             confirmed_lost_ = true;
     }
@@ -324,6 +346,7 @@ bool LocalizationPublicationGate::ObserveLidarMatch(bool valid, double sensor_st
 bool LocalizationPublicationGate::ObserveRelocalizationRequested() {
     std::lock_guard<std::mutex> lock(mutex_);
     relocalization_request_pending_ = true;
+    transient_rejection_candidate_ = false;
     if (has_valid_match_) confirmed_lost_ = true;
     return has_valid_match_;
 }
@@ -348,6 +371,19 @@ loc::dtc::TrackingEvidence LocalizationPublicationGate::TrackingState(double cur
         if (latest_sensor_stamp_ > 0.0 && last_valid_lidar_match_stamp_ > 0.0)
             state.valid_match_age_sec = std::max(state.valid_match_age_sec, latest_sensor_stamp_ - last_valid_lidar_match_stamp_);
     }
+    state.rejected_frames_since_match = static_cast<std::uint32_t>(std::min<std::size_t>(
+        consecutive_lost_frames_, std::numeric_limits<std::uint32_t>::max()));
+    if (has_valid_match_ && consecutive_lost_frames_ > 0) {
+        double age = std::max(0.0, std::chrono::duration<double>(now - transient_rejection_arrival_).count());
+        if (latest_sensor_stamp_ > 0.0 && transient_rejection_stamp_ > 0.0)
+            age = std::max(age, latest_sensor_stamp_ - transient_rejection_stamp_);
+        transient_rejection_peak_age_sec_ = std::max(transient_rejection_peak_age_sec_, age);
+        state.transient_rejection_age_sec = transient_rejection_peak_age_sec_;
+    }
+    // Truthful evidence only: the configured bound and health conditions are enforced by the monitor.
+    state.transient_rejection_candidate = transient_rejection_candidate_ && has_valid_match_ &&
+        consecutive_lost_frames_ == 1 && !confirmed_lost_ && !relocalization_request_pending_ &&
+        !state.match_stale && std::isfinite(state.transient_rejection_age_sec);
     return state;
 }
 

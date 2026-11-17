@@ -280,6 +280,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
     dtc_config.consistency_unknown_grace_sec =
         value("consistency_unknown_grace_sec", dtc_config.consistency_unknown_grace_sec);
     dtc_config.startup_grace_sec = value("startup_grace_sec", dtc_config.startup_grace_sec);
+    dtc_config.match_failure_grace_sec = value("match_failure_grace_sec", dtc_config.match_failure_grace_sec);
     dtc_config.max_speed_mps = value("max_speed_mps", dtc_config.max_speed_mps);
     dtc_config.max_yaw_rate_radps = value("max_yaw_rate_radps", dtc_config.max_yaw_rate_radps);
     std::array<bool, 4> required_radar_roles;
@@ -344,6 +345,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << " output_timeout_sec=" << dtc_config.output_timeout_sec
               << " evaluation_timeout_sec=" << dtc_config.evaluation_timeout_sec
               << " startup_grace_sec=" << dtc_config.startup_grace_sec
+              << " match_failure_grace_sec=" << dtc_config.match_failure_grace_sec
               << " radar_frame_observation_point=raw_input_grouping"
               << " radar_frame_warning_sec=" << value("radar_frame_warning_sec", 0.2)
               << " radar_frame_timeout_sec=" << value("radar_frame_timeout_sec", 0.3)
@@ -1026,7 +1028,7 @@ void LocSystem::PublishProcessedCloud(const CloudPtr& cloud, const loc::Localiza
         // [output-observe-lidar-match]
         const bool match_updated = publication_gate_.ObserveLidarMatch(result.lidar_loc_valid_, result.timestamp_,
             sany_output::LocalizationPublicationGate::Clock::now(), result.status_,
-            result.lidar_match_stamp_, result.lidar_match_started_steady_ns_);
+            result.lidar_match_stamp_, result.lidar_match_started_steady_ns_, result.transient_match_rejection_);
         // [output-observe-lidar-match]
         if (telemetry_) {
             if (match_updated)
@@ -1493,6 +1495,9 @@ void LocSystem::PublishSafety() {
         s.latest_match_valid = localization.latest_match_valid; s.output_continuous = localization.output_continuous;
         s.localization_healthy_for_degraded = loc::dtc::HealthyLocalizationForDegradedRadar(localization);
         s.partial_radar_suppressed = decision.partial_radar_suppressed;
+        s.match_failure_grace_active = localization.match_failure_grace_active;
+        s.match_failure_grace_age_sec = localization.match_failure_grace_age_sec;
+        s.match_failure_grace_suppressed = decision.match_failure_grace_suppressed;
         s.lidar_frame_started = frames.started; s.lidar_frame_seen = frames.seen;
         s.lidar_frame_warning = frames.warning; s.lidar_frame_fault = frames.fault;
         s.lidar_frame_age_sec = frames.age_sec; s.lidar_frame_recovery_count = frames.recovery_count;
@@ -1504,7 +1509,7 @@ void LocSystem::PublishSafety() {
     // Always retain the pre-override decision, even with both reporting and
     // optional time-sync shadow logging disabled. Log every observed cause
     // transition and a one-second summary without high-rate file I/O.
-    const std::array<int, 27> diagnostic_state{{
+    const std::array<int, 28> diagnostic_state{{
         decision.raw, decision.selected, decision.published, strict,
         localization.observations[0].condition, localization.observations[1].condition,
         localization.confirmed_failure, localization.output_stale, localization.localization_lost,
@@ -1514,7 +1519,7 @@ void LocSystem::PublishSafety() {
         localization.covariance_valid, localization.pose_unobservable,
         localization.startup_pending, localization.startup_expired, localization.output_gate_open,
         localization.match_stale, localization.latest_match_valid, localization.output_continuous,
-        decision.partial_radar_suppressed, frames.warning, frames.fault}};
+        decision.partial_radar_suppressed, frames.warning, frames.fault, decision.match_failure_grace_suppressed}};
     const bool diagnostic_changed = !safety_diagnostic_seen_ || diagnostic_state != last_safety_diagnostic_state_;
     const bool diagnostic_periodic = ++safety_diagnostic_ticks_ % 50 == 0;
     if (diagnostic_changed || diagnostic_periodic) {
@@ -1532,11 +1537,14 @@ void LocSystem::PublishSafety() {
                   << " startup_age_sec=" << localization.startup_age_sec
                   << " confirmed_tracking_lost=" << localization.localization_lost
                   << " output_gate_open=" << localization.output_gate_open
+                  << " match_failure_grace_active=" << localization.match_failure_grace_active
+                  << " match_failure_grace_age_sec=" << localization.match_failure_grace_age_sec
                   << " latest_match_valid=" << localization.latest_match_valid
                   << " valid_match_age_sec=" << localization.valid_match_age_sec
                   << " output_continuous=" << localization.output_continuous
                   << " localization_healthy_for_degraded=" << loc::dtc::HealthyLocalizationForDegradedRadar(localization)
                   << " partial_radar_suppressed=" << decision.partial_radar_suppressed
+                  << " match_failure_grace_suppressed=" << decision.match_failure_grace_suppressed
                   << " partial_radar_suppression_reason=" << (decision.partial_radar_suppressed ? "healthy_localization" : "none")
                   << " lidar_frame_started=" << frames.started
                   << " lidar_frame_seen=" << frames.seen
