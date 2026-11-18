@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -355,6 +356,41 @@ class PurityTest(unittest.TestCase):
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 self.assertNotIn(node.func.id, ('open', 'exec', 'eval', 'compile', '__import__'))
         self.assertTrue(imported <= {'json', 'math'}, imported)
+
+
+class ColorTest(unittest.TestCase):
+    def latest_line(self, report):
+        return next(line for line in ds.render_summary(report, color=True).splitlines() if '最新记录：' in line)
+
+    def test_current_fault_normal_and_suppression_have_distinct_colors(self):
+        self.assertTrue(self.latest_line(live()).startswith('\x1b[1;32m'))
+        fault = live()
+        fault['latest'].update(raw_runstate=4, strict_runstate=4, selected_runstate=4, published_runstate=4)
+        self.assertTrue(self.latest_line(fault).startswith('\x1b[1;31m'))
+        fault['latest'].update(selected_runstate=0, published_runstate=0, match_failure_grace_suppressed=1)
+        self.assertTrue(self.latest_line(fault).startswith('\x1b[1;33m'))
+        zero_suppressed = live()
+        zero_suppressed['latest']['match_failure_grace_suppressed'] = 1
+        self.assertTrue(self.latest_line(zero_suppressed).startswith('\x1b[1;33m'))
+
+    def test_offline_stale_and_incomplete_records_are_never_green(self):
+        for report in (live(evidence_scope='explicit'), live(latest_age_sec=6),
+                       live(latest={'raw_runstate': 0}), live(latest_age_sec=-1)):
+            self.assertTrue(self.latest_line(report).startswith('\x1b[1;33m'))
+        offline_fault = live(evidence_scope='explicit')
+        offline_fault['latest'].update(raw_runstate=-9, published_runstate=-9)
+        self.assertTrue(self.latest_line(offline_fault).startswith('\x1b[1;33m'))
+
+    def test_colors_preserve_text_and_highlight_observation_and_threshold(self):
+        report = rich_report()
+        colored = ds.render_summary(report, color=True)
+        plain = ds.render_summary(report)
+        self.assertEqual(re.sub(r'\x1b\[[0-9;]*m', '', colored), plain)
+        self.assertNotIn('\x1b', plain)
+        self.assertIn('\x1b[1m实测 0.61 s / 阈值 0.5 s', colored)
+        self.assertIn('\x1b[1;36m历史判据', colored)
+        self.assertIn('\x1b[33m  [W1]', colored)
+        self.assertNotIn('\x1b', json.dumps(ds.build_summary(report), ensure_ascii=False))
 
 
 class WiringTest(unittest.TestCase):

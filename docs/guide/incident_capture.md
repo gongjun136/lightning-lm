@@ -52,6 +52,8 @@ bash ~/Sany/run_loc.sh --diagnose --json > diagnosis.json
 
 **--json** 原有字段不变，另增 diagnostic_summary 和 live_status_refresh。
 
+终端默认按状态着色：红色表示新鲜的当前故障，绿色表示当前记录的四种运行码均为 0 且没有故障判据；黄色表示历史故障、容忍/抑制、证据不足或重要提示，青色区分章节。触发实测值和阈值加粗。历史、过期、缺字段的记录不会显示为绿色正常。`--color auto` 遵守 TTY、`NO_COLOR` 和 `TERM=dumb`；可用 `--color always` 强制显示或 `--color never` 禁用，重定向默认无颜色，JSON 始终无 ANSI 转义。
+
 ### 解读要点
 
 - 「当前记录」必须同时满足：在线运行、进程存在、有 Safety 记录、记录年龄在 0–5 秒内。离线包和自动历史包只描述包内末条记录。

@@ -256,7 +256,10 @@ def runstate(latest, finding_count):
         verdict = '该条 Safety 记录各运行码为 0（只说明该记录为 0，不保证定位精度或下游已收到）'
     if suppressed and '容忍' not in verdict:
         verdict += '；记录 match_failure_grace_suppressed=true'
-    return {'values': clean(values), 'parts': parts, 'verdict': verdict}
+    severity = ('normal' if not missing and not unknown and all(c == 0 for c in codes.values())
+                and not suppressed and not finding_count else
+                'fault' if pub in (2, 4, -9) or (raw in (2, 4, -9) and pub != 0) else 'attention')
+    return {'values': clean(values), 'parts': parts, 'verdict': verdict, 'severity': severity}
 
 
 def threshold(name, evidence, thresholds):
@@ -741,12 +744,49 @@ def _timing_compact(eps, shown, timing, out):
         out.append('时序：输入时序不可用（状态 %s）%s' % (txt(g.get('status')), ('；' + limits[0]) if limits else ''))
 
 
+def _color_summary(lines, summary):
+    '''只给摘要加终端样式；历史和未知状态不用当前正常/故障的颜色。'''
+    current = d(summary.get('freshness')).get('is_current') is True
+    severity = d(summary.get('latest_record')).get('severity')
+    state_style = {'normal': '1;32', 'fault': '1;31'}.get(severity, '1;33') if current else '1;33'
+    colored = []
+    for line in lines:
+        style = None
+        if line.startswith(('【', '历史判据', '时序', '匹配图像/快照', '上游驱动', '完整：', '运动证据：')):
+            style = '1;36'
+        elif line.startswith('范围/新鲜度：'):
+            style = '36' if current else '1;33'
+        elif line.startswith(('最新记录：', '当前记录的判据', '所读最新记录（非当前）的判据')):
+            style = state_style
+        elif line.startswith('  [C'):
+            style = '31' if current and severity == 'fault' else '33'
+        elif line.startswith(('  码 ', '重要提示', '  结论：', '  雷达延迟交付')):
+            style = '1;33'
+        elif line.startswith(('  [H', '  [W', '  [U', '所选事件：', '  源间隔超限')):
+            style = '33'
+        elif line.startswith('      '):
+            style = '1;33'
+        elif line.startswith('构建：'):
+            style = '36' if line.startswith('构建：运行构建与合同匹配；') else '1;33'
+        if style:
+            # 保留原始数值与阈值文字，仅强调每组比较；复位后继续使用该行颜色。
+            parts = []
+            for part in line.split('；'):
+                before, marker, values = part.partition('实测 ')
+                if marker and ' / 阈值 ' in values:
+                    part = before + '\x1b[1m' + marker + values + '\x1b[22m\x1b[' + style + 'm'
+                parts.append(part)
+            line = '\x1b[' + style + 'm' + '；'.join(parts) + '\x1b[0m'
+        colored.append(line)
+    return colored
+
+
 def render_text(s, color=False):
     '''默认紧凑渲染：每类证据 1–2 行；完整条目见 render_index 与 JSON。'''
     s = d(s)
     out = []
     title = '【定位诊断摘要】'
-    out.append(chr(27) + '[1m' + title + chr(27) + '[0m' if color else title)
+    out.append(title)
     sel, fr, lr = d(s.get('selection')), d(s.get('freshness')), d(s.get('latest_record'))
     out.append('范围/新鲜度：' + txt(fr.get('text')))
     out.append('最新记录：' + '，'.join(lr.get('parts') or []) + ' → ' + txt(lr.get('verdict')))
@@ -819,7 +859,7 @@ def render_text(s, color=False):
     out.append('采集：缺口 %s；%s' % ('；'.join(gaps) if gaps else '输入时序未记录截断/丢失/序号缺口',
                                   status[3] if len(status) > 3 else '采集器统计未记录'))
     out.append('完整：--all（摘要 + 旧版全部判据段 + 证据索引）；结构化：--json 的 diagnostic_summary 字段')
-    return NL.join(out)
+    return NL.join(_color_summary(out, s) if color else out)
 
 
 def render_summary(report, color=False):
