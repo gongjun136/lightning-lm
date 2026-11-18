@@ -41,6 +41,7 @@ SOURCES = (
     'src/utils/online_logging.h',
     'scripts/compute_profile_report.py',
     'scripts/diagnose_localization.py',
+    'scripts/diagnostic_summary.py',
     'scripts/localization_log_events.py',
     'scripts/analyze_localization_health_log.py',
     'scripts/run_sany_lidar_loc.sh',

@@ -1591,10 +1591,15 @@ class DiagnosisTest(unittest.TestCase):
         colored = d.render(report, color=True)
         full = d.render(report, all_events=True)
         self.assertNotIn('\x1b', plain)
-        self.assertIn('\x1b[1;32m', colored)
+        self.assertNotIn('\x1b[1;32m', colored)
+        self.assertIn('\x1b[1;33m', colored)
         self.assertIn('--all', plain)
         self.assertEqual(plain.count('历史记录 [2]'), 12)
         self.assertEqual(full.count('历史记录 [2]'), 15)
+        live_report = dict(report, evidence_scope='live_run',
+                           process={'pid': 1, 'comm': 'loc_executor', 'exe': 'run_loc_online'}, has_safety_evidence=True,
+                           latest_age_sec=1.0)
+        self.assertIn('\x1b[1;32m', d.render(live_report, True))
 
     def test_reviewed_source_contract_is_current(self):
         self.assertEqual(contract.check(), json.loads(d.CONTRACT_PATH.read_text())['contract_id'])

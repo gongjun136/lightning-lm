@@ -14,6 +14,8 @@ import sys
 import time
 
 import compute_profile_report
+import diagnostic_summary
+
 from localization_log_events import any_event, has_event, BOUNDARY_EVENTS, CONTEXT_EVENTS
 
 MIB = 1024 * 1024
@@ -1080,7 +1082,8 @@ def fault_episodes(rows, limits):
                     episode = dict(finding, samples=0, first_time=finding['time'],
                                    start_ns=row_ns(row), last_ns=row_ns(row), end_ns=None,
                                    end_time=None, state='open', onset_evidence=finding['evidence'],
-                                   onset_source=finding['source'], onset_advice=finding['advice'])
+                                   onset_source=finding['source'], onset_advice=finding['advice'],
+                                   onset_title=finding.get('title'))
                     active[key] = episode
                     episodes.append(episode)
                 episode = active[key]
@@ -1436,7 +1439,7 @@ def match_failure_collector(report):
                 count = number(value.get(key))
                 if count is not None and count >= 0:
                     counters[key] = int(count)
-            age = max(0, (time.time_ns() - path.stat().st_mtime_ns) / 1e9)
+            age = (time.time_ns() - path.stat().st_mtime_ns) / 1e9
             latest = value.get('latest_observation', {})
             latest = {k: latest[k] for k in ('wall_ns', 'sensor_stamp_ns', 'phase', 'stage', 'rejection_reason',
                       'candidate_available', 'candidate_id', 'retrieval_score', 'map_evaluated', 'map_overlap') if k in latest} if isinstance(latest, dict) else {}
@@ -1444,7 +1447,7 @@ def match_failure_collector(report):
             episode = {k: episode[k] for k in ('id', 'admitted', 'limit', 'suppressed_at_limit') if k in episode} if isinstance(episode, dict) else {}
             json.dumps([latest, episode], allow_nan=False)
             return dict(status='observed', source=str(path), running=value.get('running') is True,
-                        status_age_sec=round(age, 3), fresh=age <= 10, counters=counters,
+                        status_age_sec=round(age, 3), fresh=0 <= age <= 10, counters=counters,
                         last_error=str(value.get('last_error', ''))[:1024],
                         protection_days=number(value.get('protection_days')), disk_mb=number(value.get('disk_mb')),
                         latest_observation=latest, episode=episode,
@@ -1777,9 +1780,12 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 'partial_radar_suppression_reason',
                 'localization_healthy_for_degraded', 'output_continuous', 'output_age_sec', 'valid_match_age_sec',
                 'latest_match_valid', 'localization_consistency', 'localization_uncertainty') if k in row})
-    age = max(0, (time.time_ns() - row_ns(latest)) / 1e9) if process and row_ns(latest) else None
+    latest_ns = row_ns(latest)
+    age = (time.time_ns() - latest_ns) / 1e9 if process and latest_ns else None
     if age is not None and age > 5:
         warnings.append(f'最新诊断记录已过去 {age:.1f} 秒，不能作为当前实时状态。')
+    elif age is not None and age < 0:
+        warnings.append(f'最新诊断记录时间比本机晚 {-age:.1f} 秒（未来时间/时钟异常），不能作为当前实时状态。')
     dropped = [number(r.get('collector_dropped')) for r in rows]
     dropped = [v for v in dropped if v is not None]
     current_findings = classify(latest, limits)
@@ -1791,10 +1797,10 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 has_match_evidence=summary.get('kind') == 'lightning_match_failure' and summary.get('status') == 'complete',
                 event_status=summary.get('status'), trigger_time=wall_time(summary.get('trigger_wall_ns')),
                 trigger_reasons=summary.get('reasons', []), thresholds=limits,
-                latest={k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
+                latest=dict({k: latest.get(k) for k in ('_time', 'raw_runstate', 'strict_runstate', 'selected_runstate',
                        'published_runstate', 'partial_radar_suppressed', 'policy_version', '_source', '_scope',
                        'lidar_frame_started', 'lidar_frame_seen', 'lidar_frame_warning', 'lidar_frame_fault',
-                       'lidar_frame_age_sec', 'lidar_frame_recovery_count')},
+                       'lidar_frame_age_sec', 'lidar_frame_recovery_count')}, _wall_ns=row_ns(latest)),
                 latest_age_sec=age, current_findings=current_findings, runtime_build=build,
                 match_snapshots=snapshots,
                 compute_profile=compute_profile, input_timing=input_timing, motion_evidence=motion_evidence(latest),
@@ -1994,7 +2000,7 @@ def render(report, color=False, all_events=False):
         lines.append(f'事件: {report["trigger_time"]}, {report["event_status"]}, 触发={report["trigger_reasons"]}')
     latest = report['latest']
     age = report.get('latest_age_sec')
-    fresh = report.get('evidence_scope') not in ('historical', 'explicit') and (age is None or age <= 5)
+    fresh = diagnostic_summary.is_fresh_live(report)
     raw = number(latest['raw_runstate'])
     style = '1;31' if fresh and raw is not None and raw != 0 else '1;32' if fresh and raw == 0 else '1;33'
     lines.append(paint(f'最新已读取状态: {latest["_time"]}, 原始={latest["raw_runstate"]}, 上报={latest["published_runstate"]}', style))
@@ -2096,6 +2102,102 @@ def render(report, color=False, all_events=False):
     return '\n'.join(lines)
 
 
+LIVE_REFRESH_BUDGET = 192 * 1024
+LIVE_IDENTITY_KEYS = ('pid', 'start_ticks', 'exe', 'run', 'log')
+STALE_WARNING_PREFIXES = ('最新诊断记录已过去', '最新诊断记录时间比本机晚')
+
+
+def _live_identity_mismatch(original, procs):
+    if any(all(str(p.get(k)) == str(original.get(k)) for k in LIVE_IDENTITY_KEYS) for p in procs):
+        return None
+    pid_hits = [p for p in procs if str(p.get('pid')) == str(original.get('pid'))]
+    if not pid_hits:
+        return '原定位进程已退出'
+    if any(str(p.get('start_ticks')) != str(original.get('start_ticks')) for p in pid_hits):
+        return 'PID 已被复用或进程已重启'
+    return '运行目录/日志/可执行文件已切换'
+
+
+def refresh_live_status(report, proc=None, budget=LIVE_REFRESH_BUDGET, now_ns=None):
+    '''耗时分析结束后，对同一运行实例日志尾部做一次有界补读。
+
+    只读 /proc、日志头部配置及尾部 budget 字节；不订阅、不等待；不改历史 findings/时序/快照。
+    任何身份或时间异常都记录原因并令当前状态未知，不用旧记录冒充新记录。
+    '''
+    meta = {'attempted': False, 'status': 'skipped', 'reason': '', 'budget_bytes': budget, 'limitations': []}
+    report['live_status_refresh'] = meta
+    original = report.get('process')
+    if report.get('evidence_scope') != 'live_run' or not isinstance(original, dict):
+        meta['reason'] = '非在线运行范围或无运行进程，不补读'
+        return report
+    meta['attempted'] = True
+
+    def fail(reason):
+        meta.update(status='failed', reason=reason)
+        report.setdefault('warnings', []).append('分析后实时补读失败：%s；当前状态未知（历史分析仍为原快照）。' % reason)
+        return report
+
+    missing = [k for k in LIVE_IDENTITY_KEYS if original.get(k) in (None, '')]
+    if missing:
+        return fail('原进程缺少身份字段 ' + ','.join(missing))
+    source = PROC if proc is None else proc
+    refresh_warnings = []
+    try:
+        mismatch = _live_identity_mismatch(original, find_processes(source))
+        if mismatch:
+            return fail(mismatch + '（补读前）')
+        reference = dt.datetime.fromtimestamp(
+            (original.get('start_wall_ns') or time.time_ns()) / 1e9).astimezone()
+        rows, logged_limits = log_rows(Path(original['log']), budget, refresh_warnings, reference)
+        mismatch = _live_identity_mismatch(original, find_processes(source))
+    except Exception as exc:  # 只读失败也只影响当前状态判断
+        return fail('补读异常：%s' % exc)
+    meta['limitations'] = [w for w in refresh_warnings if not w.startswith('日志仅检查末尾 ')]
+    if mismatch:
+        return fail(mismatch + '（补读后）')
+    rows = [row for row in rows or [] if isinstance(row, dict)]
+    if not rows:
+        return fail('补读尾部未得到 Safety 记录')
+    latest = rows[-1]
+    latest_ns = row_ns(latest)
+    if latest_ns is None:
+        return fail('补读末条记录缺少有效时间')
+    now = time.time_ns() if now_ns is None else now_ns
+    age = (now - latest_ns) / 1e9
+    if age < 0:
+        return fail('补读末条记录时间比本机晚 %.3f 秒（未来时间/时钟异常）' % -age)
+    previous = report.get('latest')
+    previous_ns = row_ns(previous) if isinstance(previous, dict) and previous else None
+    if previous_ns is not None and latest_ns < previous_ns:
+        return fail('补读末条记录早于分析快照记录')
+    limits = dict(report.get('thresholds') or {})
+    limits.update({k: v for k, v in (logged_limits or {}).items() if k in LIMITS})
+    report['analyzed_latest'] = {'latest': previous, 'latest_age_sec': report.get('latest_age_sec'),
+                                 'current_findings': report.get('current_findings'),
+                                 'motion_evidence': report.get('motion_evidence'),
+                                 'thresholds': report.get('thresholds')}
+    report['latest'] = latest
+    report['latest_age_sec'] = age
+    report['has_safety_evidence'] = True
+    report['thresholds'] = limits
+    report['current_findings'] = classify(latest, limits)
+    report['motion_evidence'] = motion_evidence(latest)
+    # 未产生新记录时，保留已核实的同条记录匹配拒绝；不把旧拒绝带到新记录。
+    if previous_ns == latest_ns:
+        for current in report['current_findings']:
+            for old in report['analyzed_latest']['current_findings'] or []:
+                if (old.get('key'), old.get('code')) == (current.get('key'), current.get('code')) and old.get('matching_rejection'):
+                    current['matching_rejection'] = old['matching_rejection']
+                    break
+    meta.update(status='refreshed', reason='分析结束后补读同一实例日志尾部', record_wall_ns=latest_ns,
+                previous_record_wall_ns=previous_ns, refreshed_at_ns=now, rows_read=len(rows))
+    if 0 <= age <= 5:
+        report['warnings'] = [('历史分析快照：' + w + '（分析后补读已取得新记录，见 live_status_refresh）')
+                              if isinstance(w, str) and w.startswith(STALE_WARNING_PREFIXES) else w
+                              for w in report.get('warnings') or []]
+    return report
+
+
 def main(argv=None):
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
@@ -2105,7 +2207,7 @@ def main(argv=None):
     parser.add_argument('--root', help='无定位进程时使用的导出根目录')
     parser.add_argument('--json', action='store_true', help='输出结构化 JSON')
     parser.add_argument('--color', choices=('auto', 'always', 'never'), default='auto', help='终端颜色；auto 尊重 NO_COLOR，重定向不着色')
-    parser.add_argument('--all', action='store_true', help='文本显示全部判据段；默认显示最近 12 段及全部分类汇总')
+    parser.add_argument('--all', action='store_true', help='文本先显示简洁摘要，再显示旧版全部判据段与完整证据索引；默认只显示简洁中文摘要')
     parser.add_argument('--log-mb', type=int, default=32, help='最多检查日志尾部 MiB，默认 32')
     parser.add_argument('--bag-mb', type=int, default=128, help='裸 bag 最大扫描大小 MiB，默认 128')
     parser.add_argument('--match-evidence', help='指定失败匹配证据包；默认仅绘制所选运行/事件范围内最新一帧')
@@ -2134,7 +2236,20 @@ def main(argv=None):
         report['upstream_lidar'] = (dict(status='not_requested', message='指定定位历史包，未拼接本机当前雷达结果；没有已关联的同次驱动证据。')
                                     if args.path else driver_diagnosis(args.root))
         report['scheduling'] = scheduling
-        print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) if args.json else render(report, color_enabled(args.color), args.all))
+        refresh_live_status(report)
+        if args.json:
+            report['diagnostic_summary'] = diagnostic_summary.build_summary(report)
+            print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
+        elif args.all:
+            use_color = color_enabled(args.color)
+            diag_summary = diagnostic_summary.build_summary(report)
+            print(diagnostic_summary.render_text(diag_summary, use_color))
+            print()
+            print(render(report, use_color, True))
+            print()
+            print(diagnostic_summary.render_index(diag_summary))
+        else:
+            print(diagnostic_summary.render_summary(report, color_enabled(args.color)))
         has_driver = report['upstream_lidar'].get('report', {}).get('has_evidence') is True
         return 0 if report['has_safety_evidence'] or report.get('has_launch_evidence') or report.get('has_match_evidence') or has_driver or report.get('input_timing', {}).get('status') == 'available' else 2
     except (OSError, ValueError, RuntimeError) as exc:
