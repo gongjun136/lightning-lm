@@ -85,10 +85,22 @@ struct LidarLocRegressionAccess {
     static void Stop(LidarLoc& loc) { loc.match_failure_recorder_->Stop(); }
     static auto CheckMap(LidarLoc& loc, const CloudPtr& scan, const SE3& pose,
                          bool overlap_enabled, std::size_t maximum_points) {
-        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, .6, maximum_points, diagnostics::SelectOverlapGate(diagnostics::MatchPhase::kTracking, overlap_enabled));
+        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, .6, maximum_points, diagnostics::SelectOverlapGate(diagnostics::MatchPhase::kTracking, overlap_enabled), diagnostics::MatchPhase::kTracking);
     }
     static auto CheckRelocalizationMap(LidarLoc& loc, const CloudPtr& scan, std::size_t maximum_points) {
-        return loc.EvaluateRelocalizationMapConsistency(scan, SE3(), 0, .6, maximum_points, diagnostics::OverlapGate::kEnforce);
+        return loc.EvaluateRelocalizationMapConsistency(scan, SE3(), 0, .6, maximum_points, diagnostics::OverlapGate::kEnforce, diagnostics::MatchPhase::kRelocalization);
+    }
+    static auto CheckGravityPhase(LidarLoc& loc, const CloudPtr& scan, double angle_deg,
+                                  diagnostics::MatchPhase phase, bool overlap_enabled) {
+        // 候选仍精确贴合点云；只改变地图/里程计竖直轴关系，避免其它门限掩盖本项。
+        loc.current_lo_pose_ = SE3(SO3::exp(Vec3d(angle_deg * diagnostics::kGravityPolicyPi / 180.0, 0, 0)), Vec3d::Zero());
+        auto result = loc.EvaluateRelocalizationMapConsistency(scan, SE3(), 0, .6, 2000,
+            diagnostics::SelectOverlapGate(phase, overlap_enabled), phase);
+        loc.ApplyMapConsistencyResult(result);
+        if (loc.last_match_stats_.map_min_gravity_alignment_cos != result.map_min_gravity_alignment_cos)
+            throw std::runtime_error("实际阶段阈值未传入匹配统计");
+        loc.current_lo_pose_ = SE3();
+        return result;
     }
 };
 }  // namespace lightning::loc
@@ -157,6 +169,25 @@ int main(int argc, char** argv) {
                 "enabled overlap accepts equality at the configured threshold");
         Require(!Access::CheckMap(localization, CloudPtr(new PointCloudType), SE3(), false, 2000).passed,
                 "disabled overlap must not accept missing scan evidence");
+        for (bool enabled : {false, true}) {
+            for (auto phase : {diagnostics::MatchPhase::kTracking, diagnostics::MatchPhase::kInitialization,
+                               diagnostics::MatchPhase::kRelocalization}) {
+                const auto nineteen = Access::CheckGravityPhase(localization, cloud, 19.0, phase, enabled);
+                const bool tracking = phase == diagnostics::MatchPhase::kTracking;
+                Require(nineteen.passed == tracking, "19 度只允许跟踪通过，初始化/重定位不得放宽");
+                Require(nineteen.map_min_gravity_alignment_cos ==
+                        (tracking ? diagnostics::DefaultTrackingMinGravityCos() : .95), "阶段阈值错误");
+                for (double angle : {21.0, 175.56, 180.0}) {
+                    const auto rejected = Access::CheckGravityPhase(localization, cloud, angle, phase, enabled);
+                    Require(!rejected.passed && std::string(rejected.reason)=="map_gravity", "超限或翻转候选必须拒绝");
+                }
+            }
+        }
+        const auto unavailable = Access::CheckGravityPhase(localization, CloudPtr(new PointCloudType), 0,
+                                                           diagnostics::MatchPhase::kTracking, false);
+        Require(!unavailable.passed && unavailable.map_min_gravity_alignment_cos == diagnostics::DefaultTrackingMinGravityCos(),
+                "前置数据缺失仍应记录实际阶段阈值");
+        Require(std::isnan(loc::LidarLoc::MatchStats().map_min_gravity_alignment_cos), "未检查的统计不得伪造阈值");
         Require(!Access::Attempt(localization, cloud), "no candidate must remain unlocalized");
         WaitSaved(localization, 1);
         for (int i = 0; i < 100; ++i)
@@ -187,10 +218,12 @@ int main(int argc, char** argv) {
             Require(summary["scan"]["saved_points"].as<int>() == 121, "hook lost original scan points");
             const auto stage = summary["stage"].as<std::string>();
             if (stage == "search") {
+                Require(summary["criterion"]["min_gravity_cos"].IsNull(), "未执行地图检查不得保存默认阈值");
                 saw_startup = summary["phase"].as<std::string>() == "startup";
                 Require(summary["poses"]["guess"].IsNull() && summary["poses"]["ndt"].IsNull(),
                         "no candidate must not fabricate a map pose");
             } else if (stage == "map_precheck") {
+                Require(summary["criterion"]["min_gravity_cos"].as<double>() == .95, "重定位快照必须保留原实际阈值");
                 saw_global = summary["phase"].as<std::string>() == "global_relocalization";
                 Require(summary["poses"]["ndt"].IsNull(), "unattempted refinement has no pose");
                 Require(summary["poses"]["guess"][3].as<double>() == 100, "saved candidate pose mismatch");

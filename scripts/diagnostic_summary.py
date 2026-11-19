@@ -5,6 +5,7 @@
 不重算安全逻辑；不修改输入；同一输入输出确定。
 '''
 from translation_diagnostics import describe_translation
+from diagnostic_history_layout import render_history_sections, history_line_style
 
 import json
 import math
@@ -342,6 +343,12 @@ def rejection_view(mr):
         items.append('重合率检查=' + ('开启' if ev['map_overlap_check_enabled'] else '关闭（仅统计）'))
     if 'map_overlap' in ev:
         items.append('地图重合率=' + fmt(ev.get('map_overlap')) + ' / 配置阈值=' + fmt(ev.get('map_min_overlap')))
+    if ev.get('map_checked') == 1 and 'map_gravity_cos' in ev:
+        measured, minimum = finite(ev.get('map_gravity_cos')), finite(ev.get('map_min_gravity_cos'))
+        items.append('重力余弦=' + fmt(ev.get('map_gravity_cos')) + ' / 实际下限=' + fmt(ev.get('map_min_gravity_cos')))
+        if measured is not None and minimum is not None and -1 <= measured <= 1 and -1 <= minimum <= 1:
+            items.append('地图/里程计竖直轴夹角=' + fmt(math.degrees(math.acos(measured)), '°') +
+                         ' / 实际上限=' + fmt(math.degrees(math.acos(minimum)), '°'))
     return {'text': '，'.join(items), 'time': mr.get('time'), 'source': mr.get('source'),
             'relation': mr.get('relation'), 'snapshots': len(lst(mr.get('snapshots'))), 'evidence': clean(ev),
             'note': '匹配分数不是可信等级；迭代数/耗时不单独说明失败原因'}
@@ -772,8 +779,11 @@ def _color_summary(lines, summary):
     state_style = {'normal': '1;32', 'fault': '1;31'}.get(severity, '1;33') if current else '1;33'
     colored = []
     for line in lines:
-        style = None
-        if line.startswith(('【', '历史判据', '时序', '匹配图像/快照', '上游驱动', '完整：', '运动证据：')):
+        history_style = history_line_style(line)
+        style = history_style[2:-1] if history_style else None
+        if style:
+            pass
+        elif line.startswith(('【', '历史判据', '时序', '匹配图像/快照', '上游驱动', '完整：', '运动证据：')):
             style = '1;36'
         elif line.startswith('范围/新鲜度：'):
             style = '36' if current else '1;33'
@@ -830,25 +840,11 @@ def render_text(s, color=False):
     groups = hist.get('groups') or []
     by_latest = {g['latest']: g for g in groups}
     shown = hist.get('shown') or []
-    if groups:
-        out.append('历史判据 %d 类 / %d 段（同一实际故障可能有日志与时间线多份记录，条数不代表物理故障次数；历史不代表当前）：' % (
-            len(groups), len(eps)))
-        for f in hist.get('first_onsets') or []:
-            measurements = f.get('measures') or []
-            split_translation = f['key'] == 'translation_condition' and len(measurements) > 1
-            out.append('  码 %s [%s] 首个触发：%s（%s）开始 %s：%s' % (
-                f['code'], f['ref'], txt(f.get('title')), f['key'], txt(f.get('time')),
-                (measurements[0] if split_translation else '；'.join(measurements)) or '触发值未记录'))
-            if split_translation:
-                out.extend('      ' + item for item in measurements[1:])
-        for ref in shown:
-            _episode_compact(eps[ref], by_latest[ref]['refs'], out)
-        rest = groups[HISTORY_LIMIT:]
-        if rest:
-            out.append('  另有 %d 种未展开（详见 --all 索引）：%s' % (
-                len(rest), '；'.join('码 %s %s×%d' % (g['code'], g['key'], len(g['refs'])) for g in rest)))
-    else:
-        out.append('历史判据：无')
+    def format_history_episode(episode, refs):
+        lines = []
+        _episode_compact(episode, refs, lines)
+        return lines
+    out.extend(render_history_sections(hist, format_history_episode, txt, HISTORY_LIMIT))
     timing_refs = list(dict.fromkeys(shown + [f['ref'] for f in hist.get('first_onsets') or []]))
     _timing_compact(eps, timing_refs, s.get('input_timing'), out)
     for i, line in enumerate(d(s.get('match_failure')).get('compact') or []):
@@ -892,6 +888,11 @@ def render_text(s, color=False):
             fmt(overlap.get('map_min_overlap_ratio'))))
     else:
         out.append('跟踪阶段重合率检查：未知（该运行日志未记录，不按新默认值推断）')
+    gravity_fields = ('tracking_map_max_gravity_angle_deg', 'tracking_map_min_gravity_cos',
+                      'initialization_map_min_gravity_cos', 'relocalization_map_min_gravity_cos')
+    if any(overlap.get(key) is not None for key in gravity_fields):
+        out.append('重力一致性配置（启动日志）：跟踪夹角上限 %s° / 余弦下限 %s；初始化余弦下限 %s；重定位余弦下限 %s' %
+                   tuple(fmt(overlap.get(key)) for key in gravity_fields))
     if overlap.get('map_consistency_enabled') in (0, False, '0', 'false'):
         out.append('地图一致性总开关已关闭；此时也没有重合率测量，按原总开关语义解释')
     observation = d(s.get('overlap_observations'))

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "4e85467517b57ba7cd67795409324f91bf35e7a23ecf74e2240245520769c135",
+  "contract_id": "177e3e79bee999ca2801220bc8a27ae12bd2b7cb93d2aa738e0e1633bcf19eb5",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -12,8 +12,8 @@
     "src/core/localization/localization.h": "847a30690565020b03e3b9f1500f4f078caa47273e9f6ab23074ac45b07998df",
     "src/core/lio/laser_mapping.cc": "d20c2b1a253d7d51ace230c7eec7a00ee57aafd1844392e28b2c7c40a01140a1",
     "src/core/lio/imu_processing.hpp": "a17d09ffb91dceabed16add3680969f0cd49facec070dc4305e6e193f560dddd",
-    "src/core/localization/lidar_loc/lidar_loc.cc": "c616c1bf59e1a8acc51dc384f683e1ebd28548cb56e56da4e8c8442aaba66e81",
-    "src/core/localization/lidar_loc/lidar_loc.h": "b930ee068d3b09fe58a361343fcc8f38978684ba264091db945373d74f2f7309",
+    "src/core/localization/lidar_loc/lidar_loc.cc": "554ba422d4b234e3f939747a92b37f43b6fecab98906d4cea9ff135adaea638d",
+    "src/core/localization/lidar_loc/lidar_loc.h": "2b2eda5d5faa1a1fd4eba746e97894a0d8ecca8e9f5c1143d74bc227fa614bc4",
     "src/core/localization/solid_relocalizer.cc": "8f7d5c2b5b7e0abeb83414baee4aef2d1fd6e043d10b4a6ea8be64a5dc90dd06",
     "src/core/localization/pose_graph/pgo.cc": "d4b8e84dbee4b8b1e5249e1cb1083d6334cf088eda79d464558f78ea5ff97859",
     "src/core/localization/pose_graph/smoother.h": "27bdf52f92eb2ba71654671be17ccdb1ae65fcc6c9df05fd18543d7e00d6ab90",
@@ -21,6 +21,7 @@
     "src/core/localization/localization_dtc_monitor.h": "fd961795b68421ca8f42a91af5727f06164aa0fa57f30f6f56e654c2695f4228",
     "src/utils/translation_evidence.h": "b04df5c6a40abac3c9ef2b3b966a3cfdab0e8f11a16de6c24618d8dd8d0430e6",
     "src/utils/tracking_overlap_policy.h": "dcea6af3921f67dbcdf40eaeec0ea7f1190bfc36db8127ee70d0fa1852aa26da",
+    "src/utils/tracking_gravity_policy.h": "6e57dc0145356ba5c45fa7e2b7b2fc3634099af9746eb0494b986556a539249e",
     "src/core/localization/localization_result.h": "fc18ef753532815604ee9645afe5f431fc49d908dba37e4ea4661069553cbe86",
     "src/core/localization/localization.cpp": "e52e30c62a8f15608d6bb3cafc8e45f15d392f57c36cedbdedf4ea6914110faa",
     "src/core/system/sany_localization_output.cc": "a777360533c4e0748c39b56e0c12e9bb535773be17fbb666c626e359c5f765c1",
@@ -35,8 +36,9 @@
     "src/utils/online_logging.cc": "8d4537cd4aafa37d3a5342bbac5650e21a00a43c24d4be055dfd47d00bb2e4ad",
     "src/utils/online_logging.h": "591b85ee197da2ae69b7fe3315823cd9f712f1faf49dc6e6bfc934615801d6a2",
     "scripts/compute_profile_report.py": "6ee3847d08faa59fb855a1188b01d71aa163002c05c68b0d66d9fc1532016f98",
-    "scripts/diagnose_localization.py": "745eb41b80409b18c9317dbe692ad8154233fa0b36e0e52845421558bb6207d3",
-    "scripts/diagnostic_summary.py": "f0761ea9d2e57992639ef4aa96fdaf2a3f8988f5f2dd0c1a1799107da78d6434",
+    "scripts/diagnose_localization.py": "e4ad89c27ff04b16d5119045bba4537a804b2a93ea96fa3cb9c0e39d2829b99f",
+    "scripts/diagnostic_summary.py": "48453ce2d1777a002fb88b29d65d9f1e9c830a5f36c96fde177525dca871ba85",
+    "scripts/diagnostic_history_layout.py": "8dc7786b192b5d24cd787e5fc7c8c6566272f54de37f05605a466a39ecb948e0",
     "scripts/translation_diagnostics.py": "c47e2779d1b7ff3b3b0a816ee43aff7ec5290e6193f1f91a1a8eb3c6ccca8847",
     "scripts/overlap_diagnostics.py": "46a00ce75acb5d81421edb93c16237b7ecba950f01b8810a903bd4305c166613",
     "scripts/match_failure_birdseye.py": "d17e72ccd5f02f5d93598d1a528e9379b7c8a5ed32f1e4a18edc57a6c3adf59f",
@@ -47,7 +49,7 @@
     "src/core/system/loc_system.h": "fcc4777e1f7db308913ea94b6c024be9f608289c26619ff5fd3ca78874fffcc6",
     "config/sany/localization.yaml#diagnostics": "d00e0b3e5f79c15cb180b29660d53af810e585fa144ea8d62409e1a3f3c3ce04",
     "config/sany/localization.yaml#relocalization": "dd8d738dbff90c2e3d6c6739f8ca097979fbdfac5cb93d68ca3b3d0ad3a6ede2",
-    "config/sany/localization.yaml#lidar_loc": "2fda3d1d944a03bb9009079fe050b515df2cd37874cf2074716598fd850b2acb",
+    "config/sany/localization.yaml#lidar_loc": "44b5f311b89dbd394f24afd34b1c393d078b95e0db33214cb7028b1a7d165f78",
     "workspace.repos": "1013e851200593c7c105793711ce241d0534691ac41d19593e2aaf334f4c19e9"
   }
 }

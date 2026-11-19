@@ -1641,6 +1641,10 @@ def overlap_observation_report(startup, context, run, process):
     policy = dict(map_overlap_check_enabled={'enabled': True, 'disabled': False}.get(state),
                   map_min_overlap_ratio=number(startup.get('map_min_overlap')),
                   map_consistency_enabled=startup.get('map_consistency_enabled'), source='startup_log' if startup else 'unknown')
+    # 只从该运行的启动日志取值；历史记录缺失时保持未知，不读取新默认值补齐。
+    for key in ('tracking_map_max_gravity_angle_deg', 'tracking_map_min_gravity_cos',
+                'initialization_map_min_gravity_cos', 'relocalization_map_min_gravity_cos'):
+        policy[key] = number(startup.get(key))
     records = []
     for clue in context:
         if not has_event(clue['text'], 'LOC_TRACKING_LOW_OVERLAP'):

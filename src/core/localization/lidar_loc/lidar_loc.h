@@ -25,6 +25,7 @@
 #include "utils/compute_profiling.h"
 #include "utils/match_failure_recorder.h"
 #include "utils/tracking_overlap_policy.h"
+#include "utils/tracking_gravity_policy.h"
 
 #include "pclomp/ndt_omp_impl.hpp"
 
@@ -95,6 +96,8 @@ class LidarLoc {
         double relocalization_min_inside_xy_ratio_ = 0.90;  ///< 接受候选所需的最小水平范围内点比例。
         double relocalization_min_overlap_ratio_ = 0.20;  ///< 接受候选所需的最小静态地图重合率。
         double relocalization_precheck_min_overlap_ratio_ = 0.20;  ///< 候选预检查的最小地图重合率。
+        double tracking_map_max_gravity_angle_deg_ = diagnostics::kDefaultTrackingMaxGravityAngleDeg;
+        double tracking_map_min_gravity_alignment_cos_ = diagnostics::DefaultTrackingMinGravityCos();
         double relocalization_min_gravity_alignment_cos_ = 0.95;  ///< 接受候选所需的最小重力方向一致性余弦。
         int relocalization_map_consistency_max_points_ = 50000;  ///< 精配后地图一致性检查的采样点数上限。
         int relocalization_precheck_max_points_ = 50000;  ///< 候选预检查的采样点数上限。
@@ -144,6 +147,7 @@ class LidarLoc {
         double map_inside_xy_ratio = 0.0;  ///< 候选点落在地图水平边界内的比例。
         double map_inside_xyz_ratio = 0.0;  ///< 候选点落在地图三维边界内的比例。
         double map_overlap_ratio = 0.0;  ///< 候选点与静态地图近邻重合的比例。
+        double map_min_gravity_alignment_cos = diagnostics::UnknownMinGravityCos();  ///< 本次地图检查实际阈值，未检查时未知。
         double map_gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
 
@@ -400,6 +404,7 @@ class LidarLoc {
         double inside_xy_ratio = 0.0;  ///< 落在地图水平包围范围内的点比例。
         double inside_xyz_ratio = 0.0;  ///< 落在地图三维包围范围内的点比例。
         double overlap_ratio = 0.0;  ///< 在配置距离内找到静态地图近邻的点比例。
+        double map_min_gravity_alignment_cos = diagnostics::UnknownMinGravityCos();  ///< 按本次阶段选取的实际阈值。
         double gravity_alignment_cos = 0.0;  ///< 候选重力方向与地图竖直方向的一致性余弦。
     };
     /// @brief 加载 global.pcd 并建立边界及各验证线程的近邻索引；地图不可用返回 false。
@@ -411,11 +416,13 @@ class LidarLoc {
      * @param worker_index 使用的近邻索引编号；并行调用需使用各自索引。
      * @param min_overlap_ratio 本次接受所需的最小重合率。
      * @param maximum_points 采样点数上限，至少按 1 计算步长。
+     * @param phase 明确指定跟踪、初始化或重定位；重力阈值独立于重合率开关。
      * @return 检查结果；缺少当前 LO 或地图索引时 evaluated 为真但不通过。
      */
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
         const CloudPtr& input, const SE3& pose, std::size_t worker_index,
-        double min_overlap_ratio, std::size_t maximum_points, diagnostics::OverlapGate overlap_gate) const;
+        double min_overlap_ratio, std::size_t maximum_points, diagnostics::OverlapGate overlap_gate,
+        diagnostics::MatchPhase phase) const;
     /// 将一致性检查结果复制到最近匹配统计。
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
     /**

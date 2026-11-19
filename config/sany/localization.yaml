@@ -374,6 +374,8 @@ lidar_loc:
   min_tracking_confidence: 0.4
   # 只关闭正常跟踪的重合率拒绝；初始化和全局重定位仍执行原检查。
   map_overlap_check_enabled: false
+  # 仅正常跟踪的地图/里程计竖直轴夹角；初始化与重定位仍使用原余弦阈值。
+  tracking_map_max_gravity_angle_deg: 20.0
   update_dynamic_cloud: false
   update_err_h: 0.2
   update_err_v: 0.2

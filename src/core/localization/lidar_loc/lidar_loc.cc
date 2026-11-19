@@ -197,6 +197,22 @@ bool LidarLoc::Init(const std::string& config_path) {
         options_.tracking_map_overlap_check_enabled_ =
             root["lidar_loc"]["map_overlap_check_enabled"].as<bool>();
     }
+    if (root["lidar_loc"] && root["lidar_loc"]["tracking_map_max_gravity_angle_deg"]) {
+        try {
+            options_.tracking_map_max_gravity_angle_deg_ =
+                root["lidar_loc"]["tracking_map_max_gravity_angle_deg"].as<double>();
+        } catch (const YAML::Exception& error) {
+            LOG(ERROR) << "event=LOC_CONFIG_INVALID 跟踪重力夹角配置无法解析 key=lidar_loc.tracking_map_max_gravity_angle_deg detail=" << error.what();
+            return false;
+        }
+    }
+    std::string tracking_gravity_error;
+    if (!diagnostics::ConvertTrackingMaxGravityAngleDeg(
+            options_.tracking_map_max_gravity_angle_deg_,
+            &options_.tracking_map_min_gravity_alignment_cos_, &tracking_gravity_error)) {
+        LOG(ERROR) << "event=LOC_CONFIG_INVALID 跟踪重力夹角配置无效 detail=" << tracking_gravity_error;
+        return false;
+    }
     if (relocalization && relocalization["map_bounds_margin"]) {
         options_.relocalization_bounds_margin_ = relocalization["map_bounds_margin"].as<double>();
     }
@@ -233,12 +249,7 @@ bool LidarLoc::Init(const std::string& config_path) {
             backend_relocalization["map_precheck_min_overlap_ratio"]
                 .as<double>();
     }
-    LOG(INFO) << "event=LOC_MAP_CONSISTENCY_CONFIG 地图一致性检查配置"
-              << " map_consistency_enabled=" << options_.enable_relocalization_map_consistency_
-              << " tracking_map_overlap_check_enabled=" << options_.tracking_map_overlap_check_enabled_
-              << " relocalization_map_overlap_check_enabled=1"
-              << " map_min_overlap=" << options_.relocalization_min_overlap_ratio_
-              << " map_precheck_min_overlap=" << options_.relocalization_precheck_min_overlap_ratio_;
+
     if (backend_relocalization &&
         backend_relocalization["max_refinement_candidates"]) {
         options_.relocalization_max_refinement_candidates_ =
@@ -417,6 +428,18 @@ bool LidarLoc::Init(const std::string& config_path) {
         LOG(ERROR) << "event=LOC_CONFIG_INVALID 重定位地图一致性配置无效";
         return false;
     }
+
+    LOG(INFO) << "event=LOC_MAP_CONSISTENCY_CONFIG 地图一致性检查配置"
+              << " map_consistency_enabled=" << options_.enable_relocalization_map_consistency_
+              << " tracking_map_overlap_check_enabled=" << options_.tracking_map_overlap_check_enabled_
+              << " relocalization_map_overlap_check_enabled=1"
+              << " map_min_overlap=" << options_.relocalization_min_overlap_ratio_
+              << " map_precheck_min_overlap=" << options_.relocalization_precheck_min_overlap_ratio_
+              << std::setprecision(17)
+              << " tracking_map_max_gravity_angle_deg=" << options_.tracking_map_max_gravity_angle_deg_
+              << " tracking_map_min_gravity_cos=" << options_.tracking_map_min_gravity_alignment_cos_
+              << " initialization_map_min_gravity_cos=" << options_.relocalization_min_gravity_alignment_cos_
+              << " relocalization_map_min_gravity_cos=" << options_.relocalization_min_gravity_alignment_cos_;
 
     // options_.filter_z_min_ = yaml.GetValue<double>("lidar_loc", "filter_z_min");
     // options_.filter_z_max_ = yaml.GetValue<double>("lidar_loc", "filter_z_max");
@@ -885,7 +908,7 @@ diagnostics::MatchFailureRecorder::Frame LidarLoc::MakeFailureEvidence(
     frame.gravity_cos = stats.map_gravity_alignment_cos;
     frame.min_overlap = minimum_overlap;
     frame.min_inside_xy = options_.relocalization_min_inside_xy_ratio_;
-    frame.min_gravity_cos = options_.relocalization_min_gravity_alignment_cos_;
+    frame.min_gravity_cos = stats.map_min_gravity_alignment_cos;
     frame.nearest_neighbor_distance_m = options_.relocalization_nearest_neighbor_distance_;
     frame.bounds_margin_m = options_.relocalization_bounds_margin_;
     frame.confidence = stats.confidence;
@@ -1095,7 +1118,8 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
                         input, result->candidates[index].T_world_imu, worker,
                         options_.relocalization_precheck_min_overlap_ratio_,
                         static_cast<std::size_t>(
-                            options_.relocalization_precheck_max_points_), diagnostics::OverlapGate::kEnforce);
+                            options_.relocalization_precheck_max_points_), diagnostics::OverlapGate::kEnforce,
+                        evidence_ever_localized_ ? diagnostics::MatchPhase::kRelocalization : diagnostics::MatchPhase::kInitialization);
                 }
             }));
         }
@@ -1115,6 +1139,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
             checked.map_inside_xyz_ratio = prechecks[index].inside_xyz_ratio;
             checked.map_overlap_ratio = prechecks[index].overlap_ratio;
             checked.map_gravity_alignment_cos = prechecks[index].gravity_alignment_cos;
+            checked.map_min_gravity_alignment_cos = prechecks[index].map_min_gravity_alignment_cos;
             auto evidence = candidate_evidence(candidate,checked,EvidenceRecorder::Stage::kMapPrecheck,
                 "candidate_map_precheck_rejected",options_.relocalization_precheck_max_points_,
                 options_.relocalization_precheck_min_overlap_ratio_);
@@ -1299,6 +1324,7 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
         summary.map_inside_xyz_ratio = candidate_stats.map_inside_xyz_ratio;
         summary.map_overlap_ratio = candidate_stats.map_overlap_ratio;
         summary.map_gravity_alignment_cos = candidate_stats.map_gravity_alignment_cos;
+        summary.map_min_gravity_alignment_cos = candidate_stats.map_min_gravity_alignment_cos;
         summary.relocalization_candidate_found = true;
         summary.relocalization_candidate_id = candidate.candidate_id;
         summary.relocalization_score = candidate.score;
@@ -1442,8 +1468,11 @@ bool LidarLoc::TryGlobalRelocalization(const CloudPtr& input) {
 
 LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     const CloudPtr& input, const SE3& pose, std::size_t worker_index,
-    double min_overlap_ratio, std::size_t maximum_points, diagnostics::OverlapGate overlap_gate) const {
+    double min_overlap_ratio, std::size_t maximum_points, diagnostics::OverlapGate overlap_gate,
+    diagnostics::MatchPhase phase) const {
     MapConsistencyResult result;
+    result.map_min_gravity_alignment_cos = diagnostics::SelectMinGravityCos(
+        phase, options_.relocalization_min_gravity_alignment_cos_, options_.tracking_map_min_gravity_alignment_cos_);
     result.evaluated = true;
     if (!input || input->empty()) { result.reason = "map_scan_unavailable"; return result; }
     if (!current_lo_pose_set_) { result.reason = "map_odometry_unavailable"; return result; }
@@ -1517,7 +1546,7 @@ LidarLoc::MapConsistencyResult LidarLoc::EvaluateRelocalizationMapConsistency(
     result.passed =
         result.inside_xy_ratio >= options_.relocalization_min_inside_xy_ratio_ &&
         diagnostics::PassOverlapGate(result.overlap_ratio, min_overlap_ratio, overlap_gate) &&
-        result.gravity_alignment_cos >= options_.relocalization_min_gravity_alignment_cos_;
+        diagnostics::PassesMinGravityCos(result.gravity_alignment_cos, result.map_min_gravity_alignment_cos);
     result.reason = result.passed ? "accepted" :
         result.inside_xy_ratio < options_.relocalization_min_inside_xy_ratio_ ? "map_bounds" :
         !diagnostics::ValidOverlap(result.overlap_ratio, min_overlap_ratio) ? "map_overlap_invalid" :
@@ -1534,6 +1563,7 @@ void LidarLoc::ApplyMapConsistencyResult(const MapConsistencyResult& result) {
     last_match_stats_.map_inside_xyz_ratio = result.inside_xyz_ratio;
     last_match_stats_.map_overlap_ratio = result.overlap_ratio;
     last_match_stats_.map_gravity_alignment_cos = result.gravity_alignment_cos;
+    last_match_stats_.map_min_gravity_alignment_cos = result.map_min_gravity_alignment_cos;
 }
 
 bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const SE3& pose) {
@@ -1542,7 +1572,8 @@ bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const
         EvaluateRelocalizationMapConsistency(
             input, pose, 0, options_.relocalization_min_overlap_ratio_,
             static_cast<std::size_t>(
-                options_.relocalization_map_consistency_max_points_), diagnostics::OverlapGate::kEnforce);
+                options_.relocalization_map_consistency_max_points_), diagnostics::OverlapGate::kEnforce,
+            evidence_ever_localized_ ? diagnostics::MatchPhase::kRelocalization : diagnostics::MatchPhase::kInitialization);
     ApplyMapConsistencyResult(result);
 
     if (!options_.relocalization_debug_dir_.empty() && input && !input->empty()) {
@@ -1579,7 +1610,9 @@ bool LidarLoc::ValidateRelocalizationMapConsistency(const CloudPtr& input, const
               << ", inside_xyz=" << result.inside_xyz_ratio
               << ", overlap=" << result.overlap_ratio
               << ", map_overlap_check_enabled=1"
+              << std::setprecision(17)
               << ", gravity_alignment_cos=" << result.gravity_alignment_cos
+              << ", map_min_gravity_cos=" << result.map_min_gravity_alignment_cos
               << ", map_z=[" << relocalization_map_min_.z() << ", "
               << relocalization_map_max_.z() << "]"
               << ", passed=" << result.passed;
@@ -2116,7 +2149,8 @@ void LidarLoc::Align(const CloudPtr& input) {
         // 局部 NDT 高分不能证明整帧与地图一致；复用验证地图并限制检查量。
         const auto consistency = EvaluateRelocalizationMapConsistency(
             input, current_pose_esti, 0, options_.relocalization_min_overlap_ratio_, 2000,
-            diagnostics::SelectOverlapGate(diagnostics::MatchPhase::kTracking, options_.tracking_map_overlap_check_enabled_));
+            diagnostics::SelectOverlapGate(diagnostics::MatchPhase::kTracking, options_.tracking_map_overlap_check_enabled_),
+            diagnostics::MatchPhase::kTracking);
         ApplyMapConsistencyResult(consistency);
         loc_success = consistency.passed;
     }
@@ -2153,7 +2187,7 @@ void LidarLoc::Align(const CloudPtr& input) {
         frame.gravity_cos = last_match_stats_.map_gravity_alignment_cos;
         frame.min_overlap = options_.relocalization_min_overlap_ratio_;
         frame.min_inside_xy = options_.relocalization_min_inside_xy_ratio_;
-        frame.min_gravity_cos = options_.relocalization_min_gravity_alignment_cos_;
+        frame.min_gravity_cos = last_match_stats_.map_min_gravity_alignment_cos;
         frame.nearest_neighbor_distance_m = options_.relocalization_nearest_neighbor_distance_;
         frame.bounds_margin_m = options_.relocalization_bounds_margin_;
         frame.confidence = fitness_score;
@@ -2231,10 +2265,10 @@ void LidarLoc::Align(const CloudPtr& input) {
                      << ", map_overlap_check_enabled=" << options_.tracking_map_overlap_check_enabled_
                      << ", map_points=" << last_match_stats_.map_consistency_points
                      << ", map_inside_xy=" << last_match_stats_.map_inside_xy_ratio
-                     << ", map_gravity_cos=" << last_match_stats_.map_gravity_alignment_cos
+                     << std::setprecision(17) << ", map_gravity_cos=" << last_match_stats_.map_gravity_alignment_cos
                      << ", map_min_inside_xy=" << options_.relocalization_min_inside_xy_ratio_
                      << ", map_min_overlap=" << options_.relocalization_min_overlap_ratio_
-                     << ", map_min_gravity_cos=" << options_.relocalization_min_gravity_alignment_cos_;
+                     << ", map_min_gravity_cos=" << last_match_stats_.map_min_gravity_alignment_cos;
         // [loc-rejected-match-fallback]
         ++match_fail_count_;
         // 拒绝 NDT 结果后退回激光里程计初值，必要时启动全局重定位。
@@ -2322,6 +2356,9 @@ void LidarLoc::Align(const CloudPtr& input) {
                           << " map_checked=" << last_match_stats_.map_consistency_evaluated
                           << " map_overlap=" << last_match_stats_.map_overlap_ratio
                           << " map_overlap_check_enabled=" << options_.tracking_map_overlap_check_enabled_
+                          << std::setprecision(17)
+                          << " map_gravity_cos=" << last_match_stats_.map_gravity_alignment_cos
+                          << " map_min_gravity_cos=" << last_match_stats_.map_min_gravity_alignment_cos
                           << " loc_success_lo=" << loc_success_lo
                           << " loc_success=" << loc_success
                           << " odom_valid=" << lidar_loc_odom_valid

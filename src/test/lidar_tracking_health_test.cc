@@ -27,11 +27,11 @@ struct LidarLocRegressionAccess {
     }
     static bool MapAgrees(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
         return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000,
-                                                       diagnostics::OverlapGate::kEnforce).passed;
+                                                       diagnostics::OverlapGate::kEnforce, diagnostics::MatchPhase::kTracking).passed;
     }
     static const char* MapReason(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
         return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000,
-                                                       diagnostics::OverlapGate::kEnforce).reason;
+                                                       diagnostics::OverlapGate::kEnforce, diagnostics::MatchPhase::kTracking).reason;
     }
     static bool RawOdomAgrees(LidarLoc& loc, const SE3& pose) {
         double delta = 0.0;

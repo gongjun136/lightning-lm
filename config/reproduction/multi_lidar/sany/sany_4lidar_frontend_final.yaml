@@ -264,6 +264,8 @@ localization_pgo:
   enable_dr_smoothing: true
 
 lidar_loc:
+  # 仅正常跟踪的地图/里程计竖直轴夹角；初始化与重定位仍使用原余弦阈值。
+  tracking_map_max_gravity_angle_deg: 20.0
   enable_dynamic_polygon: false
   enable_parking_static: false
   enable_icp_adjust: false

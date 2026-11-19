@@ -231,10 +231,10 @@ class HistoryTest(unittest.TestCase):
                episode(-9, 'confirmed_tracking_lost', 200, {'lost_frames': 9, 'lost_frame_threshold': 5}),
                episode(4, 'major_sigma', 300, {'major_sigma': 1.0})]
         text = ds.render_summary(live(findings=eps, event_status='triggered', trigger_time='t100', trigger_reasons=['4']))
-        onset = [line for line in text.split(ds.NL) if line.startswith('  码 4 [H1]')]
-        self.assertEqual(len(onset), 1)
-        self.assertIn('有效匹配年龄 实测 1.5 s / 阈值 1 s（证据）', onset[0])
-        self.assertIn('首次标题未记录', onset[0])
+        onset = text.split('  首次触发（', 1)[1].split('  最近记录（', 1)[0]
+        self.assertIn('H1', onset)
+        self.assertIn('有效匹配年龄 实测 1.5 s / 阈值 1 s（证据）', onset)
+        self.assertIn('首次标题未记录', onset)
         self.assertIn('触发原因：4', text)
 
     def test_grouping_limit_counts_and_index(self):
@@ -245,7 +245,7 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(len(summary['history']['groups']), 8)
         self.assertEqual(summary['history']['omitted_groups'], 2)
         text = ds.render_summary(report)
-        self.assertIn('另有 2 种未展开', text)
+        self.assertIn('另有 2 类原因未展开', text)
         self.assertIn('不代表物理故障次数', text)
         self.assertIn('同类 2 段', text)
         self.assertIn('H8、H9', ds.render_index(summary))
@@ -355,7 +355,9 @@ class PurityTest(unittest.TestCase):
 
     def test_module_is_pure_computation(self):
         import translation_diagnostics as td
-        for module, allowed in ((ds, {'json', 'math', 'translation_diagnostics'}),
+        import diagnostic_history_layout as dhl
+        for module, allowed in ((ds, {'json', 'math', 'translation_diagnostics', 'diagnostic_history_layout'}),
+                                (dhl, {'re'}),
                                 (td, {'__future__', 'math', 'collections', 'typing'})):
             with self.subTest(module=module.__name__):
                 with open(module.__file__, encoding='utf-8') as handle:
@@ -401,7 +403,7 @@ class ColorTest(unittest.TestCase):
         self.assertEqual(re.sub(r'\x1b\[[0-9;]*m', '', colored), plain)
         self.assertNotIn('\x1b', plain)
         self.assertIn('\x1b[1m实测 0.61 s / 阈值 0.5 s', colored)
-        self.assertIn('\x1b[1;36m历史判据', colored)
+        self.assertIn('\x1b[96m历史判据', colored)
         self.assertIn('\x1b[33m  [W1]', colored)
         self.assertNotIn('\x1b', json.dumps(ds.build_summary(report), ensure_ascii=False))
 
@@ -495,7 +497,8 @@ class CompactAccuracyTest(unittest.TestCase):
         report = rich_report()
         text = ds.render_summary(report)
         lines = text.split(ds.NL)
-        self.assertLessEqual(len(lines), 45, text)
+        # 独立首次/最近分区增加时间与判据行，保持有界摘要。
+        self.assertLessEqual(len(lines), 85, text)
         for needle in ('去重 3 条', '雷达延迟交付 2 条', '[H2.t1]', '源间隔超限 1 条', '[H1.t2]', '[W1] 合同版本不一致',
                        '[W2] 配置失效', '[W3] 日志截断', 'radar_time_sync×2', '启动失败×1 [L1]',
                        '历史驱动包（当前未发现雷达 worker）', '运行构建未验证', '未验证前仅作可视化参考',
@@ -503,11 +506,11 @@ class CompactAccuracyTest(unittest.TestCase):
             self.assertIn(needle, text)
         self.assertEqual(text.count('环节未定'), 1)
         self.assertEqual(text.count('DDS 传输/接收队列'), 1)
-        onset = lines_with(text, '码 2 [H1] 首个触发')
-        self.assertEqual(len(onset), 1)
-        self.assertIn('雷达帧供给中断', onset[0])
-        self.assertNotIn('恢复确认中', onset[0])
-        self.assertIn('雷达帧年龄 实测 0.61 s / 阈值 0.5 s（证据）', onset[0])
+        onset = text.split('  首次触发（', 1)[1].split('  最近记录（', 1)[0]
+        self.assertEqual(onset.count('H1'), 1)
+        self.assertIn('雷达帧供给中断', onset)
+        self.assertNotIn('恢复确认中', onset)
+        self.assertIn('雷达帧年龄 实测 0.61 s / 阈值 0.5 s（证据）', onset)
         index = ds.render_index(ds.build_summary(report))
         for needle in ('[H6]', '[H2.t1] 同 [H1.t1]', '[W3]', '[X2]', '[L1]'):
             self.assertIn(needle, index)
