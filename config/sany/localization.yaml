@@ -460,7 +460,8 @@ relocalization:
     feature_threads: 8
   solid_kiss:
     map_precheck_min_overlap_ratio: 0.55
-    map_min_overlap_ratio: 0.6
+    # 初始化和重定位使用此门槛；跟踪阶段是否拒绝低重合率由 lidar_loc.map_overlap_check_enabled 控制。
+    map_min_overlap_ratio: 0.75
     map_precheck_max_points: 5000
     max_refinement_candidates: 1
     top_k: 8

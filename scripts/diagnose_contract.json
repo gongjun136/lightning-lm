@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "177e3e79bee999ca2801220bc8a27ae12bd2b7cb93d2aa738e0e1633bcf19eb5",
+  "contract_id": "815398a4f1d2f2142003a3f94c08eb5151135db455618b4d594cb1b3bc43544d",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -48,7 +48,7 @@
     "src/core/system/loc_system.cc": "64d30eccf20f0b78e2e5a93350931b4eefde7e9ae1a9ae3368a16e393cc7719f",
     "src/core/system/loc_system.h": "fcc4777e1f7db308913ea94b6c024be9f608289c26619ff5fd3ca78874fffcc6",
     "config/sany/localization.yaml#diagnostics": "d00e0b3e5f79c15cb180b29660d53af810e585fa144ea8d62409e1a3f3c3ce04",
-    "config/sany/localization.yaml#relocalization": "dd8d738dbff90c2e3d6c6739f8ca097979fbdfac5cb93d68ca3b3d0ad3a6ede2",
+    "config/sany/localization.yaml#relocalization": "6388cfae7cac39f732b4ee2bbcc0b15f67ddafaf813a3cd74f38d43b324a8061",
     "config/sany/localization.yaml#lidar_loc": "44b5f311b89dbd394f24afd34b1c393d078b95e0db33214cb7028b1a7d165f78",
     "workspace.repos": "1013e851200593c7c105793711ce241d0534691ac41d19593e2aaf334f4c19e9"
   }

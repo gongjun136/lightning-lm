@@ -50,6 +50,32 @@ class DiagnosisTest(unittest.TestCase):
                 self.assertIs(result['map_overlap_check_enabled'], expected)
                 self.assertEqual(result['map_min_overlap_ratio'], .6)
 
+    def test_relocalization_overlap_075_keeps_tracking_disabled_and_historical_threshold(self):
+        matching = d.matching_thresholds(Path(__file__).resolve().parents[1] / 'config/sany/localization.yaml')
+        self.assertEqual(matching['overlap_key'], 'relocalization.solid_kiss.map_min_overlap_ratio')
+        self.assertEqual(matching['map_min_overlap_ratio'], .75)
+        self.assertIs(matching['map_overlap_check_enabled'], False)
+        fields = ('map_checked=1 map_points=16975 map_overlap=0.747629 '
+                  'map_inside_xy=1 map_min_inside_xy=0.9 '
+                  'map_gravity_cos=0.999832 map_min_gravity_cos=0.95 ')
+        # 初始化/重定位的实际强制门控不应被配置中的跟踪关闭开关覆盖。
+        rejected = dict(time='t', text=fields +
+                        'phase=initialization rejection_reason=map_overlap '
+                        'map_overlap_check_enabled=1 map_min_overlap=0.75')
+        text, _ = d.matching_summary(rejected, matching)
+        self.assertIn('map_overlap=0.747629 < map_min_overlap=0.75', text)
+        self.assertNotIn('重合率检查已关闭', text)
+        # 跟踪低重合率只作观测，不能在摘要中误写为拒绝。
+        observed = dict(time='t', text=fields +
+                        'phase=tracking accepted=1 map_overlap_check_enabled=0 map_min_overlap=0.75')
+        self.assertIn('重合率检查已关闭', d.matching_summary(observed, matching)[0])
+        # 新配置不能改写旧运行日志明确记录的 0.6 阈值。
+        historical = dict(time='t', text=fields.replace('0.747629', '0.59') +
+                          'rejection_reason=map_overlap map_overlap_check_enabled=1 map_min_overlap=0.6')
+        historical_text, _ = d.matching_summary(historical, matching)
+        self.assertIn('map_overlap=0.59 < map_min_overlap=0.6', historical_text)
+        self.assertNotIn('map_min_overlap=0.75', historical_text)
+
     def test_match_failure_grace_preserves_rejection(self):
         fixtures = [{'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_rejected_grace_suppressed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.25', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed (old logs without the new fields)'}, {'fields': {'raw': 0, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (accepted, unchanged)'}, {'fields': {'raw': -9, 'selected': -9, 'published': -9, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.4', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (confirmed loss, unchanged)'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.2', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}]
         aliases = {'raw': 'raw_runstate', 'selected': 'selected_runstate',
