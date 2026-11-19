@@ -338,6 +338,10 @@ def rejection_view(mr):
         items.append('匹配分数=' + fmt(mr.get('confidence')) + ' / 门槛=' + fmt(ev.get('min_confidence')))
     if 'consecutive_rejected_matches' in ev:
         items.append('连续拒绝=' + fmt(ev.get('consecutive_rejected_matches')) + ' / 丢失阈值=' + fmt(ev.get('lost_frame_threshold')))
+    if ev.get('map_overlap_check_enabled') in (0, 1):
+        items.append('重合率检查=' + ('开启' if ev['map_overlap_check_enabled'] else '关闭（仅统计）'))
+    if 'map_overlap' in ev:
+        items.append('地图重合率=' + fmt(ev.get('map_overlap')) + ' / 配置阈值=' + fmt(ev.get('map_min_overlap')))
     return {'text': '，'.join(items), 'time': mr.get('time'), 'source': mr.get('source'),
             'relation': mr.get('relation'), 'snapshots': len(lst(mr.get('snapshots'))), 'evidence': clean(ev),
             'note': '匹配分数不是可信等级；迭代数/耗时不单独说明失败原因'}
@@ -640,6 +644,8 @@ def build_summary(report):
         'categories': categories(report),
         'runtime_protection_scope': report.get('runtime_protection_scope'),
         'status_lines': status_lines(report),
+        'map_overlap_policy': clean(d(d(report.get('overlap_observations')).get('policy'))),
+        'overlap_observations': clean(d(report.get('overlap_observations'))),
         'details': {'thresholds': thresholds, 'collector_totals': report.get('collector_totals'),
                     'window_collector_drop_delta': report.get('window_collector_drop_delta'),
                     'image_collector_counters': d(d(d(report.get('match_failure_image')).get('collector')).get('counters'))},
@@ -877,6 +883,33 @@ def render_text(s, color=False):
     status = s.get('status_lines') or []
     gaps = s.get('collection_gaps') or []
     out.extend(status[:2])
+    overlap = d(s.get('map_overlap_policy'))
+    if isinstance(overlap.get('map_overlap_check_enabled'), bool):
+        enabled = overlap['map_overlap_check_enabled']
+        out.append('跟踪阶段重合率检查：%s（启动日志确认，仅作用于跟踪）；%s；实际阈值 %s' % (
+            '开启' if enabled else '关闭',
+            '参与匹配拒绝' if enabled else '只记录重合率，不作为拒绝项',
+            fmt(overlap.get('map_min_overlap_ratio'))))
+    else:
+        out.append('跟踪阶段重合率检查：未知（该运行日志未记录，不按新默认值推断）')
+    if overlap.get('map_consistency_enabled') in (0, False, '0', 'false'):
+        out.append('地图一致性总开关已关闭；此时也没有重合率测量，按原总开关语义解释')
+    observation = d(s.get('overlap_observations'))
+    latest_observation = d(observation.get('latest'))
+    if latest_observation:
+        info = d(latest_observation.get('evidence'))
+        out.append('最近低重合率观察 %s：实测 %s / 阈值 %s；%s；连续 %s 帧 / %s 秒' % (
+            txt(latest_observation.get('time')), fmt(info.get('ratio')), fmt(info.get('threshold')),
+            '已接受，非故障' if info.get('is_observation') else '证据需核对：' + txt(info.get('result')),
+            fmt(info.get('streak_frames')), fmt(info.get('streak_seconds'))))
+        out.append('  观察累计低重合率 %s 帧，因限频未请求采集 %s 帧；不是故障次数' % (
+            fmt(info.get('total_low_frames')), fmt(info.get('capture_suppressed'))))
+    collector = d(observation.get('collector'))
+    if collector.get('status') == 'available':
+        counts = d(collector.get('counters'))
+        dropped = sum(counts.get(k, 0) for k in ('dropped_busy','dropped_queue','dropped_oversize','rejected_disk','rejected_map','writer_errors'))
+        out.append('低重合率观察取证：已保存 %s，限频跳过 %s，丢弃/写入异常计数 %s；独立配额 %s MiB' % (
+            fmt(counts.get('saved')), fmt(counts.get('suppressed')), dropped, fmt(collector.get('disk_mb'))))
     out.append('采集：缺口 %s；%s' % ('；'.join(gaps) if gaps else '输入时序未记录截断/丢失/序号缺口',
                                   status[3] if len(status) > 3 else '采集器统计未记录'))
     out.append('完整：--all（摘要 + 旧版全部判据段 + 证据索引）；结构化：--json 的 diagnostic_summary 字段')

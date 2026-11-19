@@ -142,6 +142,15 @@ class RunstateTest(unittest.TestCase):
 
 
 class FindingFormatTest(unittest.TestCase):
+    def test_overlap_switch_is_visible_without_a_fault(self):
+        for enabled, label in [(False, '关闭'), (True, '开启')]:
+            report = {'overlap_observations': {'policy': {'map_overlap_check_enabled': enabled, 'map_min_overlap_ratio': .6, 'source': 'startup_log'}}}
+            summary = ds.build_summary(report)
+            text = ds.render_text(summary)
+            self.assertIn('跟踪阶段重合率检查：'+label, text)
+            self.assertIs(summary['map_overlap_policy']['map_overlap_check_enabled'], enabled)
+        self.assertNotIn('跟踪阶段重合率检查：关闭', ds.render_text(ds.build_summary({})))
+
     def test_multiple_independent_code4_criteria(self):
         report = live(thresholds={'output_timeout_sec': 0.5, 'major_sigma_limit_m': 0.2}, current_findings=[
             finding(4, 'match_stale_degraded', {'valid_match_age_sec': 1.25, 'localization_output_max_lidar_age_sec': 1.0,

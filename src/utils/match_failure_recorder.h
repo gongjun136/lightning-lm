@@ -48,7 +48,11 @@ class MatchFailureRecorder {
         double search_ms = 0;
         PlaneMetrics plane_icp;
         Reason reason = Reason::kRegistration;
+        bool accepted = false;
+        std::uint64_t observation_streak_frames = 0, observation_total_low_frames = 0, observation_capture_suppressed = 0;
+        double observation_streak_seconds = 0;
         bool evaluated = false;
+        bool overlap_check_enabled = true;  ///< 关闭时 overlap 只作统计，不参与地图拒绝。
         std::uint64_t validation_stride = 1, validation_points = 0;
         double overlap = 0, inside_xy = 0, inside_xyz = 0, gravity_cos = 0;
         double min_overlap = .75, min_inside_xy = .9, min_gravity_cos = .95;
@@ -75,6 +79,7 @@ class MatchFailureRecorder {
     struct Context {
         std::string directory, config_path, config_snapshot, run_dir, map_path;
         std::string build_commit, build_dirty, build_utc;
+        bool overlap_observation = false;  ///< 独立的已接受帧观察流，不使用失败片段准入。
         bool synthetic_fixture = false;
         std::array<double, 3> map_min{}, map_max{};
     };

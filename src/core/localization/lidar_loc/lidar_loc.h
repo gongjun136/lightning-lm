@@ -6,6 +6,7 @@
 #pragma once
 
 #include <pcl/registration/icp.h>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <future>
@@ -23,6 +24,7 @@
 #include "core/maps/tiled_map.h"
 #include "utils/compute_profiling.h"
 #include "utils/match_failure_recorder.h"
+#include "utils/tracking_overlap_policy.h"
 
 #include "pclomp/ndt_omp_impl.hpp"
 
@@ -87,6 +89,7 @@ class LidarLoc {
         double max_update_cache_dis_ = 30.0;  ///< 遗留缓冲距离（m）；对应分支当前停用。
         std::string recover_pose_path_ = "./data/recover_pose.txt";  ///< 定位恢复位姿记录文件的路径。
         bool enable_relocalization_map_consistency_ = true;  ///< 是否对跟踪配准和重定位候选执行地图一致性验证。
+        bool tracking_map_overlap_check_enabled_ = false;  ///< 仅控制正常跟踪的重合率拒绝；初始化/重定位始终保留原检查。
         double relocalization_bounds_margin_ = 0.5;  ///< 地图空间包围范围的外扩余量（m）。
         double relocalization_nearest_neighbor_distance_ = 0.5;  ///< 计算地图重合率使用的最大近邻距离（m）。
         double relocalization_min_inside_xy_ratio_ = 0.90;  ///< 接受候选所需的最小水平范围内点比例。
@@ -412,7 +415,7 @@ class LidarLoc {
      */
     MapConsistencyResult EvaluateRelocalizationMapConsistency(
         const CloudPtr& input, const SE3& pose, std::size_t worker_index,
-        double min_overlap_ratio, std::size_t maximum_points) const;
+        double min_overlap_ratio, std::size_t maximum_points, diagnostics::OverlapGate overlap_gate) const;
     /// 将一致性检查结果复制到最近匹配统计。
     void ApplyMapConsistencyResult(const MapConsistencyResult& result);
     /**
@@ -536,6 +539,9 @@ class LidarLoc {
     std::string relocalization_backend_name_ = "btc";  ///< 全局检索后端名称，如 BTC 或 SOLiD。
     std::shared_ptr<PointToPlaneRegistration> relocalization_plane_registration_;  ///< 重定位候选的点面精配验证器。
     CloudPtr relocalization_static_map_;  ///< 重定位一致性验证使用的静态地图点云。
+    std::atomic<bool> overlap_reset_requested_{false};  ///< 外部重置请求在匹配线程消费，避免并发修改观察器。
+    diagnostics::TrackingOverlapObserver overlap_observer_;  ///< 只记录已接受的低重合率帧。
+    std::unique_ptr<diagnostics::MatchFailureRecorder> overlap_observation_recorder_;  ///< 独立观察目录、配额和计数。
     std::unique_ptr<diagnostics::MatchFailureRecorder> match_failure_recorder_;  ///< 有界保存被拒绝的原始匹配证据。
     Vec3d relocalization_map_min_ = Vec3d::Zero();  ///< 静态地图空间包围盒下界（m）。
     Vec3d relocalization_map_max_ = Vec3d::Zero();  ///< 静态地图空间包围盒上界（m）。

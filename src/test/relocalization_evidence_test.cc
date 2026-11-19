@@ -83,6 +83,13 @@ struct LidarLocRegressionAccess {
     static void AfterPreviousLocalization(LidarLoc& loc) { loc.evidence_ever_localized_ = true; }
     static Recorder::Stats Stats(LidarLoc& loc) { return loc.match_failure_recorder_->GetStats(); }
     static void Stop(LidarLoc& loc) { loc.match_failure_recorder_->Stop(); }
+    static auto CheckMap(LidarLoc& loc, const CloudPtr& scan, const SE3& pose,
+                         bool overlap_enabled, std::size_t maximum_points) {
+        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, .6, maximum_points, diagnostics::SelectOverlapGate(diagnostics::MatchPhase::kTracking, overlap_enabled));
+    }
+    static auto CheckRelocalizationMap(LidarLoc& loc, const CloudPtr& scan, std::size_t maximum_points) {
+        return loc.EvaluateRelocalizationMapConsistency(scan, SE3(), 0, .6, maximum_points, diagnostics::OverlapGate::kEnforce);
+    }
 };
 }  // namespace lightning::loc
 
@@ -122,6 +129,34 @@ int main(int argc, char** argv) {
         }
         loc::LidarLoc localization;
         auto* backend = Access::Prepare(localization, cloud, folder);
+        Require(!loc::LidarLoc::Options().tracking_map_overlap_check_enabled_, "tracking overlap gate must default off");
+        CloudPtr changed_scan(new PointCloudType);
+        for (int i = 0; i < 100; ++i) {
+            PointType point = (*cloud)[i];
+            if (i >= 59) point.z = 1.5f;  // 位于地图范围内，但距旧地图表面超过 0.5 m。
+            changed_scan->push_back(point);
+        }
+        for (const std::size_t maximum : {std::size_t{2000}, std::size_t{50000}}) {
+            const auto enabled = Access::CheckMap(localization, changed_scan, SE3(), true, maximum);
+            const auto disabled = Access::CheckMap(localization, changed_scan, SE3(), false, maximum);
+            Require(enabled.evaluated && enabled.points == 100 && std::abs(enabled.overlap_ratio-.59)<1e-12,
+                    "actual map sampling must retain the measured low overlap");
+            Require(!enabled.passed && std::string(enabled.reason)=="map_overlap", "enabled gate must reject 59 percent");
+            Require(disabled.passed && std::string(disabled.reason)=="accepted" &&
+                    disabled.overlap_ratio==enabled.overlap_ratio, "disabled gate must preserve score and accept changed structure");
+            const auto relocalization = Access::CheckRelocalizationMap(localization, changed_scan, maximum);
+            Require(!relocalization.passed && std::string(relocalization.reason)=="map_overlap",
+                    "disabled tracking gate must not disable initialization/relocalization overlap checks");
+            const auto bounds = Access::CheckMap(localization, changed_scan, SE3(SO3(),Vec3d(100,0,0)), false, maximum);
+            Require(!bounds.passed && std::string(bounds.reason)=="map_bounds", "disabled overlap must preserve bounds rejection");
+            const auto gravity = Access::CheckMap(localization, changed_scan, SE3(SO3::exp(Vec3d(3.141592653589793,0,0)),Vec3d::Zero()), false, maximum);
+            Require(!gravity.passed && std::string(gravity.reason)=="map_gravity", "disabled overlap must preserve gravity rejection");
+        }
+        (*changed_scan)[59] = (*cloud)[59];
+        Require(Access::CheckMap(localization, changed_scan, SE3(), true, 2000).passed,
+                "enabled overlap accepts equality at the configured threshold");
+        Require(!Access::CheckMap(localization, CloudPtr(new PointCloudType), SE3(), false, 2000).passed,
+                "disabled overlap must not accept missing scan evidence");
         Require(!Access::Attempt(localization, cloud), "no candidate must remain unlocalized");
         WaitSaved(localization, 1);
         for (int i = 0; i < 100; ++i)
@@ -148,6 +183,7 @@ int main(int argc, char** argv) {
             if (!entry.is_directory() || !fs::exists(entry.path() / "summary.json")) continue;
             const auto summary = YAML::LoadFile((entry.path() / "summary.json").string());
             Require(summary["synthetic_fixture"].as<bool>(), "synthetic hook test must be labelled");
+            Require(summary["criterion"]["overlap_check_enabled"].as<bool>(), "relocalization evidence must retain its enabled gate");
             Require(summary["scan"]["saved_points"].as<int>() == 121, "hook lost original scan points");
             const auto stage = summary["stage"].as<std::string>();
             if (stage == "search") {

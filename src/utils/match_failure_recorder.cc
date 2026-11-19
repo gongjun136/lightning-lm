@@ -1,4 +1,5 @@
 #include "utils/match_failure_recorder.h"
+#include "utils/tracking_overlap_policy.h"
 
 #include <algorithm>
 #include <atomic>
@@ -221,6 +222,21 @@ class MatchFailureRecorder::Impl {
         if (context.config_snapshot.size() > MiB) throw std::invalid_argument("match failure configuration snapshot exceeds 1 MiB");
         for (auto& slot : slots) slot.points.reserve(options.max_scan_points + MaxValidation);
     }
+    const char* Prefix() const { return context.overlap_observation ? "overlap_observation_" : "match_failure_"; }
+    std::string OwnerName() const { return context.overlap_observation ? std::string(Owner)+"-overlap-observation" : Owner; }
+    std::string Event(const char* suffix) const {
+        return std::string(context.overlap_observation ? "OVERLAP_OBSERVATION event=OVERLAP_OBSERVATION_" :
+                           "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_") + suffix;
+    }
+    std::string ObservationFields(const Frame& frame) const {
+        if (!context.overlap_observation) return "";
+        std::ostringstream out;
+        out << ",\"observation_reason\":\"low_map_overlap\",\"observation\":{\"streak_frames\":"
+            << frame.observation_streak_frames << ",\"streak_seconds\":" << Number(frame.observation_streak_seconds)
+            << ",\"total_low_frames\":" << frame.observation_total_low_frames
+            << ",\"capture_suppressed\":" << frame.observation_capture_suppressed << "}";
+        return out.str();
+    }
     ~Impl() { Stop(); if (lock_fd >= 0) close(lock_fd); }
     Stats GetStats() const { return {received.load(), admitted.load(), saved.load(), suppressed.load(), busy.load(), queue_full.load(), oversize.load(), disk_rejected.load(), map_rejected.load(), errors.load()}; }
     bool Start() {
@@ -236,11 +252,11 @@ class MatchFailureRecorder::Impl {
         } catch (const std::exception& e) {
             running = false;
             if (lock_fd >= 0) { close(lock_fd); lock_fd = -1; }
-            ++errors; LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_START_FAILED 匹配失败采集启动失败 detail=" << e.what(); return false;
+            ++errors; LOG(ERROR) << Event("START_FAILED") << " 匹配失败采集启动失败 detail=" << e.what(); return false;
         }
     }
     void Observe(bool accepted) {
-        if (!running) return;
+        if (!running || context.overlap_observation) return;
         if (!accepted) { good_since = 0; last_good_observation = 0; return; }
         const auto now = Now();
         const auto previous = last_good_observation.exchange(now);
@@ -251,24 +267,36 @@ class MatchFailureRecorder::Impl {
     bool Capture(const CloudView& input, const Frame& frame) {
         if (!running || stopping) return false;
         ++received; const auto now = Now();
+        if (context.overlap_observation ? (!frame.accepted || frame.phase != Phase::kTracking ||
+                frame.overlap_check_enabled || !frame.evaluated || !frame.validation_points ||
+                !ValidOverlap(frame.overlap, frame.min_overlap) || frame.overlap >= frame.min_overlap) : frame.accepted) {
+            ++oversize; return false;
+        }
         if (!input.data || !input.point || !input.size || input.size > MaxSource ||
             frame.validation_points > MaxValidation || !frame.validation_stride ||
             (frame.evaluated && frame.validation_points > 0 && !frame.pose_available[2])) { ++oversize; return false; }
         std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
         if (!lock.owns_lock()) { ++busy; return false; }
-        if (recovered.exchange(false)) {
+        if (!context.overlap_observation && recovered.exchange(false)) {
             ++episode_id; episode_captures = 0; last_capture = 0;
             best_overlap = -1; best_retrieval = -std::numeric_limits<double>::infinity();
         }
         latest_observation = frame; latest_observation_wall = Now(true); have_observation = true;
-        if (episode_captures >= EpisodeLimit) { ++episode_limited; ++suppressed; return false; }
+        if (context.overlap_observation) {
+            const auto previous = last_capture.load();
+            if (previous && (now < previous || now - previous < options.cooldown_seconds * 1e9)) {
+                ++suppressed; return false;
+            }
+            // 冷却在尝试入队时推进；队列或写盘失败不导致连续热重试。
+            last_capture = now;
+        } else if (episode_captures >= EpisodeLimit) { ++episode_limited; ++suppressed; return false; }
         const bool changed = frame.phase != last_admitted_frame.phase || frame.stage != last_admitted_frame.stage ||
             frame.reason != last_admitted_frame.reason ||
             std::strncmp(frame.rejection_reason.data(),last_admitted_frame.rejection_reason.data(),frame.rejection_reason.size()) != 0;
         const bool improved = (frame.candidate_available && !last_admitted_frame.candidate_available) ||
             (frame.evaluated && frame.validation_points > 0 && frame.overlap >= best_overlap + .05) ||
             (std::isfinite(frame.retrieval_score) && frame.retrieval_score >= best_retrieval + .10);
-        if (episode_captures && !changed && !improved) { ++suppressed; return false; }
+        if (!context.overlap_observation && episode_captures && !changed && !improved) { ++suppressed; return false; }
         Slot* slot = nullptr; for (auto& item : slots) if (item.state == Slot::kEmpty) { slot = &item; break; }
         if (!slot) { ++queue_full; return false; }
         slot->points.clear(); slot->validation_points = 0;
@@ -287,8 +315,12 @@ class MatchFailureRecorder::Impl {
             ++oversize; slot->points.clear(); return false;
         }
         slot->frame = frame; slot->source_points = input.size; slot->downsampled = display_stride > 1;
-        slot->episode_id = episode_id; slot->episode_index = static_cast<unsigned>(++episode_captures);
-        slot->selection = slot->episode_index == 1 ? 0 : changed ? 1 : 2;
+        if (context.overlap_observation) {
+            slot->episode_id = 0; slot->episode_index = 0; slot->selection = 3;
+        } else {
+            slot->episode_id = episode_id; slot->episode_index = static_cast<unsigned>(++episode_captures);
+            slot->selection = slot->episode_index == 1 ? 0 : changed ? 1 : 2;
+        }
         last_admitted_frame = frame;
         if (frame.evaluated && frame.validation_points > 0) best_overlap = std::max(best_overlap,frame.overlap);
         if (std::isfinite(frame.retrieval_score)) best_retrieval = std::max(best_retrieval,frame.retrieval_score);
@@ -301,7 +333,7 @@ class MatchFailureRecorder::Impl {
         std::uint64_t episode, captures, limited;
         { std::lock_guard<std::mutex> lock(mutex); latest=latest_observation; has_latest=have_observation;
           latest_wall=latest_observation_wall; episode=episode_id; captures=episode_captures; limited=episode_limited; }
-        std::ostringstream out; out << "{\"schema\":1,\"kind\":\"lightning_match_failure_collector\",\"pid\":" << getpid()
+        std::ostringstream out; out << "{\"schema\":1,\"kind\":" << Json(context.overlap_observation ? "tracking_overlap_observation_collector" : "lightning_match_failure_collector") << ",\"pid\":" << getpid()
             << ",\"session_start_wall_ns\":" << session << ",\"run_dir\":" << Json(context.run_dir)
             << ",\"running\":" << (running && !stopping ? "true" : "false")
             << ",\"received\":" << s.received << ",\"admitted\":" << s.admitted << ",\"saved\":" << s.saved
@@ -310,15 +342,20 @@ class MatchFailureRecorder::Impl {
             << ",\"rejected_disk\":" << s.rejected_disk << ",\"rejected_map\":" << s.rejected_map
             << ",\"writer_errors\":" << s.writer_errors << ",\"last_error\":" << Json(last_error)
             << ",\"protection_days\":" << options.protect_days << ",\"disk_mb\":" << options.disk_mb
-            << ",\"episode\":{\"id\":" << episode << ",\"admitted\":" << captures << ",\"limit\":" << EpisodeLimit
+             ;
+        if (context.overlap_observation) out << ",\"episode\":null";
+        else out << ",\"episode\":{\"id\":" << episode << ",\"admitted\":" << captures << ",\"limit\":" << EpisodeLimit
             << ",\"suppressed_at_limit\":" << limited << ",\"recovery_seconds\":" << Number(options.recovery_seconds)
-            << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "},\"latest_observation\":";
+            << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "}";
+        out << ",\"latest_observation\":";
         if (!has_latest) out << "null";
         else out << "{\"wall_ns\":" << latest_wall << ",\"sensor_stamp_ns\":" << latest.sensor_stamp_ns
             << ",\"phase\":" << Json(PhaseName(latest.phase)) << ",\"stage\":" << Json(StageName(latest.stage))
-            << ",\"rejection_reason\":" << Json(Detail(latest)) << ",\"candidate_available\":" << (latest.candidate_available ? "true" : "false")
+            << ",\"accepted\":" << (latest.accepted ? "true" : "false") << ObservationFields(latest)
+            << ",\"rejection_reason\":" << (context.overlap_observation ? "null" : Json(Detail(latest))) << ",\"candidate_available\":" << (latest.candidate_available ? "true" : "false")
             << ",\"candidate_id\":" << latest.candidate_id << ",\"retrieval_score\":" << Number(latest.retrieval_score)
             << ",\"map_evaluated\":" << (latest.evaluated ? "true" : "false") << ",\"map_overlap\":" << Number(latest.overlap)
+            << ",\"map_overlap_check_enabled\":" << (latest.overlap_check_enabled ? "true" : "false")
             << ",\"registration\":" << Registration(latest) << "}";
         out
             << ",\"writer_scheduling\":" << scheduling << "}\n";
@@ -333,9 +370,9 @@ class MatchFailureRecorder::Impl {
         // the same quota. Only explicitly owned, expired events may be removed.
         std::uint64_t used = DirectoryBytes(root);
         for (const auto& item : fs::directory_iterator(root)) {
-            if (item.is_symlink() || !item.is_directory() || item.path().filename().string().rfind("match_failure_", 0) != 0 ||
+            if (item.is_symlink() || !item.is_directory() || item.path().filename().string().rfind(Prefix(), 0) != 0 ||
                 fs::is_symlink(item.path()/"OWNER") ||
-                ReadFirstLine(item.path()/"OWNER") != Owner) continue;
+                ReadFirstLine(item.path()/"OWNER") != OwnerName()) continue;
             const auto bytes = DirectoryBytes(item.path());
             std::int64_t wall = 0;
             try { wall = std::stoll(ReadFirstLine(item.path()/"captured_wall_ns")); } catch (...) {}
@@ -375,14 +412,14 @@ class MatchFailureRecorder::Impl {
         std::uint64_t map_points = 0;
         for (std::size_t i = 0; any_pose && i < map.size; ++i) if (inside(map.point(map.data, i))) ++map_points;
         const std::uint64_t needed = slot.points.size()*24 + map_points*12 + context.config_snapshot.size() + 65536;
-        if (needed > options.event_mb*MiB) { ++map_rejected; last_error = "local map exceeds complete event budget; evidence was not truncated"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_MAP_BUDGET 地图超过完整事件预算，未采集且未截断证据 detail=" << last_error; return; }
-        if (!Reserve(needed)) { ++disk_rejected; last_error = "protected evidence/disk budget or minimum free space prevents new capture"; LOG(WARNING) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_DISK_BUDGET 证据保护或磁盘预算限制，无法新增采集 detail=" << last_error; return; }
+        if (needed > options.event_mb*MiB) { ++map_rejected; last_error = "local map exceeds complete event budget; evidence was not truncated"; LOG(WARNING) << Event("MAP_BUDGET") << " 地图超过完整事件预算，未采集且未截断证据 detail=" << last_error; return; }
+        if (!Reserve(needed)) { ++disk_rejected; last_error = "protected evidence/disk budget or minimum free space prevents new capture"; LOG(WARNING) << Event("DISK_BUDGET") << " 证据保护或磁盘预算限制，无法新增采集 detail=" << last_error; return; }
         const fs::path root(context.directory);
-        const std::string name = "match_failure_" + std::to_string(slot.wall) + "_" + std::to_string(getpid()) + "_" + std::to_string(slot.sequence);
+        const std::string name = std::string(Prefix()) + std::to_string(slot.wall) + "_" + std::to_string(getpid()) + "_" + std::to_string(slot.sequence);
         const fs::path temporary = root/("."+name+".partial"), final = root/name;
         if (!fs::create_directory(temporary)) throw std::runtime_error("duplicate evidence staging path");
         try {
-            WriteText(temporary/"OWNER", std::string(Owner)+"\n");
+            WriteText(temporary/"OWNER", OwnerName()+"\n");
             WriteText(temporary/"captured_wall_ns", std::to_string(slot.wall)+"\n");
             if (!context.config_snapshot.empty()) WriteText(temporary/"config.yaml",context.config_snapshot);
             Digest scan_hash, map_hash;
@@ -404,20 +441,23 @@ class MatchFailureRecorder::Impl {
               target.flush(); if (!target) throw std::runtime_error("map write failed"); }
             Sync(temporary/"scan.bin"); Sync(temporary/"map_local.bin");
             std::ostringstream s;
-            s << "{\"schema\":2,\"kind\":\"lightning_match_failure\",\"status\":\"complete\",\"wall_ns\":" << slot.wall
+            s << "{\"schema\":2,\"kind\":" << Json(context.overlap_observation ? "tracking_overlap_observation" : "lightning_match_failure") << ",\"status\":\"complete\",\"wall_ns\":" << slot.wall
               << ",\"sensor_stamp_ns\":" << f.sensor_stamp_ns << ",\"pid\":" << getpid() << ",\"sequence\":" << slot.sequence
               << ",\"session_start_wall_ns\":" << session << ",\"config_path\":" << Json(context.config_path) << ",\"run_dir\":" << Json(context.run_dir)
               << ",\"synthetic_fixture\":" << (context.synthetic_fixture ? "true" : "false")
               << ",\"phase\":" << Json(PhaseName(f.phase)) << ",\"stage\":" << Json(StageName(f.stage))
-              << ",\"rejection_reason\":" << Json(Detail(f)) << ",\"candidate_available\":" << (f.candidate_available ? "true" : "false")
+              << ",\"accepted\":" << (f.accepted ? "true" : "false") << ObservationFields(f)
+              << ",\"rejection_reason\":" << (context.overlap_observation ? "null" : Json(Detail(f))) << ",\"candidate_available\":" << (f.candidate_available ? "true" : "false")
               << ",\"candidate_id\":" << f.candidate_id << ",\"retrieval_score\":" << Number(f.retrieval_score)
               << ",\"refinement_backend\":" << Json(BackendName(f.refinement_backend))
               << ",\"query\":{\"points\":" << f.query_points << ",\"descriptors\":" << f.query_descriptors << ",\"search_ms\":" << Number(f.search_ms) << "}"
-              << ",\"episode\":{\"id\":" << slot.episode_id << ",\"index\":" << slot.episode_index << ",\"limit\":" << EpisodeLimit
+               ;
+            if (context.overlap_observation) s << ",\"episode\":null";
+            else s << ",\"episode\":{\"id\":" << slot.episode_id << ",\"index\":" << slot.episode_index << ",\"limit\":" << EpisodeLimit
               << ",\"selection\":" << Json(slot.selection == 0 ? "first_failure" : slot.selection == 1 ? "reason_changed" : "candidate_improved")
               << ",\"recovery_seconds\":" << Number(options.recovery_seconds)
-              << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "}"
-              << ",\"reason\":" << Json(ReasonName(f.reason)) << ",\"build\":{\"commit\":" << Json(context.build_commit) << ",\"dirty\":" << Json(context.build_dirty) << ",\"built_utc\":" << Json(context.build_utc) << "}"
+              << ",\"recovery_max_gap_sec\":" << Number(RecoveryMaxGapNs * 1e-9) << "}";
+            s << ",\"reason\":" << Json(context.overlap_observation ? "low_map_overlap" : ReasonName(f.reason)) << ",\"build\":{\"commit\":" << Json(context.build_commit) << ",\"dirty\":" << Json(context.build_dirty) << ",\"built_utc\":" << Json(context.build_utc) << "}"
               << ",\"poses\":{\"guess\":" << (f.pose_available[0] ? Array(f.guess) : "null") << ",\"ndt\":" << (f.pose_available[1] ? Array(f.ndt) : "null") << ",\"check\":" << (f.pose_available[2] ? Array(f.check) : "null") << "}"
               << ",\"pose_available\":{\"guess\":" << (f.pose_available[0] ? "true" : "false") << ",\"ndt\":" << (f.pose_available[1] ? "true" : "false") << ",\"check\":" << (f.pose_available[2] ? "true" : "false") << "}"
               << ",\"pose_frame\":\"internal_map_from_primary_lidar_at_scan_end\",\"map\":{\"path\":" << Json(context.map_path)
@@ -428,6 +468,7 @@ class MatchFailureRecorder::Impl {
               << ",\"scan\":{\"frame\":\"primary_lidar_at_scan_end\",\"source_points\":" << slot.source_points << ",\"saved_points\":" << slot.points.size() << ",\"validation_points\":" << slot.validation_points
               << ",\"display_downsampled\":" << (slot.downsampled ? "true" : "false") << ",\"record_bytes\":24,\"encoding\":\"little_endian_xyz_f32_lidar_u32_source_index_u32_validation_u32\"}"
               << ",\"criterion\":{\"evaluated\":" << (f.evaluated ? "true" : "false")
+              << ",\"overlap_check_enabled\":" << (f.overlap_check_enabled ? "true" : "false")
               << ",\"sample_replay_available\":" << (f.evaluated && f.validation_points > 0 ? "true" : "false")
               << ",\"sampling_stride\":" << f.validation_stride << ",\"points\":" << f.validation_points
               << ",\"overlap\":" << Number(f.overlap) << ",\"inside_xy\":" << Number(f.inside_xy) << ",\"inside_xyz\":" << Number(f.inside_xyz) << ",\"gravity_cos\":" << Number(f.gravity_cos)
@@ -445,8 +486,9 @@ class MatchFailureRecorder::Impl {
               << ",\"protection_days\":" << options.protect_days << ",\"writer_scheduling\":" << scheduling << "}\n";
             WriteText(temporary/"summary.json", s.str()); Sync(temporary,true);
             fs::rename(temporary, final); Sync(root,true); ++saved; last_error.clear();
-            LOG(INFO) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_SAVED saved=" << final
-                      << " sensor_stamp_ns=" << f.sensor_stamp_ns << " rejection_reason=" << Detail(f)
+            LOG(INFO) << Event("SAVED") << " saved=" << final
+                      << " sensor_stamp_ns=" << f.sensor_stamp_ns
+                      << (context.overlap_observation ? " observation_reason=low_map_overlap accepted=1" : std::string(" rejection_reason=")+Detail(f))
                       << " phase=" << PhaseName(f.phase) << " stage=" << StageName(f.stage)
                       << " overlap=" << f.overlap << " validation_points=" << slot.validation_points;
         } catch (...) {
@@ -470,12 +512,12 @@ class MatchFailureRecorder::Impl {
                     else if (stopping) break;
                 }
                 if (slot) {
-                    try { Save(*slot); } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_WRITE_FAILED 匹配失败证据写入失败 detail=" << e.what(); }
+                    try { Save(*slot); } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << Event("WRITE_FAILED") << " 匹配失败证据写入失败 detail=" << e.what(); }
                     std::lock_guard<std::mutex> lock(mutex); slot->points.clear(); slot->state = Slot::kEmpty;
                 }
                 Status();
             }
-        } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << "MATCH_FAILURE_CAPTURE event=MATCH_CAPTURE_WRITER_STOPPED 匹配失败证据写入线程已停止 detail=" << e.what(); }
+        } catch (const std::exception& e) { ++errors; last_error = e.what(); LOG(ERROR) << Event("WRITER_STOPPED") << " 匹配失败证据写入线程已停止 detail=" << e.what(); }
         running = false;
         try { Status(); } catch (...) { ++errors; }
     }

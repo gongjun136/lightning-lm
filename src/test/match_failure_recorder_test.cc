@@ -41,7 +41,8 @@ R::Context Context(const fs::path& root) {
 }
 R::Frame Frame(const Cloud& cloud) {
     R::Frame f; f.sensor_stamp_ns = 1793348973600000000LL; f.guess = Pose(1); f.ndt = Pose(2); f.check = Pose();
-    f.reason = R::Reason::kOverlap; f.evaluated = true; f.validation_stride = std::max<std::size_t>(1,(cloud.size()+1999)/2000);
+    f.reason = R::Reason::kOverlap; f.evaluated = true; f.overlap_check_enabled = true;
+    f.validation_stride = std::max<std::size_t>(1,(cloud.size()+1999)/2000);
     std::size_t finite = 0;
     for (auto p : cloud) if (std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z)) {
         if (finite % f.validation_stride == 0) ++f.validation_points;
@@ -89,6 +90,7 @@ fs::path ExactSelection(const fs::path& root, bool numerical_failure = false) {
     const auto events = Events(context.directory); Check(events.size()==1,"event count");
     const auto path = events.front(); const auto metadata = YAML::LoadFile((path/"summary.json").string());
     Check(metadata["status"].as<std::string>()=="complete","partial exposed");
+    Check(metadata["criterion"]["overlap_check_enabled"].as<bool>(),"actual overlap gate missing from capture");
     Check(metadata["run_dir"].as<std::string>()==root.string(),"run identity missing");
     Check(metadata["rejection_reason"].as<std::string>() == (numerical_failure ? "ndt_numerical_failure" : "ndt_not_converged"),"specific rejection reason lost");
     const auto registration = metadata["registration"];
@@ -284,6 +286,61 @@ void ZeroSamplesAndPartialQuota() {
     Check(limited.GetStats().rejected_disk==1 && fs::exists(partial/"unknown.bin"),"partial bypassed quota or was deleted");
 }
 
+void ObservationStream() {
+    Fixture f;
+    Cloud cloud{{0,0,0,0},{.1f,0,0,1},{0,.1f,0,2}};
+    auto failure_context = Context(f.root);
+    auto observation_context = failure_context;
+    observation_context.directory = (f.root/"overlap_observations").string();
+    observation_context.overlap_observation = true;
+    R failures(Options(),failure_context,View(cloud));
+    R observations(Options(),observation_context,View(cloud));
+    Check(failures.Start() && observations.Start(),"independent streams start");
+    auto observed = Frame(cloud);
+    observed.accepted = true; observed.overlap_check_enabled = false;
+    observed.overlap = .59; observed.min_overlap = .6;
+    observed.observation_streak_frames = 3; observed.observation_streak_seconds = .2;
+    observed.observation_total_low_frames = 12; observed.observation_capture_suppressed = 11;
+    Check(observations.Capture(View(cloud),observed),"first accepted observation missing");
+    for (int i=0;i<20;++i) Check(!observations.Capture(View(cloud),observed),"observation cooldown bypassed");
+    Check(!failures.Capture(View(cloud),observed),"accepted observation leaked into failure stream");
+    auto failed=observed; failed.accepted=false; failed.overlap_check_enabled=true;
+    Check(failures.Capture(View(cloud),failed),"observations affected failure admission");
+    Check(!observations.Capture(View(cloud),failed),"rejected frame entered observation stream");
+    observations.ObserveTracking(false); observations.ObserveTracking(true);
+    WaitSaved(observations,1); WaitSaved(failures,1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+    Check(observations.Capture(View(cloud),observed),"same low overlap not periodically observed");
+    Check(!failures.Capture(View(cloud),failed),"failure episode behavior changed");
+    observations.Stop(); failures.Stop();
+    Check(observations.GetStats().saved==2 && failures.GetStats().saved==1,"independent counters mixed");
+    Check(Events(observation_context.directory).empty(),"observation classified as failure snapshot");
+    unsigned packages=0;
+    for (const auto& entry:fs::directory_iterator(observation_context.directory)) {
+        if (!entry.is_directory()) continue;
+        Check(entry.path().filename().string().rfind("overlap_observation_",0)==0,"observation prefix");
+        const auto meta=YAML::LoadFile((entry.path()/"summary.json").string());
+        Check(meta["kind"].as<std::string>()=="tracking_overlap_observation" && meta["accepted"].as<bool>(),"accepted observation identity");
+        Check(meta["rejection_reason"].IsNull() && meta["episode"].IsNull(),"observation has failure semantics");
+        Check(meta["observation"]["streak_frames"].as<int>()==3 && meta["observation"]["capture_suppressed"].as<int>()==11,"observation evidence counters lost");
+        Check(meta["criterion"]["sample_replay_available"].as<bool>(),"observation exact sample unavailable");
+        ++packages;
+    }
+    Check(packages==2,"periodic observation package count");
+    const auto status=YAML::LoadFile((fs::path(observation_context.directory)/"collector_status.json").string());
+    Check(status["kind"].as<std::string>()=="tracking_overlap_observation_collector","collector identity");
+    Check(status["suppressed"].as<int>()>=20 && status["episode"].IsNull(),"collector cooldown evidence");
+
+    Fixture quota;
+    auto context=Context(quota.root); context.overlap_observation=true;
+    auto options=Options(); options.disk_mb=options.event_mb=1;
+    FakeOwned(context.directory,"match_failure_foreign",Wall()-9LL*86400*1000000000,MiB);
+    R limited(options,context,View(cloud)); Check(limited.Start(),"observation quota start");
+    Check(limited.Capture(View(cloud),observed),"observation queue admission"); limited.Stop();
+    Check(limited.GetStats().rejected_disk==1 && fs::exists(fs::path(context.directory)/"match_failure_foreign/data"),
+          "observation quota deleted foreign failure evidence or exceeded budget");
+}
+
 fs::path ExportFixture(const fs::path& root) {
     // Synthetic two static walls plus a central object absent from the map.
     Cloud map, scan;
@@ -311,7 +368,7 @@ int main(int argc,char** argv) {
             return 0;
         }
         Fixture f, numerical; ExactSelection(f.root); ExactSelection(numerical.root, true);
-        ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota(); EpisodeAndUnavailable(); FullGlobalSamples();
+        ProtectionAndRetention(); OversizeMapAndQueue(); ValidationAndLock(); ZeroSamplesAndPartialQuota(); EpisodeAndUnavailable(); FullGlobalSamples(); ObservationStream();
         std::cout<<"match_failure_recorder_test passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

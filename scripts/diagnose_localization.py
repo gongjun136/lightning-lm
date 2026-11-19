@@ -18,6 +18,7 @@ import time
 
 import compute_profile_report
 import diagnostic_summary
+from overlap_diagnostics import describe_overlap
 
 from localization_log_events import any_event, has_event, BOUNDARY_EVENTS, CONTEXT_EVENTS
 
@@ -495,6 +496,9 @@ def matching_thresholds(config):
     if overlap_path not in scalars:
         overlap_path = ('relocalization', 'map_min_overlap_ratio')
     return dict(source=str(config), backend=backend,
+                map_overlap_check_enabled={'true': True, 'yes': True, 'on': True, '1': True,
+                                           'false': False, 'no': False, 'off': False, '0': False}.get(
+                    str(scalars.get(('lidar_loc', 'map_overlap_check_enabled'), '')).lower()),
                 map_min_overlap_ratio=number(scalars.get(overlap_path)) if backend else None,
                 overlap_key='.'.join(overlap_path),
                 min_tracking_confidence=number(scalars.get(('lidar_loc', 'min_tracking_confidence'),
@@ -614,6 +618,8 @@ def log_rows(path, budget, warnings, reference=None, context=None,
                     config.update(fields(line))
                 if 'LOCALIZATION_DIAGNOSTIC_BUILD' in line:
                     config['_build'] = fields(line)
+                if 'event=LOC_MAP_CONSISTENCY_CONFIG ' in line:
+                    config['_map_overlap_policy'] = dict(re.findall(r'([A-Za-z_]\w*)=([^\s,]+)', line))
                 if 'event=LOC_TUM_RECORDING ' in line:
                     config['_trajectory'] = fields(line)
             size = os.fstat(f.fileno()).st_size
@@ -1154,8 +1160,11 @@ def matching_rejection(clue):
     reason = values.get('rejection_reason')
     stamp = re.search(r'\bsensor_stamp_ns=(\d+)', clue['text'])
     score = re.search(r'\bscore:\s*([^\s,]+)', clue['text'])
-    return dict(reason_code=reason, title=MATCH_REJECTION_TITLES.get(reason,
-                    '未记录具体拒绝码，不能仅凭迭代次数确认未收敛' if reason is None else '未识别拒绝码，保留原始记录'),
+    title = MATCH_REJECTION_TITLES.get(reason,
+                '未记录具体拒绝码，不能仅凭迭代次数确认未收敛' if reason is None else '未识别拒绝码，保留原始记录')
+    if reason == 'map_overlap' and values.get('map_overlap_check_enabled') == 0:
+        title = '证据矛盾：重合率检查已关闭，但记录的拒绝项仍为 map_overlap'
+    return dict(reason_code=reason, title=title,
                 time=clue['time'], wall_ns=clue.get('wall_ns'), source=clue.get('source'),
                 sensor_stamp_ns=int(stamp[1]) if stamp else None,
                 confidence=number(score[1]) if score else None,
@@ -1164,6 +1173,7 @@ def matching_rejection(clue):
                           'ndt_budget_exhausted', 'ndt_numerical_failure', 'ndt_transform_finite', 'ndt_confidence_finite',
                           'raw_odom_valid', 'raw_odom_delta', 'raw_odom_limit',
                           'consecutive_rejected_matches', 'lost_frame_threshold',
+                          'map_overlap_check_enabled', 'map_overlap', 'map_min_overlap',
                           'snapshot_recorder_present', 'snapshot_capture_admitted') if k in values},
                 snapshots=[], relation='故障起点附近的实际匹配拒绝；不等于物理根因')
 
@@ -1222,6 +1232,11 @@ def matching_summary(clue, matching, prefix='首次失锁前匹配记录'):
     text = f'{prefix}: {clue["time"]}，map_checked={values.get("map_checked", "未知")}，map_overlap={values.get("map_overlap", "未知")}，raw_odom_valid={values.get("raw_odom_valid", "未知")}。'
     rejection = matching_rejection(clue)
     text += ' 拒绝判据: ' + rejection['title'] + ('（' + str(rejection['reason_code']) + '）' if rejection['reason_code'] else '') + '。'
+    overlap_enabled = values.get('map_overlap_check_enabled')
+    if overlap_enabled == 0:
+        text += ' 地图重合率检查已关闭；重合率仅统计，不参与拒绝。'
+    elif overlap_enabled == 1:
+        text += ' 地图重合率检查已开启。'
     if values.get('ndt_metrics_available') == 1:
         text += (f' NDT 收敛={values.get("ndt_converged", "未知")}，迭代={values.get("iterations", "未知")}/'
                  f'{values.get("ndt_max_iterations", "未知")}，epsilon={values.get("ndt_epsilon", "未知")}；'
@@ -1247,6 +1262,8 @@ def matching_summary(clue, matching, prefix='首次失锁前匹配记录'):
     for metric, limit in (('map_inside_xy', 'map_min_inside_xy'),
                           ('map_overlap', 'map_min_overlap'),
                           ('map_gravity_cos', 'map_min_gravity_cos')):
+        if metric == 'map_overlap' and overlap_enabled == 0:
+            continue
         value, threshold = number(values.get(metric)), number(values.get(limit))
         basis = '运行日志判据'
         if threshold is None and metric == 'map_overlap' and limit not in values:
@@ -1617,6 +1634,47 @@ def runtime_contract(logged_limits, warnings):
     return dict(status=status, expected_contract=expected, compiled=built)
 
 
+def overlap_observation_report(startup, context, run, process):
+    """独立观察证据；不加入任何故障判据或次数。"""
+    policy_row = {'map_overlap_check_enabled': startup.get('tracking_map_overlap_check_enabled')}
+    state = describe_overlap(policy_row)['gate']
+    policy = dict(map_overlap_check_enabled={'enabled': True, 'disabled': False}.get(state),
+                  map_min_overlap_ratio=number(startup.get('map_min_overlap')),
+                  map_consistency_enabled=startup.get('map_consistency_enabled'), source='startup_log' if startup else 'unknown')
+    records = []
+    for clue in context:
+        if not has_event(clue['text'], 'LOC_TRACKING_LOW_OVERLAP'):
+            continue
+        # 新观察字段保留原始字符串，避免大计数器经过浮点转换丢失精度。
+        row = dict(re.findall(r'([A-Za-z_]\w*)=([^\s,]+)', clue['text']))
+        records.append(dict(time=clue.get('time'), source=clue.get('source'), evidence=describe_overlap(row)))
+    collector = {'status': 'unavailable', 'counters': {}}
+    roots = [run / 'overlap_observations']
+    if process and process.get('match_failure_root'):
+        roots.insert(0, Path(process['match_failure_root']).parent / 'overlap_observations')
+    for root in roots:
+        path = root / 'collector_status.json'
+        try:
+            if not path.is_file() or path.stat().st_size > MIB:
+                continue
+            value = json.loads(read_text(path))
+            if value.get('kind') != 'tracking_overlap_observation_collector' or value.get('schema') != 1:
+                continue
+            if process and value.get('pid') != process.get('pid'):
+                continue
+            keys = ('received','admitted','saved','suppressed','dropped_busy','dropped_queue',
+                    'dropped_oversize','rejected_disk','rejected_map','writer_errors')
+            counters = {k: value[k] for k in keys if type(value.get(k)) is int and value[k] >= 0}
+            collector = dict(status='available', source=str(path), running=value.get('running'),
+                             counters=counters, disk_mb=value.get('disk_mb'), latest=value.get('latest_observation'))
+            break
+        except (OSError, ValueError, TypeError):
+            continue
+    return dict(policy=policy, latest=records[-1] if records else None, records=records[-12:],
+                retained_log_count=len(records), collector=collector,
+                limitation='观察行已限频，不是逐帧记录；未保存数和写入丢弃数需要一并查看。无观察日志不等于已证明重合率正常。')
+
+
 def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
     warnings = list(warnings)
     summary = summary_at(path) if path.is_dir() else {}
@@ -1813,6 +1871,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                        'lidar_frame_age_sec', 'lidar_frame_recovery_count')}, _wall_ns=row_ns(latest)),
                 latest_age_sec=age, current_findings=current_findings, runtime_build=build,
                 match_snapshots=snapshots,
+                overlap_observations=overlap_observation_report(logged_limits.get('_map_overlap_policy', {}), context, run, process),
                 compute_profile=compute_profile, input_timing=input_timing, motion_evidence=motion_evidence(latest),
                 trajectory_recording=dict(logged_limits.get('_trajectory', {}),
                                           final=logged_limits.get('_trajectory_final', {})),
@@ -1888,6 +1947,15 @@ def render(report, color=False, all_events=False):
             lines.append('  时序证据存在丢弃或序号缺口: ' + json.dumps(dict(runtime=timing['lost_by_topic'], retained=timing['truncated_events'], sequence_gaps=timing['event_sequence_gaps'])))
     else:
         lines.append('上游输入时序: 当前日志缺少配对间隔证据，无法仅凭接收龄期区分源缺口和延迟交付。')
+    observation = report.get('overlap_observations', {})
+    if observation:
+        lines.append('低重合率观察（独立于故障判据）: ' + observation.get('limitation', ''))
+        latest_observation = observation.get('latest') or {}
+        if latest_observation:
+            lines.append('  最近观察记录时间: ' + str(latest_observation.get('time')))
+            info = latest_observation.get('evidence', {})
+            lines.extend('  ' + line for line in info.get('lines', []) + info.get('warnings', []))
+        lines.append('  观察采集器: ' + json.dumps(observation.get('collector', {}), ensure_ascii=False, allow_nan=False))
     snapshots = report.get('match_snapshots', {})
     if snapshots.get('records'):
         lines.append('匹配快照保存记录: ' + str(snapshots['retained_saved_logs']) + ' 条（已读取日志范围）')

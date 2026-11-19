@@ -29,6 +29,7 @@ LEGACY_EVENTS = {
 }
 EVENT = re.compile(r'(?<!\S)event=([A-Z][A-Z0-9_]*)(?=[\s,]|$)')
 CONTEXT_EVENTS = (
+    'LOC_TRACKING_LOW_OVERLAP', 'OVERLAP_OBSERVATION_SAVED',
     'LOC_INITIAL_POSE_UNSET', 'LOC_MATCH_FAILED', 'LOC_INIT_MATCH_FAILED', 'MATCH_CAPTURE_SAVED', 'LOC_OUTPUT_DISABLED',
     'LOC_OUTPUT_STOPPED', 'LOC_OUTPUT_RECOVERED', 'LOC_SENSOR_QUEUE_LAG',
     'LOC_SENSOR_QUEUE_RECOVERED', 'LIO_STALE_CORRECTION_DROPPED',
@@ -46,11 +47,11 @@ def has_event(text, code):
     explicit = EVENT.search(text)
     if explicit:
         return explicit[1] == code
-    return all(marker in text for marker in LEGACY_EVENTS[code])
+    return code in LEGACY_EVENTS and all(marker in text for marker in LEGACY_EVENTS[code])
 
 
 def any_event(text, codes):
     explicit = EVENT.search(text)
     if explicit:
         return explicit[1] in codes
-    return any(all(marker in text for marker in LEGACY_EVENTS[code]) for code in codes)
+    return any(code in LEGACY_EVENTS and all(marker in text for marker in LEGACY_EVENTS[code]) for code in codes)

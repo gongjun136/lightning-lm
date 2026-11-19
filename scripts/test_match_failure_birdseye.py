@@ -40,6 +40,13 @@ def fixture(root, run=None, wall_ns=1000, pid=42):
 
 
 class BirdseyeTest(unittest.TestCase):
+    def test_overlap_gate_note_distinguishes_legacy_and_disabled(self):
+        self.assertIn('未记录', b.overlap_gate_note({}))
+        self.assertIn('已关闭', b.overlap_gate_note({'overlap_check_enabled': False}))
+        self.assertIn('已开启', b.overlap_gate_note({'overlap_check_enabled': True}))
+        with self.assertRaises(ValueError):
+            b.overlap_gate_note({'overlap_check_enabled': 'false'})
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -72,6 +79,24 @@ class BirdseyeTest(unittest.TestCase):
         self.assertFalse(b.is_evidence(self.evidence))
         self.assertEqual(b.render_evidence(self.evidence)['status'], 'unavailable')
         self.assertFalse((self.evidence / 'birdseye').exists())
+
+    def test_accepted_observation_renders_but_is_not_a_failure_candidate(self):
+        self.dependencies()
+        self.summary.update(schema=2, kind=b.OBSERVATION_KIND, accepted=True,
+                            rejection_reason=None, observation_reason='low_map_overlap', reason='low_map_overlap',
+                            candidate_available=True, pose_available={name:True for name in b.POSES})
+        self.summary['map']['coverage']='all_possible_neighbors_for_saved_scan_and_available_poses'
+        self.summary['criterion']['overlap_check_enabled']=False
+        self.save()
+        self.assertFalse(b.is_evidence(self.evidence))
+        result=b.render_evidence(self.evidence)
+        self.assertEqual(result['status'],'generated')
+        self.assertTrue(result['accepted'])
+        self.assertEqual(result['evidence_kind'],b.OBSERVATION_KIND)
+        self.assertIn('低重合率观察（非故障）',(self.evidence/'birdseye/index.html').read_text(encoding='utf-8'))
+        self.summary['accepted']=False
+        self.save()
+        self.assertEqual(b.render_evidence(self.evidence)['status'],'unavailable')
 
     def test_path_escape_rejected_before_import_or_write(self):
         self.summary['files']['scan'] = '../scan.bin'

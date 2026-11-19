@@ -13,13 +13,24 @@ import tempfile
 
 SCHEMA = 2
 KIND = 'lightning_match_failure'
-RENDER_VERSION = 4
+OBSERVATION_KIND = 'tracking_overlap_observation'
+RENDER_VERSION = 5
 MAX_SUMMARY_BYTES = 1024 * 1024
 MAX_SCAN_POINTS = 100000
 MAX_MAP_BYTES = 64 * 1024 * 1024
 MAX_CANDIDATES = 256
 POSES = ('guess', 'ndt', 'check')
 NOTE = 'Red means no map neighbour within the 3D distance threshold; it does not identify a dynamic object.'
+
+
+def overlap_gate_note(criterion):
+    value = criterion.get('overlap_check_enabled')
+    if value is None:
+        return '旧证据未记录地图重合率检查开关，按当时实际拒绝原因解释。'
+    if not isinstance(value, bool):
+        raise ValueError('地图重合率检查开关必须是布尔值')
+    return ('地图重合率检查已开启，记录的门槛参与拒绝。' if value else
+            '地图重合率检查已关闭；重合率和红色点仅作统计，不表示该项触发故障。')
 
 
 def read_summary(directory):
@@ -33,8 +44,10 @@ def read_summary(directory):
     def invalid(value):
         raise ValueError('nonfinite JSON value: ' + value)
     value = json.loads(path.read_text(encoding='utf-8'), parse_constant=invalid)
-    if not isinstance(value, dict) or value.get('kind') != KIND or value.get('schema') not in (1, SCHEMA):
+    if not isinstance(value, dict) or value.get('kind') not in (KIND, OBSERVATION_KIND) or value.get('schema') not in (1, SCHEMA):
         raise ValueError('unsupported match-failure evidence schema')
+    if value.get('kind') == OBSERVATION_KIND and (value.get('accepted') is not True or value.get('criterion', {}).get('overlap_check_enabled') is not False):
+        raise ValueError('低重合率观察证据的接受/开关状态矛盾')
     if value.get('status') != 'complete':
         raise ValueError('match-failure evidence is not complete')
     return value
@@ -244,6 +257,7 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
             raise ValueError('invalid original map bounds')
         comparison = compare(scan, cloud, validation, poses, distance, np, tree_type, bounds) if poses else {}
         evaluated = summary['criterion'].get('evaluated') is True
+        gate_note = overlap_gate_note(summary['criterion'])
         replay = evaluated and bool(validation.any())
         original = _finite(summary['criterion'].get('overlap'), 'recorded overlap') if evaluated else None
         exact = (abs(comparison['check']['overlap'] - original) <= max(1e-6, 0.01 / int(validation.sum()))) if replay else None
@@ -286,6 +300,9 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
                                       renderer_version=RENDER_VERSION, distance_dimension=3 if poses else None, map_coverage=summary['map']['coverage'],
                                       verified_file_sha256=hashes, score_arithmetic='double_transform_float32_query_and_squared_distance'),
                       criterion=summary['criterion'], original_check_overlap=original,
+                      overlap_check_enabled=summary['criterion'].get('overlap_check_enabled'),
+                      overlap_gate_note=gate_note, evidence_kind=summary['kind'], accepted=summary.get('accepted'),
+                      observation=summary.get('observation'),
                       check_score_matches_recorded=exact, comparison={name: {k: v for k, v in values.items() if k not in ('xyz', 'hit')}
                                                                   for name, values in comparison.items()},
                       display=dict(z_min=z_min, z_max=z_max, height_filter_affects_score=False,
@@ -351,6 +368,8 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
                           f'WARNING: recorded check {original:.4%}, recomputation differs' if replay else
                           'No original validation sample: scores use saved display sample only')
             fixture_note = 'SYNTHETIC TEST FIXTURE | ' if summary.get('synthetic_fixture') else ''
+            if summary['kind'] == OBSERVATION_KIND:
+                fixture_note += 'ACCEPTED LOW OVERLAP OBSERVATION | '
             threshold_note = f'3D NN threshold {distance:g} m | ' if poses else ''
             fig.suptitle(f'{fixture_note}{result["phase"]}: {result["stage"]} | sensor stamp {summary.get("sensor_stamp_ns")}\n'
                          f'{threshold_note}{score_note}\n{result["warning"]}', fontsize=11, y=.98)
@@ -363,8 +382,8 @@ def render_evidence(directory, output_dir=None, z_min=None, z_max=None):
         payload = json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False)
         document = ('<!doctype html><meta charset="utf-8"><title>Match failure comparison</title>'
                     '<style>body{font:16px system-ui;margin:24px;color:#203040}img{width:100%;height:auto}pre{white-space:pre-wrap}</style>'
-                    '<h1>' + fixture_note + 'Localization failure evidence</h1><p>' + html.escape(result['warning']) + '</p><p>' + html.escape(score_note) + '</p>'
-                    '<p>' + html.escape(str(display_reason)) + '</p>'
+                    '<h1>' + ('已接受 · 低重合率观察（非故障）' if summary['kind'] == OBSERVATION_KIND else fixture_note + 'Localization failure evidence') + '</h1><p>' + html.escape(result['warning']) + '</p><p>' + html.escape(score_note) + '</p>'
+                    '<p>' + html.escape(str(display_reason)) + '</p><p>' + html.escape(gate_note) + '</p>'
                     '<p>Height filtering affects display only. Reported scores use all original validation points and 3D distances.</p>'
                     '<img alt="' + ('Map and scan at available candidate poses' if poses else 'Sensor-frame scan; no map pose available') +
                     '" src="data:image/png;base64,' + base64.b64encode(png).decode() + '">'

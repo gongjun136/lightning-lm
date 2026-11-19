@@ -27,6 +27,7 @@ SOURCES = (
     'src/core/localization/localization_dtc_monitor.cc',
     'src/core/localization/localization_dtc_monitor.h',
     'src/utils/translation_evidence.h',
+    'src/utils/tracking_overlap_policy.h',
     'src/core/localization/localization_result.h',
     'src/core/localization/localization.cpp',
     'src/core/system/sany_localization_output.cc',
@@ -44,12 +45,16 @@ SOURCES = (
     'scripts/diagnose_localization.py',
     'scripts/diagnostic_summary.py',
     'scripts/translation_diagnostics.py',
+    'scripts/overlap_diagnostics.py',
+    'scripts/match_failure_birdseye.py',
     'scripts/localization_log_events.py',
     'scripts/analyze_localization_health_log.py',
     'scripts/run_sany_lidar_loc.sh',
     'src/core/system/loc_system.cc',
     'src/core/system/loc_system.h',
     'config/sany/localization.yaml#diagnostics',
+    'config/sany/localization.yaml#relocalization',
+    'config/sany/localization.yaml#lidar_loc',
     'workspace.repos',
 )
 
@@ -66,9 +71,9 @@ def snapshot(root=ROOT):
         elif section == 'DtcInitialization':
             start = text.index('    const YAML::Node dtc = root["diagnostics"];')
             text = text[start:text.index('    const auto dtc_qos = ', start)]
-        elif section == 'diagnostics':
+        elif section in ('diagnostics', 'relocalization', 'lidar_loc'):
             lines = text.splitlines(keepends=True)
-            start = next(i for i, line in enumerate(lines) if line.startswith('diagnostics:'))
+            start = next(i for i, line in enumerate(lines) if line.startswith(section + ':'))
             end = next((i for i in range(start + 1, len(lines))
                         if lines[i].strip() and not lines[i][0].isspace() and not lines[i].startswith('#')), len(lines))
             text = ''.join(lines[start:end])

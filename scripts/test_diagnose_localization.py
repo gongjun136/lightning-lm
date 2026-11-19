@@ -18,6 +18,38 @@ import check_diagnostic_contract as contract
 
 
 class DiagnosisTest(unittest.TestCase):
+    def test_map_overlap_switch_controls_diagnostic_attribution(self):
+        original = ('rejection_reason=map_gravity map_checked=1 map_points=100 '
+                    'map_overlap=0.59 map_min_overlap=0.6 map_inside_xy=1 map_min_inside_xy=0.9 '
+                    'map_gravity_cos=0.90 map_min_gravity_cos=0.95')
+        disabled = dict(time='t', text=original+' map_overlap_check_enabled=0')
+        text, _ = d.matching_summary(disabled, {})
+        self.assertIn('重合率检查已关闭', text)
+        self.assertIn('已证实未满足项: map_gravity_cos', text)
+        self.assertNotIn('运行日志判据: map_overlap=', text)
+        enabled = dict(time='t', text=original+' map_overlap_check_enabled=1')
+        self.assertIn('map_overlap、map_gravity_cos', d.matching_summary(enabled, {})[0])
+        # 旧日志没有实际开关字段；不能用新配置默认值把历史拒绝改写为已关闭。
+        legacy = dict(time='t', text=original)
+        text, _ = d.matching_summary(legacy, {'map_overlap_check_enabled': False})
+        self.assertIn('运行日志判据: map_overlap=0.59 < map_min_overlap=0.6', text)
+        self.assertNotIn('重合率检查已关闭', text)
+        contradictory = dict(time='t', text=original.replace('map_gravity ', 'map_overlap ')+' map_overlap_check_enabled=0')
+        detail = d.matching_rejection(contradictory)
+        self.assertIn('证据矛盾', detail['title'])
+        self.assertEqual(detail['evidence']['map_overlap_check_enabled'], 0)
+
+    def test_map_overlap_config_preserves_missing_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'config.yaml'
+            for value, expected in [('', None), ('  map_overlap_check_enabled: false\n', False),
+                                    ('  map_overlap_check_enabled: true\n', True)]:
+                path.write_text('lidar_loc:\n'+value+'relocalization:\n  backend: solid_kiss\n'+
+                                '  solid_kiss:\n    map_min_overlap_ratio: 0.6\n', encoding='utf-8')
+                result = d.matching_thresholds(path)
+                self.assertIs(result['map_overlap_check_enabled'], expected)
+                self.assertEqual(result['map_min_overlap_ratio'], .6)
+
     def test_match_failure_grace_preserves_rejection(self):
         fixtures = [{'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_rejected_grace_suppressed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'partial_radar_suppressed': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.25', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed'}, {'fields': {'raw': 4, 'selected': 4, 'published': 4, 'match_valid': 0, 'output_gate_open': 0}, 'expected': 'None -> existing classifier -> match_rejected_unconfirmed (old logs without the new fields)'}, {'fields': {'raw': 0, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': 'inf', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (accepted, unchanged)'}, {'fields': {'raw': -9, 'selected': -9, 'published': -9, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 0, 'match_failure_grace_age_sec': '0.4', 'match_failure_grace_suppressed': 0}, 'expected': 'None -> existing classifier (confirmed loss, unchanged)'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 1, 'output_gate_open': 1, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.05', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}, {'fields': {'raw': 4, 'selected': 0, 'published': 0, 'match_valid': 0, 'output_gate_open': 0, 'match_failure_grace_active': 1, 'match_failure_grace_age_sec': '0.2', 'match_failure_grace_suppressed': 1}, 'expected': 'match_failure_grace_inconsistent'}]
         aliases = {'raw': 'raw_runstate', 'selected': 'selected_runstate',

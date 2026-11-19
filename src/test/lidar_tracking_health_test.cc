@@ -26,10 +26,12 @@ struct LidarLocRegressionAccess {
         loc.relocalization_kdtrees_.push_back(std::move(tree));
     }
     static bool MapAgrees(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
-        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000).passed;
+        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000,
+                                                       diagnostics::OverlapGate::kEnforce).passed;
     }
     static const char* MapReason(LidarLoc& loc, const CloudPtr& scan, const SE3& pose) {
-        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000).reason;
+        return loc.EvaluateRelocalizationMapConsistency(scan, pose, 0, 0.75, 2000,
+                                                       diagnostics::OverlapGate::kEnforce).reason;
     }
     static bool RawOdomAgrees(LidarLoc& loc, const SE3& pose) {
         double delta = 0.0;

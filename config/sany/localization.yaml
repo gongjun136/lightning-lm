@@ -269,6 +269,16 @@ loop_closing:
 diagnostics:
   # Independent matching evidence; protected packages are never evicted to make
   # room for new ones. A full archive reports skipped captures instead.
+  # 已接受低重合率帧的独立观察取证；不改变故障判定，写盘在低优先级后台线程。
+  overlap_observation_capture:
+    enabled: true
+    cooldown_seconds: 30.0
+    disk_mb: 256
+    min_free_mb: 2048
+    event_mb: 64
+    write_mb_per_second: 2.0
+    max_scan_points: 50000
+    protect_days: 7
   match_failure_capture:
     enabled: true
     cooldown_seconds: 30.0  # Legacy key; continuous failures now use a three-package episode limit.
@@ -362,6 +372,8 @@ lidar_loc:
   init_with_fp: false
   min_init_confidence: 0.5
   min_tracking_confidence: 0.4
+  # 只关闭正常跟踪的重合率拒绝；初始化和全局重定位仍执行原检查。
+  map_overlap_check_enabled: false
   update_dynamic_cloud: false
   update_err_h: 0.2
   update_err_v: 0.2
