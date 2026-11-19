@@ -345,17 +345,21 @@ class PurityTest(unittest.TestCase):
         self.assertIn(chr(27), ds.render_summary(live(), color=True))
 
     def test_module_is_pure_computation(self):
-        with open(ds.__file__, encoding='utf-8') as handle:
-            tree = ast.parse(handle.read())
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split('.')[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                imported.add((node.module or '').split('.')[0])
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                self.assertNotIn(node.func.id, ('open', 'exec', 'eval', 'compile', '__import__'))
-        self.assertTrue(imported <= {'json', 'math'}, imported)
+        import translation_diagnostics as td
+        for module, allowed in ((ds, {'json', 'math', 'translation_diagnostics'}),
+                                (td, {'__future__', 'math', 'collections', 'typing'})):
+            with self.subTest(module=module.__name__):
+                with open(module.__file__, encoding='utf-8') as handle:
+                    tree = ast.parse(handle.read())
+                imported = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported.update(alias.name.split('.')[0] for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom):
+                        imported.add((node.module or '').split('.')[0])
+                    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                        self.assertNotIn(node.func.id, ('open', 'exec', 'eval', 'compile', '__import__'))
+                self.assertTrue(imported <= allowed, imported)
 
 
 class ColorTest(unittest.TestCase):

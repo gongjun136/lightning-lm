@@ -7,6 +7,7 @@
 #include <mutex>
 #include "common/eigen_types.h"
 #include "utils/lidar_frame_watchdog.h"
+#include "utils/translation_evidence.h"
 
 namespace lightning::loc::dtc {
 using Clock = std::chrono::steady_clock;
@@ -71,6 +72,8 @@ struct Snapshot {
     double valid_match_age_sec = std::numeric_limits<double>::infinity();
     bool output_continuous = false;  ///< Advancing output over the configured motion window without a timeout/epoch jump.
     double error_longitudinal_m = 0, error_lateral_m = 0, error_yaw_rad = 0;
+    bool translation_failure_latched = false;  ///< 仅归因平移锁存，不代表航向或协方差锁存。
+    motion_diagnostics::TranslationEvidence translation_evidence;
     YawEvidence yaw_evidence;  ///< The comparison selected by the adjacent/window rule, rather than a different maximum residual.
     bool covariance_valid = false, pose_unobservable = false;
     double major_sigma_m = std::numeric_limits<double>::quiet_NaN();
@@ -112,6 +115,7 @@ class Monitor {
     bool yaw_pass_seen_ = false;
     Clock::time_point yaw_pass_time_{};
     Snapshot snapshot_;
+    motion_diagnostics::TranslationEvidence last_translation_failure_;  ///< 保留原序号和源时间。
 };
 // Severe > localization > lidar > normal. An explicit radar-only override
 // suppresses the lidar branch (including UNKNOWN), never the first two branches.

@@ -449,7 +449,9 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
         try {
             Prepare(*event);
             csv.open(event->path / "timeline.csv");
-            csv << "relative_sec,wall_ns,raw,selected,published,strict,imu_callback_age,lidar_callback_age,stamp_advance_age,prepared_age,publish_begin_age,publish_end_age,publishing,pipeline_age,sensor_pending,localization_pending,high_frequency_pending,sensor_dropped,localization_dropped,sensor_lag,match_age,match_stale,output_gate,missing_lidars,lio_ms,major_sigma,lateral_sigma,yaw_sigma,covariance_valid,unobservable,collector_dropped,observed_stage,consistency,uncertainty,translation_condition,yaw_condition,confirmed_failure,unknown_tolerated,optional_can_unavailable,output_stale,localization_lost,radar_all_failed,non_sync_fault,non_sync_all_pass,bounded_policy_enabled,time_sync_fault_mask,bounded_sync_warning_mask,error_x,error_y,error_yaw_rad,output_age_sec,imu_arrival_age_sec,imu_stamp_lag_sec,can_arrival_age_sec,can_stamp_lag_sec,yaw_pass_age_sec,policy_version,startup_pending,startup_expired,startup_age_sec,confirmed_tracking_lost,output_gate_open,latest_match_valid,valid_match_age_sec,output_continuous,localization_healthy_for_degraded,partial_radar_suppressed,partial_radar_suppression_reason,lidar_frame_started,lidar_frame_seen,lidar_frame_warning,lidar_frame_fault,lidar_frame_age_sec,lidar_frame_recovery_count,match_failure_grace_active,match_failure_grace_age_sec,match_failure_grace_suppressed\n";
+            csv << "relative_sec,wall_ns,raw,selected,published,strict,imu_callback_age,lidar_callback_age,stamp_advance_age,prepared_age,publish_begin_age,publish_end_age,publishing,pipeline_age,sensor_pending,localization_pending,high_frequency_pending,sensor_dropped,localization_dropped,sensor_lag,match_age,match_stale,output_gate,missing_lidars,lio_ms,major_sigma,lateral_sigma,yaw_sigma,covariance_valid,unobservable,collector_dropped,observed_stage,consistency,uncertainty,translation_condition,yaw_condition,confirmed_failure,unknown_tolerated,optional_can_unavailable,output_stale,localization_lost,radar_all_failed,non_sync_fault,non_sync_all_pass,bounded_policy_enabled,time_sync_fault_mask,bounded_sync_warning_mask,error_x,error_y,error_yaw_rad,output_age_sec,imu_arrival_age_sec,imu_stamp_lag_sec,can_arrival_age_sec,can_stamp_lag_sec,yaw_pass_age_sec,policy_version,startup_pending,startup_expired,startup_age_sec,confirmed_tracking_lost,output_gate_open,latest_match_valid,valid_match_age_sec,output_continuous,localization_healthy_for_degraded,partial_radar_suppressed,partial_radar_suppression_reason,lidar_frame_started,lidar_frame_seen,lidar_frame_warning,lidar_frame_fault,lidar_frame_age_sec,lidar_frame_recovery_count,match_failure_grace_active,match_failure_grace_age_sec,match_failure_grace_suppressed,translation_failure_latched";
+            motion_diagnostics::WriteTranslationCsvHeader(csv);
+            csv << '\n';
             for (;;) {
                 Row row; bool done;
                 {
@@ -492,7 +494,10 @@ const c=document.getElementById('plot'),ctx=c.getContext('2d');if(samples.length
                         << ',' << s.safety.lidar_frame_warning << ',' << s.safety.lidar_frame_fault
                         << ',' << s.safety.lidar_frame_age_sec << ',' << s.safety.lidar_frame_recovery_count
                         << ',' << s.safety.match_failure_grace_active << ',' << s.safety.match_failure_grace_age_sec
-                        << ',' << s.safety.match_failure_grace_suppressed << '\n';
+                        << ',' << s.safety.match_failure_grace_suppressed
+                        << ',' << s.safety.translation_failure_latched;
+                    motion_diagnostics::WriteTranslationCsvValues(csv, s.safety.translation_evidence);
+                    csv << '\n';
                     continue;
                 }
                 if (event->bytes >= options.event_mb * MiB || event->closed_disk_bytes >= options.event_mb * MiB) {

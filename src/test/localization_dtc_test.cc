@@ -508,7 +508,61 @@ void TestMatchFailureGraceMonitor(const std::function<void(Monitor&, Clock::time
     Require(throws(-0.01) && throws(0.2000001) && throws(std::numeric_limits<double>::quiet_NaN()) && throws(std::numeric_limits<double>::infinity()), "grace: out-of-range or nonfinite config rejected");
 }
 
+void CheckTranslationDiagnosticIntegration() {
+    Config cfg;
+    Monitor m(cfg, At(0));
+    for (int ms = 0; ms <= 500; ms += 20) Feed(m, ms, Pose(0), 0);
+    const SE3 raw_jump = Pose(.8);
+    Feed(m, 520, Pose(0), 0, 0, 1, &raw_jump);
+    const auto failed = m.Evaluate(false, At(520));
+    const auto& e = failed.translation_evidence;
+    Require(failed.translation_condition == kFail && failed.translation_failure_latched &&
+            e.selected_window == 0 && !e.latched && e.evaluation_stamp == 100.52,
+            "translation evidence identifies current adjacent failure");
+    for (const auto& c : e.comparisons) {
+        Require(c.available && c.to_stamp == 100.52 &&
+                c.limit_x_m == cfg.longitudinal_m + cfg.distance_ratio * c.distance_m &&
+                c.limit_y_m == cfg.lateral_m + cfg.distance_ratio * c.distance_m,
+                "all four comparisons preserve actual dynamic bounds");
+    }
+    Require(!e.comparisons[0].fail_x && e.comparisons[1].fail_x &&
+            e.comparisons[1].raw_distinct && e.comparisons[1].error_x_m == .8,
+            "raw-only failure must not be attributed to published pose");
+
+    Feed(m, 540, Pose(0), 0, 0, 2);
+    const auto latched = m.Evaluate(false, At(540));
+    Require(latched.translation_condition == kUnknown && latched.translation_failure_latched &&
+            latched.translation_evidence.latched && latched.translation_evidence.sequence == e.sequence &&
+            latched.translation_evidence.evaluation_stamp == e.evaluation_stamp,
+            "unknown keeps the original failure sequence and source time");
+    for (int ms = 560; ms <= 1100; ms += 20) Feed(m, ms, Pose(0), 0, 0, 2);
+    const auto recovered = m.Evaluate(false, At(1100));
+    Require(recovered.translation_condition == kPass && !recovered.translation_failure_latched &&
+            !recovered.translation_evidence.latched && recovered.translation_evidence.sequence > e.sequence,
+            "passing evidence clears historical translation attribution");
+
+    Monitor window(cfg, At(0));
+    for (int ms = 0; ms <= 500; ms += 20) Feed(window, ms, Pose(ms * .0022));
+    const auto w = window.Evaluate(false, At(500));
+    Require(w.translation_condition == kFail && w.translation_evidence.selected_window == 1 &&
+            !w.translation_evidence.comparisons[0].fail_x && w.translation_evidence.comparisons[2].fail_x,
+            "window accumulation is distinguished from adjacent jump");
+    const auto& wc = w.translation_evidence.comparisons[2];
+    Require(std::abs(wc.distance_m - .5) < 1e-12 && std::abs(wc.limit_x_m - .55) < 1e-12 &&
+            std::abs(wc.error_x_m - .6) < 1e-12, "window actual error and dynamic threshold are preserved");
+
+    Monitor adjacent(cfg, At(0));
+    for (int ms = 0; ms < 500; ms += 20) Feed(adjacent, ms, Pose(0), 0);
+    Feed(adjacent, 500, Pose(-.8), 0);
+    Feed(adjacent, 520, Pose(0), 0);
+    const auto a = adjacent.Evaluate(false, At(520));
+    Require(a.translation_condition == kFail && a.translation_evidence.selected_window == 0 &&
+            a.translation_evidence.comparisons[0].fail_x && !a.translation_evidence.comparisons[2].fail_x,
+            "adjacent failure wins while passing window is retained");
+}
+
 int main(int argc, char** argv) {
+    CheckTranslationDiagnosticIntegration();
     TestMatchFailureGraceDecision();
     TestMatchFailureGraceMonitor([](Monitor& monitor, Clock::time_point& now) {
         for (int ms = 0; ms <= 600; ms += 20) Feed(monitor, 100000 + ms, Pose(ms * .001));

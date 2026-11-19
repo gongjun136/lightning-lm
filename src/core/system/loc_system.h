@@ -358,7 +358,7 @@ class LocSystem {
     int last_safety_strict_ = -128, last_safety_shadow_ = -128;
     uint8_t last_safety_sync_mask_ = 0;
     uint64_t safety_shadow_ticks_ = 0;
-    std::array<int, 28> last_safety_diagnostic_state_{};
+    std::array<int, 29> last_safety_diagnostic_state_{};
     bool safety_diagnostic_seen_ = false;
     uint64_t safety_diagnostic_ticks_ = 0, safety_diagnostic_sequence_ = 0;
     std::mutex dtc_publish_mutex_;

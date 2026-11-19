@@ -8,6 +8,7 @@
 #include <rclcpp/serialized_message.hpp>
 #include <rosidl_runtime_cpp/traits.hpp>
 #include <yaml-cpp/yaml.h>
+#include "utils/translation_evidence.h"
 
 namespace lightning::diagnostics {
 
@@ -43,6 +44,8 @@ class IncidentRecorder {
         bool covariance_valid = false, unobservable = false;
         double major_sigma = -1, lateral_sigma = -1, yaw_sigma = -1;
         int translation_condition = 0, yaw_condition = 0;
+        bool translation_failure_latched = false;
+        motion_diagnostics::TranslationEvidence translation_evidence;
         bool confirmed_failure = false, unknown_tolerated = false, optional_can_unavailable = false;
         bool output_stale = false, localization_lost = false, radar_all_failed = false;
         bool non_sync_fault = false, non_sync_all_pass = false, bounded_policy_enabled = false;

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Field diagnosis with optional cached figures; no ROS node or localization changes."""
+from translation_diagnostics import (describe_translation, extract_translation_evidence,
+                                     needs_translation_finding, translation_latch_attribution)
+
 import argparse
 from collections import Counter, deque
 import csv
@@ -899,8 +902,14 @@ def classify(row, limits):
                 add('uncertainty_fail', '不确定度检查失败，现有字段不足以还原超限项', ['localization_uncertainty', 'covariance_valid', 'major_sigma', 'lateral_sigma', 'yaw_sigma_rad'], '需要本次实际配置和更完整判据。')
         for key, title, evidence in [('yaw_condition', '航向运动一致性检查失败', ['yaw_condition', 'error_yaw_rad']),
                                      ('translation_condition', '平移运动一致性检查失败', ['translation_condition', 'error_x', 'error_y'])]:
-            if row.get(key) == 2:
+            if row.get(key) == 2 or (key == 'translation_condition' and needs_translation_finding(row)):
                 add(key, title, evidence, '比较位姿增量与 IMU/CAN 积分；运动阈值包含增量比例项，不是不确定度阈值。')
+                if key == 'translation_condition':
+                    causes[-1]['evidence'].update(extract_translation_evidence(row))
+                    causes[-1]['translation_detail'] = diagnostic_summary.clean(describe_translation(row))
+                    causes[-1]['advice'] = '按记录的实际分支、区间和动态阈值解释；逐轴最大残差不用于反推触发项。'
+                    if translation_latch_attribution(row) is True and row.get(key) != 2:
+                        causes[-1]['title'] = '平移失败尚未恢复（保留历史触发证据）'
                 if key == 'yaw_condition':
                     causes[-1]['advice'] = '比较位姿航向增量与 IMU 机体系 z 角速度积分；CAN 用于平移检查。旧字段缺少累计转角 turn 及窗口/位姿分支，无法重建确切动态阈值；这不是协方差不确定度阈值。'
                     if number(row.get('error_yaw_rad')) is not None:
@@ -921,7 +930,8 @@ def classify(row, limits):
                             causes[-1]['advice'] += ' 未平滑两端至少一端回退为发布位姿，不能视为独立分支证据。'
         if row.get('localization_consistency') == 2 and row.get('yaw_condition') != 2 and row.get('translation_condition') != 2:
             add('consistency_fail', '运动一致性检查失败，缺少平移/航向细分状态', ['localization_consistency'], '需要同次运行的细分判据或完整事件。')
-        latched = row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2 and uncertainty != 2
+        latched = (row.get('confirmed_failure') == 1 and row.get('localization_consistency') != 2
+                   and uncertainty != 2 and translation_latch_attribution(row) is not True)
         if latched:
             add('latched_failure', '先前确认的失败尚未重新通过', ['confirmed_failure', 'localization_consistency', 'localization_uncertainty'], '向前检查首次 FAIL；UNKNOWN 不会清除已确认失败。')
         if not motion_unknown_advisory and not latched and row.get('localization_consistency') == 0 and row.get('unknown_tolerated') == 0 and row.get('optional_can_unavailable') == 0:

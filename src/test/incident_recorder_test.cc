@@ -71,6 +71,11 @@ void MaskedFaultAndReadback() {
     fault.policy_version = "localization-dtc-v5-confirmed-loss";
     fault.startup_age_sec = 12.5; fault.valid_match_age_sec = .51;
     fault.match_stale = true; fault.latest_match_valid = true;
+    fault.translation_condition = 2; fault.translation_failure_latched = true;
+    motion_diagnostics::BeginTranslationEvaluation(fault.translation_evidence, 100.52);
+    fault.translation_evidence.selected_window = 0;
+    motion_diagnostics::RecordTranslationComparison(fault.translation_evidence, false, true, true,
+        100.5, 100.52, .02, .02, 0, .8, 0, .78, 0, .502, .302, true, false);
     r.ObserveSafety(fault); Sleep(.01); r.ObserveSafety({});  // shorter than a monitor period
     for (int i = 0; i < 6; ++i) {
         auto msg = std::make_shared<std_msgs::msg::String>(); msg->data = "after-" + std::to_string(i);
@@ -101,6 +106,13 @@ void MaskedFaultAndReadback() {
     const auto match_column = std::find(header.begin(), header.end(), "valid_match_age_sec") - header.begin();
     const auto stale_column = std::find(header.begin(), header.end(), "match_stale") - header.begin();
     const auto suppression_column = std::find(header.begin(), header.end(), "partial_radar_suppressed") - header.begin();
+    const auto translation_latch_column = std::find(header.begin(), header.end(), "translation_failure_latched") - header.begin();
+    const auto translation_error_column = std::find(header.begin(), header.end(), "translation_adjacent_raw_error_x_m") - header.begin();
+    const auto translation_limit_column = std::find(header.begin(), header.end(), "translation_adjacent_raw_limit_x_m") - header.begin();
+    const auto translation_slot_column = std::find(header.begin(), header.end(), "translation_selected_window") - header.begin();
+    Check(translation_latch_column < header.size() && translation_error_column < header.size() &&
+          translation_limit_column < header.size() && translation_slot_column < header.size(),
+          "translation CSV evidence columns missing");
     Check(policy_column < header.size() && lost_column < header.size() && match_column < header.size() &&
           stale_column < header.size() && suppression_column < header.size(), "policy evidence columns missing");
     bool detailed_fault_seen = false;
@@ -108,6 +120,10 @@ void MaskedFaultAndReadback() {
         const auto values = columns(line);
         Check(values.size() == header.size(), "timeline header/row column mismatch");
         if (values[2] == "4") {
+            Check(values[translation_latch_column] == "1" && values[translation_slot_column] == "adjacent" &&
+                  std::abs(std::stod(values[translation_error_column]) - .78) < 1e-14 &&
+                  std::abs(std::stod(values[translation_limit_column]) - .502) < 1e-14,
+                  "translation CSV error or actual threshold assigned to wrong column");
             Check(values[yaw_column] == "2" && std::abs(std::stod(values[error_column]) - .0428282) < 1e-9,
                   "fault details assigned to wrong CSV columns");
             Check(values[policy_column] == "localization-dtc-v5-confirmed-loss" && values[lost_column] == "0" &&
@@ -150,10 +166,32 @@ void FrameSupplyFaultReadback() {
     const auto summary = YAML::LoadFile((path / "summary.json").string());
     Check(summary["observed_first_stage"].as<std::string>() == "radar_input_grouping",
           "v6 frame fault was mislabeled as a device DTC");
-    const auto csv = Read(path / "timeline.csv");
-    Check(csv.find("lidar_frame_started,lidar_frame_seen,lidar_frame_warning,lidar_frame_fault,lidar_frame_age_sec,lidar_frame_recovery_count") != std::string::npos &&
-          csv.find(",1,1,1,1,0.05,2\n") != std::string::npos,
-          "frame-supply recovery evidence missing or assigned to wrong CSV columns");
+    // 按列名读回，允许兼容地追加新的诊断列。
+    auto columns = [](const std::string& line) {
+        std::vector<std::string> values; std::istringstream input(line); std::string value;
+        while (std::getline(input, value, ',')) values.push_back(value);
+        return values;
+    };
+    std::istringstream csv(Read(path / "timeline.csv")); std::string line;
+    std::getline(csv, line); const auto header = columns(line);
+    bool seen = false;
+    while (std::getline(csv, line)) {
+        const auto values = columns(line);
+        Check(values.size() == header.size(), "frame-supply CSV column count mismatch");
+        if (values[2] != "2") continue;
+        auto value = [&](const std::string& name) {
+            const auto col = std::find(header.begin(), header.end(), name);
+            Check(col != header.end(), "frame-supply CSV column missing");
+            return std::stod(values[static_cast<size_t>(col - header.begin())]);
+        };
+        Check(value("lidar_frame_started") == 1 && value("lidar_frame_seen") == 1 &&
+              value("lidar_frame_warning") == 1 && value("lidar_frame_fault") == 1 &&
+              std::abs(value("lidar_frame_age_sec") - .05) < 1e-12 &&
+              value("lidar_frame_recovery_count") == 2,
+              "frame-supply recovery evidence assigned to wrong CSV columns");
+        seen = true;
+    }
+    Check(seen, "frame-supply recovery evidence missing");
     r.Stop();
 }
 void BoundedAdmissionAndSlowWriter() {

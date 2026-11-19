@@ -4,6 +4,8 @@
 不启动子进程、不创建 ROS 节点或订阅；判据与可信等级沿用 classify() 的结论，
 不重算安全逻辑；不修改输入；同一输入输出确定。
 '''
+from translation_diagnostics import describe_translation
+
 import json
 import math
 
@@ -58,6 +60,8 @@ FLAGS = {
                                         'latest_match_valid', 'match_failure_grace_active', 'match_failure_grace_suppressed'],
     'major_sigma': ['covariance_valid'],
     'yaw_condition': ['yaw_evidence_available', 'error_yaw_deg'],
+    'translation_condition': ['translation_condition', 'translation_failure_latched',
+                              'translation_evidence_origin', 'translation_selected_window'],
 }
 for _alias, _base in (('output_stale', 'output_stale_degraded'), ('startup_expired', 'startup_pending'),
                       ('match_failure_grace_inconsistent', 'match_rejected_grace_suppressed'),
@@ -278,6 +282,8 @@ def threshold(name, evidence, thresholds):
 
 def measures(key, evidence, thresholds):
     '''列出实测与实际阈值；不比较大小（恢复确认阶段等情形下比较会误导）。'''
+    if key == 'translation_condition':
+        return describe_translation(evidence)['lines']
     out = []
     for label, vkey, tkey, unit, conv in SPECS.get(key, ()):
         value = evidence.get(vkey)
@@ -300,6 +306,8 @@ def flags(key, evidence):
 
 def notes(key, evidence, thresholds, finding):
     out = []
+    if key == 'translation_condition':
+        out.extend(describe_translation(evidence)['warnings'])
     if key == 'frame_supply':
         out.append('恢复确认阶段年龄可能已低于阈值，按记录展示，不推断大小关系')
     if key in ('output_stale', 'output_stale_degraded'):
@@ -669,11 +677,15 @@ def _aggregate(items):
 
 def _finding_compact(v, out):
     tags = '，'.join(t for t in (v['key'], v['confidence'], PHASE_TEXT.get(v.get('phase'), '')) if t)
-    body = '；'.join(v.get('measures') or [])
+    measurements = v.get('measures') or []
+    split_translation = v['key'] == 'translation_condition' and len(measurements) > 1
+    body = measurements[0] if split_translation else '；'.join(measurements)
     if not body:
         body = '记录字段 ' + '，'.join(v['flags']) if v.get('flags') else '实测值未记录'
     out.append('  [%s] 码 %s %s（%s）时间 %s：%s' % (v['ref'], v['code'], txt(v.get('title')), tags,
                                              txt(v.get('time')), body))
+    if split_translation:
+        out.extend('      ' + line for line in measurements[1:])
     extra = []
     mr = v.get('matching_rejection')
     if mr:
@@ -688,10 +700,11 @@ def _episode_compact(v, refs, out):
     for tag in (PHASE_TEXT.get(v.get('phase'), ''), ('设备 ' + txt(v.get('device'))) if v.get('device') else ''):
         if tag:
             tags.append(tag)
-    if v.get('onset_measures'):
-        values = '触发值 ' + '；'.join(v['onset_measures'])
-    elif v.get('measures'):
-        values = '末样本 ' + '；'.join(v['measures'])
+    measurements = v.get('onset_measures') or v.get('measures') or []
+    split_translation = v['key'] == 'translation_condition' and len(measurements) > 1
+    if measurements:
+        values = ('触发值 ' if v.get('onset_measures') else '末样本 ') + (
+            measurements[0] if split_translation else '；'.join(measurements))
     else:
         values = '数值未记录'
     line = '  [%s] 码 %s（%s）%s；开始 %s，末次 %s；%s；同类 %d 段' % (
@@ -700,6 +713,8 @@ def _episode_compact(v, refs, out):
     if v.get('coverage') != COVERAGE_TEXT['range_overlap']:
         line += '；' + txt(v.get('coverage'))
     out.append(line)
+    if split_translation:
+        out.extend('      ' + item for item in measurements[1:])
     if v.get('matching_rejection'):
         out.append('      历史匹配拒绝：' + v['matching_rejection']['text'])
 
@@ -773,6 +788,8 @@ def _color_summary(lines, summary):
             parts = []
             for part in line.split('；'):
                 before, marker, values = part.partition('实测 ')
+                if not marker:
+                    before, marker, values = part.partition('实测误差 ')
                 if marker and ' / 阈值 ' in values:
                     part = before + '\x1b[1m' + marker + values + '\x1b[22m\x1b[' + style + 'm'
                 parts.append(part)
@@ -811,9 +828,13 @@ def render_text(s, color=False):
         out.append('历史判据 %d 类 / %d 段（同一实际故障可能有日志与时间线多份记录，条数不代表物理故障次数；历史不代表当前）：' % (
             len(groups), len(eps)))
         for f in hist.get('first_onsets') or []:
+            measurements = f.get('measures') or []
+            split_translation = f['key'] == 'translation_condition' and len(measurements) > 1
             out.append('  码 %s [%s] 首个触发：%s（%s）开始 %s：%s' % (
                 f['code'], f['ref'], txt(f.get('title')), f['key'], txt(f.get('time')),
-                '；'.join(f.get('measures') or []) or '触发值未记录'))
+                (measurements[0] if split_translation else '；'.join(measurements)) or '触发值未记录'))
+            if split_translation:
+                out.extend('      ' + item for item in measurements[1:])
         for ref in shown:
             _episode_compact(eps[ref], by_latest[ref]['refs'], out)
         rest = groups[HISTORY_LIMIT:]

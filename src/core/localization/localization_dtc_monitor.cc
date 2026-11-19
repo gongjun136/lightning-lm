@@ -137,8 +137,14 @@ Monitor::MotionResult Monitor::Motion(const Pose& from, const Pose& to, Clock::t
         if (translation_available) {
             snapshot_.error_longitudinal_m = std::max(snapshot_.error_longitudinal_m, ex);
             snapshot_.error_lateral_m = std::max(snapshot_.error_lateral_m, ey);
-            translation_fail |= ex > config_.longitudinal_m + config_.distance_ratio * distance ||
-                                ey > config_.lateral_m + config_.distance_ratio * distance;
+            const double limit_x = config_.longitudinal_m + config_.distance_ratio * distance;
+            const double limit_y = config_.lateral_m + config_.distance_ratio * distance;
+            const bool fail_x = ex > limit_x, fail_y = ey > limit_y;
+            translation_fail |= fail_x || fail_y;
+            // 原样记录本次比较；不以诊断结果反向修改判定。
+            motion_diagnostics::RecordTranslationComparison(snapshot_.translation_evidence,
+                window, raw, raw && from.raw_independent && to.raw_independent,
+                from.stamp, to.stamp, distance, dx, dy, x, y, ex, ey, limit_x, limit_y, fail_x, fail_y);
         }
         if (yaw_available) {
             const double delta_yaw = Wrap(Yaw(current) - yaw);
@@ -215,20 +221,26 @@ void Monitor::ObservePose(double stamp, const SE3& pose, const SE3& raw, const M
     output_seen_ = true;
     for (auto& obs : snapshot_.observations) ++obs.sequence;
     snapshot_.error_longitudinal_m = snapshot_.error_lateral_m = snapshot_.error_yaw_rad = 0;
+    motion_diagnostics::BeginTranslationEvaluation(snapshot_.translation_evidence, stamp);
     const Pose current{stamp, pose, raw, raw_independent};
     MotionResult motion;
     // Check adjacent increments as well, so a jump is detected during window warmup.
     if (!poses_.empty()) motion = Motion(poses_.back(), current, now, false);
+    if (motion.translation == kFail) snapshot_.translation_evidence.selected_window = 0;
     auto anchor = poses_.end();
     for (auto it = poses_.begin(); it != poses_.end() && it->stamp <= stamp - config_.window_sec; ++it) anchor = it;
     if (anchor != poses_.end()) {
         const auto window = Motion(*anchor, current, now, true);
-        if (motion.translation != kFail) motion.translation = window.translation;
+        if (motion.translation != kFail) {
+            motion.translation = window.translation;
+            snapshot_.translation_evidence.selected_window = 1;
+        }
         if (motion.yaw != kFail) { motion.yaw = window.yaw; motion.evidence = window.evidence; }
     } else {
         if (motion.translation != kFail) motion.translation = kUnknown;
         if (motion.yaw != kFail) motion.yaw = kUnknown;
     }
+    if (motion.translation == kFail) last_translation_failure_ = snapshot_.translation_evidence;
     snapshot_.translation_condition = motion.translation;
     snapshot_.yaw_condition = motion.yaw;
     snapshot_.yaw_evidence = motion.evidence;
@@ -307,6 +319,10 @@ Snapshot Monitor::EvaluateLocked(const TrackingEvidence& tracking, Clock::time_p
     out.consistency_pass_age_sec = consistency_pass_seen_ ? Age(now, consistency_pass_time_) : missing;
     out.yaw_pass_age_sec = yaw_pass_seen_ ? Age(now, yaw_pass_time_) : missing;
     out.confirmed_failure = failed_checks_[0] || failed_checks_[1] || failed_checks_[2];
+    out.translation_failure_latched = failed_checks_[0];
+    out.translation_evidence = motion_diagnostics::SelectTranslationSnapshot(
+        snapshot_.translation_evidence, last_translation_failure_, failed_checks_[0],
+        snapshot_.translation_condition == kFail);
     for (auto& obs : out.observations) {
         obs.age_us = output_seen_ ? static_cast<uint64_t>(std::max(0.0, Age(now, evaluation_time_)) * 1e6) : std::numeric_limits<uint64_t>::max();
         if (obs.condition != kFail &&

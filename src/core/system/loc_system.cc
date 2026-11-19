@@ -1476,6 +1476,8 @@ void LocSystem::PublishSafety() {
         s.covariance_valid = localization.covariance_valid; s.unobservable = localization.pose_unobservable;
         s.major_sigma = localization.major_sigma_m; s.lateral_sigma = localization.lateral_sigma_m; s.yaw_sigma = localization.yaw_sigma_rad;
         s.translation_condition = localization.translation_condition; s.yaw_condition = localization.yaw_condition;
+        s.translation_failure_latched = localization.translation_failure_latched;
+        s.translation_evidence = localization.translation_evidence;
         s.confirmed_failure = localization.confirmed_failure;
         s.unknown_tolerated = localization.consistency_unknown_tolerated;
         s.optional_can_unavailable = localization.optional_can_unavailable;
@@ -1509,7 +1511,7 @@ void LocSystem::PublishSafety() {
     // Always retain the pre-override decision, even with both reporting and
     // optional time-sync shadow logging disabled. Log every observed cause
     // transition and a one-second summary without high-rate file I/O.
-    const std::array<int, 28> diagnostic_state{{
+    const std::array<int, 29> diagnostic_state{{
         decision.raw, decision.selected, decision.published, strict,
         localization.observations[0].condition, localization.observations[1].condition,
         localization.confirmed_failure, localization.output_stale, localization.localization_lost,
@@ -1519,7 +1521,8 @@ void LocSystem::PublishSafety() {
         localization.covariance_valid, localization.pose_unobservable,
         localization.startup_pending, localization.startup_expired, localization.output_gate_open,
         localization.match_stale, localization.latest_match_valid, localization.output_continuous,
-        decision.partial_radar_suppressed, frames.warning, frames.fault, decision.match_failure_grace_suppressed}};
+        decision.partial_radar_suppressed, frames.warning, frames.fault, decision.match_failure_grace_suppressed,
+        localization.translation_failure_latched}};
     const bool diagnostic_changed = !safety_diagnostic_seen_ || diagnostic_state != last_safety_diagnostic_state_;
     const bool diagnostic_periodic = ++safety_diagnostic_ticks_ % 50 == 0;
     if (diagnostic_changed || diagnostic_periodic) {
@@ -1529,6 +1532,9 @@ void LocSystem::PublishSafety() {
                          << " recovery_count=" << frames.recovery_count;
         }
         const double sensor_stamp = last_localization_stamp_.load();
+        // 沿用有界日志调度，在监视器锁外格式化平移证据。
+        std::ostringstream translation_fields;
+        motion_diagnostics::WriteTranslationFields(translation_fields, localization.translation_evidence);
         LOG(INFO) << "SAFETY_DIAGNOSTIC sequence=" << ++safety_diagnostic_sequence_
                   << " policy_version=" << loc::dtc::kSafetyPolicyVersion
                   << " radar_frame_observation_point=raw_input_grouping"
@@ -1580,6 +1586,8 @@ void LocSystem::PublishSafety() {
                   << " error_y=" << localization.error_lateral_m
                   << " error_yaw_rad=" << localization.error_yaw_rad
                   << std::setprecision(17)
+                  << " translation_failure_latched=" << localization.translation_failure_latched
+                  << translation_fields.str()
                   << " yaw_evidence_available=" << localization.yaw_evidence.available
                   << " yaw_comparison=" << (localization.yaw_evidence.window ? "window" : "adjacent")
                   << " yaw_raw_independent=" << localization.yaw_evidence.raw_independent
