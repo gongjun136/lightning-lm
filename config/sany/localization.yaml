@@ -30,9 +30,9 @@ multi_lidar:
     tracking_lidar_count: 0
     rotate_secondary_lidars: false
     lio_point_budgets:
-    - 2200
-    - 1804
     - 1500
+    - 1200
+    - 1000
     predictive: true
     target_latency_sec: 0.09
     hard_latency_sec: 0.3
@@ -349,7 +349,7 @@ diagnostics:
   startup_grace_sec: 8.0
   radar_frame_warning_sec: 0.2
   radar_frame_timeout_sec: 0.3
-  radar_frame_recovery_frames: 3
+  radar_frame_recovery_frames: 1  # 第一帧新鲜合格输入组帧即恢复码 2
   max_speed_mps: 30.0
   max_yaw_rate_radps: 3.0
 localization_pgo:

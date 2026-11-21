@@ -15,7 +15,7 @@ class LidarFrameWatchdog {
     using Clock = std::chrono::steady_clock;
     struct Config {
         double warning_sec = 0.2, timeout_sec = 0.3, startup_grace_sec = 8.0;
-        unsigned recovery_frames = 3;
+        unsigned recovery_frames = 1;
     };
     struct Snapshot {
         bool started = false, seen = false, warning = false, fault = false;

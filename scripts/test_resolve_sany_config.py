@@ -51,7 +51,7 @@ class SanyConfigTest(unittest.TestCase):
                             self.assertEqual(load["tracking_min_lidars"], 1)
                             self.assertEqual(load["relocalization_min_lidars"], 1)
                             self.assertEqual(load["tracking_lidar_count"], 0)
-                            self.assertEqual(load["lio_point_budgets"], [2200, 1804, 1500])
+                            self.assertEqual(load["lio_point_budgets"], [1500, 1200, 1000])
 
     def test_radar_topology_rejects_inconsistent_snapshot(self):
         self.vehicle_config()

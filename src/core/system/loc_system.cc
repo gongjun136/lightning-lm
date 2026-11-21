@@ -350,7 +350,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
               << " radar_frame_warning_sec=" << value("radar_frame_warning_sec", 0.2)
               << " radar_frame_timeout_sec=" << value("radar_frame_timeout_sec", 0.3)
               << " radar_frame_recovery_frames=" << (dtc && dtc["radar_frame_recovery_frames"] ?
-                    dtc["radar_frame_recovery_frames"].as<unsigned>() : 3)
+                    dtc["radar_frame_recovery_frames"].as<unsigned>() : 1)
               << " localization_output_max_lidar_age_sec=" << max_lidar_match_age_sec
               << " lost_frame_threshold=" << lost_frame_threshold
               << " degraded_continuous_output_sec=" << dtc_config.window_sec
@@ -465,7 +465,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 [this, id = sensor.id, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                     const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(id, ToSec(cloud->header.stamp),
-                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
+                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty(), arrived, node_->now().seconds());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud, id, arrived); }, "Proc Lidar",
@@ -488,7 +488,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 cloud_topic_, lidar_qos, [this, capture_id](sensor_msgs::msg::PointCloud2::SharedPtr cloud) {
                     const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
-                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty());
+                        cloud->width > 0 && cloud->height > 0 && !cloud->data.empty(), arrived, node_->now().seconds());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         CloudCaptureBytes(*cloud), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud, arrived); }, "Proc Lidar",
@@ -503,7 +503,7 @@ bool LocSystem::Init(const std::string &yaml_path, const std::string &map_path_o
                 livox_topic_, lidar_qos, [this, capture_id](livox_ros_driver2::msg::CustomMsg::SharedPtr cloud) {
                     const auto arrived = std::chrono::steady_clock::now();
                     lidar_frame_watchdog_->ObserveInput(0, ToSec(cloud->header.stamp),
-                        cloud->point_num > 0 && !cloud->points.empty());
+                        cloud->point_num > 0 && !cloud->points.empty(), arrived, node_->now().seconds());
                     if (incident_recorder_) incident_recorder_->Capture(capture_id, cloud,
                         sizeof(*cloud) + cloud->points.capacity() * sizeof(livox_ros_driver2::msg::CustomPoint), CaptureStamp(cloud->header.stamp));
                     Timer::Evaluate([&]() { ProcessLidar(cloud, arrived); }, "Proc Lidar",
@@ -1344,6 +1344,7 @@ void LocSystem::PublishHealthStatus() {
 }
 
 void LocSystem::RegisterLidarInput(int lidar_id, const std::string& topic) {
+    lidar_frame_watchdog_->SetInputTopic(lidar_id, topic);
     std::lock_guard<std::mutex> lock(input_stats_mutex_);
     lidar_input_stats_[lidar_id].topic = topic;
     // 10 Hz 点云的正常间隔约 100 ms；输入时序告警留出两帧余量。
@@ -1459,7 +1460,8 @@ void LocSystem::PublishSafety() {
     if (!dtc_monitor_ || !safety_pub_ || !radar_dtc_state_) return;
     const auto localization = EvaluateLocalizationDtc();
     const auto radar = radar_dtc_state_->Evaluate();
-    const auto frames = lidar_frame_watchdog_->Evaluate();
+    const auto frame_evaluated_at = std::chrono::steady_clock::now();
+    const auto frames = lidar_frame_watchdog_->Evaluate(frame_evaluated_at);
     geosun_msgs::msg::Safety msg;
     msg.header.stamp = node_->now();
     const int strict = loc::dtc::SafetyValue(localization, radar.all_failed, radar.fault, radar.all_pass);
@@ -1535,6 +1537,9 @@ void LocSystem::PublishSafety() {
         // 沿用有界日志调度，在监视器锁外格式化平移证据。
         std::ostringstream translation_fields;
         motion_diagnostics::WriteTranslationFields(translation_fields, localization.translation_evidence);
+        std::ostringstream radar_input_fields;
+        lidar_frame_watchdog_->WriteEvidence(radar_input_fields,
+            lidar_frame_watchdog_->SnapshotEvidence(frames.accepted, frame_evaluated_at));
         LOG(INFO) << "SAFETY_DIAGNOSTIC sequence=" << ++safety_diagnostic_sequence_
                   << " policy_version=" << loc::dtc::kSafetyPolicyVersion
                   << " radar_frame_observation_point=raw_input_grouping"
@@ -1560,6 +1565,7 @@ void LocSystem::PublishSafety() {
                   << " lidar_frame_recovery_count=" << frames.recovery_count
                   << " lidar_frame_accepted=" << frames.accepted
                   << " lidar_frame_rejected=" << frames.rejected
+                  << radar_input_fields.str()
                   << " event=" << (diagnostic_changed ? "transition" : "periodic")
                   << " reporting_enabled=" << safety_fault_reporting_enabled_
                   << " raw_runstate=" << int(decision.raw)

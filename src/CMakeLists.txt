@@ -144,6 +144,8 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_diagnose_localization.py)
     add_test(NAME diagnostic_summary_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_diagnostic_summary.py)
+    add_test(NAME radar_input_diagnostics_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_radar_input_diagnostics.py)
     add_test(NAME localization_log_language_test
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_localization_log_events.py)
     add_test(NAME diagnostic_contract_test

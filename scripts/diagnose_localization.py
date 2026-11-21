@@ -802,6 +802,8 @@ def classify(row, limits):
     causes = []
     def add(key, title, evidence, advice, confidence='判据已确认'):
         values = {k: row[k] for k in evidence if k in row}
+        if key == 'frame_supply':
+            values.update({k: v for k, v in row.items() if k.startswith('radar_rx_')})
         values.update({k: row[k] for k in ('policy_version', 'strict_runstate', 'selected_runstate',
                       'partial_radar_suppressed', 'partial_radar_suppression_reason', 'localization_healthy_for_degraded') if k in row})
         if row.get('policy_version') in MODERN_POLICIES:
@@ -832,7 +834,7 @@ def classify(row, limits):
         if row.get('lidar_frame_fault') == 1:
             recovering = number(row.get('lidar_frame_recovery_count')) or 0
             title = ('启动宽限结束仍未收到合格雷达输入组帧' if row.get('lidar_frame_seen') == 0 else
-                     '雷达输入组帧连续不可用') if not recovering else '雷达输入组帧已恢复，尚在连续合格帧确认阶段'
+                     '雷达输入组帧连续不可用') if not recovering else '雷达输入组帧故障仍保持，正在确认恢复'
             add('frame_supply', title, evidence,
                 '检查原始雷达输入的非空条件、主雷达、最低来源数、时间桶及同桶跨度；算法排队/处理/匹配耗时不参与 2，设备 DTC 仅作对照。')
             causes[-1]['evidence'].update({k: limits[k] for k in
@@ -1064,6 +1066,39 @@ def cause_key(finding):
     return (finding['code'], finding['key'], finding.get('device'), finding.get('phase'))
 
 
+def link_radar_input_evidence(rows, logdata):
+    """给同次运行的事件时间线补充严格匹配的日志快照，不更改其故障字段。
+
+    仅接受 50 ms 内且帧年龄/状态/恢复计数吻合的唯一 Safety 日志记录。
+    日志年龄默认六位有效数字，比较只容忍该格式舍入；多候选不猜测。
+    """
+    from bisect import bisect_left, bisect_right
+    candidates = sorted((r for r in logdata if r.get('radar_rx_schema') == 1 and
+                         r.get('radar_rx_available') == 1 and row_ns(r) is not None), key=row_ns)
+    times = [row_ns(r) for r in candidates]
+    result = []
+    state = ('policy_version', 'raw_runstate', 'lidar_frame_seen', 'lidar_frame_fault', 'lidar_frame_recovery_count')
+    for row in rows:
+        stamp, age = row_ns(row), number(row.get('lidar_frame_age_sec'))
+        if row.get('raw_runstate') != 2 or row.get('radar_rx_schema') is not None or stamp is None or age is None or not math.isfinite(age):
+            result.append(row)
+            continue
+        nearby = candidates[bisect_left(times, stamp - 50_000_000):bisect_right(times, stamp + 50_000_000)]
+        matched = [r for r in nearby if all(k in row and k in r and row[k] == r[k] for k in state)
+                   and number(r.get('lidar_frame_age_sec')) is not None
+                   and math.isclose(age, number(r['lidar_frame_age_sec']), rel_tol=5e-6, abs_tol=5e-7)]
+        if len(matched) == 1:
+            source = matched[0]
+            row = dict(row, **{k:v for k,v in source.items() if k.startswith('radar_rx_')})
+            row.update(radar_rx_link_source=source.get('_source'), radar_rx_link_time=source.get('_time'),
+                       radar_rx_link_offset_sec=(row_ns(source) - stamp) / 1e9)
+        elif matched or nearby:
+            row = dict(row, radar_rx_link_status='ambiguous' if matched else 'no_match',
+                       radar_rx_link_candidates=len(matched or nearby))
+        result.append(row)
+    return result
+
+
 def fault_episodes(rows, limits):
     """Keep every selected-predicate interval and device, including brief faults."""
     episodes, scopes = [], {}
@@ -1087,6 +1122,7 @@ def fault_episodes(rows, limits):
                 if key not in current:
                     episode = active.pop(key)
                     episode['end_time'] = row.get('_time')
+                    episode['end_source'] = row.get('_source')
                     episode['end_ns'] = row_ns(row)
                     episode['next_raw'] = row.get('raw_runstate')
                     episode['end_localization_lost'] = row.get('localization_lost')
@@ -1762,6 +1798,7 @@ def analyze(path, process, selection, warnings, log_mb=32, bag_mb=128):
                 warnings.append('startup_without_output 与窗口内已有发布完成记录并存；旧版并发时间采样可误触发此标签，不能据此认定启动无输出。')
         if process:
             warnings.append('同时显示本事件和当前运行日志尾部的故障；日志中的较早故障不一定属于此事件，见每项时间与来源。')
+    rows = link_radar_input_evidence(rows, logdata)
     findings = fault_episodes(rows + logdata, limits)
     snapshots = match_snapshot_records(context, run, protection_window)
     for finding in findings:

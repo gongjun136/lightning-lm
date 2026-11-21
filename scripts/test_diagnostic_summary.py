@@ -170,7 +170,7 @@ class FindingFormatTest(unittest.TestCase):
         text = ds.render_summary(report)
         self.assertIn('雷达帧年龄 实测 0.05 s / 阈值 0.5 s（证据）', text)
         self.assertIn('恢复确认帧 实测 3 帧 / 阈值未记录', text)
-        self.assertIn('不推断大小关系', text)
+        self.assertIn('不能仅凭年龄推断已恢复', text)
         line = lines_with(text, '雷达帧年龄')[0]
         self.assertNotIn('>', line)
         self.assertNotIn('超过', line)
@@ -356,7 +356,9 @@ class PurityTest(unittest.TestCase):
     def test_module_is_pure_computation(self):
         import translation_diagnostics as td
         import diagnostic_history_layout as dhl
-        for module, allowed in ((ds, {'json', 'math', 'translation_diagnostics', 'diagnostic_history_layout'}),
+        import radar_input_diagnostics as ri
+        for module, allowed in ((ds, {'json', 'math', 'translation_diagnostics', 'diagnostic_history_layout', 'radar_input_diagnostics'}),
+                                (ri, {'math'}),
                                 (dhl, {'re'}),
                                 (td, {'__future__', 'math', 'collections', 'typing'})):
             with self.subTest(module=module.__name__):

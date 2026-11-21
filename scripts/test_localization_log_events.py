@@ -75,7 +75,7 @@ class LocalizedLogTests(unittest.TestCase):
             def clean(value):
                 if isinstance(value, dict):
                     return {k: clean(v) for k, v in value.items()
-                            if k not in ('text', 'source', 'onset_source', 'first_source', 'last_source',
+                            if k not in ('text', 'source', 'onset_source', 'end_source', 'first_source', 'last_source',
                                          'byte_offset', '_source', '_scope')}
                 if isinstance(value, list):
                     return [clean(v) for v in value]

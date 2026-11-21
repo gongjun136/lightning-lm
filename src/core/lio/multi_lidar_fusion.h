@@ -235,6 +235,9 @@ class MultiLidarFrameAssembler {
     /// 获取雷达数量不足而丢弃的桶数。
     std::size_t InsufficientLidarDropCount() const { return insufficient_lidar_drop_count_; }
 
+    /// 只读取最早待组帧桶；不推进、过期或修改组帧状态。
+    bool DescribeOldestPending(MultiLidarFrameStats& stats, double& sensor_progress) const;
+
    private:
     struct PartialFrame {
         std::map<int, CloudPtr> clouds;  ///< 当前时间桶内按雷达 ID 保存的点云。
