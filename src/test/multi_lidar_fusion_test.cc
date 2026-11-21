@@ -417,11 +417,12 @@ void TestFormalSanyAdaptiveConfigs() {
                         config.adaptive_load.relocalization_min_lidars == 1 &&
                         config.adaptive_load.tracking_lidar_count == 0,
                     "single-lidar correction remains available under load");
-            Require(config.adaptive_load.lio_point_budgets == std::vector<int>({2200, 1804, 1500}) &&
-                        config.adaptive_load.predictive &&
+            Require(config.adaptive_load.lio_point_budgets == std::vector<int>({1500, 1200, 1000}),
+                    "共享配置的 LIO 点数预算应为 1500/1200/1000");
+            Require(config.adaptive_load.predictive &&
                         config.adaptive_load.hard_latency_sec == 0.3 &&
                         root["compute_budget"]["ndt_max_points"].as<int>() == 3500,
-                    "shared configuration preserves the legacy point and compute budgets");
+                    "共享配置保持预测降级、0.3 秒硬延迟门槛及 3500 点 NDT 预算");
             MultiLidarFrameAssembler assembler(config);
             const std::array<double, 4> offsets = {0.0, 0.001, 0.010, 0.002};
             for (int id = 0; id < count; ++id) {
@@ -447,8 +448,8 @@ void TestFormalSanyAdaptiveConfigs() {
             auto full = count == 3 ? MakeFrameStats({0, 1, 2}) : MakeFrameStats({0, 1, 2, 3});
             auto selection = controller.Select(full);
             Require(selection.lidar_ids.size() == static_cast<std::size_t>(count) &&
-                        selection.max_points == 2200,
-                    "healthy tracking starts with all configured lidars");
+                        selection.max_points == 1500,
+                    "正常跟踪从全部配置雷达及 1500 点预算开始");
             for (int step = 1; step <= count + 1; ++step) {
                 controller.Observe(0.07, 0.1, true);
                 selection = controller.Select(full);
@@ -456,8 +457,8 @@ void TestFormalSanyAdaptiveConfigs() {
                 Require(selection.lidar_ids.size() == static_cast<std::size_t>(expected_count) &&
                             selection.lidar_ids.front() == 0,
                         "point budgets degrade first, then secondary lidars down to primary only");
-                Require(selection.max_points == (step == 1 ? 1804 : 1500),
-                        "legacy point budget survives lidar-count degradation");
+                Require(selection.max_points == (step == 1 ? 1200 : 1000),
+                        "点数先降至 1200 再降至 1000，减少雷达路数时保持 1000 点预算");
             }
             Require(controller.CanPublishCloud(full),
                     "tracking selection does not trim the complete publication cloud");
@@ -478,8 +479,8 @@ void TestFormalSanyAdaptiveConfigs() {
             controller.SetLocalizationGood(true);
             for (int i = 0; i < 75 * (count + 1); ++i) controller.Observe(0.01, 0.01, true);
             Require(controller.Select(full).lidar_ids.size() == static_cast<std::size_t>(count) &&
-                        controller.Select(full).max_points == 2200,
-                    "healthy load recovery gradually restores all lidars and the first budget");
+                        controller.Select(full).max_points == 1500,
+                    "负载恢复后逐步恢复全部雷达和 1500 点初始预算");
         }
     }
 }
