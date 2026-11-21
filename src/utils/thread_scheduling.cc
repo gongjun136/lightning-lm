@@ -21,7 +21,7 @@ namespace lightning::threading {
 namespace {
 
 constexpr int kMaxNice = 19;
-std::array<std::vector<int>, 5> online_masks;
+std::array<std::vector<int>, 6> online_masks;
 bool online_policy_enabled = false;
 
 std::string_view Trim(std::string_view text) {
@@ -187,10 +187,10 @@ bool ConfigureCurrentThread(const std::string& name, int nice_floor,
 }
 
 bool InitializeOnlineThreadPolicy(std::string* error) {
-    const std::array<const char*, 5> names{{
+    const std::array<const char*, 6> names{{
         "LIGHTNING_LM_BACKGROUND_CPUS", "LIGHTNING_LM_SENSOR_CPUS",
         "LIGHTNING_LM_OUTPUT_CPUS", "LIGHTNING_LM_EXECUTOR_CPUS",
-        "LIGHTNING_LM_MATCH_CPUS"}};
+        "LIGHTNING_LM_MATCH_CPUS", "LIGHTNING_LM_LIO_WORKER_CPUS"}};
     bool requested = false;
     for (const auto* name : names) requested |= std::getenv(name) != nullptr;
     if (!requested) return true;
@@ -199,10 +199,11 @@ bool InitializeOnlineThreadPolicy(std::string* error) {
     if (sched_getaffinity(0, sizeof(original), &original) != 0) {
         SetError(error, "cannot read startup affinity"); return false;
     }
-    std::array<std::vector<int>, 5> candidate;
+    std::array<std::vector<int>, 6> candidate;
     for (size_t i = 0; i < names.size(); ++i) {
         const char* value = std::getenv(names[i]);
-        if (i == static_cast<size_t>(OnlineThreadRole::kMatch) && !value) {
+        if ((i == static_cast<size_t>(OnlineThreadRole::kMatch) ||
+             i == static_cast<size_t>(OnlineThreadRole::kLioWorker)) && !value) {
             candidate[i] = candidate[0];
             continue;
         }
@@ -221,6 +222,16 @@ bool InitializeOnlineThreadPolicy(std::string* error) {
             if (i == static_cast<size_t>(OnlineThreadRole::kMatch) &&
                 std::find(candidate[1].begin(), candidate[1].end(), cpu) != candidate[1].end()) {
                 SetError(error, "匹配线程与传感器线程的 CPU 配置重叠"); return false;
+            }
+            if (i == static_cast<size_t>(OnlineThreadRole::kLioWorker)) {
+                for (auto role : {OnlineThreadRole::kBackground, OnlineThreadRole::kSensor,
+                                  OnlineThreadRole::kMatch}) {
+                    const auto& reserved = candidate[static_cast<size_t>(role)];
+                    if (std::find(reserved.begin(), reserved.end(), cpu) != reserved.end()) {
+                        SetError(error, "LIO 工作线程 CPU 与后台、传感器或 NDT CPU 重叠");
+                        return false;
+                    }
+                }
             }
         }
     }
@@ -252,7 +263,7 @@ void ApplyOnlineParallelWorkerPolicy() {
     if (!online_policy_enabled || omp_get_thread_num() == 0) return;
     thread_local bool configured = false;
     if (!configured) {
-        ApplyOnlineThreadRole(OnlineThreadRole::kBackground, "loc_lio_worker");
+        ApplyOnlineThreadRole(OnlineThreadRole::kLioWorker, "loc_lio_worker");
         configured = true;
     }
 }

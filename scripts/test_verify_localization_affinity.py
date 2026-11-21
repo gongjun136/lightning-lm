@@ -71,6 +71,36 @@ class AffinityTests(unittest.TestCase):
         (self.process / 'environ').unlink()
         self.assertFalse(self.check()['passed'])
 
+    def dual_lio(self, count=2):
+        (self.process / 'environ').write_bytes(
+            b'LIGHTNING_LM_MATCH_CPUS=0-9\0LIGHTNING_LM_NDT_THREADS=4\0'
+            b'LIGHTNING_LM_LIO_WORKER_CPUS=11\0' + f'LIGHTNING_LM_LIO_THREADS={count}\0'.encode())
+        for tid in range(127, 131):
+            self.thread(tid, 'loc_match', '0-9')
+
+    def test_dual_lio_requires_one_worker_on_cpu11(self):
+        self.dual_lio()
+        self.assertFalse(self.check()['passed'])
+        self.thread(131, 'loc_lio_worker', '11')
+        self.assertTrue(self.check()['passed'])
+        self.thread(131, 'loc_lio_worker', '0-9')
+        self.assertFalse(self.check()['passed'])
+        self.thread(131, 'loc_lio_worker', '10-11')
+        self.assertFalse(self.check()['passed'])
+
+    def test_worker_count_and_ndt_overlap_are_checked(self):
+        self.dual_lio(1)
+        self.assertTrue(self.check()['passed'])
+        self.thread(131, 'loc_lio_worker', '11')
+        self.assertFalse(self.check()['passed'])
+        self.dual_lio()
+        self.assertTrue(self.check()['passed'])
+        self.thread(132, 'loc_lio_worker', '11')
+        self.assertFalse(self.check()['passed'])
+        (self.process / 'environ').write_bytes(
+            b'LIGHTNING_LM_MATCH_CPUS=11\0LIGHTNING_LM_LIO_WORKER_CPUS=11\0')
+        self.assertFalse(self.check()['passed'])
+
 
 if __name__ == '__main__':
     unittest.main()

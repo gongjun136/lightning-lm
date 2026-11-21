@@ -23,17 +23,21 @@ bool ConfigureCurrentThread(const std::string& name, int nice_floor,
 
 // Initialize once, before creating threads. Optional environment lists:
 // LIGHTNING_LM_BACKGROUND_CPUS, LIGHTNING_LM_SENSOR_CPUS,
-// LIGHTNING_LM_OUTPUT_CPUS, LIGHTNING_LM_EXECUTOR_CPUS, LIGHTNING_LM_MATCH_CPUS.
+// LIGHTNING_LM_OUTPUT_CPUS, LIGHTNING_LM_EXECUTOR_CPUS, LIGHTNING_LM_MATCH_CPUS,
+// LIGHTNING_LM_LIO_WORKER_CPUS.
 // All lists must be within the startup mask; background must be disjoint
 // from sensor/output/executor. Match defaults to background for old launchers;
 // an explicit match mask may share output/executor, but not the sensor core.
+// LIO workers default to background for old launchers. An explicit worker mask
+// may share output/executor, but must exclude sensor, background and matching.
 // Threads initially inherit the background mask.
 bool InitializeOnlineThreadPolicy(std::string* error = nullptr);
-enum class OnlineThreadRole { kBackground, kSensor, kOutput, kExecutor, kMatch };
+enum class OnlineThreadRole { kBackground, kSensor, kOutput, kExecutor, kMatch, kLioWorker };
 // Explicitly restore only a validated role mask from the startup policy.
 // Throws on an application/readback error, never silently runs unpinned.
 void ApplyOnlineThreadRole(OnlineThreadRole role, const std::string& name);
-// Call inside LIO OpenMP loops; worker threads must not inherit the sensor core.
+// Call inside LIO OpenMP loops; thread zero retains the sensor role, additional
+// threads use the worker role instead of inheriting the sensor core.
 void ApplyOnlineParallelWorkerPolicy();
 
 }  // namespace lightning::threading

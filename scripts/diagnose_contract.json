@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "b9a58d46c989de94cb66e83e0f05d9d2baf46c784137113657f3d6c0a3a54a2a",
+  "contract_id": "cbc347dac6c383ad9190b2cb28363a81a356e0b21e93be9ee4ad454aa88d36ec",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -44,7 +44,7 @@
     "scripts/match_failure_birdseye.py": "d17e72ccd5f02f5d93598d1a528e9379b7c8a5ed32f1e4a18edc57a6c3adf59f",
     "scripts/localization_log_events.py": "5624f80a62e32d631b5ac86f7628e755e86bbc45b97998f21669242e8db4a3f4",
     "scripts/analyze_localization_health_log.py": "92a12e1e3046483ba03bbadf316ed05b79f723e90d59a06cea4f316ea8f4656f",
-    "scripts/run_sany_lidar_loc.sh": "fba99bc3daa26a0262b2fc9839377c0de909e521c689e1a090705463b5f7a1a0",
+    "scripts/run_sany_lidar_loc.sh": "cc2dc9b5b8ee2dc5e82de15edeb01ff3ec9209df51ee13bea6e3f2124baa34fd",
     "src/core/system/loc_system.cc": "64d30eccf20f0b78e2e5a93350931b4eefde7e9ae1a9ae3368a16e393cc7719f",
     "src/core/system/loc_system.h": "fcc4777e1f7db308913ea94b6c024be9f608289c26619ff5fd3ca78874fffcc6",
     "config/sany/localization.yaml#diagnostics": "d00e0b3e5f79c15cb180b29660d53af810e585fa144ea8d62409e1a3f3c3ce04",
