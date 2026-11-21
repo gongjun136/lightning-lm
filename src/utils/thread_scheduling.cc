@@ -21,7 +21,7 @@ namespace lightning::threading {
 namespace {
 
 constexpr int kMaxNice = 19;
-std::array<std::vector<int>, 4> online_masks;
+std::array<std::vector<int>, 5> online_masks;
 bool online_policy_enabled = false;
 
 std::string_view Trim(std::string_view text) {
@@ -187,9 +187,10 @@ bool ConfigureCurrentThread(const std::string& name, int nice_floor,
 }
 
 bool InitializeOnlineThreadPolicy(std::string* error) {
-    const std::array<const char*, 4> names{{
+    const std::array<const char*, 5> names{{
         "LIGHTNING_LM_BACKGROUND_CPUS", "LIGHTNING_LM_SENSOR_CPUS",
-        "LIGHTNING_LM_OUTPUT_CPUS", "LIGHTNING_LM_EXECUTOR_CPUS"}};
+        "LIGHTNING_LM_OUTPUT_CPUS", "LIGHTNING_LM_EXECUTOR_CPUS",
+        "LIGHTNING_LM_MATCH_CPUS"}};
     bool requested = false;
     for (const auto* name : names) requested |= std::getenv(name) != nullptr;
     if (!requested) return true;
@@ -198,9 +199,13 @@ bool InitializeOnlineThreadPolicy(std::string* error) {
     if (sched_getaffinity(0, sizeof(original), &original) != 0) {
         SetError(error, "cannot read startup affinity"); return false;
     }
-    std::array<std::vector<int>, 4> candidate;
+    std::array<std::vector<int>, 5> candidate;
     for (size_t i = 0; i < names.size(); ++i) {
         const char* value = std::getenv(names[i]);
+        if (i == static_cast<size_t>(OnlineThreadRole::kMatch) && !value) {
+            candidate[i] = candidate[0];
+            continue;
+        }
         if (!value || !ParseCpuList(value, candidate[i], error) || candidate[i].empty()) {
             SetError(error, std::string("all online CPU roles must be specified: ") + names[i]);
             return false;
@@ -209,8 +214,13 @@ bool InitializeOnlineThreadPolicy(std::string* error) {
             if (!CPU_ISSET(cpu, &original)) {
                 SetError(error, "online CPU role exceeds startup affinity"); return false;
             }
-            if (i && std::find(candidate[0].begin(), candidate[0].end(), cpu) != candidate[0].end()) {
+            if (i > 0 && i < static_cast<size_t>(OnlineThreadRole::kMatch) &&
+                std::find(candidate[0].begin(), candidate[0].end(), cpu) != candidate[0].end()) {
                 SetError(error, "background and critical CPU roles overlap"); return false;
+            }
+            if (i == static_cast<size_t>(OnlineThreadRole::kMatch) &&
+                std::find(candidate[1].begin(), candidate[1].end(), cpu) != candidate[1].end()) {
+                SetError(error, "匹配线程与传感器线程的 CPU 配置重叠"); return false;
             }
         }
     }

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "contract_id": "815398a4f1d2f2142003a3f94c08eb5151135db455618b4d594cb1b3bc43544d",
+  "contract_id": "b9a58d46c989de94cb66e83e0f05d9d2baf46c784137113657f3d6c0a3a54a2a",
   "reviewed_sources": {
     "src/app/run_loc_online.cc": "591157fd97cc5998bf128d3fa3bc857820d5dbd1f5d4064aea16f0b4e621699f",
     "src/utils/input_timing_monitor.h": "b08b61cafb01e9d75c0aba7cf4e36a3db75f3efa61a9e1d9cfa33ec8dd3dc3ec",
@@ -23,7 +23,7 @@
     "src/utils/tracking_overlap_policy.h": "dcea6af3921f67dbcdf40eaeec0ea7f1190bfc36db8127ee70d0fa1852aa26da",
     "src/utils/tracking_gravity_policy.h": "6e57dc0145356ba5c45fa7e2b7b2fc3634099af9746eb0494b986556a539249e",
     "src/core/localization/localization_result.h": "fc18ef753532815604ee9645afe5f431fc49d908dba37e4ea4661069553cbe86",
-    "src/core/localization/localization.cpp": "e52e30c62a8f15608d6bb3cafc8e45f15d392f57c36cedbdedf4ea6914110faa",
+    "src/core/localization/localization.cpp": "55fdb7762ed51d1dc5a73005691938228377b7ea126c6417b0259400f3a467d4",
     "src/core/system/sany_localization_output.cc": "a777360533c4e0748c39b56e0c12e9bb535773be17fbb666c626e359c5f765c1",
     "src/core/system/sany_localization_output.h": "9b3fb942ac7f3f3d3f630814498da172d52ffc83c08c09db726b6c52b2c6e8cf",
     "src/utils/radar_dtc_state.h": "a06b054102ab71ac85d5b05a99e2e6e040b007db1231a77375941a4260224ac4",
@@ -44,7 +44,7 @@
     "scripts/match_failure_birdseye.py": "d17e72ccd5f02f5d93598d1a528e9379b7c8a5ed32f1e4a18edc57a6c3adf59f",
     "scripts/localization_log_events.py": "5624f80a62e32d631b5ac86f7628e755e86bbc45b97998f21669242e8db4a3f4",
     "scripts/analyze_localization_health_log.py": "92a12e1e3046483ba03bbadf316ed05b79f723e90d59a06cea4f316ea8f4656f",
-    "scripts/run_sany_lidar_loc.sh": "caef162d73ddcb001e6a0cd2ab5bf09c61c44004333e85097f720cf9ec0e8f1c",
+    "scripts/run_sany_lidar_loc.sh": "fba99bc3daa26a0262b2fc9839377c0de909e521c689e1a090705463b5f7a1a0",
     "src/core/system/loc_system.cc": "64d30eccf20f0b78e2e5a93350931b4eefde7e9ae1a9ae3368a16e393cc7719f",
     "src/core/system/loc_system.h": "fcc4777e1f7db308913ea94b6c024be9f608289c26619ff5fd3ca78874fffcc6",
     "config/sany/localization.yaml#diagnostics": "d00e0b3e5f79c15cb180b29660d53af810e585fa144ea8d62409e1a3f3c3ce04",

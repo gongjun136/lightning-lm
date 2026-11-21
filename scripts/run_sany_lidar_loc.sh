@@ -32,6 +32,12 @@ export SANY_MIN_FREE_GB="${SANY_MIN_FREE_GB:-20}"
 export SANY_ENABLE_POSE_VEL_WATCHDOG="${SANY_ENABLE_POSE_VEL_WATCHDOG:-0}"
 export LIGHTNING_LM_RUN_MODE="${LIGHTNING_LM_RUN_MODE:-diagnostic}"
 export LIGHTNING_LM_LIO_THREADS="${LIGHTNING_LM_LIO_THREADS:-1}"
+# Existing field wrappers may export the original four roles directly. Apply
+# the matching default here as well; generic launches without roles stay unpinned.
+if [[ -n "${LIGHTNING_LM_OUTPUT_CPUS:-}" ]]; then
+  export LIGHTNING_LM_MATCH_CPUS="${LIGHTNING_LM_MATCH_CPUS:-${LIGHTNING_LM_OUTPUT_CPUS}}"
+  export LIGHTNING_LM_NDT_THREADS="${LIGHTNING_LM_NDT_THREADS:-1}"
+fi
 # [sany-lidar-field-defaults]
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="${REPO}"
@@ -134,6 +140,8 @@ Useful environment variables:
                               (mode default: diagnostic=0, production=1)
   LIGHTNING_LM_LIO_THREADS    Override compute_budget.lio_threads (SANY default: 1)
   LIGHTNING_LM_NDT_THREADS    Override compute_budget.ndt_threads
+  LIGHTNING_LM_MATCH_CPUS     匹配线程 CPU；已配置在线角色时默认使用输出 CPU。
+                            与 LIGHTNING_LM_NDT_THREADS=1 配合进行单核对照。
   LIGHTNING_LM_NDT_MAX_POINTS Override NDT point cap only; LIO budgets come from YAML
   LIGHTNING_LM_RESOURCE_PROFILE
                               /proc process/thread CPU, runqueue wait, memory and I/O:
@@ -635,6 +643,7 @@ wait_for_inputs || fail "required sensor deliveries are unavailable; see ${run_d
   echo "lio_threads_override=${LIGHTNING_LM_LIO_THREADS:-<from-config>}"
   echo "speed_smoothing_shadow_requested=${LIGHTNING_LM_SPEED_SMOOTHING_SHADOW:-0}"
   echo "ndt_threads_override=${LIGHTNING_LM_NDT_THREADS:-<from-config>}"
+  echo "match_cpu_affinity=${LIGHTNING_LM_MATCH_CPUS:-<background>}"
   echo "ndt_max_points_override=${LIGHTNING_LM_NDT_MAX_POINTS:-<from-config>}"
   echo "solid_icp_workers_override=${LIGHTNING_LM_SOLID_ICP_WORKERS:-<from-config>}"
   echo "solid_worker_nice_override=${LIGHTNING_LM_SOLID_WORKER_NICE:-<from-config>}"

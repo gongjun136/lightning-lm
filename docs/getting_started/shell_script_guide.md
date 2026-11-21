@@ -139,7 +139,9 @@ ${SANY_WS}/run.sh：加载路径配置，选择 lidar，固定发布预设
 
 本轮 12 核 AGX Orin 可在现场入口调用执行器前 source
 `config/sany/orin_cpu_roles.bash`：进程启动允许 0–11，关键线程使用 10/11，
-后台线程使用 0–9。四个 `LIGHTNING_LM_*_CPUS` 角色变量必须成套设置，
+后台线程使用 0–9。后台、传感器、输出、执行器四个 `LIGHTNING_LM_*_CPUS` 角色变量必须成套设置；
+SANY 入口默认另设 `LIGHTNING_LM_MATCH_CPUS=11`、`LIGHTNING_LM_NDT_THREADS=1`，
+使 NDT 单线程与输出共享 CPU11。对照配置及验证范围见 @ref lio_scheduling_20261021 。
 外层服务的 CPU 限制必须容纳所有角色。该脚本只设置线程策略所需环境，
 内核隔核另由 `scripts/configure_orin_localization_isolation.py --apply` 写入，
 需要管理员权限及整机重启；实际效果用 `scripts/verify_localization_affinity.py`

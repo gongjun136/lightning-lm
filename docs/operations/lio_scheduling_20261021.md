@@ -78,3 +78,26 @@ python3 ~/Sany/lightning_lm_ws/src/lightning-lm/scripts/verify_localization_affi
 
 本轮不凭空开启实时 FIFO 或更改网卡掩码，不调整 -9 条件。
 CAN 可选输入和停车原始位姿修复解决的是各自有证据的故障来源，不会自动消除 LIO 和网络调度延迟。
+
+## 2026-11-21 NDT 单线程与 CPU11 对照配置
+
+SANY 默认 `compute_budget.ndt_threads=1`。在线角色配置新增
+`LIGHTNING_LM_MATCH_CPUS=11`，`loc_match` 与 `loc_executor`/`loc_output` 共享 CPU11；
+LIO 仍在 CPU10，其他后台线程仍在 CPU0–9。旧现场入口已设置输出角色时，
+启动器也会补齐匹配角色默认值；未配置在线角色的通用启动仍不主动绑核。
+NDT 已恢复线搜索及最终 Hessian 重算，保留数值异常保护。
+
+同一代码的共享核对照可在下一次人工安排启动时覆盖：
+
+```bash
+LIGHTNING_LM_MATCH_CPUS=0-9 LIGHTNING_LM_NDT_THREADS=4 \
+LIGHTNING_LM_COMPUTE_PROFILE=1 LIGHTNING_LM_RESOURCE_PROFILE=1 bash ~/Sany/run_loc.sh
+```
+
+单核候选使用 `LIGHTNING_LM_MATCH_CPUS=11 LIGHTNING_LM_NDT_THREADS=1`，其余条件一致。
+通过 `verify_localization_affinity.py <PID> --require-isolation` 核对实际线程；
+脚本读取目标进程的匹配角色环境，单线程模式下额外的 `loc_match` 工作线程会使检查失败。
+日志保留 `ONLINE_THREAD_AFFINITY ... name=loc_match cpus=11`、实际 `ndt_threads`，
+运行元数据记录 `match_cpu_affinity`，资源采样记录匹配角色环境。
+验收比较 NDT 耗时 P95/P99、LIO 积压、输出年龄及 Safety；绑核通过不代表时限通过。
+这一配置不直接解决 CPU10 上的 LIO 满载。程序正在运行时，重启仍需本次明确许可。

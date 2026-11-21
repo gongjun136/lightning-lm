@@ -301,6 +301,8 @@ if(BUILD_TESTING)
     add_test(NAME compute_profiling_test COMMAND $<TARGET_FILE:compute_profiling_test>)
     add_test(NAME compute_budget_test COMMAND $<TARGET_FILE:compute_budget_test>)
     add_test(NAME thread_scheduling_test COMMAND $<TARGET_FILE:thread_scheduling_test>)
+    add_test(NAME localization_affinity_readback_test
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/test_verify_localization_affinity.py)
     add_test(NAME laser_mapping_projection_test COMMAND $<TARGET_FILE:laser_mapping_projection_test>)
     add_test(NAME laser_mapping_timing_test COMMAND $<TARGET_FILE:laser_mapping_timing_test>)
     add_test(NAME debug_event_test COMMAND $<TARGET_FILE:debug_event_test>)

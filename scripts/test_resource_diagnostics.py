@@ -59,6 +59,9 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(load['hard_latency_sec'],.3)
         self.assertEqual(declared['requested_effective_budget']['ndt_max_points'],3600)
         self.assertEqual(declared['compute_budget']['ndt_max_points'],3500)
+        self.assertEqual(declared['requested_effective_budget']['ndt_threads'],1)
+        baseline=config_summary.summarize(path,{'LIGHTNING_LM_NDT_THREADS':'4'})
+        self.assertEqual(baseline['requested_effective_budget']['ndt_threads'],4)
         with tempfile.TemporaryDirectory() as temp:
             from resolve_sany_config import resolve
             vehicle=Path(temp)/'vehicle.yaml'
@@ -77,6 +80,28 @@ class ResourceTests(unittest.TestCase):
         path=repo/'config/sany/localization.yaml'
         config=yaml.safe_load(path.read_text(encoding='utf-8'))
         self.assertIs(config['output']['fixed_map_transform']['enabled'],False)
+
+    @unittest.skipUnless(sys.platform=='linux','requires Bash field launcher')
+    def test_ndt_match_defaults_preserve_explicit_comparison(self):
+        repo=Path(__file__).resolve().parent.parent
+        launcher=(repo/'scripts/run_sany_lidar_loc.sh').read_text()
+        defaults=launcher.split('# [sany-lidar-field-defaults]')[1]
+        report='\nprintf "%s,%s" "${LIGHTNING_LM_MATCH_CPUS:-unset}" "${LIGHTNING_LM_NDT_THREADS:-unset}"'
+        clean={key:value for key,value in os.environ.items() if not key.startswith('LIGHTNING_LM_')}
+        for overrides,expected in [({},'unset,unset'),
+                ({'LIGHTNING_LM_OUTPUT_CPUS':'11'},'11,1'),
+                ({'LIGHTNING_LM_OUTPUT_CPUS':'11','LIGHTNING_LM_MATCH_CPUS':'0-9',
+                  'LIGHTNING_LM_NDT_THREADS':'4'},'0-9,4')]:
+            with self.subTest(overrides=overrides):
+                actual=subprocess.check_output(['bash','-c',defaults+report],
+                                               env={**clean,**overrides},text=True)
+                self.assertEqual(actual,expected)
+        profile=repo/'config/sany/orin_cpu_roles.bash'
+        for overrides,expected in [({},'11,1'),
+                ({'LIGHTNING_LM_MATCH_CPUS':'0-9','LIGHTNING_LM_NDT_THREADS':'4'},'0-9,4')]:
+            actual=subprocess.check_output(['bash','-c','source "$1"'+report,'test',str(profile)],
+                                           env={**clean,**overrides},text=True)
+            self.assertEqual(actual,expected)
 
     def test_system_cpu_ranking_handles_pid_reuse(self):
         old={1:dict(start_ticks=10,cpu_ticks=100),2:dict(start_ticks=20,cpu_ticks=80),9:{}}

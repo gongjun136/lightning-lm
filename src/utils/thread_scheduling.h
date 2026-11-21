@@ -23,11 +23,13 @@ bool ConfigureCurrentThread(const std::string& name, int nice_floor,
 
 // Initialize once, before creating threads. Optional environment lists:
 // LIGHTNING_LM_BACKGROUND_CPUS, LIGHTNING_LM_SENSOR_CPUS,
-// LIGHTNING_LM_OUTPUT_CPUS, LIGHTNING_LM_EXECUTOR_CPUS.
+// LIGHTNING_LM_OUTPUT_CPUS, LIGHTNING_LM_EXECUTOR_CPUS, LIGHTNING_LM_MATCH_CPUS.
 // All lists must be within the startup mask; background must be disjoint
-// from critical roles. Threads initially inherit the background mask.
+// from sensor/output/executor. Match defaults to background for old launchers;
+// an explicit match mask may share output/executor, but not the sensor core.
+// Threads initially inherit the background mask.
 bool InitializeOnlineThreadPolicy(std::string* error = nullptr);
-enum class OnlineThreadRole { kBackground, kSensor, kOutput, kExecutor };
+enum class OnlineThreadRole { kBackground, kSensor, kOutput, kExecutor, kMatch };
 // Explicitly restore only a validated role mask from the startup policy.
 // Throws on an application/readback error, never silently runs unpinned.
 void ApplyOnlineThreadRole(OnlineThreadRole role, const std::string& name);
