@@ -259,9 +259,8 @@ SANY 可选 MCAP 录制启用的雷达点云、主 IMU、`pose_vel`、定位 fau
 
 SANY 正式定位 YAML 通过统一的 `compute_budget` 限制 LIO、NDT 和 SOLiD ICP 工作池。域控调参时可
 用 `LIGHTNING_LM_LIO_THREADS`、`LIGHTNING_LM_NDT_THREADS`、
-`LIGHTNING_LM_SOLID_ICP_WORKERS` 临时覆盖。SANY 双线程配置使用 `LIGHTNING_LM_CPU_AFFINITY=0-11`，
-LIO 主线程为 CPU10，`LIGHTNING_LM_LIO_WORKER_CPUS=11` 指定额外工作线程，NDT 使用 CPU0–9。
-进程总掩码必须容纳所有线程角色。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写；脚本会在启动前
+`LIGHTNING_LM_SOLID_ICP_WORKERS` 临时覆盖，并用 `LIGHTNING_LM_CPU_AFFINITY=0-9` 将算法限制到
+已为定位预留的核心。实际核心列表必须按域控的 IRQ、驱动和其他进程分配填写；脚本会在启动前
 校验 SOLiD worker 核心集合是定位进程有效核心集合的子集，不满足时拒绝启动。
 
 ### 历史 `/PosRes` 接收统计

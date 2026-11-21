@@ -13,7 +13,6 @@
 #include <sched.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
@@ -99,92 +98,6 @@ int main() {
     for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
         if (CPU_ISSET(cpu, &original)) available.push_back(cpu);
     if (available.size() >= 3) {
-        // Isolate policy initialization in child processes: each starts with
-        // the same original mask, without resetting process-global policy state.
-        for (const std::string match : {std::string(), std::to_string(available[0]),
-                                       std::to_string(available[2]), std::to_string(available[1]),
-                                       std::string("invalid")}) {
-            const pid_t child = fork();
-            Require(child >= 0, "role test process can be created");
-            if (child == 0) {
-                using namespace lightning::threading;
-                unsetenv("LIGHTNING_LM_LIO_WORKER_CPUS");
-                setenv("LIGHTNING_LM_BACKGROUND_CPUS", std::to_string(available[0]).c_str(), 1);
-                setenv("LIGHTNING_LM_SENSOR_CPUS", std::to_string(available[1]).c_str(), 1);
-                setenv("LIGHTNING_LM_OUTPUT_CPUS", std::to_string(available[2]).c_str(), 1);
-                setenv("LIGHTNING_LM_EXECUTOR_CPUS", std::to_string(available[2]).c_str(), 1);
-                if (match.empty()) unsetenv("LIGHTNING_LM_MATCH_CPUS");
-                else setenv("LIGHTNING_LM_MATCH_CPUS", match.c_str(), 1);
-                const bool invalid = match == "invalid" || match == std::to_string(available[1]);
-                Require(InitializeOnlineThreadPolicy(&error) != invalid,
-                        "match role validates mask and excludes sensor CPU");
-                if (!invalid) {
-                    std::thread matching([&] {
-                        ApplyOnlineThreadRole(OnlineThreadRole::kMatch, "loc_match");
-#pragma omp parallel num_threads(1)
-                        {
-                            cpu_set_t mask;
-                            CPU_ZERO(&mask);
-                            const int expected = match.empty() ? available[0] : std::stoi(match);
-                            Require(omp_get_num_threads() == 1 &&
-                                    sched_getaffinity(0, sizeof(mask), &mask) == 0 &&
-                                    CPU_COUNT(&mask) == 1 && CPU_ISSET(expected, &mask),
-                                    "single-thread matching executes on its configured CPU");
-                        }
-                    });
-                    matching.join();
-                }
-                _exit(0);
-            }
-            int status = 0;
-            Require(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
-                    "match role policy case passes");
-        }
-        for (const std::string worker_mask : {std::string(), std::to_string(available[2]),
-                                              std::to_string(available[1]), std::to_string(available[0]),
-                                              std::string("invalid"), std::string("1023")}) {
-            const pid_t child = fork();
-            Require(child >= 0, "worker role test process can be created");
-            if (child == 0) {
-                using namespace lightning::threading;
-                setenv("LIGHTNING_LM_BACKGROUND_CPUS", std::to_string(available[0]).c_str(), 1);
-                setenv("LIGHTNING_LM_SENSOR_CPUS", std::to_string(available[1]).c_str(), 1);
-                setenv("LIGHTNING_LM_OUTPUT_CPUS", std::to_string(available[2]).c_str(), 1);
-                setenv("LIGHTNING_LM_EXECUTOR_CPUS", std::to_string(available[2]).c_str(), 1);
-                setenv("LIGHTNING_LM_MATCH_CPUS", std::to_string(available[0]).c_str(), 1);
-                if (worker_mask.empty()) unsetenv("LIGHTNING_LM_LIO_WORKER_CPUS");
-                else setenv("LIGHTNING_LM_LIO_WORKER_CPUS", worker_mask.c_str(), 1);
-                const bool valid = worker_mask.empty() || worker_mask == std::to_string(available[2]);
-                Require(InitializeOnlineThreadPolicy(&error) == valid,
-                        "worker rejects invalid, shared compute or unavailable CPUs");
-                if (valid) {
-                    ApplyOnlineThreadRole(OnlineThreadRole::kSensor, "loc_sensor");
-                    // Reused OpenMP workers and serial regions must preserve the
-                    // main thread mask and read back the dedicated worker CPU.
-                    for (int count : {2, 1, 2}) {
-                        int failures = 0;
-#pragma omp parallel num_threads(count) reduction(+:failures)
-                        {
-                            ApplyOnlineParallelWorkerPolicy();
-                            cpu_set_t mask;
-                            CPU_ZERO(&mask);
-                            const int expected = omp_get_thread_num() == 0 ? available[1] :
-                                (worker_mask.empty() ? available[0] : available[2]);
-                            if (omp_get_num_threads() != count ||
-                                sched_getaffinity(0, sizeof(mask), &mask) != 0 ||
-                                CPU_COUNT(&mask) != 1 || !CPU_ISSET(expected, &mask)) ++failures;
-                        }
-                        Require(failures == 0, "LIO team actually uses separate requested CPUs");
-                    }
-                }
-                _exit(0);
-            }
-            int status = 0;
-            Require(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
-                    "worker role policy case passes");
-        }
-        unsetenv("LIGHTNING_LM_LIO_WORKER_CPUS");
-        unsetenv("LIGHTNING_LM_MATCH_CPUS");
         setenv("LIGHTNING_LM_BACKGROUND_CPUS", std::to_string(available[0]).c_str(), 1);
         setenv("LIGHTNING_LM_SENSOR_CPUS", std::to_string(available[1]).c_str(), 1);
         setenv("LIGHTNING_LM_OUTPUT_CPUS", std::to_string(available[2]).c_str(), 1);

@@ -9,7 +9,7 @@ common:
   imu_topic: /livox/imu_192_168_3_184
   benchmark_variant: relocalization_solid_cpu
 compute_budget:
-  lio_threads: 2
+  lio_threads: 6
   ndt_threads: 4
   ndt_max_points: 3500
   solid_icp_workers: 12

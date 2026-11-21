@@ -193,7 +193,7 @@ bool Localization::Init(const std::string& yaml_path, const std::string& global_
         threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kOutput, "loc_output");
     });
     lidar_loc_proc_cloud_.SetThreadInit([] {
-        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kMatch, "loc_match");
+        threading::ApplyOnlineThreadRole(threading::OnlineThreadRole::kBackground, "loc_match");
     });
 
     // 允许跳帧

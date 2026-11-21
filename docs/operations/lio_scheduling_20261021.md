@@ -33,7 +33,7 @@
 
 ## 第一轮：保持两个隔离核，消除共享 LIO 工作线程依赖
 
-当时 SANY 启动入口默认 `LIGHTNING_LM_LIO_THREADS=1`，全局 YAML 保留六线程；2026-11-21 后续配置见本文末节。
+SANY 启动入口现默认 `LIGHTNING_LM_LIO_THREADS=1`，全局 YAML 仍保留六线程，显式环境变量仍可覆盖。
 日常启动只需 `bash ~/Sany/run_loc.sh`。三个诊断采集开关保持原有模式默认值；需要采集时才显式开启：
 
 ```bash
@@ -78,31 +78,3 @@ python3 ~/Sany/lightning_lm_ws/src/lightning-lm/scripts/verify_localization_affi
 
 本轮不凭空开启实时 FIFO 或更改网卡掩码，不调整 -9 条件。
 CAN 可选输入和停车原始位姿修复解决的是各自有证据的故障来源，不会自动消除 LIO 和网络调度延迟。
-
-## 2026-11-21 LIO 双线程与两个隔离核
-
-SANY 默认 `compute_budget.lio_threads=2`、`compute_budget.ndt_threads=4`。
-`loc_sensor` 保持 CPU10，新增 `LIGHTNING_LM_LIO_WORKER_CPUS=11` 使唯一的
-`loc_lio_worker` 与 `loc_executor`/`loc_output` 共享 CPU11。
-`LIGHTNING_LM_MATCH_CPUS=0-9` 使 NDT 四线程回到共享核。
-旧现场入口已设置输出角色时，启动器补齐 LIO 工作线程和匹配角色默认值；
-显式环境覆盖保持有效，冲突配置在启动时拒绝；未配置在线角色的通用启动仍不主动绑核。
-NDT 已恢复线搜索及最终 Hessian 重算，保留数值异常保护。
-
-同一代码的单线程对照可在下一次人工安排启动时覆盖：
-
-```bash
-LIGHTNING_LM_LIO_THREADS=1 \
-LIGHTNING_LM_MATCH_CPUS=0-9 LIGHTNING_LM_NDT_THREADS=4 \
-LIGHTNING_LM_COMPUTE_PROFILE=1 LIGHTNING_LM_RESOURCE_PROFILE=1 bash ~/Sany/run_loc.sh
-```
-
-双线程使用 `LIGHTNING_LM_LIO_THREADS=2`，其余条件一致。
-设置线程数为 2 本身不能证明 CPU 分配正确；历史未配置工作线程角色时仍兼容回退到后台核。
-通过 `verify_localization_affinity.py <PID> --require-isolation` 核对实际线程；
-脚本在已处理点云后检查实际工作线程数量和掩码，拒绝 CPU10/11 混跑、漏绑或多出工作线程。
-日志保留 `ONLINE_THREAD_AFFINITY ... name=loc_lio_worker cpus=11` 和
-`name=loc_match cpus=0-9`；运行元数据记录 `lio_worker_cpu_affinity`、`match_cpu_affinity`。
-LIO 最近邻、平面拟合和观测构建沿用原有并行循环；不改变匹配公式、点数预算和报警门槛。
-验收比较 LIO 耗时 P95/P99、积压、输出年龄及 Safety，同时确认 CPU11 的回调/输出未恶化。
-本地回放耗时不能替代 Orin 实测；绑核通过不代表时限通过。程序正在运行时，重启仍需本次明确许可。
