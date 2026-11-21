@@ -6,6 +6,7 @@
 '''
 from translation_diagnostics import describe_translation
 from diagnostic_history_layout import render_history_sections, history_line_style
+from radar_input_diagnostics import describe_radar_inputs
 
 import json
 import math
@@ -310,7 +311,17 @@ def notes(key, evidence, thresholds, finding):
     if key == 'translation_condition':
         out.extend(describe_translation(evidence)['warnings'])
     if key == 'frame_supply':
-        out.append('恢复确认阶段年龄可能已低于阈值，按记录展示，不推断大小关系')
+        age = finite(evidence.get('lidar_frame_age_sec'))
+        timeout = finite(threshold('radar_frame_timeout_sec', evidence, thresholds)[0])
+        if age is not None and timeout is not None and age < timeout:
+            out.append('记录中的帧年龄已低于超时门槛；码 2 仍按恢复确认判据解释，不能仅凭年龄推断已恢复')
+        recovery, origin = threshold('radar_frame_recovery_frames', evidence, thresholds)
+        if finite(recovery) == 1:
+            out.append('恢复门槛为 1 帧（%s）：首个新鲜合格组帧清除码 2，下一次 Safety 发布体现；其他故障独立判定' % origin)
+        elif finite(recovery) is not None:
+            out.append('恢复门槛为 %s 帧（%s，按本条记录；本版本默认 1 帧，不覆盖记录值）：需故障后连续达到该数量的新鲜合格组帧才清除码 2，下一次 Safety 发布体现；其他故障独立判定' % (fmt(recovery), origin))
+        if finite(recovery) is not None:
+            out.append('新鲜要求主雷达输入未过期、组帧接收满足恢复时效；空帧、重复时间戳、未满足组帧条件的单路来包均不计入恢复')
     if key in ('output_stale', 'output_stale_degraded'):
         age = num(evidence.get('output_age_sec'))
         if truthy(evidence.get('first_valid_output_missing')) or (age is not None and math.isinf(age)):
@@ -364,6 +375,7 @@ def finding_view(finding, thresholds, ref):
             'source': f.get('source'), 'scope': f.get('scope'), 'published': clean(f.get('published')),
             'advice': f.get('advice'), 'measures': measures(key, ev, thresholds), 'flags': flags(key, ev),
             'notes': notes(key, ev, thresholds, f), 'evidence': clean(ev),
+            'radar_inputs': describe_radar_inputs(ev) if key == 'frame_supply' else [],
             'matching_rejection': rejection_view(mr) if isinstance(mr, dict) else None}
 
 
@@ -407,10 +419,12 @@ def episode_view(ep, index, thresholds):
         'state': state, 'state_text': STATE_TEXT.get(state, '状态未知(' + txt(state) + ')'),
         'coverage': COVERAGE_TEXT.get(cov, '采集覆盖未知(' + txt(cov) + ')'),
         'first_time': ep.get('first_time'), 'last_time': ep.get('last_time'), 'end_time': ep.get('end_time'),
+        'end_source': ep.get('end_source'),
         'start_ns': clean(ep.get('start_ns')), 'last_ns': clean(ep.get('last_ns')), 'end_ns': clean(ep.get('end_ns')),
         'samples': clean(ep.get('samples')), 'next_raw': clean(ep.get('next_raw')),
         'onset_measures': measures(view['key'], onset, thresholds) if onset else [],
         'onset_evidence': clean(onset), 'onset_source': ep.get('onset_source'), 'onset_advice': ep.get('onset_advice'),
+        'onset_radar_inputs': describe_radar_inputs(onset) if view['key'] == 'frame_supply' and onset else [],
         'onset_title': ep.get('onset_title'),
         'event_paths': clean(lst(ep.get('event_paths'))), 'onset_context': clean(lst(ep.get('onset_context'))),
         'context': clean(lst(ep.get('context'))), 'timing': timing_view(lst(ep.get('input_timing_evidence')), ref)})
@@ -620,7 +634,7 @@ def status_lines(report):
     lines.append(line)
     cp = d(report.get('compute_profile'))
     lines.append('计算剖析：状态 %s，启用 %s，路径 %s' % (txt(cp.get('status')), fmt(cp.get('enabled')), txt(cp.get('path'))))
-    lines.append('采集器累计：%s；窗口内采集丢弃增量 %s' % (brief(d(report.get('collector_totals')), 8),
+    lines.append('采集器累计：%s；窗口内采集丢弃增量 %s' % (brief(d(report.get('collector_totals')), 8) if report.get('collector_totals') else '未记录',
                                                 short(report.get('window_collector_drop_delta'))))
     lines.append('启动证据 %s；匹配证据 %s' % (fmt(report.get('has_launch_evidence')), fmt(report.get('has_match_evidence'))))
     return lines
@@ -695,7 +709,7 @@ def _finding_compact(v, out):
     body = measurements[0] if split_translation else '；'.join(measurements)
     if not body:
         body = '记录字段 ' + '，'.join(v['flags']) if v.get('flags') else '实测值未记录'
-    out.append('  [%s] 码 %s %s（%s）时间 %s：%s' % (v['ref'], v['code'], txt(v.get('title')), tags,
+    out.append('  [%s] 码 %s %s（%s）本条记录时间 %s：%s' % (v['ref'], v['code'], txt(v.get('title')), tags,
                                              txt(v.get('time')), body))
     if split_translation:
         out.extend('      ' + line for line in measurements[1:])
@@ -706,6 +720,7 @@ def _finding_compact(v, out):
     extra.extend(v.get('notes') or [])
     if extra:
         out.append('      ' + '；'.join(extra))
+    out.extend('      ' + line for line in v.get('radar_inputs') or [])
 
 
 def _episode_compact(v, refs, out):
@@ -714,6 +729,8 @@ def _episode_compact(v, refs, out):
         if tag:
             tags.append(tag)
     measurements = v.get('onset_measures') or v.get('measures') or []
+    if v['key'] == 'frame_supply' and v.get('onset_measures'):
+        measurements = measurements[:1] + ['触发时 ' + m for m in measurements[1:]]
     split_translation = v['key'] == 'translation_condition' and len(measurements) > 1
     if measurements:
         values = ('触发值 ' if v.get('onset_measures') else '末样本 ') + (
@@ -730,6 +747,12 @@ def _episode_compact(v, refs, out):
         out.extend('      ' + item for item in measurements[1:])
     if v.get('matching_rejection'):
         out.append('      历史匹配拒绝：' + v['matching_rejection']['text'])
+    if v['key'] == 'frame_supply':
+        if v.get('state') == 'recovered':
+            out.append('      原始码回 0 首见 %s；实际清除时刻在末次故障记录与该记录之间；恢复帧未单独记录，不能确认由哪一帧清除' % txt(v.get('end_time')))
+            out.append('      回 0 依据：' + txt(v.get('end_source')))
+        out.append('      以下为触发时输入快照（对应 %s）：' % txt(v.get('first_time')) if v.get('onset_radar_inputs') else '      以下为末样本输入快照：')
+        out.extend('      ' + line for line in v.get('onset_radar_inputs') or v.get('radar_inputs') or [])
 
 
 def _timing_compact(eps, shown, timing, out):
@@ -831,6 +854,8 @@ def render_text(s, color=False):
     out.append('%s的判据（%d 项）%s' % (label, len(current), '' if current else '：未检出已知故障判据'))
     for v in current:
         _finding_compact(v, out)
+    if any(v.get('key') == 'frame_supply' for v in current):
+        out.append('  [C] 表示本条记录的判据；首次触发时间见历史分区，未保留历史段时为未知。')
     ev = d(s.get('event'))
     if ev.get('status') or ev.get('trigger_time') or ev.get('trigger_reasons'):
         reasons = '；'.join(short(r) for r in ev.get('trigger_reasons') or []) or '未记录'
@@ -851,8 +876,11 @@ def render_text(s, color=False):
         out.append(('匹配图像/快照：' if i == 0 else '  ') + line)
     up = d(s.get('upstream_lidar'))
     found = up.get('findings') or []
-    out.append('上游驱动（独立证据，不拼接为因果；active 或退出码 0 不等于健康）：%s；状态 %s%s' % (
-        txt(up.get('kind')), txt(up.get('status')), '' if found else '；无异常条目，不能据此确认当前设备或数据流正常'))
+    if not found and up.get('status') in (None, 'unavailable'):
+        out.append('上游驱动：未记录（运行状态与异常条目证据不足），不能判断设备或数据流是否正常；active 或退出码 0 也不等于健康')
+    else:
+        out.append('上游驱动（独立证据，不拼接为因果；active 或退出码 0 不等于健康）：%s；状态 %s%s' % (
+            txt(up.get('kind')), txt(up.get('status')), '' if found else '；无异常条目，不能据此确认当前设备或数据流正常'))
     for f in found[:3]:
         out.append('  [%s] %s %s/%s：%s' % (f['ref'], txt(f.get('severity')), txt(f.get('role')),
                                          txt(f.get('stage')), txt(f.get('message'))))
@@ -875,7 +903,7 @@ def render_text(s, color=False):
             line += '（范围 %s）' % short(s.get('runtime_protection_scope'))
         out.append(line)
     if empty:
-        out.append('无记录：' + '、'.join(empty))
+        out.append('未记录（不能据此排除）：' + '、'.join(empty))
     status = s.get('status_lines') or []
     gaps = s.get('collection_gaps') or []
     out.extend(status[:2])
@@ -911,7 +939,8 @@ def render_text(s, color=False):
         dropped = sum(counts.get(k, 0) for k in ('dropped_busy','dropped_queue','dropped_oversize','rejected_disk','rejected_map','writer_errors'))
         out.append('低重合率观察取证：已保存 %s，限频跳过 %s，丢弃/写入异常计数 %s；独立配额 %s MiB' % (
             fmt(counts.get('saved')), fmt(counts.get('suppressed')), dropped, fmt(collector.get('disk_mb'))))
-    out.append('采集：缺口 %s；%s' % ('；'.join(gaps) if gaps else '输入时序未记录截断/丢失/序号缺口',
+    gap_text = '；'.join(gaps) if gaps else ('已检查范围内未见截断/丢失/序号缺口' if d(s.get('input_timing')).get('status') == 'available' else '未知（输入时序未记录，无法检查截断/丢失/序号缺口）')
+    out.append('采集：缺口 %s；%s' % (gap_text,
                                   status[3] if len(status) > 3 else '采集器统计未记录'))
     out.append('完整：--all（摘要 + 旧版全部判据段 + 证据索引）；结构化：--json 的 diagnostic_summary 字段')
     return NL.join(_color_summary(out, s) if color else out)
@@ -946,6 +975,7 @@ def _index_view(out, v, seen=None):
     out.extend('  触发时 ' + m for m in v.get('onset_measures') or [])
     out.extend('  ' + m for m in v.get('measures') or [])
     out.extend('  注 ' + n for n in v.get('notes') or [])
+    out.extend('  ' + line for line in v.get('radar_inputs') or [])
     for label in ('advice', 'onset_advice'):
         if v.get(label):
             out.append('  ' + label + ' ' + txt(v[label]))

@@ -841,6 +841,13 @@ bool MultiLidarFrameAssembler::PopReady(FusedLidarFrame& frame) {
 
 void MultiLidarFrameAssembler::Flush() { PromoteReady(true); }
 
+bool MultiLidarFrameAssembler::DescribeOldestPending(MultiLidarFrameStats& stats, double& sensor_progress) const {
+    if (frames_.empty()) return false;
+    stats = DescribeInputFrame(frames_.begin()->second).stats;
+    sensor_progress = max_seen_time_ - BucketTime(frames_.begin()->first);
+    return true;
+}
+
 FusedLidarFrame MultiLidarFrameAssembler::DescribeInputFrame(const PartialFrame& frame) const {
     FusedLidarFrame result;
     auto& stats = result.stats;

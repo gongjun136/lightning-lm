@@ -45,6 +45,7 @@ SOURCES = (
     'scripts/compute_profile_report.py',
     'scripts/diagnose_localization.py',
     'scripts/diagnostic_summary.py',
+    'scripts/radar_input_diagnostics.py',
     'scripts/diagnostic_history_layout.py',
     'scripts/translation_diagnostics.py',
     'scripts/overlap_diagnostics.py',

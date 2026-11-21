@@ -6,7 +6,9 @@ static Watchdog::Clock::time_point At(int ms) { return Watchdog::Clock::time_poi
 static void Require(bool ok, const char* text) { if (!ok) throw std::runtime_error(text); }
 int main() {
     try {
-        Watchdog w(Watchdog::Config{});
+        // 保留可配置三帧模式的既有契约，同时单独验证新的默认一帧恢复。
+        auto three = Watchdog::Config{}; three.recovery_frames = 3;
+        Watchdog w(three);
         Require(!w.Evaluate(At(9000)).fault, "unarmed watchdog must not fault");
         w.Start(At(1000));
         Require(!w.Evaluate(At(8999)).fault && w.Evaluate(At(9000)).fault, "finite no-input startup grace");
@@ -31,7 +33,7 @@ int main() {
         w.Observe(10.6, At(10350), true, At(10350));
         w.Observe(10.7, At(10450), true, At(10450));
         Require(!w.Evaluate(At(10450)).fault, "continuous fresh recovery succeeds");
-        Watchdog batch(Watchdog::Config{});
+        Watchdog batch(three);
         batch.Start(At(1000)); batch.Observe(1, At(1100), true, At(1100));
         Require(batch.Evaluate(At(1400)).fault, "batch fixture faults independently");
         batch.Observe(1.1, At(1410), true, At(1600));
@@ -41,6 +43,15 @@ int main() {
                 "three cached arrivals processed together cannot clear a fault");
         batch.Observe(1.4, At(1700), true, At(1700)); batch.Observe(1.5, At(1800), true, At(1800));
         Require(!batch.Evaluate(At(1800)).fault, "live arrivals finish recovery after a cached batch");
+        Watchdog immediate(Watchdog::Config{});
+        immediate.Start(At(1000)); immediate.Observe(1, At(1100), true, At(1100));
+        Require(immediate.Evaluate(At(1400)).fault, "silence still faults with one-frame recovery");
+        Require(!immediate.Observe(1, At(1410), true, At(1410)), "duplicate cannot recover");
+        Require(!immediate.Observe(1.1, At(1420), false, At(1420)), "ineligible group cannot recover");
+        Require(!immediate.Observe(1.1, At(1100), true, At(1420)), "stale input cannot recover");
+        Require(immediate.Evaluate(At(1420)).fault, "invalid input leaves the fault latched");
+        Require(immediate.Observe(1.1, At(1430), true, At(1430)) && !immediate.Evaluate(At(1430)).fault,
+                "first fresh eligible group clears the default fault immediately");
         bool invalid = false;
         try { auto c = Watchdog::Config{}; c.timeout_sec = c.warning_sec; Watchdog bad(c); }
         catch (const std::invalid_argument&) { invalid = true; }

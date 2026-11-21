@@ -371,7 +371,7 @@ class DiagnosisTest(unittest.TestCase):
         self.assertEqual(report['current_findings'][0]['key'], 'frame_supply')
         self.assertIn('雷达输入组帧策略', d.render(report))
         self.assertIn('算法处理滞后不参与', d.render(report))
-        self.assertIn('确认阶段', d.render(report))
+        self.assertIn('故障仍保持，正在确认恢复', d.render(report))
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1188,7 +1188,11 @@ class DiagnosisTest(unittest.TestCase):
         self.log.write_text(first +
             'W1028 12:00:01.000000 42] adaptive lidar load step 1 -> 2, processing_ms=80, latency_ms=20, tracking_healthy=1\n' + last)
         report = d.analyze(self.run, None, '指定路径', [])
-        self.assertEqual(report['findings'], baseline)
+        self.assertEqual(baseline[0]['end_source'], f'{self.log}:byte={len(first.encode())}')
+        self.assertEqual(report['findings'][0]['end_source'],
+                         f'{self.log}:byte={self.log.read_bytes().index(last.encode())}')
+        self.assertEqual([{k:v for k,v in f.items() if k != 'end_source'} for f in report['findings']],
+                         [{k:v for k,v in f.items() if k != 'end_source'} for f in baseline])
         self.assertEqual(len(report['runtime_protections']), 1)
 
     def test_explicit_event_protections_use_exact_timeline_window(self):
