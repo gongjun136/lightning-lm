@@ -1,8 +1,8 @@
 // ndt_line_search_test.cc
-// 独立回归测试：More-Thuente 线搜索修复（interval_converged 符号 + 内层搜索后 Hessian 重算）。
+// 独立回归测试：恢复历史 NDT 步长策略，正常区间使用截断后的初始牛顿步。
 // 仅生成合成点云，不访问文件/网络；不使用 assert；任一检查失败返回非零并打印中文说明。
 // 体素键语义（分析方核实）：key = round(point * inverse_leaf_size)，分辨率 1.0 时整数为体素中心，半整数为边界。
-// 预期：修复前版本在用例2失败（内层循环被跳过）；仅改符号的版本在用例3失败（Hessian 为零）。
+// 预期：用例2确认不再进行内层步长细化；其余检查保留数值有效性和实际候选的一致性。
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -249,7 +249,7 @@ inline double runAndCheck(Probe &ndt, Checker &c, const Vec6 &x, const Vec6 &dir
   c.expect(alpha > 0.0, "alpha is a real positive step, not an artificial zero");
   c.expect(alpha >= step_min && alpha <= step_max, "alpha lies within [step_min, step_max]");
   c.expect(std::isfinite(score) && g.allFinite() && h.allFinite(), "score, gradient and Hessian are finite");
-  c.expect(h.norm() > 0.0, "Hessian was recomputed, not left zeroed");
+  c.expect(h.norm() > 0.0, "selected candidate has a nonzero Hessian");
   if (!std::isfinite(alpha)) return alpha;
 
   Vec6 g2;
@@ -311,7 +311,7 @@ inline bool run() {
   if (c.failures) return false;
   const Vec6 gdir = g0.normalized();
 
-  // 3. Ordinary finite backtracking: oversized initial step, production lower bound.
+  // 3. Legacy positive-interval policy: even an oversized trial retains its clamped step.
   runAndCheck(ndt, c, x0, gdir, 2.0, 2.0, 0.005, score0, g0, h0, 0);
 
   // 4. Clamp stagnation. With step_min == step_max every proposal clamps onto the evaluated step,
@@ -402,7 +402,7 @@ int main() {
     Check(g.norm() <= 1e-5 * H.norm(), "用例1b 驻点：单位变换处梯度应接近零（对称点簇，梯度范数 ≤ 1e-5 × Hessian 范数，仅为相对尺度归一化，不等价于牛顿步上界）");
   }
 
-  // 用例 2/3：过大初始试探步必须触发内层搜索并被缩小；搜索后返回的 Hessian 必须与最终位置重算一致
+  // 用例 2/3：历史策略保留过大的初始试探步；得分、Hessian 和输出点云必须对应实际选用的位置。
   {
     Vec6 x0;
     x0 << 0.15, 0.0, 0.0, 0.0, 0.0, 0.0;  // 源沿 x 偏移 0.15，真实最优在 x=0
@@ -422,9 +422,9 @@ int main() {
     std::printf("用例2: score0=%.6f score_t=%.6f a_t=%.6f |H|=%.6e\n", score0, score, a_t, H.norm());
 
     Check(std::isfinite(a_t) && a_t > 0.0, "用例2 线搜索：返回步长应为有限正数");
-    Check(a_t < step_init - 1e-9,
-          "用例2 线搜索：过大初始试探步应被内层搜索缩小（修复前此处失败：interval_converged 初始为真，内层循环被跳过）");
-    Check(score > score0, "用例2 线搜索：线搜索后的得分应优于起点得分");
+    Check(a_t == step_init,
+          "用例2 历史步长：正常区间保留截断后的初始牛顿步，不执行内层细化");
+    Check(score < score0, "用例2 场景：所选步长确实过冲，未暗中恢复改善得分的线搜索");
 
     Vec6 x_fin = x0 + dir * a_t;
     Vec6 g2;
@@ -432,7 +432,7 @@ int main() {
     const double score2 = Derivs(ndt, *source, x_fin, g2, H2, true);
     const double h_scale = std::max(H2.norm(), 1e-12);
     Check(H.norm() > 1e-9,
-          "用例3 Hessian：内层搜索后返回的 Hessian 不应为零（仅改符号而不重算 Hessian 的变体此处失败）");
+          "用例3 Hessian：所选初始试探步的 Hessian 不应为零");
     Check((H - H2).norm() <= 1e-8 * (1.0 + h_scale), "用例3 Hessian：返回的 Hessian 应与最终位置重算结果一致");
     Check(std::fabs(score - score2) <= 1e-9 * (1.0 + std::fabs(score2)), "用例3 一致性：返回得分应与最终位置重算一致");
     Check((g - g2).norm() <= 1e-9 * (1.0 + g2.norm()), "用例3 一致性：返回梯度应与最终位置重算一致");

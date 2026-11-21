@@ -896,8 +896,10 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
   double f_u = auxilaryFunction_PsiMT(a_u, phi_0, phi_0, d_phi_0, mu);
   double g_u = auxilaryFunction_dPsiMT(d_phi_0, d_phi_0, mu);
 
-  // Check used to allow More-Thuente step length calculation to be skipped by making step_min == step_max
-  bool interval_converged = (step_max - step_min) < 0, open_interval = true;
+  // Restore the pre-2026-11-17 step policy: a normal positive interval accepts the
+  // initial clamped Newton step without More-Thuente refinement. Keep numerical
+  // failure guards independent of this rollback.
+  bool interval_converged = (step_max - step_min) > 0, open_interval = true;
 
   double a_t = step_init;
   a_t        = std::min(a_t, step_max);
@@ -1017,16 +1019,9 @@ double pclomp::NormalDistributionsTransform<PointSource, PointTarget>::computeSt
     step_iterations++;
   }
 
-  // If inner loop was run then hessian needs to be calculated.
-  // Hessian is unnessisary for step length determination but gradients are required
-  // so derivative and transform data is stored for the next iteration.
-  // If the inner loop was run, the last trial used computeDerivatives(..., false), which leaves a
-  // zeroed Hessian. Recompute score, gradient and Hessian once at the final x_t (trans_cloud and
-  // final_transformation_ already correspond to x_t). computeHessian has no implementation in
-  // this variant, so the existing computeDerivatives(..., true) is used instead.
-  if (step_iterations) {
-    score = computeDerivatives(score_gradient, hessian, trans_cloud, x_t, true);
-  }
+  // Restore the legacy path together with the interval policy above: no extra
+  // final Hessian evaluation. For normal bounds the initial trial already
+  // computes score, gradient and Hessian at the selected step.
 
   // Never report a finite step for a nonfinite evaluation: propagate NaN so the caller's
   // existing nonfinite rejection applies instead of a small-step convergence.
