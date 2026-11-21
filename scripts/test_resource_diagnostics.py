@@ -52,7 +52,7 @@ class ResourceTests(unittest.TestCase):
         declared=config_summary.summarize(path,{'LIGHTNING_LM_NDT_MAX_POINTS':'3600'})
         self.assertTrue(declared['lio_point_budget_enabled'])
         load=declared['adaptive_load']
-        self.assertEqual(load['lio_point_budgets'],[2200,1804,1500])
+        self.assertEqual(load['lio_point_budgets'],[1500,1200,1000])
         self.assertEqual(load['tracking_lidar_count'],0)
         self.assertEqual(load['tracking_min_lidars'],1)
         self.assertFalse(load['rotate_secondary_lidars'])
@@ -69,7 +69,8 @@ class ResourceTests(unittest.TestCase):
             subprocess.run([sys.executable,str(repo/'scripts/prepare_compute_pruning_config.py'),
                             '--base',str(runtime),'--output',str(generated)],check=True,capture_output=True)
             result=config_summary.summarize(generated,{})
-            self.assertEqual(result['adaptive_load']['lio_point_budgets'],load['lio_point_budgets'])
+            # The historical experiment generator has its own frozen defaults.
+            self.assertEqual(result['adaptive_load']['lio_point_budgets'],[2200,1804,1500])
             self.assertEqual(result['compute_budget']['ndt_max_points'],3500)
 
     def test_three_lidar_uses_current_map_without_fixed_transform(self):

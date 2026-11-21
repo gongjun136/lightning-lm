@@ -30,9 +30,9 @@ multi_lidar:
     tracking_lidar_count: 0
     rotate_secondary_lidars: false
     lio_point_budgets:
-    - 2200
-    - 1804
     - 1500
+    - 1200
+    - 1000
     predictive: true
     target_latency_sec: 0.09
     hard_latency_sec: 0.3
